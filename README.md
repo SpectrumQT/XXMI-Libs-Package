@@ -1,7 +1,7 @@
 ![image](https://cloud.githubusercontent.com/assets/6544511/22624161/934dba64-eb27-11e6-8f78-46c902e96e1b.png)
 ========
 
-####Chiri's wrapper to enable fixing broken stereoscopic effects in DX11 games.
+**Chiri's wrapper to enable fixing broken stereoscopic effects in DX11 games.**
 
 This includes the entire code base, and it will compile, link, and run in it's current state.
 
@@ -31,7 +31,7 @@ https://github.com/bo3b/3Dmigoto.git
 1. Output files are in .\x64\Debug (3 dll and 1 .ini)
 <br>
 
-#####If you have any questions or problems don't hesitate to contact me.
+##### If you have any questions or problems don't hesitate to contact me.
 
 
 Big, big, _impossibly_ big thanks to Chiri for open-sourcing 3Dmigoto.

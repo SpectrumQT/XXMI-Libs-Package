@@ -455,8 +455,14 @@ void Override::Activate(HackerDevice *device, bool override_has_deactivate_condi
 		return;
 	}
 
-	LogInfo("User key activation -->\n");
+	//don't re-activate if already active, this causes a jam in hold overrides
+	if (active) {
+		LogInfo("Skipping override activation: already active\n");
+		return;
+	}
 
+	LogInfo("User key activation -->\n");
+	
 	if (override_has_deactivate_condition) {
 		active = true;
 		OverrideSave.Save(device, this);

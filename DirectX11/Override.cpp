@@ -456,7 +456,7 @@ void Override::Activate(HackerDevice *device, bool override_has_deactivate_condi
 	}
 
 	LogInfo("User key activation -->\n");
-
+	
 	if (override_has_deactivate_condition) {
 		active = true;
 		OverrideSave.Save(device, this);
@@ -515,7 +515,7 @@ void KeyOverride::DownEvent(HackerDevice *device)
 	if (type == KeyOverrideType::TOGGLE)
 		return Toggle(device);
 
-	if (type == KeyOverrideType::HOLD)
+	if (type == KeyOverrideType::HOLD && !active)
 		return Activate(device, true);
 
 	return Activate(device, false);

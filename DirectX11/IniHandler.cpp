@@ -4610,7 +4610,7 @@ void ReloadConfig(HackerDevice *device)
 
 	SavePersistentSettings();
 
-	LogInfoW(L"Reloading " INI_FILENAME L" (EXPERIMENTAL)...\n");
+	LogInfoW(L"Reloading " INI_FILENAME L"...\n");
 
 	G->gReloadConfigPending = false;
 	G->iniParamsReserved = 0;

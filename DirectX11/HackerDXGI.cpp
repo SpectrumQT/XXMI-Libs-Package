@@ -124,7 +124,7 @@ void InstallSetWindowPosHook()
 		return;
 	}
 
-	LogInfo("Successfully hooked SetWindowPos for full_screen=2\n");
+	LogInfo("[INF]: Successfully hooked SetWindowPos for full_screen=2\n");
 	return;
 }
 
@@ -177,14 +177,14 @@ HackerSwapChain::HackerSwapChain(IDXGISwapChain1 *pSwapChain, HackerDevice *pDev
 		mOverlay = new Overlay(mHackerDevice, mHackerContext, mOrigSwapChain1);
 	}
 	catch (...) {
-		LogInfo("  *** Failed to create Overlay. Exception caught.\n");
+		LogInfo("[INF]:  *** Failed to create Overlay. Exception caught.\n");
 		mOverlay = NULL;
 	}
 }
 
 IDXGISwapChain1* HackerSwapChain::GetOrigSwapChain1()
 {
-	LogDebug("HackerSwapChain::GetOrigSwapChain returns %p\n", mOrigSwapChain1);
+	LogDebug("[DBG]: HackerSwapChain::GetOrigSwapChain returns %p\n", mOrigSwapChain1);
 	return mOrigSwapChain1;
 }
 
@@ -194,7 +194,7 @@ IDXGISwapChain1* HackerSwapChain::GetOrigSwapChain1()
 
 void HackerSwapChain::RunFrameActions()
 {
-	LogDebug("Running frame actions.  Device: %p\n", mHackerDevice);
+	LogDebug("[DBG]: Running frame actions.  Device: %p\n", mHackerDevice);
 
 	// Regardless of log settings, since this runs every frame, let's flush the log
 	// so that the most lost will be one frame worth.  Tradeoff of performance to accuracy
@@ -327,12 +327,12 @@ STDMETHODIMP HackerSwapChain::QueryInterface(THIS_
 	/* [in] */ REFIID riid,
 	/* [iid_is][out] */ _COM_Outptr_ void __RPC_FAR *__RPC_FAR *ppvObject)
 {
-	LogInfo("HackerSwapChain::QueryInterface(%s@%p) called with IID: %s\n", type_name(this), this, NameFromIID(riid).c_str());
+	LogInfo("[INF]: HackerSwapChain::QueryInterface(%s@%p) called with IID: %s\n", type_name(this), this, NameFromIID(riid).c_str());
 
 	HRESULT hr = mOrigSwapChain1->QueryInterface(riid, ppvObject);
 	if (FAILED(hr) || !*ppvObject)
 	{
-		LogInfo("  failed result = %x for %p\n", hr, ppvObject);
+		LogInfo("[INF]:  failed result = %x for %p\n", hr, ppvObject);
 		return hr;
 	}
 
@@ -347,20 +347,20 @@ STDMETHODIMP HackerSwapChain::QueryInterface(THIS_
 
 	if (riid == __uuidof(IDXGISwapChain2))
 	{
-		LogInfo("***  returns E_NOINTERFACE as error for IDXGISwapChain2.\n");
+		LogInfo("[INF]: ***  returns E_NOINTERFACE as error for IDXGISwapChain2.\n");
 		*ppvObject = NULL;
 		return E_NOINTERFACE;
 	}
 	if (riid == __uuidof(IDXGISwapChain3))
 	{
 		// Return interface without wrapper to support HDR color space setup.
-		LogInfo("  return IDXGISwapChain3 interface (%p) without wrapper.\n", ppvObject);
-		LogInfo("  returns result = %x for %p\n", hr, ppvObject);
+		LogInfo("[INF]:  return IDXGISwapChain3 interface (%p) without wrapper.\n", ppvObject);
+		LogInfo("[INF]:  returns result = %x for %p\n", hr, ppvObject);
 		return hr;
 	}
 	if (riid == __uuidof(IDXGISwapChain4))
 	{
-		LogInfo("***  returns E_NOINTERFACE as error for IDXGISwapChain4.\n");
+		LogInfo("[INF]: ***  returns E_NOINTERFACE as error for IDXGISwapChain4.\n");
 		*ppvObject = NULL;
 		return E_NOINTERFACE;
 	}
@@ -380,34 +380,34 @@ STDMETHODIMP HackerSwapChain::QueryInterface(THIS_
 		unk_this->Release();
 		unk_ppvObject->Release();
 
-		LogInfo("  return HackerSwapChain(%s@%p) wrapper of %p\n", type_name(this), this, mOrigSwapChain1);
+		LogInfo("[INF]:  return HackerSwapChain(%s@%p) wrapper of %p\n", type_name(this), this, mOrigSwapChain1);
 		return hr;
 	}
 
-	LogInfo("  returns result = %x for %p\n", hr, ppvObject);
+	LogInfo("[INF]:  returns result = %x for %p\n", hr, ppvObject);
 	return hr;
 }
 
 STDMETHODIMP_(ULONG) HackerSwapChain::AddRef(THIS)
 {
 	ULONG ulRef = mOrigSwapChain1->AddRef();
-	LogInfo("HackerSwapChain::AddRef(%s@%p), counter=%d, this=%p\n", type_name(this), this, ulRef, this);
+	LogInfo("[INF]: HackerSwapChain::AddRef(%s@%p), counter=%d, this=%p\n", type_name(this), this, ulRef, this);
 	return ulRef;
 }
 
 STDMETHODIMP_(ULONG) HackerSwapChain::Release(THIS)
 {
 	ULONG ulRef = mOrigSwapChain1->Release();
-	LogInfo("HackerSwapChain::Release(%s@%p), counter=%d, this=%p\n", type_name(this), this, ulRef, this);
+	LogInfo("[INF]: HackerSwapChain::Release(%s@%p), counter=%d, this=%p\n", type_name(this), this, ulRef, this);
 
 	if (ulRef <= 0)
 	{
 		if (mHackerDevice) {
 			if (mHackerDevice->GetHackerSwapChain() == this) {
-				LogInfo("  Clearing mHackerDevice->mHackerSwapChain\n");
+				LogInfo("[INF]:  Clearing mHackerDevice->mHackerSwapChain\n");
 				mHackerDevice->SetHackerSwapChain(nullptr);
 			} else
-				LogInfo("  mHackerDevice %p not using mHackerSwapchain %p\n", mHackerDevice, this);
+				LogInfo("[INF]:  mHackerDevice %p not using mHackerSwapchain %p\n", mHackerDevice, this);
 			mHackerDevice->Release();
 		}
 
@@ -420,7 +420,7 @@ STDMETHODIMP_(ULONG) HackerSwapChain::Release(THIS)
 		if (last_fullscreen_swap_chain == mOrigSwapChain1)
 			last_fullscreen_swap_chain = NULL;
 
-		LogInfo("  counter=%d, this=%p, deleting self.\n", ulRef, this);
+		LogInfo("[INF]:  counter=%d, this=%p, deleting self.\n", ulRef, this);
 
 		delete this;
 		return 0L;
@@ -438,11 +438,11 @@ STDMETHODIMP HackerSwapChain::SetPrivateData(THIS_
 	/* [annotation][in] */
 	__in_bcount(DataSize)  const void *pData)
 {
-	LogInfo("HackerSwapChain::SetPrivateData(%s@%p) called with GUID: %s\n", type_name(this), this, NameFromIID(Name).c_str());
-	LogInfo("  DataSize = %d\n", DataSize);
+	LogInfo("[INF]: HackerSwapChain::SetPrivateData(%s@%p) called with GUID: %s\n", type_name(this), this, NameFromIID(Name).c_str());
+	LogInfo("[INF]:  DataSize = %d\n", DataSize);
 
 	HRESULT hr = mOrigSwapChain1->SetPrivateData(Name, DataSize, pData);
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -452,10 +452,10 @@ STDMETHODIMP HackerSwapChain::SetPrivateDataInterface(THIS_
 	/* [annotation][in] */
 	__in  const IUnknown *pUnknown)
 {
-	LogInfo("HackerSwapChain::SetPrivateDataInterface(%s@%p) called with GUID: %s\n", type_name(this), this, NameFromIID(Name).c_str());
+	LogInfo("[INF]: HackerSwapChain::SetPrivateDataInterface(%s@%p) called with GUID: %s\n", type_name(this), this, NameFromIID(Name).c_str());
 
 	HRESULT hr = mOrigSwapChain1->SetPrivateDataInterface(Name, pUnknown);
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -467,10 +467,10 @@ STDMETHODIMP HackerSwapChain::GetPrivateData(THIS_
 	/* [annotation][out] */
 	__out_bcount(*pDataSize)  void *pData)
 {
-	LogInfo("HackerSwapChain::GetPrivateData(%s@%p) called with GUID: %s\n", type_name(this), this, NameFromIID(Name).c_str());
+	LogInfo("[INF]: HackerSwapChain::GetPrivateData(%s@%p) called with GUID: %s\n", type_name(this), this, NameFromIID(Name).c_str());
 
 	HRESULT hr = mOrigSwapChain1->GetPrivateData(Name, pDataSize, pData);
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -494,16 +494,16 @@ STDMETHODIMP HackerSwapChain::GetParent(THIS_
 	/* [annotation][retval][out] */
 	__out  void **ppParent)
 {
-	LogInfo("HackerSwapChain::GetParent(%s@%p) called with IID: %s\n", type_name(this), this, NameFromIID(riid).c_str());
+	LogInfo("[INF]: HackerSwapChain::GetParent(%s@%p) called with IID: %s\n", type_name(this), this, NameFromIID(riid).c_str());
 
 	HRESULT hr = mOrigSwapChain1->GetParent(riid, ppParent);
 	if (FAILED(hr))
 	{
-		LogInfo("  failed result = %x for %p\n", hr, ppParent);
+		LogInfo("[INF]:  failed result = %x for %p\n", hr, ppParent);
 		return hr;
 	}
 
-	LogInfo("  returns result = %#x\n", hr);
+	LogInfo("[INF]:  returns result = %#x\n", hr);
 	return hr;
 }
 
@@ -516,10 +516,10 @@ STDMETHODIMP HackerSwapChain::GetDevice(
 	/* [annotation][retval][out] */
 	_Out_  void **ppDevice)
 {
-	LogDebug("HackerSwapChain::GetDevice(%s@%p) called with IID: %s\n", type_name(this), this, NameFromIID(riid).c_str());
+	LogDebug("[DBG]: HackerSwapChain::GetDevice(%s@%p) called with IID: %s\n", type_name(this), this, NameFromIID(riid).c_str());
 
 	HRESULT hr = mOrigSwapChain1->GetDevice(riid, ppDevice);
-	LogDebug("  returns result = %x, handle = %p\n", hr, *ppDevice);
+	LogDebug("[DBG]:  returns result = %x, handle = %p\n", hr, *ppDevice);
 	return hr;
 }
 
@@ -534,9 +534,9 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 	Profiling::State profiling_state = {0};
 	bool profiling = false;
 
-	LogDebug("HackerSwapChain::Present(%s@%p) called with\n", type_name(this), this);
-	LogDebug("  SyncInterval = %d\n", SyncInterval);
-	LogDebug("  Flags = %d\n", Flags);
+	LogDebug("[DBG]: HackerSwapChain::Present(%s@%p) called with\n", type_name(this), this);
+	LogDebug("[DBG]:  SyncInterval = %d\n", SyncInterval);
+	LogDebug("[DBG]:  Flags = %d\n", Flags);
 
 	if (!(Flags & DXGI_PRESENT_TEST)) {
 		// Profiling::mode may change below, so make a copy
@@ -571,7 +571,7 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 			Profiling::end(&profiling_state, &Profiling::present_overhead);
 	}
 
-	LogDebug("  returns %x\n", hr);
+	LogDebug("[DBG]:  returns %x\n", hr);
 	return hr;
 }
 
@@ -582,10 +582,10 @@ STDMETHODIMP HackerSwapChain::GetBuffer(THIS_
 	/* [annotation][out][in] */
 	_Out_  void **ppSurface)
 {
-	LogDebug("HackerSwapChain::GetBuffer(%s@%p) called with IID: %s\n", type_name(this), this, NameFromIID(riid).c_str());
+	LogDebug("[DBG]: HackerSwapChain::GetBuffer(%s@%p) called with IID: %s\n", type_name(this), this, NameFromIID(riid).c_str());
 
 	HRESULT hr = mOrigSwapChain1->GetBuffer(Buffer, riid, ppSurface);
-	LogDebug("  returns %x\n", hr);
+	LogDebug("[DBG]:  returns %x\n", hr);
 	return hr;
 }
 
@@ -594,9 +594,9 @@ STDMETHODIMP HackerSwapChain::SetFullscreenState(THIS_
 	/* [annotation][in] */
 	_In_opt_  IDXGIOutput *pTarget)
 {
-	LogInfo("HackerSwapChain::SetFullscreenState(%s@%p) called with\n", type_name(this), this);
-	LogInfo("  Fullscreen = %d\n", Fullscreen);
-	LogInfo("  Target = %p\n", pTarget);
+	LogInfo("[INF]: HackerSwapChain::SetFullscreenState(%s@%p) called with\n", type_name(this), this);
+	LogInfo("[INF]:  Fullscreen = %d\n", Fullscreen);
+	LogInfo("[INF]:  Target = %p\n", pTarget);
 
 	if (G->SCREEN_FULLSCREEN > 0)
 	{
@@ -609,7 +609,7 @@ STDMETHODIMP HackerSwapChain::SetFullscreenState(THIS_
 		}
 
 		Fullscreen = true;
-		LogInfo("->Fullscreen forced = %d\n", Fullscreen);
+		LogInfo("[INF]: ->Fullscreen forced = %d\n", Fullscreen);
 	}
 
 	//if (pTarget)	
@@ -621,7 +621,7 @@ STDMETHODIMP HackerSwapChain::SetFullscreenState(THIS_
 		last_fullscreen_swap_chain = mOrigSwapChain1;
 
 	HRESULT hr = mOrigSwapChain1->SetFullscreenState(Fullscreen, pTarget);
-	LogInfo("  returns %x\n", hr);
+	LogInfo("[INF]:  returns %x\n", hr);
 	return hr;
 }
 
@@ -631,19 +631,19 @@ STDMETHODIMP HackerSwapChain::GetFullscreenState(THIS_
 	/* [annotation][out] */
 	_Out_opt_  IDXGIOutput **ppTarget)
 {
-	LogDebug("HackerSwapChain::GetFullscreenState(%s@%p) called\n", type_name(this), this);
+	LogDebug("[DBG]: HackerSwapChain::GetFullscreenState(%s@%p) called\n", type_name(this), this);
 
 	//IDXGIOutput *origOutput;
 	//HRESULT hr = mOrigSwapChain1->GetFullscreenState(pFullscreen, &origOutput);
 	//if (hr == S_OK)
 	//{
 	//	*ppTarget = IDXGIOutput::GetDirectOutput(origOutput);
-	//	if (pFullscreen) LogInfo("  returns Fullscreen = %d\n", *pFullscreen);
-	//	if (ppTarget) LogInfo("  returns target IDXGIOutput = %x, wrapper = %x\n", origOutput, *ppTarget);
+	//	if (pFullscreen) LogInfo("[INF]:  returns Fullscreen = %d\n", *pFullscreen);
+	//	if (ppTarget) LogInfo("[INF]:  returns target IDXGIOutput = %x, wrapper = %x\n", origOutput, *ppTarget);
 	//}
 
 	HRESULT hr = mOrigSwapChain1->GetFullscreenState(pFullscreen, ppTarget);
-	LogDebug("  returns result = %x\n", hr);
+	LogDebug("[DBG]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -651,20 +651,20 @@ STDMETHODIMP HackerSwapChain::GetDesc(THIS_
 	/* [annotation][out] */
 	_Out_  DXGI_SWAP_CHAIN_DESC *pDesc)
 {
-	LogDebug("HackerSwapChain::GetDesc(%s@%p) called\n", type_name(this), this);
+	LogDebug("[DBG]: HackerSwapChain::GetDesc(%s@%p) called\n", type_name(this), this);
 
 	HRESULT hr = mOrigSwapChain1->GetDesc(pDesc);
 
 	if (hr == S_OK)
 	{
-		if (pDesc) LogDebug("  returns Windowed = %d\n", pDesc->Windowed);
-		if (pDesc) LogDebug("  returns Width = %d\n", pDesc->BufferDesc.Width);
-		if (pDesc) LogDebug("  returns Height = %d\n", pDesc->BufferDesc.Height);
-		if (pDesc) LogDebug("  returns Refresh rate = %f\n",
+		if (pDesc) LogDebug("[DBG]:  returns Windowed = %d\n", pDesc->Windowed);
+		if (pDesc) LogDebug("[DBG]:  returns Width = %d\n", pDesc->BufferDesc.Width);
+		if (pDesc) LogDebug("[DBG]:  returns Height = %d\n", pDesc->BufferDesc.Height);
+		if (pDesc) LogDebug("[DBG]:  returns Refresh rate = %f\n",
 			(float)pDesc->BufferDesc.RefreshRate.Numerator / (float)pDesc->BufferDesc.RefreshRate.Denominator);
 	}
 
-	LogDebug("  returns result = %x\n", hr);
+	LogDebug("[DBG]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -675,19 +675,19 @@ STDMETHODIMP HackerSwapChain::ResizeBuffers(THIS_
 	/* [in] */ DXGI_FORMAT NewFormat,
 	/* [in] */ UINT SwapChainFlags)
 {
-	LogInfo("HackerSwapChain::ResizeBuffers(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerSwapChain::ResizeBuffers(%s@%p) called\n", type_name(this), this);
 
 	if (G->mResolutionInfo.from == GetResolutionFrom::SWAP_CHAIN)
 	{
 		G->mResolutionInfo.width = Width;
 		G->mResolutionInfo.height = Height;
-		LogInfo("  Got resolution from swap chain: %ix%i\n",
+		LogInfo("[INF]:  Got resolution from swap chain: %ix%i\n",
 			G->mResolutionInfo.width, G->mResolutionInfo.height);
 	}
 
 	HRESULT hr = mOrigSwapChain1->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
 
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -697,9 +697,9 @@ STDMETHODIMP HackerSwapChain::ResizeTarget(THIS_
 {
 	DXGI_MODE_DESC new_desc;
 
-	LogInfo("HackerSwapChain::ResizeTarget(%s@%p) called\n", type_name(this), this);
-	LogInfo("  Width: %d, Height: %d\n", pNewTargetParameters->Width, pNewTargetParameters->Height);
-	LogInfo("     Refresh rate = %f\n",
+	LogInfo("[INF]: HackerSwapChain::ResizeTarget(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]:  Width: %d, Height: %d\n", pNewTargetParameters->Width, pNewTargetParameters->Height);
+	LogInfo("[INF]:     Refresh rate = %f\n",
 		(float)pNewTargetParameters->RefreshRate.Numerator / (float)pNewTargetParameters->RefreshRate.Denominator);
 
 	// Historically we have only forced the refresh rate when full-screen.
@@ -718,7 +718,7 @@ STDMETHODIMP HackerSwapChain::ResizeTarget(THIS_
 	ForceDisplayMode(&new_desc);
 
 	HRESULT hr = mOrigSwapChain1->ResizeTarget(&new_desc);
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -726,9 +726,9 @@ STDMETHODIMP HackerSwapChain::GetContainingOutput(THIS_
 	/* [annotation][out] */
 	_Out_  IDXGIOutput **ppOutput)
 {
-	LogInfo("HackerSwapChain::GetContainingOutput(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerSwapChain::GetContainingOutput(%s@%p) called\n", type_name(this), this);
 	HRESULT hr = mOrigSwapChain1->GetContainingOutput(ppOutput);
-	LogInfo("  returns result = %#x\n", hr);
+	LogInfo("[INF]:  returns result = %#x\n", hr);
 	return hr;
 }
 
@@ -736,9 +736,9 @@ STDMETHODIMP HackerSwapChain::GetFrameStatistics(THIS_
 	/* [annotation][out] */
 	_Out_  DXGI_FRAME_STATISTICS *pStats)
 {
-	LogInfo("HackerSwapChain::GetFrameStatistics(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerSwapChain::GetFrameStatistics(%s@%p) called\n", type_name(this), this);
 	HRESULT hr = mOrigSwapChain1->GetFrameStatistics(pStats);
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -746,9 +746,9 @@ STDMETHODIMP HackerSwapChain::GetLastPresentCount(THIS_
 	/* [annotation][out] */
 	_Out_  UINT *pLastPresentCount)
 {
-	LogInfo("HackerSwapChain::GetLastPresentCount(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerSwapChain::GetLastPresentCount(%s@%p) called\n", type_name(this), this);
 	HRESULT hr = mOrigSwapChain1->GetLastPresentCount(pLastPresentCount);
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -764,16 +764,16 @@ STDMETHODIMP HackerSwapChain::GetDesc1(THIS_
 	/* [annotation][out] */
 	_Out_  DXGI_SWAP_CHAIN_DESC1 *pDesc)
 {
-	LogInfo("HackerSwapChain::GetDesc1(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerSwapChain::GetDesc1(%s@%p) called\n", type_name(this), this);
 
 	HRESULT hr = mOrigSwapChain1->GetDesc1(pDesc);
 	if (hr == S_OK)
 	{
-		if (pDesc) LogInfo("  returns Stereo = %d\n", pDesc->Stereo);
-		if (pDesc) LogInfo("  returns Width = %d\n", pDesc->Width);
-		if (pDesc) LogInfo("  returns Height = %d\n", pDesc->Height);
+		if (pDesc) LogInfo("[INF]:  returns Stereo = %d\n", pDesc->Stereo);
+		if (pDesc) LogInfo("[INF]:  returns Width = %d\n", pDesc->Width);
+		if (pDesc) LogInfo("[INF]:  returns Height = %d\n", pDesc->Height);
 	}
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 
 	return hr;
 }
@@ -782,16 +782,16 @@ STDMETHODIMP HackerSwapChain::GetFullscreenDesc(THIS_
 	/* [annotation][out] */
 	_Out_  DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pDesc)
 {
-	LogInfo("HackerSwapChain::GetFullscreenDesc(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerSwapChain::GetFullscreenDesc(%s@%p) called\n", type_name(this), this);
 
 	HRESULT hr = mOrigSwapChain1->GetFullscreenDesc(pDesc);
 	if (hr == S_OK)
 	{
-		if (pDesc) LogInfo("  returns Windowed = %d\n", pDesc->Windowed);
-		if (pDesc) LogInfo("  returns Refresh rate = %f\n",
+		if (pDesc) LogInfo("[INF]:  returns Windowed = %d\n", pDesc->Windowed);
+		if (pDesc) LogInfo("[INF]:  returns Refresh rate = %f\n",
 			(float)pDesc->RefreshRate.Numerator / (float)pDesc->RefreshRate.Denominator);
 	}
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 
 	return hr;
 }
@@ -800,9 +800,9 @@ STDMETHODIMP HackerSwapChain::GetHwnd(THIS_
 	/* [annotation][out] */
 	_Out_  HWND *pHwnd)
 {
-	LogInfo("HackerSwapChain::GetHwnd(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerSwapChain::GetHwnd(%s@%p) called\n", type_name(this), this);
 	HRESULT hr = mOrigSwapChain1->GetHwnd(pHwnd);
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -812,10 +812,10 @@ STDMETHODIMP HackerSwapChain::GetCoreWindow(THIS_
 	/* [annotation][out] */
 	_Out_  void **ppUnk)
 {
-	LogInfo("HackerSwapChain::GetCoreWindow(%s@%p) called with IID: %s\n", type_name(this), this, NameFromIID(refiid).c_str());
+	LogInfo("[INF]: HackerSwapChain::GetCoreWindow(%s@%p) called with IID: %s\n", type_name(this), this, NameFromIID(refiid).c_str());
 
 	HRESULT hr = mOrigSwapChain1->GetCoreWindow(refiid, ppUnk);
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -837,9 +837,9 @@ STDMETHODIMP HackerSwapChain::Present1(THIS_
 	gLogDebug = true;
 	bool profiling = false;
 
-	LogDebug("HackerSwapChain::Present1(%s@%p) called\n", type_name(this), this);
-	LogDebug("  SyncInterval = %d\n", SyncInterval);
-	LogDebug("  Flags = %d\n", PresentFlags);
+	LogDebug("[DBG]: HackerSwapChain::Present1(%s@%p) called\n", type_name(this), this);
+	LogDebug("[DBG]:  SyncInterval = %d\n", SyncInterval);
+	LogDebug("[DBG]:  Flags = %d\n", PresentFlags);
 
 	if (!(PresentFlags & DXGI_PRESENT_TEST)) {
 		// Profiling::mode may change below, so make a copy
@@ -874,7 +874,7 @@ STDMETHODIMP HackerSwapChain::Present1(THIS_
 			Profiling::end(&profiling_state, &Profiling::present_overhead);
 	}
 
-	LogDebug("  returns %x\n", hr);
+	LogDebug("[DBG]:  returns %x\n", hr);
 
 	gLogDebug = false;
 	return hr;
@@ -882,9 +882,9 @@ STDMETHODIMP HackerSwapChain::Present1(THIS_
 
 STDMETHODIMP_(BOOL) HackerSwapChain::IsTemporaryMonoSupported(THIS)
 {
-	LogInfo("HackerSwapChain::IsTemporaryMonoSupported(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerSwapChain::IsTemporaryMonoSupported(%s@%p) called\n", type_name(this), this);
 	BOOL ret = mOrigSwapChain1->IsTemporaryMonoSupported();
-	LogInfo("  returns %d\n", ret);
+	LogInfo("[INF]:  returns %d\n", ret);
 	return ret;
 }
 
@@ -892,9 +892,9 @@ STDMETHODIMP HackerSwapChain::GetRestrictToOutput(THIS_
 	/* [annotation][out] */
 	_Out_  IDXGIOutput **ppRestrictToOutput)
 {
-	LogInfo("HackerSwapChain::GetRestrictToOutput(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerSwapChain::GetRestrictToOutput(%s@%p) called\n", type_name(this), this);
 	HRESULT hr = mOrigSwapChain1->GetRestrictToOutput(ppRestrictToOutput);
-	LogInfo("  returns result = %x, handle = %p\n", hr, *ppRestrictToOutput);
+	LogInfo("[INF]:  returns result = %x, handle = %p\n", hr, *ppRestrictToOutput);
 	return hr;
 }
 
@@ -902,9 +902,9 @@ STDMETHODIMP HackerSwapChain::SetBackgroundColor(THIS_
 	/* [annotation][in] */
 	_In_  const DXGI_RGBA *pColor)
 {
-	LogInfo("HackerSwapChain::SetBackgroundColor(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerSwapChain::SetBackgroundColor(%s@%p) called\n", type_name(this), this);
 	HRESULT hr = mOrigSwapChain1->SetBackgroundColor(pColor);
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -912,9 +912,9 @@ STDMETHODIMP HackerSwapChain::GetBackgroundColor(THIS_
 	/* [annotation][out] */
 	_Out_  DXGI_RGBA *pColor)
 {
-	LogInfo("HackerSwapChain::GetBackgroundColor(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerSwapChain::GetBackgroundColor(%s@%p) called\n", type_name(this), this);
 	HRESULT hr = mOrigSwapChain1->GetBackgroundColor(pColor);
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -922,9 +922,9 @@ STDMETHODIMP HackerSwapChain::SetRotation(THIS_
 	/* [annotation][in] */
 	_In_  DXGI_MODE_ROTATION Rotation)
 {
-	LogInfo("HackerSwapChain::SetRotation(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerSwapChain::SetRotation(%s@%p) called\n", type_name(this), this);
 	HRESULT hr = mOrigSwapChain1->SetRotation(Rotation);
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -932,9 +932,9 @@ STDMETHODIMP HackerSwapChain::GetRotation(THIS_
 	/* [annotation][out] */
 	_Out_  DXGI_MODE_ROTATION *pRotation)
 {
-	LogInfo("HackerSwapChain::GetRotation(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerSwapChain::GetRotation(%s@%p) called\n", type_name(this), this);
 	HRESULT hr = mOrigSwapChain1->GetRotation(pRotation);
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -1035,7 +1035,7 @@ void HackerUpscalingSwapChain::CreateRenderTarget(DXGI_SWAP_CHAIN_DESC* pFakeSwa
 		return;
 	}
 
-	LogInfo("HackerUpscalingSwapChain::HackerUpscalingSwapChain(): result %d\n", hr);
+	LogInfo("[INF]: HackerUpscalingSwapChain::HackerUpscalingSwapChain(): result %d\n", hr);
 
 	if (FAILED(hr))
 	{
@@ -1053,7 +1053,7 @@ STDMETHODIMP HackerUpscalingSwapChain::GetBuffer(THIS_
 	/* [annotation][out][in] */
 	_Out_  void **ppSurface)
 {
-	LogDebug("HackerUpscalingSwapChain::GetBuffer(%s@%p) called with IID: %s\n", type_name(this), this, NameFromIID(riid).c_str());
+	LogDebug("[DBG]: HackerUpscalingSwapChain::GetBuffer(%s@%p) called with IID: %s\n", type_name(this), this, NameFromIID(riid).c_str());
 
 	HRESULT hr = S_OK;
 
@@ -1071,11 +1071,11 @@ STDMETHODIMP HackerUpscalingSwapChain::GetBuffer(THIS_
 	}
 	else
 	{
-		LogInfo("BUG: HackerUpscalingDXGISwapChain::GetBuffer(): Missing upscaling object\n");
+		LogInfo("[INF]: BUG: HackerUpscalingDXGISwapChain::GetBuffer(): Missing upscaling object\n");
 		DoubleBeepExit();
 	}
 
-	LogDebug("  returns %x\n", hr);
+	LogDebug("[DBG]:  returns %x\n", hr);
 	return hr;
 }
 
@@ -1084,9 +1084,9 @@ STDMETHODIMP HackerUpscalingSwapChain::SetFullscreenState(THIS_
 	/* [annotation][in] */
 	_In_opt_  IDXGIOutput *pTarget)
 {
-	LogInfo("HackerUpscalingSwapChain::SetFullscreenState(%s@%p) called with\n", type_name(this), this);
-	LogInfo("  Fullscreen = %d\n", Fullscreen);
-	LogInfo("  Target = %p\n", pTarget);
+	LogInfo("[INF]: HackerUpscalingSwapChain::SetFullscreenState(%s@%p) called with\n", type_name(this), this);
+	LogInfo("[INF]:  Fullscreen = %d\n", Fullscreen);
+	LogInfo("[INF]:  Target = %p\n", pTarget);
 
 	HRESULT hr;
 
@@ -1115,7 +1115,7 @@ STDMETHODIMP HackerUpscalingSwapChain::SetFullscreenState(THIS_
 		}
 	}
 
-	LogInfo("  returns %x\n", hr);
+	LogInfo("[INF]:  returns %x\n", hr);
 	return hr;
 }
 
@@ -1123,7 +1123,7 @@ STDMETHODIMP HackerUpscalingSwapChain::GetDesc(THIS_
 	/* [annotation][out] */
 	_Out_  DXGI_SWAP_CHAIN_DESC *pDesc)
 {
-	LogDebug("HackerUpscalingSwapChain::GetDesc(%s@%p) called\n", type_name(this), this);
+	LogDebug("[DBG]: HackerUpscalingSwapChain::GetDesc(%s@%p) called\n", type_name(this), this);
 
 	HRESULT hr = mOrigSwapChain1->GetDesc(pDesc);
 
@@ -1140,7 +1140,7 @@ STDMETHODIMP HackerUpscalingSwapChain::GetDesc(THIS_
 				mFakeBackBuffer->GetDesc(&fd);
 				pDesc->BufferDesc.Width = fd.Width;
 				pDesc->BufferDesc.Height = fd.Height;
-				LogDebug("->Using fake SwapChain Sizes.\n");
+				LogDebug("[DBG]: ->Using fake SwapChain Sizes.\n");
 			}
 
 			if (mFakeSwapChain1)
@@ -1149,13 +1149,13 @@ STDMETHODIMP HackerUpscalingSwapChain::GetDesc(THIS_
 			}
 		}
 
-		if (pDesc) LogDebug("  returns Windowed = %d\n", pDesc->Windowed);
-		if (pDesc) LogDebug("  returns Width = %d\n", pDesc->BufferDesc.Width);
-		if (pDesc) LogDebug("  returns Height = %d\n", pDesc->BufferDesc.Height);
-		if (pDesc) LogDebug("  returns Refresh rate = %f\n",
+		if (pDesc) LogDebug("[DBG]:  returns Windowed = %d\n", pDesc->Windowed);
+		if (pDesc) LogDebug("[DBG]:  returns Width = %d\n", pDesc->BufferDesc.Width);
+		if (pDesc) LogDebug("[DBG]:  returns Height = %d\n", pDesc->BufferDesc.Height);
+		if (pDesc) LogDebug("[DBG]:  returns Refresh rate = %f\n",
 			(float)pDesc->BufferDesc.RefreshRate.Numerator / (float)pDesc->BufferDesc.RefreshRate.Denominator);
 	}
-	LogDebug("  returns result = %x\n", hr);
+	LogDebug("[DBG]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -1166,7 +1166,7 @@ STDMETHODIMP HackerUpscalingSwapChain::ResizeBuffers(THIS_
 	/* [in] */ DXGI_FORMAT NewFormat,
 	/* [in] */ UINT SwapChainFlags)
 {
-	LogInfo("HackerSwapChain::ResizeBuffers(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerSwapChain::ResizeBuffers(%s@%p) called\n", type_name(this), this);
 
 	// TODO: not sure if it belongs here, in the resize target function or in both
 	// or maybe it is better to put it in the getviewport function?
@@ -1178,7 +1178,7 @@ STDMETHODIMP HackerUpscalingSwapChain::ResizeBuffers(THIS_
 	{
 		G->mResolutionInfo.width = Width;
 		G->mResolutionInfo.height = Height;
-		LogInfo("Got resolution from swap chain: %ix%i\n",
+		LogInfo("[INF]: Got resolution from swap chain: %ix%i\n",
 			G->mResolutionInfo.width, G->mResolutionInfo.height);
 	}
 
@@ -1216,11 +1216,11 @@ STDMETHODIMP HackerUpscalingSwapChain::ResizeBuffers(THIS_
 	}
 	else
 	{
-		LogInfo("BUG: HackerUpscalingSwapChain::ResizeBuffers(): Missing upscaling object\n");
+		LogInfo("[INF]: BUG: HackerUpscalingSwapChain::ResizeBuffers(): Missing upscaling object\n");
 		DoubleBeepExit();
 	}
 
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 
@@ -1228,7 +1228,7 @@ STDMETHODIMP HackerUpscalingSwapChain::ResizeTarget(THIS_
 	/* [annotation][in] */
 	_In_  const DXGI_MODE_DESC *pNewTargetParameters)
 {
-	LogInfo("HackerUpscalingSwapChain::ResizeTarget(%s@%p) called\n", type_name(this), this);
+	LogInfo("[INF]: HackerUpscalingSwapChain::ResizeTarget(%s@%p) called\n", type_name(this), this);
 
 	if (pNewTargetParameters != nullptr)
 	{
@@ -1276,7 +1276,7 @@ STDMETHODIMP HackerUpscalingSwapChain::ResizeTarget(THIS_
 		G->upscaling_hooks_armed = true;
 	}
 
-	LogInfo("  returns result = %x\n", hr);
+	LogInfo("[INF]:  returns result = %x\n", hr);
 	return hr;
 }
 

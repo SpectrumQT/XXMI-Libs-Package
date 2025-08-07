@@ -78,8 +78,8 @@ const int maxstring = 1024;
 
 Overlay::Overlay(HackerDevice *pDevice, HackerContext *pContext, IDXGISwapChain *pSwapChain)
 {
-	LogInfo("Overlay::Overlay created for %p\n", pSwapChain);
-	LogInfo("  on HackerDevice: %p, HackerContext: %p\n", pDevice, pContext);
+	LogInfo("[INF]: Overlay::Overlay created for %p\n", pSwapChain);
+	LogInfo("[INF]:  on HackerDevice: %p, HackerContext: %p\n", pDevice, pContext);
 
 	// Drawing environment for this swap chain. This is the game environment.
 	// These should specifically avoid Hacker* objects, to avoid object
@@ -181,7 +181,7 @@ Overlay::Overlay(HackerDevice *pDevice, HackerContext *pContext, IDXGISwapChain 
 
 Overlay::~Overlay()
 {
-	LogInfo("Overlay::~Overlay deleted for SwapChain %p\n", mOrigSwapChain);
+	LogInfo("[INF]: Overlay::~Overlay deleted for SwapChain %p\n", mOrigSwapChain);
 	// We Release the same interface we called AddRef on, and we use the
 	// Hacker interfaces to make sure that our cleanup code is run if this
 	// is the last reference.
@@ -316,7 +316,7 @@ static ID3D11Texture2D* get_11on12_backbuffer(ID3D11Device *mOrigDevice, IDXGISw
 
 	if (FAILED(mOrigDevice->QueryInterface(IID_ID3D11On12Device, (void**)&d3d11on12_dev)))
 		return NULL;
-	LogDebug("  ID3D11On12Device: %p\n", d3d11on12_dev);
+	LogDebug("[DBG]:  ID3D11On12Device: %p\n", d3d11on12_dev);
 
 	// In D3D12 we need to make sure we are writing to the correct back
 	// buffer for the current frame, and failing to do this will lead to a
@@ -326,11 +326,11 @@ static ID3D11Texture2D* get_11on12_backbuffer(ID3D11Device *mOrigDevice, IDXGISw
 	if (FAILED(mOrigSwapChain->QueryInterface(IID_IDXGISwapChain3, (void**)&swap_chain_3)))
 		goto out;
 	bb_idx = swap_chain_3->GetCurrentBackBufferIndex();
-	LogDebug("  Current Back Buffer Index: %i\n", bb_idx);
+	LogDebug("[DBG]:  Current Back Buffer Index: %i\n", bb_idx);
 
 	if (FAILED(mOrigSwapChain->GetBuffer(bb_idx, IID_ID3D12Resource, (void**)&d3d12_bb)))
 		goto out;
-	LogDebug("  ID3D12Resource: %p\n", d3d12_bb);
+	LogDebug("[DBG]:  ID3D12Resource: %p\n", d3d12_bb);
 
 	// At the moment I'm creating a wrapped resource every frame, though
 	// the 11on12 sample code does this once for every back buffer index
@@ -386,7 +386,7 @@ static ID3D11Texture2D* get_11on12_backbuffer(ID3D11Device *mOrigDevice, IDXGISw
 			D3D12_RESOURCE_STATE_RENDER_TARGET, /* in "state" */
 			D3D12_RESOURCE_STATE_PRESENT, /* out "state" */
 			IID_ID3D11Texture2D, (void**)&d3d11_bb);
-	LogDebug("  ID3D11Texture2D: %p, result: 0x%x\n", d3d11_bb, hr);
+	LogDebug("[DBG]:  ID3D11Texture2D: %p, result: 0x%x\n", d3d11_bb, hr);
 
 out:
 	if (d3d12_bb)

@@ -533,7 +533,7 @@ static void log_nv_error(NvAPI_Status status)
 		return;
 
 	NvAPI_GetErrorMessage(status, desc);
-	LogInfo("%s\n", desc);
+	LogInfo("[INF]: %s\n", desc);
 }
 
 static HMODULE nvDLL;
@@ -554,25 +554,25 @@ static NvAPI_Status NvAPI_DRS_SaveSettingsToFileEx(NvDRSSessionHandle hSession, 
 			nvDLL = GetModuleHandle(L"nvapi.dll");
 		}
 		if (!nvDLL) {
-			LogInfo("Can't get nvapi handle\n");
+			LogInfo("[INF]: Can't get nvapi handle\n");
 			nvapi_failed = true;
 			return NVAPI_ERROR;
 		}
 	}
 	if (!nvapi_QueryInterfacePtr) {
 		nvapi_QueryInterfacePtr = (nvapi_QueryInterfaceType)GetProcAddress(nvDLL, "nvapi_QueryInterface");
-		LogDebug("nvapi_QueryInterfacePtr @ 0x%p\n", nvapi_QueryInterfacePtr);
+		LogDebug("[DBG]: nvapi_QueryInterfacePtr @ 0x%p\n", nvapi_QueryInterfacePtr);
 		if (!nvapi_QueryInterfacePtr) {
-			LogInfo("Unable to call NvAPI_QueryInterface\n");
+			LogInfo("[INF]: Unable to call NvAPI_QueryInterface\n");
 			nvapi_failed = true;
 			return NVAPI_ERROR;
 		}
 	}
 	if (!_NvAPI_DRS_SaveSettingsToFileEx) {
 		_NvAPI_DRS_SaveSettingsToFileEx	= (tNvAPI_DRS_SaveSettingsToFileEx)nvapi_QueryInterfacePtr(0x1267818E);
-		LogDebug("NvAPI_DRS_SaveSettingsToFileEx @ 0x%p\n", _NvAPI_DRS_SaveSettingsToFileEx);
+		LogDebug("[DBG]: NvAPI_DRS_SaveSettingsToFileEx @ 0x%p\n", _NvAPI_DRS_SaveSettingsToFileEx);
 		if (!_NvAPI_DRS_SaveSettingsToFileEx) {
-			LogInfo("Unable to call NvAPI_DRS_SaveSettingsToFileEx\n");
+			LogInfo("[INF]: Unable to call NvAPI_DRS_SaveSettingsToFileEx\n");
 			nvapi_failed = true;
 			return NVAPI_ERROR;
 		}
@@ -650,7 +650,7 @@ static int create_internal_setting_map(NvDRSSessionHandle session)
 		if (!profile.empty() && line.length() > 22 && !line.compare(line.length() - 22, 22, L"InternalSettingFlag=V0")) {
 			sid = line.substr(line.find(L" ID_0x") + 6, 8);
 			swscanf_s(sid.c_str(), L"%08x", &id);
-			// LogInfo("Identified Internal Setting ID %S 0x%08x\n", line.c_str(), id);
+			// LogInfo("[INF]: Identified Internal Setting ID %S 0x%08x\n", line.c_str(), id);
 			internal_setting_map[profile].insert(id);
 		}
 	}
@@ -664,7 +664,7 @@ err_rm:
 	DeleteFile(path);
 err:
 	log_nv_error(status);
-	LogInfo("WARNING: Unable to determine which settings are internal - some settings will be garbage\n");
+	LogInfo("[INF]: WARNING: Unable to determine which settings are internal - some settings will be garbage\n");
 	return -1;
 }
 
@@ -737,7 +737,7 @@ unsigned decode_internal_dword(unsigned id, unsigned val)
 	    | internal_setting_key[(off+2) % 256] << 16
 	    | internal_setting_key[(off+1) % 256] << 8
 	    | internal_setting_key[(off+0) % 256];
-	// LogDebug("Decoded Setting ID=%08x Off=%u Key=%08x Enc=%08x Dec=%08x\n", id, off, key, val, key ^ val);
+	// LogDebug("[DBG]: Decoded Setting ID=%08x Off=%u Key=%08x Enc=%08x Dec=%08x\n", id, off, key, val, key ^ val);
 	return key ^ val;
 }
 
@@ -750,7 +750,7 @@ void decode_internal_string(unsigned id, NvAPI_UnicodeString val)
 		off = ((id << 1) + i*2);
 		key = internal_setting_key[(off+1) % 256] << 8
 		    | internal_setting_key[(off+0) % 256];
-		// LogInfo("Decoded SettingString ID=%08x Off=%u Key=%04x Enc=%04x Dec=%04x\n", id, off, key, val[i], key ^ val[i]);
+		// LogInfo("[INF]: Decoded SettingString ID=%08x Off=%u Key=%04x Enc=%04x Dec=%04x\n", id, off, key, val[i], key ^ val[i]);
 		val[i] = val[i] ^ key;
 		if (!val[i]) // Decoded the NULL terminator
 			break;
@@ -779,17 +779,17 @@ void _log_nv_profile(NvDRSSessionHandle session, NvDRSProfileHandle profile, NVD
 	if (status != NVAPI_OK)
 		goto bail;
 
-	LogInfo("Profile \"%S\"%s\n", (wchar_t*)info->profileName,
+	LogInfo("[INF]: Profile \"%S\"%s\n", (wchar_t*)info->profileName,
 			info->isPredefined ? "" : " UserSpecified=true");
 
 	if (info->gpuSupport.geforce && info->gpuSupport.quadro) // CHECKME
-		LogInfo("    ShowOn All\n");
+		LogInfo("[INF]:    ShowOn All\n");
 	else if (info->gpuSupport.geforce)
-		LogInfo("    ShowOn GeForce\n");
+		LogInfo("[INF]:    ShowOn GeForce\n");
 	else if (info->gpuSupport.quadro)
-		LogInfo("    ShowOn Quadro\n");
+		LogInfo("[INF]:    ShowOn Quadro\n");
 	if (info->gpuSupport.nvs) // What is this?
-		LogInfo("    ShowOn NVS\n");
+		LogInfo("[INF]:    ShowOn NVS\n");
 
 	// XXX: Geforce Profile Manager says "ProfileType Application/Global"...
 	// not sure where that comes from
@@ -879,7 +879,7 @@ void _log_nv_profile(NvDRSSessionHandle session, NvDRSProfileHandle profile, NVD
 		LogInfo("\n");
 	}
 
-	LogInfo("EndProfile\n\n");
+	LogInfo("[INF]: EndProfile\n\n");
 
 bail:
 	log_nv_error(status);
@@ -924,10 +924,10 @@ static NvDRSProfileHandle get_cur_nv_profile(NvDRSSessionHandle session)
 	wchar_t path[MAX_PATH];
 
 	if (!get_exe_path(path, MAX_PATH)) {
-		LogInfo("GetModuleFileName failed\n");
+		LogInfo("[INF]: GetModuleFileName failed\n");
 		return 0;
 	}
-	LogInfo("\nLooking up profiles related to %S\n", path);
+	LogInfo("[INF]: \nLooking up profiles related to %S\n", path);
 
 	app.version = NVDRS_APPLICATION_VER;
 	status = NvAPI_DRS_FindApplicationByName(session, (NvU16*)path, &profile, &app);
@@ -956,7 +956,7 @@ static void log_relevant_nv_profiles(NvDRSSessionHandle session, NvDRSProfileHan
 	NvU32 len = 0;
 	char *default_stereo_profile = NULL;
 
-	LogInfo("----------- Driver profile settings -----------\n");
+	LogInfo("[INF]: ----------- Driver profile settings -----------\n");
 
 	status = NvAPI_DRS_GetBaseProfile(session, &base_profile);
 	if (status != NVAPI_OK)
@@ -967,7 +967,7 @@ static void log_relevant_nv_profiles(NvDRSSessionHandle session, NvDRSProfileHan
 	if (status != NVAPI_OK)
 		goto bail;
 
-	LogInfo("BaseProfile \"%S\"\n", (wchar_t*)base_info.profileName);
+	LogInfo("[INF]: BaseProfile \"%S\"\n", (wchar_t*)base_info.profileName);
 
 	status = NvAPI_DRS_GetCurrentGlobalProfile(session, &global_profile);
 	if (status != NVAPI_OK)
@@ -978,7 +978,7 @@ static void log_relevant_nv_profiles(NvDRSSessionHandle session, NvDRSProfileHan
 	if (status != NVAPI_OK)
 		goto bail;
 
-	LogInfo("SelectedGlobalProfile \"%S\"\n", (wchar_t*)global_info.profileName);
+	LogInfo("[INF]: SelectedGlobalProfile \"%S\"\n", (wchar_t*)global_info.profileName);
 
 	// TODO: Log current stereo profile
 	// FIXME: Update nvapi headers to latest public version to get this function:
@@ -992,10 +992,10 @@ static void log_relevant_nv_profiles(NvDRSSessionHandle session, NvDRSProfileHan
 	// 		goto bail;
 	// 	// Making this look like a comment since Geforce Profile
 	// 	// Manager does not output it:
-	// 	LogInfo("// Default stereo profile: %s\n", default_stereo_profile);
+	// 	LogInfo("[INF]: // Default stereo profile: %s\n", default_stereo_profile);
 
 	// } else {
-	// 	LogInfo("// No default stereo profile set\n");
+	// 	LogInfo("[INF]: // No default stereo profile set\n");
 	// }
 
 	LogInfo("\n");
@@ -1014,7 +1014,7 @@ static void log_relevant_nv_profiles(NvDRSSessionHandle session, NvDRSProfileHan
 bail:
 	delete default_stereo_profile;
 	log_nv_error(status);
-	LogInfo("----------- End driver profile settings -----------\n");
+	LogInfo("[INF]: ----------- End driver profile settings -----------\n");
 }
 
 static int parse_ini_profile_lhs(wstring *lhs, NVDRS_SETTING *setting)
@@ -1159,7 +1159,7 @@ int parse_ini_profile_line(wstring *lhs, wstring *rhs)
 			!_wcsnicmp(lhs->c_str(), L"Executable ", 11) ||
 			!_wcsnicmp(lhs->c_str(), L"ProfileType ", 12) ||
 			!_wcsnicmp(lhs->c_str(), L"ShowOn ", 7))) {
-		LogInfo("  Ignoring Line: %S\n", lhs->c_str());
+		LogInfo("[INF]:  Ignoring Line: %S\n", lhs->c_str());
 		return 0;
 	}
 
@@ -1210,7 +1210,7 @@ void log_nv_driver_version()
 
 	status = NvAPI_SYS_GetDriverAndBranchVersion(&version, branch);
 	if (status == NVAPI_OK) {
-		LogInfo("NVIDIA driver version %u.%u (branch %s)\n", version / 100, version % 100, branch);
+		LogInfo("[INF]: NVIDIA driver version %u.%u (branch %s)\n", version / 100, version % 100, branch);
 	} else {
 		LogInfoNoNL("Error getting NVIDIA driver version: ");
 		log_nv_error(status);
@@ -1229,9 +1229,9 @@ static int copy_self_to_temp_location(wchar_t *migoto_long_path,
 	if (!GetTempFileName(d3dcompiler_temp_path, L"3DM", 0, migoto_short_path))
 		return -1;
 
-	LogInfo("Copying %S to %S\n", migoto_long_path, migoto_short_path);
+	LogInfo("[INF]: Copying %S to %S\n", migoto_long_path, migoto_short_path);
 	if (!CopyFile(migoto_long_path, migoto_short_path, false)) {
-		LogInfo("*** Copy error: %u ***\n", GetLastError());
+		LogInfo("[INF]: *** Copy error: %u ***\n", GetLastError());
 		goto err_rm;
 	}
 
@@ -1245,9 +1245,9 @@ static int copy_self_to_temp_location(wchar_t *migoto_long_path,
 	wcsrchr(tmp, L'\\')[1] = 0;
 	wcscat_s(tmp, MAX_PATH, L"d3dcompiler_47.dll");
 
-	LogInfo("Copying %S to %S\n", tmp, d3dcompiler_temp_path);
+	LogInfo("[INF]: Copying %S to %S\n", tmp, d3dcompiler_temp_path);
 	if (!CopyFile(tmp, d3dcompiler_temp_path, false)) {
-		LogInfo("*** Copy error: %u ***\n", GetLastError());
+		LogInfo("[INF]: *** Copy error: %u ***\n", GetLastError());
 		// Not going to abort in this case - there is a possibility the
 		// DLL may be in a standard location and this might still work.
 		// If not, we'll get an error dialog and error tones and the
@@ -1350,7 +1350,7 @@ static void spawn_privileged_profile_helper_task()
 		if (!GetShortPathName(migoto_short_path, migoto_short_path, MAX_PATH))
 			goto err;
 		if (wcschr(migoto_short_path, L' ') || wcschr(migoto_short_path, L',')) {
-			LogInfo("*** Temporary directory has a space, cannot use rundll method ***\n");
+			LogInfo("[INF]: *** Temporary directory has a space, cannot use rundll method ***\n");
 			goto err;
 		}
 	}
@@ -1383,12 +1383,12 @@ static void spawn_privileged_profile_helper_task()
 
 	// ShellExecuteEx may require COM, though will probably be ok without it:
 	if (FAILED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)))
-		LogInfo("spawn_privileged_profile_helper_task: CoInitializeEx failed\n");
+		LogInfo("[INF]: spawn_privileged_profile_helper_task: CoInitializeEx failed\n");
 
-	LogInfo("Spawning helper task to install driver profile...\n");
-	LogInfo("  Program: %S\n", rundll_path);
-	LogInfo("  Arguments: %S\n", params.c_str());
-	LogInfo("  Directory: %S\n", info.lpDirectory);
+	LogInfo("[INF]: Spawning helper task to install driver profile...\n");
+	LogInfo("[INF]:  Program: %S\n", rundll_path);
+	LogInfo("[INF]:  Arguments: %S\n", params.c_str());
+	LogInfo("[INF]:  Directory: %S\n", info.lpDirectory);
 	if (!ShellExecuteEx(&info))
 		goto err;
 
@@ -1401,7 +1401,7 @@ static void spawn_privileged_profile_helper_task()
 	if (!GetExitCodeProcess(info.hProcess, &rc))
 		goto err_close;
 
-	LogInfo("Helper process terminated with code %u\n", rc);
+	LogInfo("[INF]: Helper process terminated with code %u\n", rc);
 
 	CloseHandle(info.hProcess);
 
@@ -1416,7 +1416,7 @@ static void spawn_privileged_profile_helper_task()
 err_close:
 	CloseHandle(info.hProcess);
 err:
-	LogInfo("Error while requesting admin privileges to install driver profile\n");
+	LogInfo("[INF]: Error while requesting admin privileges to install driver profile\n");
 
 	CoUninitialize();
 
@@ -1449,7 +1449,7 @@ static bool compare_setting(NvDRSSessionHandle session,
 
 	if (migoto_setting->settingType != driver_setting.settingType) {
 		if (log)
-			LogInfo("Need to update setting 0x%08x because type differs\n", migoto_setting->settingId);
+			LogInfo("[INF]: Need to update setting 0x%08x because type differs\n", migoto_setting->settingId);
 		return true;
 	}
 
@@ -1475,7 +1475,7 @@ static bool compare_setting(NvDRSSessionHandle session,
 			dval = decode_internal_dword(driver_setting.settingId, dval);
 		if (dval != migoto_setting->u32CurrentValue) {
 			if (log) {
-				LogInfo("Need to update DWORD setting 0x%08x from 0x%08x to 0x%08x\n",
+				LogInfo("[INF]: Need to update DWORD setting 0x%08x from 0x%08x to 0x%08x\n",
 					migoto_setting->settingId, dval,
 					migoto_setting->u32CurrentValue);
 			}
@@ -1487,9 +1487,9 @@ static bool compare_setting(NvDRSSessionHandle session,
 			decode_internal_string(driver_setting.settingId, driver_setting.wszCurrentValue);
 		if (wcscmp((wchar_t*)driver_setting.wszCurrentValue, (wchar_t*)migoto_setting->wszCurrentValue)) {
 			if (log) {
-				LogInfo("Need to update string setting 0x%08x\n", migoto_setting->settingId);
-				LogInfo("  From: \"%S\"\n", (wchar_t*)driver_setting.wszCurrentValue);
-				LogInfo("    To: \"%S\"\n", (wchar_t*)migoto_setting->wszCurrentValue);
+				LogInfo("[INF]: Need to update string setting 0x%08x\n", migoto_setting->settingId);
+				LogInfo("[INF]:  From: \"%S\"\n", (wchar_t*)driver_setting.wszCurrentValue);
+				LogInfo("[INF]:    To: \"%S\"\n", (wchar_t*)migoto_setting->wszCurrentValue);
 			}
 			return true;
 		}
@@ -1507,7 +1507,7 @@ static bool need_profile_update(NvDRSSessionHandle session, NvDRSProfileHandle p
 		return false;
 
 	if (profile == 0) {
-		LogInfo("Need profile update: No profile installed\n");
+		LogInfo("[INF]: Need profile update: No profile installed\n");
 		return true;
 	}
 
@@ -1566,7 +1566,7 @@ static int add_exe_to_profile(NvDRSSessionHandle session, NvDRSProfileHandle pro
 	// problem in practice.
 	get_lower_exe_name((wchar_t*)app.appName);
 
-	LogInfo("Adding \"%S\" to profile\n", (wchar_t*)app.appName);
+	LogInfo("[INF]: Adding \"%S\" to profile\n", (wchar_t*)app.appName);
 	status = NvAPI_DRS_CreateApplication(session, profile, &app);
 	if (status != NVAPI_OK) {
 		LogInfoNoNL("Error adding app to profile: ");
@@ -1589,13 +1589,13 @@ static NvDRSProfileHandle create_profile(NvDRSSessionHandle session)
 	// In the event that the profile name already exists, add us to it:
 	status = NvAPI_DRS_FindProfileByName(session, info.profileName, &profile);
 	if (status == NVAPI_OK) {
-		LogInfo("Profile \"%S\" already exists\n", (wchar_t*)info.profileName);
+		LogInfo("[INF]: Profile \"%S\" already exists\n", (wchar_t*)info.profileName);
 		if (add_exe_to_profile(session, profile))
 			return 0;
 		return profile;
 	}
 
-	LogInfo("Creating profile \"%S\"\n", (wchar_t*)info.profileName);
+	LogInfo("[INF]: Creating profile \"%S\"\n", (wchar_t*)info.profileName);
 	status = NvAPI_DRS_CreateProfile(session, &info, &profile);
 	if (status != NVAPI_OK) {
 		LogInfoNoNL("Error creating profile: ");
@@ -1630,12 +1630,12 @@ static int update_profile(NvDRSSessionHandle session, NvDRSProfileHandle profile
 
 			switch (migoto_setting->settingType) {
 			case NVDRS_DWORD_TYPE:
-				LogInfo("DWORD setting 0x%08x changed to 0x%08x\n",
+				LogInfo("[INF]: DWORD setting 0x%08x changed to 0x%08x\n",
 						migoto_setting->settingId,
 						migoto_setting->u32CurrentValue);
 				break;
 			case NVDRS_WSTRING_TYPE:
-				LogInfo("String setting 0x%08x changed to \"%S\"\n",
+				LogInfo("[INF]: String setting 0x%08x changed to \"%S\"\n",
 						migoto_setting->settingId,
 						(wchar_t*)migoto_setting->wszCurrentValue);
 				break;
@@ -1717,7 +1717,7 @@ void CALLBACK Install3DMigotoDriverProfileW(HWND hwnd, HINSTANCE hinst, LPWSTR l
 	if (update_profile(session, profile))
 		goto bail;
 
-	LogInfo("Profile update successful\n");
+	LogInfo("[INF]: Profile update successful\n");
 
 bail:
 	destroy_internal_setting_map();
@@ -1753,7 +1753,7 @@ void log_check_and_update_nv_profiles()
 	log_relevant_nv_profiles(session, profile);
 
 	if (!need_profile_update(session, profile)) {
-		LogInfo("No profile update required\n");
+		LogInfo("[INF]: No profile update required\n");
 		goto bail;
 	}
 
@@ -1788,9 +1788,9 @@ void log_check_and_update_nv_profiles()
 
 	profile = get_cur_nv_profile(session);
 	if (profile) {
-		LogInfo("----------- Updated profile settings -----------\n");
+		LogInfo("[INF]: ----------- Updated profile settings -----------\n");
 		log_nv_profile(session, profile);
-		LogInfo("----------- End updated profile settings -----------\n");
+		LogInfo("[INF]: ----------- End updated profile settings -----------\n");
 	}
 
 	if (need_profile_update(session, profile)) {

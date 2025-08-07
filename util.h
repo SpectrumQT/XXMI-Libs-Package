@@ -97,7 +97,7 @@ static uint32_t crc32c_hw(uint32_t seed, const void *buffer, size_t length)
 	catch (...)
 	{
 		// Fatal error, but catch it and return null for hash.
-		LogInfo("   ******* Exception caught while calculating crc32c_hw hash ******\n");
+		LogInfo("[INF]:   ******* Exception caught while calculating crc32c_hw hash ******\n");
 		return 0;
 	}
 }
@@ -775,7 +775,7 @@ static string BinaryToAsmText(const void *pShaderBytecode, size_t BytecodeLength
 			d3dcompiler_46_compat, disassemble_undecipherable_data, patch_cb_offsets);
 #endif // MIGOTO_DX
 	if (FAILED(r)) {
-		LogInfo("  disassembly failed. Error: %x\n", r);
+		LogInfo("[INF]:  disassembly failed. Error: %x\n", r);
 		return "";
 	}
 
@@ -872,7 +872,7 @@ static HRESULT CreateTextFile(wchar_t *fullPath, string *asmText, bool overwrite
 		if (f)
 		{
 			fclose(f);
-			LogInfoW(L"    CreateTextFile error: file already exists %s\n", fullPath);
+			LogInfoW(L"[INF]:    CreateTextFile error: file already exists %s\n", fullPath);
 			return ERROR_FILE_EXISTS;
 		}
 	}
@@ -908,9 +908,9 @@ static HRESULT CreateAsmTextFile(wchar_t* fileDirectory, UINT64 hash, const wcha
 	HRESULT hr = CreateTextFile(fullPath, &asmText, false);
 
 	if (SUCCEEDED(hr))
-		LogInfoW(L"    storing disassembly to %s\n", fullPath);
+		LogInfoW(L"[INF]:    storing disassembly to %s\n", fullPath);
 	else
-		LogInfoW(L"    error: %x, storing disassembly to %s\n", hr, fullPath);
+		LogInfoW(L"[INF]:    error: %x, storing disassembly to %s\n", hr, fullPath);
 
 	return hr;
 }

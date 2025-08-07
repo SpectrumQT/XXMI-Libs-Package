@@ -52,7 +52,7 @@ static SECURITY_ATTRIBUTES* init_security_attributes(SECURITY_ATTRIBUTES *sa)
 		return sa;
 	}
 
-	LogInfo("ConvertStringSecurityDescriptorToSecurityDescriptor failed\n");
+	LogInfo("[INF]: ConvertStringSecurityDescriptorToSecurityDescriptor failed\n");
 	return NULL;
 }
 
@@ -86,7 +86,7 @@ errno_t wfopen_ensuring_access(FILE** pFile, const wchar_t *filename, const wcha
 		// This function is for creating new files for now. We could
 		// make it do some heroics on read/append as well, but I don't
 		// want to push this further than we need to.
-		LogInfo("FIXME: wfopen_ensuring_access only supports opening for write\n");
+		LogInfo("[INF]: FIXME: wfopen_ensuring_access only supports opening for write\n");
 		DoubleBeepExit();
 	}
 
@@ -384,13 +384,13 @@ float get_effective_dpi()
 		if (libUser32)
 			fnSetThreadDpiAwarenessContext = (tSetThreadDpiAwarenessContext)GetProcAddress(libUser32, "SetThreadDpiAwarenessContext");
 		if (!fnGetDpiForMonitor)
-			LogInfo("Obsolete Windows version, GetDpiForMonitor() unavailable, falling back to reporting effective_dpi as 96\n");
+			LogInfo("[INF]: Obsolete Windows version, GetDpiForMonitor() unavailable, falling back to reporting effective_dpi as 96\n");
 		else if (!fnSetThreadDpiAwarenessContext)
-			LogInfo("Obsolete Windows version, SetThreadDpiAwarenessContext() unavailable, effective_dpi will be at the mercy of the process DPI awareness\n");
+			LogInfo("[INF]: Obsolete Windows version, SetThreadDpiAwarenessContext() unavailable, effective_dpi will be at the mercy of the process DPI awareness\n");
 		if (fnGetProcessDpiAwareness) {
 			PROCESS_DPI_AWARENESS awareness;
 			fnGetProcessDpiAwareness(NULL, &awareness);
-			LogInfo("Process DPI Awareness: %u\n", awareness);
+			LogInfo("[INF]: Process DPI Awareness: %u\n", awareness);
 		}
 		init_done = true;
 	}
@@ -562,7 +562,7 @@ static DWORD WINAPI crash_handler_switch_to_window(_In_ LPVOID lpParameter)
 	// TODO: See if we can find a way to make this more reliable
 	//
 	if (last_fullscreen_swap_chain) {
-		LogInfo("Attempting emergency switch to windowed mode on swap chain %p\n",
+		LogInfo("[INF]: Attempting emergency switch to windowed mode on swap chain %p\n",
 				last_fullscreen_swap_chain);
 
 		last_fullscreen_swap_chain->SetFullscreenState(FALSE, NULL);
@@ -592,12 +592,12 @@ static LONG WINAPI migoto_exception_filter(_In_ struct _EXCEPTION_POINTERS *Exce
 	if (LogFile) {
 		fflush(LogFile);
 
-		LogInfo("\n\n ######################################\n"
+		LogInfo("[INF]: \n\n ######################################\n"
 		            " ### 3DMigoto Crash Handler Invoked ###\n");
 
 		int i = 0;
 		for (auto record = ExceptionInfo->ExceptionRecord; record; record = record->ExceptionRecord, i++) {
-			LogInfo(" ######################################\n"
+			LogInfo("[INF]: ######################################\n"
 			        " ### Exception Record %i\n"
 				" ###    ExceptionCode: 0x%08x\n"
 				" ###   ExceptionFlags: 0x%08x\n"
@@ -610,7 +610,7 @@ static LONG WINAPI migoto_exception_filter(_In_ struct _EXCEPTION_POINTERS *Exce
 				record->ExceptionAddress,
 				record->NumberParameters);
 			for (unsigned j = 0; j < record->NumberParameters; j++)
-				LogInfo(" %08Ix", record->ExceptionInformation[j]);
+				LogInfo("[INF]: %08Ix", record->ExceptionInformation[j]);
 			LogInfo("\n");
 		}
 
@@ -633,20 +633,20 @@ static LONG WINAPI migoto_exception_filter(_In_ struct _EXCEPTION_POINTERS *Exce
 	auto fp = CreateFile(path, GENERIC_WRITE, FILE_SHARE_READ,
 			0, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (fp != INVALID_HANDLE_VALUE) {
-		LogInfo("Writing minidump to %S...\n", path);
+		LogInfo("[INF]: Writing minidump to %S...\n", path);
 
 		MINIDUMP_EXCEPTION_INFORMATION dump_info =
 			{ GetCurrentThreadId(), ExceptionInfo, FALSE };
 
 		if (MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
 				fp, MiniDumpWithHandleData, &dump_info, NULL, NULL))
-			LogInfo("Succeeded\n");
+			LogInfo("[INF]: Succeeded\n");
 		else
-			LogInfo("Failed :(\n");
+			LogInfo("[INF]: Failed :(\n");
 
 		CloseHandle(fp);
 	} else
-		LogInfo("Error creating minidump file \"%S\": %d\n", path, GetLastError());
+		LogInfo("[INF]: Error creating minidump file \"%S\": %d\n", path, GetLastError());
 
 	if (LogFile)
 		fflush(LogFile);
@@ -657,12 +657,12 @@ static LONG WINAPI migoto_exception_filter(_In_ struct _EXCEPTION_POINTERS *Exce
 	// to prevent them being accidentally triggered.
 	if (crash_handler_level == 2) {
 		if (LogFile) {
-			LogInfo("3DMigoto interactive crash handler invoked:\n");
-			LogInfo(" Ctrl+Alt+Q: Quit (execute exception handler)\n");
-			LogInfo(" Ctrl+Alt+K: Kill process\n");
-			LogInfo(" Ctrl+Alt+C: Continue execution\n");
-			LogInfo(" Ctrl+Alt+B: Break into the debugger (make sure one is attached)\n");
-			LogInfo(" Ctrl+Alt+W: Attempt to switch to Windowed mode\n");
+			LogInfo("[INF]: 3DMigoto interactive crash handler invoked:\n");
+			LogInfo("[INF]: Ctrl+Alt+Q: Quit (execute exception handler)\n");
+			LogInfo("[INF]: Ctrl+Alt+K: Kill process\n");
+			LogInfo("[INF]: Ctrl+Alt+C: Continue execution\n");
+			LogInfo("[INF]: Ctrl+Alt+B: Break into the debugger (make sure one is attached)\n");
+			LogInfo("[INF]: Ctrl+Alt+W: Attempt to switch to Windowed mode\n");
 			LogInfo("\n");
 			fflush(LogFile);
 		}
@@ -673,19 +673,19 @@ static LONG WINAPI migoto_exception_filter(_In_ struct _EXCEPTION_POINTERS *Exce
 				if (GetAsyncKeyState(VK_CONTROL) < 0 &&
 				    GetAsyncKeyState(VK_MENU) < 0) {
 					if (GetAsyncKeyState('C') < 0) {
-						LogInfo("Attempting to continue...\n"); fflush(LogFile); Beep(1000, 100);
+						LogInfo("[INF]: Attempting to continue...\n"); fflush(LogFile); Beep(1000, 100);
 						ret = EXCEPTION_CONTINUE_EXECUTION;
 						goto unlock;
 					}
 
 					if (GetAsyncKeyState('Q') < 0) {
-						LogInfo("Executing exception handler...\n"); fflush(LogFile); Beep(1000, 100);
+						LogInfo("[INF]: Executing exception handler...\n"); fflush(LogFile); Beep(1000, 100);
 						ret = EXCEPTION_EXECUTE_HANDLER;
 						goto unlock;
 					}
 
 					if (GetAsyncKeyState('K') < 0) {
-						LogInfo("Killing process...\n"); fflush(LogFile); Beep(1000, 100);
+						LogInfo("[INF]: Killing process...\n"); fflush(LogFile); Beep(1000, 100);
 						ExitProcess(0x3D819070);
 					}
 
@@ -694,7 +694,7 @@ static LONG WINAPI migoto_exception_filter(_In_ struct _EXCEPTION_POINTERS *Exce
 					// R = Resume all other threads
 
 					if (GetAsyncKeyState('B') < 0) {
-						LogInfo("Dropping to debugger...\n"); fflush(LogFile); Beep(1000, 100);
+						LogInfo("[INF]: Dropping to debugger...\n"); fflush(LogFile); Beep(1000, 100);
 						__debugbreak();
 						goto unlock;
 					}
@@ -721,7 +721,7 @@ void install_crash_handler(int level)
 	// exceptions as well
 
 	if (old_handler == migoto_exception_filter) {
-		LogInfo("  > 3DMigoto crash handler already installed\n");
+		LogInfo("[INF]:  > 3DMigoto crash handler already installed\n");
 		return;
 	}
 
@@ -729,7 +729,7 @@ void install_crash_handler(int level)
 
 	old_mode = SetErrorMode(SEM_FAILCRITICALERRORS);
 
-	LogInfo("  > Installed 3DMigoto crash handler, previous exception filter: %p, previous error mode: %x\n",
+	LogInfo("[INF]:  > Installed 3DMigoto crash handler, previous exception filter: %p, previous error mode: %x\n",
 			old_handler, old_mode);
 }
 #endif

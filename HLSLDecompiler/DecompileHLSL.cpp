@@ -195,7 +195,7 @@ public:
 	void logDecompileError(const string &err)
 	{
 		mErrorOccurred = true;
-		LogInfo("    error parsing shader> %s\n", err.c_str());
+		LogInfo("[INF]:    error parsing shader> %s\n", err.c_str());
 	}
 
 	DataType TranslateType(const char *name)
@@ -342,15 +342,15 @@ public:
 		// The key aspect is whether we are supposed to use a different Register.
 		if (reg1 == reg2)
 		{
-			LogDebug("    SkipPacking false for v%d==v%d\n", reg1, reg2);
-			LogDebug("      %s\n", line1.c_str());
-			LogDebug("      %s\n", line2.c_str());
+			LogDebug("[DBG]:    SkipPacking false for v%d==v%d\n", reg1, reg2);
+			LogDebug("[DBG]:      %s\n", line1.c_str());
+			LogDebug("[DBG]:      %s\n", line2.c_str());
 			return false;
 		}
 
-		LogDebug("    SkipPacking true for:\n");
-		LogDebug("      %s\n", line1.c_str());
-		LogDebug("      %s\n", line2.c_str());
+		LogDebug("[DBG]:    SkipPacking true for:\n");
+		LogDebug("[DBG]:      %s\n", line1.c_str());
+		LogDebug("[DBG]:      %s\n", line2.c_str());
 
 		return true;
 	}
@@ -965,7 +965,7 @@ public:
 					// Instead of "2dMS4", it's just "2dMS". If we set that to Texture2DMS<float4>, with no size, 
 					// it generates the same code as the ASM.	 sscanf returns -1 as an error.
 					//
-					// LogInfo("--> Texture %s: sprintf=%d as %s\n", dim, error, buffer);
+					// LogInfo("[INF]: --> Texture %s: sprintf=%d as %s\n", dim, error, buffer);
 					int msnumber;
 					int scanned;
 					char buffer[256];
@@ -4101,7 +4101,7 @@ public:
 				logDecompileError("Error parsing statement: " + string(c + pos, 80));
 				return;
 			}
-			//LogDebug("parsing statement %s with args %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s\n", statement,
+			//LogDebug("[DBG]: parsing statement %s with args %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s\n", statement,
 			//	op1, op2, op3, op4, op5, op6, op7, op8, op9, op10, op11, op12, op13, op14, op15);
 			//
 
@@ -6834,7 +6834,7 @@ const string DecompileBinaryHLSL(ParseParameters &params, bool &patched, std::st
 	catch (...)
 	{
 		// Fatal error, but catch it and mark it as bad.
-		LogInfo("   ******* Exception caught while decompiling shader ******\n");
+		LogInfo("[INF]:   ******* Exception caught while decompiling shader ******\n");
 
 		errorOccurred = true;
 		return string();

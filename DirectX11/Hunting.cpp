@@ -252,7 +252,7 @@ void DumpUsage(wchar_t *dir)
 	wcscat(path, L"ShaderUsage.txt");
 	HANDLE f = CreateFile(path, GENERIC_WRITE, FILE_SHARE_READ, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (f == INVALID_HANDLE_VALUE) {
-		LogInfo("Error dumping ShaderUsage.txt\n");
+		LogInfo("[INF]: Error dumping ShaderUsage.txt\n");
 		return;
 	}
 
@@ -293,7 +293,7 @@ static void SimpleScreenShot(HackerDevice *pDevice, HashType hash, char *shaderT
 
 	HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 	if (FAILED(hr))
-		LogInfo("*** Overlay call CoInitializeEx failed: %d\n", hr);
+		LogInfo("[INF]: *** Overlay call CoInitializeEx failed: %d\n", hr);
 
 	hr = mHackerSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&backBuffer);
 	if (SUCCEEDED(hr))
@@ -305,7 +305,7 @@ static void SimpleScreenShot(HackerDevice *pDevice, HashType hash, char *shaderT
 
 	CoUninitialize();
 
-	LogInfoW(L"  SimpleScreenShot on Mark: %s, result: %d\n", fullName, hr);
+	LogInfoW(L"[INF]:  SimpleScreenShot on Mark: %s, result: %d\n", fullName, hr);
 }
 
 template <typename HashType>
@@ -334,7 +334,7 @@ static void MarkingScreenShots(HackerDevice *device, HashType hash, char *short_
 
 static string Decompile(ID3DBlob *pShaderByteCode, string *asmText)
 {
-	LogInfo("    creating HLSL representation.\n");
+	LogInfo("[INF]:    creating HLSL representation.\n");
 
 	bool patched = false;
 	string shaderModel;
@@ -350,7 +350,7 @@ static string Decompile(ID3DBlob *pShaderByteCode, string *asmText)
 
 	if (!decompiledCode.size())
 	{
-		LogInfo("    error while decompiling.\n");
+		LogInfo("[INF]:    error while decompiling.\n");
 	}
 
 	return decompiledCode;
@@ -366,7 +366,7 @@ static string Decompile(ID3DBlob *pShaderByteCode, string *asmText)
 
 MigotoIncludeHandler::MigotoIncludeHandler(const char *path)
 {
-	LogDebug("      MigotoIncludeHandler %p for \"%s\"\n", this, path);
+	LogDebug("[DBG]:      MigotoIncludeHandler %p for \"%s\"\n", this, path);
 	push_dir(path);
 }
 
@@ -404,7 +404,7 @@ STDMETHODIMP MigotoIncludeHandler::Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFi
 	wstring wpath;
 	HANDLE f;
 
-	LogDebug("      MigotoIncludeHandler::Open(%p, %u, %s, %p)\n", this, IncludeType, pFileName, pParentData);
+	LogDebug("[DBG]:      MigotoIncludeHandler::Open(%p, %u, %s, %p)\n", this, IncludeType, pFileName, pParentData);
 
 	// For backwards compatibility with D3D_COMPILE_STANDARD_FILE_INCLUDE
 	// we only search for shaders relative to the *initial* source file by
@@ -444,7 +444,7 @@ STDMETHODIMP MigotoIncludeHandler::Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFi
 		f = CreateFile(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	}
 	if (f == INVALID_HANDLE_VALUE) {
-		LogInfo("      Error opening included file: %s\n", apath.c_str());
+		LogInfo("[INF]:      Error opening included file: %s\n", apath.c_str());
 		return E_FAIL;
 	}
 
@@ -454,11 +454,11 @@ STDMETHODIMP MigotoIncludeHandler::Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFi
 	// #include <3dmigoto.h>
 	switch (IncludeType) {
 		case D3D_INCLUDE_LOCAL:
-			LogInfo("      #include \"%s\"\n", apath.c_str());
+			LogInfo("[INF]:      #include \"%s\"\n", apath.c_str());
 			break;
 		case D3D_INCLUDE_SYSTEM:
 		default:
-			LogInfo("      #include <%s>\n", apath.c_str());
+			LogInfo("[INF]:      #include <%s>\n", apath.c_str());
 			break;
 	}
 
@@ -466,7 +466,7 @@ STDMETHODIMP MigotoIncludeHandler::Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFi
 	buf = new char[size];
 
 	if (!ReadFile(f, buf, size, &read, 0) || size != read) {
-		LogInfo("      Error reading included file.\n");
+		LogInfo("[INF]:      Error reading included file.\n");
 		goto err_free;
 	}
 	CloseHandle(f);
@@ -474,7 +474,7 @@ STDMETHODIMP MigotoIncludeHandler::Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFi
 	*pBytes = size;
 	*ppData = buf;
 	push_dir(apath.c_str());
-	LogDebug("       -> %p\n", buf);
+	LogDebug("[DBG]:       -> %p\n", buf);
 
 	return S_OK;
 
@@ -486,7 +486,7 @@ err_free:
 
 STDMETHODIMP MigotoIncludeHandler::Close(LPCVOID pData)
 {
-	LogDebug("      MigotoIncludeHandler::Close(%p, %p)\n", this, pData);
+	LogDebug("[DBG]:      MigotoIncludeHandler::Close(%p, %p)\n", this, pData);
 	delete [] pData;
 	dir_stack.pop_back();
 	return S_OK;
@@ -513,7 +513,7 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 	HANDLE f = CreateFile(fullName, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (f == INVALID_HANDLE_VALUE)
 	{
-		LogInfo("    ReloadShader shader not found: %ls\n", fullName);
+		LogInfo("[INF]:    ReloadShader shader not found: %ls\n", fullName);
 
 		return true;
 	}
@@ -528,7 +528,7 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 		|| !GetFileTime(f, NULL, NULL, &curFileTime)
 		|| srcDataSize != readSize)
 	{
-		LogInfo("    Error reading txt file.\n");
+		LogInfo("[INF]:    Error reading txt file.\n");
 		CloseHandle(f);
 
 		return true;
@@ -548,9 +548,9 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 	
 	if (wcsstr(fileName, L"_replace"))
 	{
-		LogInfo("   >Replacement shader found. Re-Loading replacement HLSL code from %ls\n", fileName);
-		LogInfo("    Reload source code loaded. Size = %d\n", srcDataSize);
-		LogInfo("    compiling replacement HLSL code with shader model %s\n", shaderModel);
+		LogInfo("[INF]:   >Replacement shader found. Re-Loading replacement HLSL code from %ls\n", fileName);
+		LogInfo("[INF]:    Reload source code loaded. Size = %d\n", srcDataSize);
+		LogInfo("[INF]:    compiling replacement HLSL code with shader model %s\n", shaderModel);
 
 		// TODO: Add #defines for IniParams
 
@@ -565,13 +565,13 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 				G->recursive_include == -1 ? D3D_COMPILE_STANDARD_FILE_INCLUDE : &include_handler,
 			"main", shaderModel, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pByteCode, &pErrorMsgs);
 
-		LogInfo("    compile result for replacement HLSL shader: %x\n", ret);
+		LogInfo("[INF]:    compile result for replacement HLSL shader: %x\n", ret);
 
 		if (pErrorMsgs)
 		{
 			LPVOID errMsg = pErrorMsgs->GetBufferPointer();
 			SIZE_T errSize = pErrorMsgs->GetBufferSize();
-			LogInfo("--------------------------------------------- BEGIN ---------------------------------------------\n");
+			LogInfo("[INF]: --------------------------------------------- BEGIN ---------------------------------------------\n");
 			if (FAILED(ret))
 			{
 				// If there are errors they go to the overlay
@@ -584,7 +584,7 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 				// these to the overlay.
 				fwrite(errMsg, 1, errSize - 1, LogFile);
 			}
-			LogInfo("---------------------------------------------- END ----------------------------------------------\n");
+			LogInfo("[INF]: ---------------------------------------------- END ----------------------------------------------\n");
 			if (errText)
 				*errText = string((char*)pErrorMsgs->GetBufferPointer(), pErrorMsgs->GetBufferSize() - 1);
 			pErrorMsgs->Release();
@@ -602,9 +602,9 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 	}
 	else
 	{
-		LogInfo("   >Replacement shader found. Re-Loading replacement ASM code from %ls\n", fileName);
-		LogInfo("    Reload source code loaded. Size = %d\n", srcDataSize);
-		LogInfo("    assembling replacement ASM code with shader model %s\n", shaderModel);
+		LogInfo("[INF]:   >Replacement shader found. Re-Loading replacement ASM code from %ls\n", fileName);
+		LogInfo("[INF]:    Reload source code loaded. Size = %d\n", srcDataSize);
+		LogInfo("[INF]:    assembling replacement ASM code with shader model %s\n", shaderModel);
 
 		// We need original byte code unchanged, so make a copy.
 		vector<byte> byteCode(origByteCode->GetBufferSize());
@@ -629,7 +629,7 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 			memcpy(pByteCode->GetBufferPointer(), byteCode.data(), byteCode.size());
 		}
 		else {
-			LogInfo("    *** failed to allocate new Blob for assemble.\n");
+			LogInfo("[INF]:    *** failed to allocate new Blob for assemble.\n");
 			return true;
 		}
 	}
@@ -724,7 +724,7 @@ static bool ReloadShader(wchar_t *shaderPath, wchar_t *fileName, HackerDevice *d
 			// Just skip it in that case, because the new version will be loaded when it is used.
 			if (oldShader == NULL)
 			{
-				LogInfo("> failed to find original shader in mReloadedShaders: %ls\n", fileName);
+				LogInfo("[INF]: > failed to find original shader in mReloadedShaders: %ls\n", fileName);
 				continue;
 			}
 
@@ -823,7 +823,7 @@ static bool ReloadShader(wchar_t *shaderPath, wchar_t *fileName, HackerDevice *d
 			// candidates for auto patching:
 			G->mReloadedShaders[oldShader].deferred_replacement_candidate = false;
 
-			LogInfo("> successfully reloaded shader: %ls\n", fileName);
+			LogInfo("[INF]: > successfully reloaded shader: %ls\n", fileName);
 		}
 	}	// for every registered shader in mReloadedShaders 
 
@@ -849,7 +849,7 @@ static bool WriteASM(string *asmText, string *hlslText, string *errText,
 
 	wfopen_ensuring_access(&f, fullName, L"wb");
 	if (!f) {
-		LogInfo("    error storing marked shader to %S\n", fullName);
+		LogInfo("[INF]:    error storing marked shader to %S\n", fullName);
 		return false;
 	}
 
@@ -918,11 +918,11 @@ static bool WriteHLSL(string *asmText, string *hlslText, string *errText,
 	wfopen_ensuring_access(&fw, fullName, L"wb");
 	if (!fw)
 	{
-		LogInfoW(L"    error storing marked shader to %s\n", fullName);
+		LogInfoW(L"[INF]:    error storing marked shader to %s\n", fullName);
 		return false;
 	}
 
-	LogInfoW(L"    storing patched shader to %s\n", fullName);
+	LogInfoW(L"[INF]:    storing patched shader to %s\n", fullName);
 
 	fwrite(hlslText->c_str(), 1, hlslText->size(), fw);
 
@@ -937,7 +937,7 @@ static bool WriteHLSL(string *asmText, string *hlslText, string *errText,
 	ret = ReloadShader(G->SHADER_PATH, fileName, device, errText);
 
 	if (!ret && remove_failed) {
-		LogInfo("    removing shader that failed to reload: %S\n", fullName);
+		LogInfo("[INF]:    removing shader that failed to reload: %S\n", fullName);
 		DeleteFile(fullName);
 	}
 
@@ -1115,7 +1115,7 @@ static void RevertMissingShaders()
 			continue;
 		}
 
-		LogInfo("Reverting %016llx not found in ShaderFixes\n", i->second.hash);
+		LogInfo("[INF]: Reverting %016llx not found in ShaderFixes\n", i->second.hash);
 
 		if (i->second.replacement)
 			i->second.replacement->Release();
@@ -1143,7 +1143,7 @@ static void RevertMissingShaders()
 
 static void ReloadFixes(HackerDevice *device, void *private_data)
 {
-	LogInfo("> reloading *_replace.txt fixes from ShaderFixes\n");
+	LogInfo("[INF]: > reloading *_replace.txt fixes from ShaderFixes\n");
 
 	if (G->SHADER_PATH[0])
 	{
@@ -1199,7 +1199,7 @@ static void DisableFix(HackerDevice *device, void *private_data)
 	if (G->hunting != HUNTING_MODE_ENABLED)
 		return;
 
-	LogInfo("show_original pressed - switching to original shaders\n");
+	LogInfo("[INF]: show_original pressed - switching to original shaders\n");
 	G->fix_enabled = false;
 }
 
@@ -1208,7 +1208,7 @@ static void EnableFix(HackerDevice *device, void *private_data)
 	if (G->hunting != HUNTING_MODE_ENABLED)
 		return;
 
-	LogInfo("show_original released - switching to replaced shaders\n");
+	LogInfo("[INF]: show_original released - switching to replaced shaders\n");
 	G->fix_enabled = true;
 }
 
@@ -1256,13 +1256,13 @@ static void AnalyseFrame(HackerDevice *device, void *private_data)
 	wcsrchr(path, L'\\')[1] = 0;
 	wcscat_s(path, MAX_PATH, subdir);
 
-	LogInfoW(L"Frame analysis directory: %s\n", path);
+	LogInfoW(L"[INF]: Frame analysis directory: %s\n", path);
 
 	// Bail if the analysis directory already exists or can't be created.
 	// This currently limits us to one / second, but that's probably
 	// enough. We can always increase the granuality if needed.
 	if (!CreateDirectoryEnsuringAccess(path)) {
-		LogInfoW(L"Error creating frame analysis directory: %i\n", GetLastError());
+		LogInfoW(L"[INF]: Error creating frame analysis directory: %i\n", GetLastError());
 		return;
 	}
 
@@ -1314,7 +1314,7 @@ static void FreezePerf(HackerDevice *device, void *private_data)
 	Profiling::freeze = !Profiling::freeze;
 
 	if (Profiling::freeze)
-		LogInfoW(L"%s", Profiling::text.c_str());
+		LogInfoW(L"[INF]: %s", Profiling::text.c_str());
 }
 
 static void DisableDeferred(HackerDevice *device, void *private_data)
@@ -1322,7 +1322,7 @@ static void DisableDeferred(HackerDevice *device, void *private_data)
 	if (G->hunting != HUNTING_MODE_ENABLED)
 		return;
 
-	LogInfo("Disabling execution of deferred command lists\n");
+	LogInfo("[INF]: Disabling execution of deferred command lists\n");
 	G->deferred_contexts_enabled = false;
 }
 
@@ -1331,7 +1331,7 @@ static void EnableDeferred(HackerDevice *device, void *private_data)
 	if (G->hunting != HUNTING_MODE_ENABLED)
 		return;
 
-	LogInfo("Enabling execution of deferred command lists\n");
+	LogInfo("[INF]: Enabling execution of deferred command lists\n");
 	G->deferred_contexts_enabled = true;
 }
 
@@ -1372,12 +1372,12 @@ static void HuntNext(char *type, std::set<ItemType> *visited,
 				*selectedPos = 0;
 				*selected = *visited->begin();
 			}
-			LogInfo("> traversing to next %s #%d. Number of %ss in frame: %d\n",
+			LogInfo("[INF]: > traversing to next %s #%d. Number of %ss in frame: %d\n",
 					type, *selectedPos, type, size);
 		} else {
 			*selectedPos = 0;
 			*selected = *visited->begin();
-			LogInfo("> starting at %s #%d. Number of %ss in frame: %d\n",
+			LogInfo("[INF]: > starting at %s #%d. Number of %ss in frame: %d\n",
 					type, *selectedPos, type, size);
 		}
 	}
@@ -1469,12 +1469,12 @@ static void HuntPrev(char *type, std::set<ItemType> *visited,
 				*selectedPos = size - 1;
 				*selected = *std::prev(end);
 			}
-			LogInfo("> traversing to previous %s shader #%d. Number of %s shaders in frame: %d\n",
+			LogInfo("[INF]: > traversing to previous %s shader #%d. Number of %s shaders in frame: %d\n",
 					type, *selectedPos, type, size);
 		} else {
 			*selectedPos = size - 1;
 			*selected = *std::prev(end);
-			LogInfo("> starting at %s shader #%d. Number of %s shaders in frame: %d\n",
+			LogInfo("[INF]: > starting at %s shader #%d. Number of %s shaders in frame: %d\n",
 					type, *selectedPos, type, size);
 		}
 	}
@@ -1588,11 +1588,11 @@ static void MarkVertexBuffer(HackerDevice *device, void *private_data)
 
 	MarkingScreenShots(device, G->mSelectedVertexBuffer, "vb");
 
-	LogInfo(">>>> Vertex buffer marked: vertex buffer hash = %08x\n", G->mSelectedVertexBuffer);
+	LogInfo("[INF]: >>>> Vertex buffer marked: vertex buffer hash = %08x\n", G->mSelectedVertexBuffer);
 	for (std::set<UINT64>::iterator i = G->mSelectedVertexBuffer_PixelShader.begin(); i != G->mSelectedVertexBuffer_PixelShader.end(); ++i)
-		LogInfo("     visited pixel shader hash = %016I64x\n", *i);
+		LogInfo("[INF]:     visited pixel shader hash = %016I64x\n", *i);
 	for (std::set<UINT64>::iterator i = G->mSelectedVertexBuffer_VertexShader.begin(); i != G->mSelectedVertexBuffer_VertexShader.end(); ++i)
-		LogInfo("     visited vertex shader hash = %016I64x\n", *i);
+		LogInfo("[INF]:     visited vertex shader hash = %016I64x\n", *i);
 
 	if (G->DumpUsage)
 		DumpUsage(NULL);
@@ -1612,11 +1612,11 @@ static void MarkIndexBuffer(HackerDevice *device, void *private_data)
 
 	MarkingScreenShots(device, G->mSelectedIndexBuffer, "ib");
 
-	LogInfo(">>>> Index buffer marked: index buffer hash = %08x\n", G->mSelectedIndexBuffer);
+	LogInfo("[INF]: >>>> Index buffer marked: index buffer hash = %08x\n", G->mSelectedIndexBuffer);
 	for (std::set<UINT64>::iterator i = G->mSelectedIndexBuffer_PixelShader.begin(); i != G->mSelectedIndexBuffer_PixelShader.end(); ++i)
-		LogInfo("     visited pixel shader hash = %016I64x\n", *i);
+		LogInfo("[INF]:     visited pixel shader hash = %016I64x\n", *i);
 	for (std::set<UINT64>::iterator i = G->mSelectedIndexBuffer_VertexShader.begin(); i != G->mSelectedIndexBuffer_VertexShader.end(); ++i)
-		LogInfo("     visited vertex shader hash = %016I64x\n", *i);
+		LogInfo("[INF]:     visited vertex shader hash = %016I64x\n", *i);
 
 	if (G->DumpUsage)
 		DumpUsage(NULL);
@@ -1631,7 +1631,7 @@ static bool MarkShaderBegin(char *type, UINT64 selected)
 
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 
-	LogInfo(">>>> %s marked: %s hash = %016I64x\n", type, type, selected);
+	LogInfo("[INF]: >>>> %s marked: %s hash = %016I64x\n", type, type, selected);
 
 	return true;
 }
@@ -1670,11 +1670,11 @@ static void MarkPixelShader(HackerDevice *device, void *private_data)
 		return;
 
 	for (std::set<uint32_t>::iterator i = G->mSelectedPixelShader_VertexBuffer.begin(); i != G->mSelectedPixelShader_VertexBuffer.end(); ++i)
-		LogInfo("     visited vertex buffer hash = %08x\n", *i);
+		LogInfo("[INF]:     visited vertex buffer hash = %08x\n", *i);
 	for (std::set<uint32_t>::iterator i = G->mSelectedPixelShader_IndexBuffer.begin(); i != G->mSelectedPixelShader_IndexBuffer.end(); ++i)
-		LogInfo("     visited index buffer hash = %08x\n", *i);
+		LogInfo("[INF]:     visited index buffer hash = %08x\n", *i);
 	for (std::set<UINT64>::iterator i = G->mPixelShaderInfo[G->mSelectedPixelShader].PeerShaders.begin(); i != G->mPixelShaderInfo[G->mSelectedPixelShader].PeerShaders.end(); ++i)
-		LogInfo("     visited peer shader hash = %016I64x\n", *i);
+		LogInfo("[INF]:     visited peer shader hash = %016I64x\n", *i);
 
 	MarkShaderEnd(device, "pixel shader", "ps", G->mSelectedPixelShader);
 }
@@ -1685,11 +1685,11 @@ static void MarkVertexShader(HackerDevice *device, void *private_data)
 		return;
 
 	for (std::set<uint32_t>::iterator i = G->mSelectedVertexShader_VertexBuffer.begin(); i != G->mSelectedVertexShader_VertexBuffer.end(); ++i)
-		LogInfo("     visited vertex buffer hash = %08lx\n", *i);
+		LogInfo("[INF]:     visited vertex buffer hash = %08lx\n", *i);
 	for (std::set<uint32_t>::iterator i = G->mSelectedVertexShader_IndexBuffer.begin(); i != G->mSelectedVertexShader_IndexBuffer.end(); ++i)
-		LogInfo("     visited index buffer hash = %08lx\n", *i);
+		LogInfo("[INF]:     visited index buffer hash = %08lx\n", *i);
 	for (std::set<UINT64>::iterator i = G->mVertexShaderInfo[G->mSelectedVertexShader].PeerShaders.begin(); i != G->mVertexShaderInfo[G->mSelectedVertexShader].PeerShaders.end(); ++i)
-		LogInfo("     visited peer shader hash = %016I64x\n", *i);
+		LogInfo("[INF]:     visited peer shader hash = %016I64x\n", *i);
 
 	MarkShaderEnd(device, "vertex shader", "vs", G->mSelectedVertexShader);
 }
@@ -1707,7 +1707,7 @@ static void MarkGeometryShader(HackerDevice *device, void *private_data)
 		return;
 
 	for (std::set<UINT64>::iterator i = G->mGeometryShaderInfo[G->mSelectedGeometryShader].PeerShaders.begin(); i != G->mGeometryShaderInfo[G->mSelectedGeometryShader].PeerShaders.end(); ++i)
-		LogInfo("     visited peer shader hash = %016I64x\n", *i);
+		LogInfo("[INF]:     visited peer shader hash = %016I64x\n", *i);
 
 	MarkShaderEnd(device, "geometry shader", "gs", G->mSelectedGeometryShader);
 }
@@ -1718,7 +1718,7 @@ static void MarkDomainShader(HackerDevice *device, void *private_data)
 		return;
 
 	for (std::set<UINT64>::iterator i = G->mDomainShaderInfo[G->mSelectedDomainShader].PeerShaders.begin(); i != G->mDomainShaderInfo[G->mSelectedDomainShader].PeerShaders.end(); ++i)
-		LogInfo("     visited peer shader hash = %016I64x\n", *i);
+		LogInfo("[INF]:     visited peer shader hash = %016I64x\n", *i);
 
 	MarkShaderEnd(device, "domain shader", "ds", G->mSelectedDomainShader);
 }
@@ -1729,7 +1729,7 @@ static void MarkHullShader(HackerDevice *device, void *private_data)
 		return;
 
 	for (std::set<UINT64>::iterator i = G->mHullShaderInfo[G->mSelectedHullShader].PeerShaders.begin(); i != G->mHullShaderInfo[G->mSelectedHullShader].PeerShaders.end(); ++i)
-		LogInfo("     visited peer shader hash = %016I64x\n", *i);
+		LogInfo("[INF]:     visited peer shader hash = %016I64x\n", *i);
 
 	MarkShaderEnd(device, "hull shader", "hs", G->mSelectedHullShader);
 }
@@ -1740,7 +1740,7 @@ static uint32_t LogRenderTarget(ID3D11Resource *target, char *log_prefix)
 
 	if (!target || target == (ID3D11Resource *)-1)
 	{
-		LogInfo("No render target selected for marking\n");
+		LogInfo("[INF]: No render target selected for marking\n");
 		return 0;
 	}
 
@@ -1750,7 +1750,7 @@ static uint32_t LogRenderTarget(ID3D11Resource *target, char *log_prefix)
 	LeaveCriticalSection(&G->mResourcesLock);
 	struct ResourceHashInfo &info = G->mResourceInfo[orig_hash];
 	StrResourceDesc(buf, 256, info);
-	LogInfo("%srender target handle = %p, hash = %08lx, orig_hash = %08lx, %s\n",
+	LogInfo("[INF]: %srender target handle = %p, hash = %08lx, orig_hash = %08lx, %s\n",
 		log_prefix, target, hash, orig_hash, buf);
 
 	return orig_hash;
@@ -1789,7 +1789,7 @@ static void TuneUp(HackerDevice *device, void *private_data)
 		return;
 
 	G->gTuneValue[index] += G->gTuneStep;
-	LogInfo("> Value %Ii tuned to %f\n", index + 1, G->gTuneValue[index]);
+	LogInfo("[INF]: > Value %Ii tuned to %f\n", index + 1, G->gTuneValue[index]);
 }
 
 static void TuneDown(HackerDevice *device, void *private_data)
@@ -1800,7 +1800,7 @@ static void TuneDown(HackerDevice *device, void *private_data)
 		return;
 
 	G->gTuneValue[index] -= G->gTuneStep;
-	LogInfo("> Value %Ii tuned to %f\n", index + 1, G->gTuneValue[index]);
+	LogInfo("[INF]: > Value %Ii tuned to %f\n", index + 1, G->gTuneValue[index]);
 }
 
 
@@ -1869,7 +1869,7 @@ static void ToggleHunting(HackerDevice *device, void *private_data)
 		G->hunting = HUNTING_MODE_SOFT_DISABLED;
 	else
 		G->hunting = HUNTING_MODE_ENABLED;
-	LogInfo("> Hunting toggled to %d\n", G->hunting);
+	LogInfo("[INF]: > Hunting toggled to %d\n", G->hunting);
 }
 
 void ParseHuntingSection()
@@ -1880,7 +1880,7 @@ void ParseHuntingSection()
 	MarkingMode new_marking_mode;
 	static MarkingMode prev_marking_mode = MarkingMode::INVALID;
 
-	LogInfo("[Hunting]\n");
+	LogInfo("[INF]: [Hunting]\n");
 	G->hunting = GetIniInt(L"Hunting", L"hunting", 0, NULL);
 
 	// reload_config is registered even if not hunting - this allows us to

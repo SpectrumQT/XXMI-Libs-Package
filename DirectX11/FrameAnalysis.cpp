@@ -84,7 +84,7 @@ void FrameAnalysisContext::vFrameAnalysisLog(char *fmt, va_list ap)
 
 		frame_analysis_log = _wfsopen(filename, L"w", _SH_DENYNO);
 		if (!frame_analysis_log) {
-			LogInfoW(L"Error opening %s\n", filename);
+			LogInfoW(L"[INF]: Error opening %s\n", filename);
 			return;
 		}
 		draw_call = 1;
@@ -137,7 +137,7 @@ void FrameAnalysisContext::vFrameAnalysisLogW(wchar_t* fmt, va_list ap)
 
 		frame_analysis_log = _wfsopen(filename, L"w", _SH_DENYNO);
 		if (!frame_analysis_log) {
-			LogInfoW(L"Error opening %s\n", filename);
+			LogInfoW(L"[INF]: Error opening %s\n", filename);
 			return;
 		}
 		draw_call = 1;
@@ -1884,7 +1884,7 @@ static BOOL CreateDeferredFADirectory(LPCWSTR path)
 	if (!CreateDirectoryEnsuringAccess(path)) {
 		err = GetLastError();
 		if (err != ERROR_ALREADY_EXISTS) {
-			LogInfoW(L"Error creating deferred frame analysis directory: %i\n", err);
+			LogInfoW(L"[INF]: Error creating deferred frame analysis directory: %i\n", err);
 			return FALSE;
 		}
 	}
@@ -2291,13 +2291,13 @@ void FrameAnalysisContext::link_deduplicated_files(const wchar_t *filename, cons
 	}
 
 	// Hard links may fail e.g. if running the game off a FAT32 partition:
-	LogDebug("Hard linking %S -> %S failed (0x%u), trying windows shortcut\n",
+	LogDebug("[DBG]: Hard linking %S -> %S failed (0x%u), trying windows shortcut\n",
 			filename, dedupe_filename, GetLastError());
 
 	if (create_shortcut(filename, dedupe_filename))
 		return;
 
-	LogDebug("Creating shortcut %S -> %S failed. Cannot deduplicate file, moving back.\n",
+	LogDebug("[DBG]: Creating shortcut %S -> %S failed. Cannot deduplicate file, moving back.\n",
 			filename, dedupe_filename);
 
 	if (MoveFile(dedupe_filename, filename))

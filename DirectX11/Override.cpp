@@ -376,7 +376,7 @@ void KeyOverrideCycle::UpdateCurrent(HackerDevice *device)
 	// Search for any other presets that do match:
 	for (unsigned i = 0; i < presets.size(); i++) {
 		if (i != current && presets[i].MatchesCurrent(device)) {
-			LogInfo("Resynced key cycle: %i -> %i\n", current, i);
+			LogInfo("[INF]: Resynced key cycle: %i -> %i\n", current, i);
 			current = i;
 			return;
 		}
@@ -451,11 +451,11 @@ std::vector<CommandList*> pending_post_command_lists;
 void Override::Activate(HackerDevice *device, bool override_has_deactivate_condition)
 {
 	if (is_conditional && condition.evaluate(NULL, device) == 0) {
-		LogInfo("Skipping override activation: condition not met\n");
+		LogInfo("[INF]: Skipping override activation: condition not met\n");
 		return;
 	}
 
-	LogInfo("User key activation -->\n");
+	LogInfo("[INF]: User key activation -->\n");
 
 	if (override_has_deactivate_condition) {
 		active = true;
@@ -480,11 +480,11 @@ void Override::Activate(HackerDevice *device, bool override_has_deactivate_condi
 void Override::Deactivate(HackerDevice *device)
 {
 	if (!active) {
-		LogInfo("Skipping override deactivation: not active\n");
+		LogInfo("[INF]: Skipping override deactivation: not active\n");
 		return;
 	}
 
-	LogInfo("User key deactivation <--\n");
+	LogInfo("[INF]: User key deactivation <--\n");
 
 	active = false;
 	OverrideSave.Restore(this);
@@ -501,7 +501,7 @@ void Override::Deactivate(HackerDevice *device)
 void Override::Toggle(HackerDevice *device)
 {
 	if (is_conditional && condition.evaluate(NULL, device) == 0) {
-		LogInfo("Skipping toggle override: condition not met\n");
+		LogInfo("[INF]: Skipping toggle override: condition not met\n");
 		return;
 	}
 
@@ -784,7 +784,7 @@ int OverrideGlobalSaveParam::Restore(float *val)
 			*val = save;
 		save = FLT_MAX;
 	} else if (refcount < 0) {
-		LogInfo("BUG! OverrideGlobalSaveParam refcount < 0!\n");
+		LogInfo("[INF]: BUG! OverrideGlobalSaveParam refcount < 0!\n");
 	}
 
 	return refcount;
@@ -806,7 +806,7 @@ void OverrideGlobalSave::Restore(Override *preset)
 		j = preset->mOverrideParams.find(i->first);
 		if (j != preset->mOverrideParams.end()) {
 			if (!i->second.Restore(&preset->mSavedParams[i->first])) {
-				LogDebug("removed ini param %c%.0i save area\n", i->first.chr(), i->first.idx);
+				LogDebug("[DBG]: removed ini param %c%.0i save area\n", i->first.chr(), i->first.idx);
 				next = params.erase(i);
 			}
 		}
@@ -817,7 +817,7 @@ void OverrideGlobalSave::Restore(Override *preset)
 		l = preset->mOverrideVars.find(k->first);
 		if (l != preset->mOverrideVars.end()) {
 			if (!k->second.Restore(&preset->mSavedVars[k->first])) {
-				LogDebug("removed var %S save area\n", k->first->name.c_str());
+				LogDebug("[DBG]: removed var %S save area\n", k->first->name.c_str());
 				next = vars.erase(k);
 			}
 		}

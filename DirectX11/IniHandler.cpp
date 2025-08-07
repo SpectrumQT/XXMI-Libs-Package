@@ -464,7 +464,7 @@ bool check_include_condition(wstring *val, const wstring *ini_namespace)
 	}
 
 	if (!ret)
-		LogInfo("        condition = false, skipping \"%S\"\n", ini_namespace->c_str());
+		LogInfo("[INF]:        condition = false, skipping \"%S\"\n", ini_namespace->c_str());
 
 	return !!ret;
 }
@@ -474,7 +474,7 @@ static bool ParseIniPreamble(wstring *wline, wstring *ini_namespace)
 	size_t first, last, delim;
 	wstring key, val;
 
-	LogInfo("      %S\n", wline->c_str());
+	LogInfo("[INF]:      %S\n", wline->c_str());
 
 	// Key / Val pair
 	delim = wline->find(L"=");
@@ -491,7 +491,7 @@ static bool ParseIniPreamble(wstring *wline, wstring *ini_namespace)
 		}
 
 		if (!_wcsicmp(key.c_str(), L"namespace")) {
-			LogInfo("        Renaming namespace \"%S\" -> \"%S\"\n", ini_namespace->c_str(), val.c_str());
+			LogInfo("[INF]:        Renaming namespace \"%S\" -> \"%S\"\n", ini_namespace->c_str(), val.c_str());
 			*ini_namespace = val;
 			return true;
 		}
@@ -707,13 +707,13 @@ static pcre2_code* glob_to_regex(wstring &pattern)
 	if (pcre2_pattern_convert((PCRE2_SPTR)apattern.c_str(),
 				apattern.length(), PCRE2_CONVERT_GLOB,
 				&converted, &blength, NULL)) {
-		LogInfo("Bad pattern: exclude_recursive=%S\n", pattern.c_str());
+		LogInfo("[INF]: Bad pattern: exclude_recursive=%S\n", pattern.c_str());
 		return NULL;
 	}
 
 	regex = pcre2_compile(converted, blength, PCRE2_CASELESS, &err, &err_off, NULL);
 	if (!regex)
-		LogInfo("WARNING: exclude_recursive PCRE2 regex compilation failed");
+		LogInfo("[INF]: WARNING: exclude_recursive PCRE2 regex compilation failed");
 
 	pcre2_converted_pattern_free(converted);
 	return regex;
@@ -780,7 +780,7 @@ static void ParseIniFilesRecursive(wchar_t *migoto_path, const wstring &rel_path
 	wstring search_path, ini_path, ini_namespace;
 
 	search_path = wstring(migoto_path) + rel_path + L"\\*";
-	LogInfo("    Searching \"%S\"\n", search_path.c_str());
+	LogInfo("[INF]:    Searching \"%S\"\n", search_path.c_str());
 
 	// We want to make sure the order will be consistent in case of any
 	// interactions between mods, so we read the entire directory, sort it
@@ -789,13 +789,13 @@ static void ParseIniFilesRecursive(wchar_t *migoto_path, const wstring &rel_path
 
 	hFind = FindFirstFile(search_path.c_str(), &find_data);
 	if (hFind == INVALID_HANDLE_VALUE) {
-		LogInfo("    Recursive include path \"%S\" not found\n", search_path.c_str());
+		LogInfo("[INF]:    Recursive include path \"%S\" not found\n", search_path.c_str());
 		return;
 	}
 
 	do {
 		if (matches_globbing_vector(find_data.cFileName, exclude)) {
-			LogInfo("    Excluding \"%S\"\n", find_data.cFileName);
+			LogInfo("[INF]:    Excluding \"%S\"\n", find_data.cFileName);
 			continue;
 		}
 
@@ -805,7 +805,7 @@ static void ParseIniFilesRecursive(wchar_t *migoto_path, const wstring &rel_path
 		} else if (!wcscmp(find_data.cFileName + wcslen(find_data.cFileName) - 4, L".ini")) {
 			ini_files.insert(wstring(find_data.cFileName));
 		} else {
-			LogDebug("    Not a directory or ini file: \"%S\"\n", find_data.cFileName);
+			LogDebug("[DBG]:    Not a directory or ini file: \"%S\"\n", find_data.cFileName);
 		}
 	} while (FindNextFile(hFind, &find_data));
 
@@ -814,7 +814,7 @@ static void ParseIniFilesRecursive(wchar_t *migoto_path, const wstring &rel_path
 	for (wstring i: ini_files) {
 		ini_namespace = rel_path + wstring(L"\\") + i;
 		ini_path = wstring(migoto_path) + ini_namespace;
-		LogInfo("    Processing \"%S\"\n", ini_path.c_str());
+		LogInfo("[INF]:    Processing \"%S\"\n", ini_path.c_str());
 		ParseNamespacedIniFile(ini_path.c_str(), &ini_namespace);
 	}
 
@@ -840,7 +840,7 @@ static void _GetIniSection(IniSections *custom_ini_sections, IniSectionVector **
 	try {
 		*key_vals = &custom_ini_sections->at(section).kv_vec;
 	} catch (std::out_of_range) {
-		LogDebug("WARNING: GetIniSection() called on a section not in the ini_sections map: %S\n", section);
+		LogDebug("[DBG]: WARNING: GetIniSection() called on a section not in the ini_sections map: %S\n", section);
 		*key_vals = &empty_section_vector;
 	}
 }
@@ -919,7 +919,7 @@ bool GetIniString(const wchar_t *section, const wchar_t *key, const wchar_t *def
 	bool found = false;
 
 	if (!ret) {
-		LogInfo("BUG: Misuse of GetIniString()\n");
+		LogInfo("[INF]: BUG: Misuse of GetIniString()\n");
 		DoubleBeepExit();
 	}
 
@@ -971,7 +971,7 @@ int GetIniStringAndLog(const wchar_t *section, const wchar_t *key,
 	int rc = GetIniString(section, key, def, ret, size);
 
 	if (rc)
-		LogInfo("  %S=%S\n", key, ret);
+		LogInfo("[INF]:  %S=%S\n", key, ret);
 
 	return rc;
 }
@@ -981,7 +981,7 @@ static bool GetIniStringAndLog(const wchar_t *section, const wchar_t *key,
 	bool rc = GetIniString(section, key, def, ret);
 
 	if (rc)
-		LogInfo("  %S=%s\n", key, ret->c_str());
+		LogInfo("[INF]:  %S=%s\n", key, ret->c_str());
 
 	return rc;
 }
@@ -1007,7 +1007,7 @@ float GetIniFloat(const wchar_t *section, const wchar_t *key, float def, bool *f
 		} else {
 			if (found)
 				*found = true;
-			LogInfo("  %S=%f\n", key, ret);
+			LogInfo("[INF]:  %S=%f\n", key, ret);
 		}
 	}
 
@@ -1037,7 +1037,7 @@ int GetIniInt(const wchar_t *section, const wchar_t *key, int def, bool *found, 
 		} else {
 			if (found)
 				*found = true;
-			LogInfo("  %S=%d\n", key, ret);
+			LogInfo("[INF]:  %S=%d\n", key, ret);
 		}
 	}
 
@@ -1054,13 +1054,13 @@ bool GetIniBool(const wchar_t *section, const wchar_t *key, bool def, bool *foun
 
 	if (GetIniString(section, key, 0, val, 32)) {
 		if (!_wcsicmp(val, L"1") || !_wcsicmp(val, L"true") || !_wcsicmp(val, L"yes") || !_wcsicmp(val, L"on")) {
-			LogInfo("  %S=1\n", key);
+			LogInfo("[INF]:  %S=1\n", key);
 			if (found)
 				*found = true;
 			return true;
 		}
 		if (!_wcsicmp(val, L"0") || !_wcsicmp(val, L"false") || !_wcsicmp(val, L"no") || !_wcsicmp(val, L"off")) {
-			LogInfo("  %S=0\n", key);
+			LogInfo("[INF]:  %S=0\n", key);
 			if (found)
 				*found = true;
 			return false;
@@ -1096,7 +1096,7 @@ static UINT64 GetIniHash(const wchar_t *section, const wchar_t *key, UINT64 def,
 		} else {
 			if (found)
 				*found = true;
-			LogInfo("  %S=%016llx\n", key, ret);
+			LogInfo("[INF]:  %S=%016llx\n", key, ret);
 		}
 	}
 
@@ -1120,7 +1120,7 @@ static int GetIniHexString(const wchar_t *section, const wchar_t *key, int def, 
 		} else {
 			if (found)
 				*found = true;
-			LogInfo("  %S=%x\n", key, ret);
+			LogInfo("[INF]:  %S=%x\n", key, ret);
 		}
 	}
 
@@ -1164,7 +1164,7 @@ static int GetIniEnum(const wchar_t *section, const wchar_t *key, int def, bool 
 			ret = ParseEnum(val, prefix, names, names_len, first);
 			if (found)
 				*found = true;
-			LogInfo("  %S=%S\n", key, val);
+			LogInfo("[INF]:  %S=%S\n", key, val);
 		} catch (EnumParseError) {
 			IniWarningW(L"Unrecognised Enum: %ls=%ls\n - [%ls]\n", key, val, section);
 		}
@@ -1192,7 +1192,7 @@ T GetIniEnumClass(const wchar_t *section, const wchar_t *key, T def, bool *found
 		if (tmp_found) {
 			if (found)
 				*found = tmp_found;
-			LogInfo("  %S=%S\n", key, val);
+			LogInfo("[INF]:  %S=%S\n", key, val);
 		} else {
 			IniWarningW(L"Unknown Enum: %ls=%ls\n - [%ls]\n", key, val, section);
 		}
@@ -1225,7 +1225,7 @@ T GetIniEnumClass(const wchar_t *section, const wchar_t *key, T def, bool *found
 		if (tmp_found) {
 			if (found)
 				*found = tmp_found;
-			LogInfo("  %S=%s\n", key, val.c_str());
+			LogInfo("[INF]:  %S=%s\n", key, val.c_str());
 		} else {
 			IniWarningW(L"Unknown Enum: %ls=%S\n - [%ls]\n", key, val.c_str(), section);
 		}
@@ -1333,7 +1333,7 @@ static void ParseIncludedIniFiles()
 
 		for (i = include_sections.begin(); i != include_sections.end(); i++) {
 			section_id = i->first.c_str();
-			LogInfo("[%S]\n", section_id);
+			LogInfo("[INF]: [%S]\n", section_id);
 
 			_get_namespaced_section_path(&include_sections, i->first.c_str(), &namespace_path);
 
@@ -1341,7 +1341,7 @@ static void ParseIncludedIniFiles()
 			for (entry = section->begin(); entry < section->end(); entry++) {
 				key = &entry->first;
 				val = &entry->second;
-				LogInfo("  %S=%S\n", key->c_str(), val->c_str());
+				LogInfo("[INF]:  %S=%S\n", key->c_str(), val->c_str());
 
 				rel_path = namespace_path + *val;
 
@@ -1393,7 +1393,7 @@ static void RegisterPresetKeyBindings()
 	for (i = lower; i != upper; i++) {
 		const wchar_t *id = i->first.c_str();
 
-		LogInfo("[%S]\n", id);
+		LogInfo("[INF]: [%S]\n", id);
 
 		keys = GetIniStringMultipleKeys(id, L"Key");
 		back = GetIniStringMultipleKeys(id, L"Back");
@@ -1455,7 +1455,7 @@ static void ParsePresetOverrideSections()
 		const wchar_t *id = i->first.c_str();
 		preset = &i->second;
 
-		LogInfo("[%S]\n", id);
+		LogInfo("[INF]: [%S]\n", id);
 
 		// Read parameters from ini
 		preset->ParseIniSection(id);
@@ -1793,7 +1793,7 @@ static void ParseResourceSections()
 	lower = ini_sections.lower_bound(wstring(L"Resource"));
 	upper = prefix_upper_bound(ini_sections, wstring(L"Resource"));
 	for (i = lower; i != upper; i++) {
-		LogInfoW(L"[%s]\n", i->first.c_str());
+		LogInfoW(L"[INF]: [%s]\n", i->first.c_str());
 
 		// Convert section name to lower case so our keys will be
 		// consistent in the unordered_map:
@@ -1839,7 +1839,7 @@ static void ParseResourceSections()
 			if (custom_resource->override_format == (DXGI_FORMAT)-1) {
 				IniWarningW(L"Unknown format \"%ls\"\n - [%ls]\n", setting, i->first.c_str());
 			} else {
-				LogInfo("  format=%s\n", TexFormatStr(custom_resource->override_format));
+				LogInfo("[INF]:  format=%s\n", TexFormatStr(custom_resource->override_format));
 			}
 		}
 
@@ -1927,13 +1927,13 @@ static void ParseCommandList(const wchar_t *id,
 	// Safety check to make sure we are keeping the command list section
 	// list up to date:
 	if (!IsCommandListSection(id)) {
-		LogInfoW(L"BUG: ParseCommandList() called on a section not in the CommandListSections list: %s\n", id);
+		LogInfoW(L"[INF]: BUG: ParseCommandList() called on a section not in the CommandListSections list: %s\n", id);
 		DoubleBeepExit();
 	}
 
 	scope.emplace_front();
 
-	LogDebug("Registering command list: %S\n", id);
+	LogDebug("[DBG]: Registering command list: %S\n", id);
 	pre_command_list->ini_section = id;
 	pre_command_list->post = false;
 	pre_command_list->scope = &scope;
@@ -1995,7 +1995,7 @@ static void ParseCommandList(const wchar_t *id,
 		}
 
 		if (ParseCommandListLine(id, key_ptr, val, raw_line, command_list, explicit_command_list, pre_command_list, post_command_list, &entry->ini_namespace)) {
-			LogInfoW(L"  %ls\n", raw_line->c_str());
+			LogInfoW(L"[INF]:  %ls\n", raw_line->c_str());
 			continue;
 		}
 
@@ -2022,7 +2022,7 @@ static void ParseCommandList(const wchar_t *id,
 			// There might be a lot of entries if a large mod was just
 			// uninstalled, so we only show the first bad setting on the
 			// overlay and log all other invalid settings to the log file:
-			LogInfoW(L"WARNING: Unrecognised entry in %ls: %ls\n", G->user_config.c_str(), raw_line->c_str());
+			LogInfoW(L"[INF]: WARNING: Unrecognised entry in %ls: %ls\n", G->user_config.c_str(), raw_line->c_str());
 			continue;
 		}
 
@@ -2061,7 +2061,7 @@ static void ParseConstantsSection()
 	// this is implemented as a command list run on immediate context
 	// creation & config reload, which allows it to be used for any one
 	// time initialisation.
-	LogInfo("[Constants]\n");
+	LogInfo("[INF]: [Constants]\n");
 
 	// We pass this section in two stages - the first pass is only looking
 	// for global variable declarations, and the second pass is as any
@@ -2132,9 +2132,9 @@ static void ParseConstantsSection()
 			persistent_variables.emplace_back(&inserted.first->second);
 
 		if (val->empty())
-			LogInfo("  global %S\n", name.c_str());
+			LogInfo("[INF]:  global %S\n", name.c_str());
 		else
-			LogInfo("  global %S=%f\n", name.c_str(), fval);
+			LogInfo("[INF]:  global %S=%f\n", name.c_str(), fval);
 
 		// Remove this line from the ini section data structures so the
 		// command list won't consider it in the 2nd pass:
@@ -2263,7 +2263,7 @@ static void ParseShaderOverrideSections()
 	for (i = lower; i != upper; i++) {
 		id = i->first.c_str();
 
-		LogInfo("[%S]\n", id);
+		LogInfo("[INF]: [%S]\n", id);
 
 		hash = GetIniHash(id, L"Hash", 0, &found);
 		if (!found) {
@@ -2403,7 +2403,7 @@ static bool parse_shader_regex_section_pattern(const std::wstring *section_id, c
 		// job for another day
 		wline = &entry->raw_line;
 		aline = std::string(wline->begin(), wline->end());
-		LogInfo("  %s\n", aline.c_str());
+		LogInfo("[INF]:  %s\n", aline.c_str());
 		pattern.append(aline);
 	}
 
@@ -2412,9 +2412,9 @@ static bool parse_shader_regex_section_pattern(const std::wstring *section_id, c
 	// stripped, so that if there is a problem the user can see exactly
 	// what we used. This will look ugly, but will make errors like missing
 	// \n or \s+ easier to spot.
-	LogInfo("--------- final pcre2 regex pattern used after ini parsing ---------\n");
-	LogInfo("%s\n", pattern.c_str());
-	LogInfo("--------------------------------------------------------------------\n");
+	LogInfo("[INF]: --------- final pcre2 regex pattern used after ini parsing ---------\n");
+	LogInfo("[INF]: %s\n", pattern.c_str());
+	LogInfo("[INF]: --------------------------------------------------------------------\n");
 
 	regex_pattern = &regex_group->patterns[*pattern_id];
 	if (!regex_pattern->compile(&pattern))
@@ -2448,7 +2448,7 @@ static bool parse_shader_regex_section_declarations(const std::wstring *section_
 		// job for another day
 		wline = &entry->raw_line;
 		aline = std::string(wline->begin(), wline->end());
-		LogInfo("  %s\n", aline.c_str());
+		LogInfo("[INF]:  %s\n", aline.c_str());
 		regex_group->declarations.push_back(aline);
 	}
 
@@ -2478,16 +2478,16 @@ static bool parse_shader_regex_section_replace(const std::wstring *section_id, c
 		// job for another day
 		wline = &entry->raw_line;
 		aline = std::string(wline->begin(), wline->end());
-		LogInfo("  %s\n", aline.c_str());
+		LogInfo("[INF]:  %s\n", aline.c_str());
 		regex_pattern->replace.append(aline);
 	}
 
 	// Similar to above we want to see the final substitution string after
 	// ini parsing, especially to help spot missing newlines. TODO: Add an
 	// option to automatically add newlines after every ini line.
-	LogInfo("--------- final pcre2 replace string used after ini parsing ---------\n");
-	LogInfo("%s\n", regex_pattern->replace.c_str());
-	LogInfo("---------------------------------------------------------------------\n");
+	LogInfo("[INF]: --------- final pcre2 replace string used after ini parsing ---------\n");
+	LogInfo("[INF]: %s\n", regex_pattern->replace.c_str());
+	LogInfo("[INF]: ---------------------------------------------------------------------\n");
 
 	regex_pattern->do_replace = true;
 	return true;
@@ -2538,7 +2538,7 @@ static void ParseShaderRegexSections()
 	upper = prefix_upper_bound(ini_sections, wstring(L"ShaderRegex"));
 	for (i = lower; i != upper; i++) {
 		section_id = &i->first;
-		LogInfo("[%S]\n", section_id->c_str());
+		LogInfo("[INF]: [%S]\n", section_id->c_str());
 
 		hash = hash_ini_section(hash, section_id);
 
@@ -2603,7 +2603,7 @@ static void ParseShaderRegexSections()
 	// Copy pointers to each of the groups to a vector so we can look them
 	// up directly without iterating over the map:
 	shader_regex_hash = hash;
-	LogInfo("ShaderRegex hash: %08x\n", shader_regex_hash);
+	LogInfo("[INF]: ShaderRegex hash: %08x\n", shader_regex_hash);
 	for (j = shader_regex_groups.begin(); j != shader_regex_groups.end(); j++)
 		shader_regex_group_index.push_back(&j->second);
 }
@@ -2902,7 +2902,7 @@ static void parse_texture_override_common(const wchar_t *id, TextureOverride *ov
 		{
 			if (id[j] <= 0) break;
 			override->iterations.push_back(id[j]);
-			LogInfo("  Iteration=%d\n", id[j]);
+			LogInfo("[INF]:  Iteration=%d\n", id[j]);
 		}
 	}
 
@@ -2968,7 +2968,7 @@ static bool parse_masked_flags_field(const wstring setting, unsigned *val, unsig
 	if (!setting.size() || !setting.compare(L"0")) {
 		*val = 0;
 		*mask = 0xffffffff;
-		LogInfo("    Using: 0x%08x / 0x%08x\n", *val, *mask);
+		LogInfo("[INF]:    Using: 0x%08x / 0x%08x\n", *val, *mask);
 		return true;
 	}
 
@@ -2977,7 +2977,7 @@ static bool parse_masked_flags_field(const wstring setting, unsigned *val, unsig
 	if (ret != 0 && ret != EOF && (len1 == setting.length() || len2 == setting.length())) {
 		if (ret == 2)
 			*mask = 0xffffffff;
-		LogInfo("    Using: 0x%08x / 0x%08x\n", *val, *mask);
+		LogInfo("[INF]:    Using: 0x%08x / 0x%08x\n", *val, *mask);
 		return true;
 	}
 
@@ -3019,7 +3019,7 @@ static bool parse_masked_flags_field(const wstring setting, unsigned *val, unsig
 
 	if (!use_mask)
 		*mask = 0xffffffff;
-	LogInfo("    Using: 0x%08x / 0x%08x\n", *val, *mask);
+	LogInfo("[INF]:    Using: 0x%08x / 0x%08x\n", *val, *mask);
 
 	return true;
 }
@@ -3207,7 +3207,7 @@ static void ParseTextureOverrideSections()
 	for (i = lower; i != upper; i++) {
 		id = i->first.c_str();
 
-		LogInfo("[%S]\n", id);
+		LogInfo("[INF]: [%S]\n", id);
 
 		hash = (uint32_t)GetIniHash(id, L"Hash", 0, &found);
 		if (!found) {
@@ -3935,7 +3935,7 @@ static void ParseCustomShaderSections()
 
 		// FIXME: This will be logged in lower case. It would be better
 		// to use the original case, but not a big deal:
-		LogInfoW(L"[%s]\n", shader_id->c_str());
+		LogInfoW(L"[INF]: [%s]\n", shader_id->c_str());
 
 		failed = false;
 
@@ -4033,7 +4033,7 @@ static void ParseExplicitCommandListSections()
 
 		// FIXME: This will be logged in lower case. It would be better
 		// to use the original case, but not a big deal:
-		LogInfoW(L"[%s]\n", section_id->c_str());
+		LogInfoW(L"[INF]: [%s]\n", section_id->c_str());
 		ParseCommandList(section_id->c_str(), &command_list_section->command_list, &command_list_section->post_command_list, NULL);
 	}
 }
@@ -4056,7 +4056,7 @@ static void ToggleFullScreen(HackerDevice *device, void *private_data)
 	// SCREEN_FULLSCREEN has several options now, so to preserve the
 	// current setting when toggled off we negate it:
 	G->SCREEN_FULLSCREEN = -G->SCREEN_FULLSCREEN;
-	LogInfo("> full screen forcing toggled to %d (will not take effect until next mode switch)\n", G->SCREEN_FULLSCREEN);
+	LogInfo("[INF]: > full screen forcing toggled to %d (will not take effect until next mode switch)\n", G->SCREEN_FULLSCREEN);
 }
 
 static void ForceFullScreen(HackerDevice *device, void *private_data)
@@ -4064,7 +4064,7 @@ static void ForceFullScreen(HackerDevice *device, void *private_data)
 	HackerSwapChain *mHackerSwapChain = device->GetHackerSwapChain();
 	IDXGISwapChain1 *swap_chain;
 
-	LogInfo("> Switching to exclusive full screen mode\n");
+	LogInfo("[INF]: > Switching to exclusive full screen mode\n");
 
 	if (!mHackerSwapChain) {
 		LogOverlay(LOG_DIRE, "force_full_screen_on_key: Unable to find swap chain\n");
@@ -4124,19 +4124,19 @@ void LoadConfigFile()
 	{
 		if (!LogFile)
 			LogFile = _wfsopen(logFilename, L"w", _SH_DENYNO);
-		LogInfo("\nD3D11 DLL starting init - v %s - %s\n", VER_FILE_VERSION_STR, LogTime().c_str());
+		LogInfo("[INF]: \nD3D11 DLL starting init - v %s - %s\n", VER_FILE_VERSION_STR, LogTime().c_str());
 
 		wchar_t our_path[MAX_PATH], exe_path[MAX_PATH];
 		GetModuleFileName(migoto_handle, our_path, MAX_PATH);
 		GetModuleFileName(NULL, exe_path, MAX_PATH);
-		LogInfo("Game path: %S\n"
+		LogInfo("[INF]: Game path: %S\n"
 			"3DMigoto path: %S\n\n",
 			exe_path, our_path);
 
-		LogInfoW(L"----------- " INI_FILENAME L" settings -----------\n");
+		LogInfoW(L"[INF]: ----------- " INI_FILENAME L" settings -----------\n");
 	}
-	LogInfo("[Logging]\n");
-	LogInfo("  calls=1\n");
+	LogInfo("[INF]: [Logging]\n");
+	LogInfo("[INF]:  calls=1\n");
 
 	ParseIniFile(iniFile);
 	InsertBuiltInIniSections();
@@ -4149,7 +4149,7 @@ void LoadConfigFile()
 	if (LogFile && GetIniBool(L"Logging", L"unbuffered", false, NULL))
 	{
 		int unbuffered = setvbuf(LogFile, NULL, _IONBF, 0);
-		LogInfo("    unbuffered return: %d\n", unbuffered);
+		LogInfo("[INF]:    unbuffered return: %d\n", unbuffered);
 	}
 
 	// Set the CPU affinity based upon d3dx.ini setting.  Useful for debugging and shader hunting in AC3.
@@ -4157,7 +4157,7 @@ void LoadConfigFile()
 	{
 		DWORD one = 0x01;
 		BOOL affinity = SetProcessAffinityMask(GetCurrentProcess(), one);
-		LogInfo("    force_cpu_affinity return: %s\n", affinity ? "true" : "false");
+		LogInfo("[INF]:    force_cpu_affinity return: %s\n", affinity ? "true" : "false");
 	}
 
 	// If specified in Logging section, wait for Attach to Debugger.
@@ -4201,7 +4201,7 @@ void LoadConfigFile()
 	}
 
 	// [System]
-	LogInfo("[System]\n");
+	LogInfo("[INF]: [System]\n");
 	GetIniStringAndLog(L"System", L"proxy_d3d11", 0, G->CHAIN_DLL_PATH, MAX_PATH);	
 	G->load_library_redirect = GetIniInt(L"System", L"load_library_redirect", 2, NULL);
 
@@ -4236,7 +4236,7 @@ void LoadConfigFile()
 	}
 
 	// [Device] (DXGI parameters)
-	LogInfo("[Device]\n");
+	LogInfo("[INF]: [Device]\n");
 	G->SCREEN_WIDTH = GetIniInt(L"Device", L"width", -1, NULL);
 	G->SCREEN_HEIGHT = GetIniInt(L"Device", L"height", -1, NULL);
 	G->SCREEN_REFRESH = GetIniInt(L"Device", L"refresh_rate", -1, NULL);
@@ -4262,7 +4262,7 @@ void LoadConfigFile()
 	G->cursor_upscaling_bypass = GetIniBool(L"Device", L"cursor_upscaling_bypass", true, NULL);
 
 	// [Rendering]
-	LogInfo("[Rendering]\n");
+	LogInfo("[INF]: [Rendering]\n");
 
 	G->shader_hash_type = GetIniEnumClass(L"Rendering", L"shader_hash", ShaderHashType::FNV, NULL, ShaderHashNames);
 	G->texture_hash_version = GetIniInt(L"Rendering", L"texture_hash", 0, NULL);
@@ -4453,27 +4453,27 @@ void LoadConfigFile()
 	ParseShaderRegexSections();
 	ParseTextureOverrideSections();
 
-	LogInfo("[Present]\n");
+	LogInfo("[INF]: [Present]\n");
 	G->present_command_list.clear();
 	G->post_present_command_list.clear();
 	ParseCommandList(L"Present", &G->present_command_list, &G->post_present_command_list, NULL);
 
-	LogInfo("[ClearRenderTargetView]\n");
+	LogInfo("[INF]: [ClearRenderTargetView]\n");
 	G->clear_rtv_command_list.clear();
 	G->post_clear_rtv_command_list.clear();
 	ParseCommandList(L"ClearRenderTargetView", &G->clear_rtv_command_list, &G->post_clear_rtv_command_list, NULL);
 
-	LogInfo("[ClearDepthStencilView]\n");
+	LogInfo("[INF]: [ClearDepthStencilView]\n");
 	G->clear_dsv_command_list.clear();
 	G->post_clear_dsv_command_list.clear();
 	ParseCommandList(L"ClearDepthStencilView", &G->clear_dsv_command_list, &G->post_clear_dsv_command_list, NULL);
 
-	LogInfo("[ClearUnorderedAccessViewUint]\n");
+	LogInfo("[INF]: [ClearUnorderedAccessViewUint]\n");
 	G->clear_uav_uint_command_list.clear();
 	G->post_clear_uav_uint_command_list.clear();
 	ParseCommandList(L"ClearUnorderedAccessViewUint", &G->clear_uav_uint_command_list, &G->post_clear_uav_uint_command_list, NULL);
 
-	LogInfo("[ClearUnorderedAccessViewFloat]\n");
+	LogInfo("[INF]: [ClearUnorderedAccessViewFloat]\n");
 	G->clear_uav_float_command_list.clear();
 	G->post_clear_uav_float_command_list.clear();
 	ParseCommandList(L"ClearUnorderedAccessViewFloat", &G->clear_uav_float_command_list, &G->post_clear_uav_float_command_list, NULL);
@@ -4511,11 +4511,11 @@ void LoadProfileManagerConfig(const wchar_t *config_dir)
 	{
 		if (!LogFile)
 			LogFile = _wfsopen(logFilename, L"w", _SH_DENYNO);
-		LogInfo("\n3DMigoto profile helper starting init - v %s - %s\n\n", VER_FILE_VERSION_STR, LogTime().c_str());
-		LogInfoW(L"----------- " INI_FILENAME L" settings -----------\n");
+		LogInfo("[INF]: \n3DMigoto profile helper starting init - v %s - %s\n\n", VER_FILE_VERSION_STR, LogTime().c_str());
+		LogInfoW(L"[INF]: ----------- " INI_FILENAME L" settings -----------\n");
 	}
-	LogInfo("[Logging]\n");
-	LogInfo("  calls=1\n");
+	LogInfo("[INF]: [Logging]\n");
+	LogInfo("[INF]:  calls=1\n");
 
 	ParseIniFile(iniFile);
 
@@ -4526,7 +4526,7 @@ void LoadProfileManagerConfig(const wchar_t *config_dir)
 	if (LogFile && GetIniBool(L"Logging", L"unbuffered", false, NULL))
 	{
 		int unbuffered = setvbuf(LogFile, NULL, _IONBF, 0);
-		LogInfo("    unbuffered return: %d\n", unbuffered);
+		LogInfo("[INF]:    unbuffered return: %d\n", unbuffered);
 	}
 
 	LogInfo("\n");
@@ -4549,11 +4549,11 @@ void SavePersistentSettings()
 	//if (!f)
 	wfopen_ensuring_access(&f, G->user_config.c_str(), L"w");
 	if (!f) {
-		LogInfo("Unable to save settings in %S\n", G->user_config.c_str());
+		LogInfo("[INF]: Unable to save settings in %S\n", G->user_config.c_str());
 		return;
 	}
 
-	LogInfo("Saving user settings to %S\n", G->user_config.c_str());
+	LogInfo("[INF]: Saving user settings to %S\n", G->user_config.c_str());
 
 	fputs("; AUTOMATICALLY GENERATED FILE - DO NOT EDIT\n"
 	      ";\n"
@@ -4610,7 +4610,7 @@ void ReloadConfig(HackerDevice *device)
 
 	SavePersistentSettings();
 
-	LogInfoW(L"Reloading " INI_FILENAME L"...\n");
+	LogInfoW(L"[INF]: Reloading " INI_FILENAME L"...\n");
 
 	G->gReloadConfigPending = false;
 	G->iniParamsReserved = 0;
@@ -4658,7 +4658,7 @@ void ReloadConfig(HackerDevice *device)
 	// user may have defined:
 	if (mHackerContext) {
 		if (G->iniParams.size() != G->iniParamsReserved) {
-			LogInfo("  Resizing IniParams from %Ii to %d\n", G->iniParams.size(), G->iniParamsReserved);
+			LogInfo("[INF]:  Resizing IniParams from %Ii to %d\n", G->iniParams.size(), G->iniParamsReserved);
 			device->CreateIniParamResources();
 			mHackerContext->Bind3DMigotoResources();
 		}

@@ -1,3 +1,41 @@
+## Information
+A fork/ repository created to bypass a certain error with the goal in mind to bypass it
+I will try to build and upload custom dlls here every 2 days to bypass checksums and filehashes checks that the game specifically uses to flag dlls
+## Working behind it:
+As for why it works, the reason is pretty simple. The certain anime game is build using directx and because of how the api works, the game itself needing the dynamic link libraries and other programs using it
+The company behind the game can't really block it
+
+
+## Installation:
+Just paste the d3d11 in your XXMI-Launcher-Portable-v1.9.2\Resources\Packages
+folder and click replace if asked
+If you get the illegal tool error then simply download the new version of the dll and replace it
+Sadly you'd have to keep doing it till I decide to build an application that automatically does it for you
+
+
+
+## 3Dmigoto
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ![image](https://cloud.githubusercontent.com/assets/6544511/22624161/934dba64-eb27-11e6-8f78-46c902e96e1b.png)
 ========
 

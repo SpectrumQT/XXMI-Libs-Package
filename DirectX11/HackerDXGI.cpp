@@ -347,9 +347,10 @@ STDMETHODIMP HackerSwapChain::QueryInterface(THIS_
 
 	if (riid == __uuidof(IDXGISwapChain2))
 	{
-		LogInfo("***  returns E_NOINTERFACE as error for IDXGISwapChain2.\n");
-		*ppvObject = NULL;
-		return E_NOINTERFACE;
+		// Return interface without wrapper to support Endfield's pipeline.
+		LogInfo("  return IDXGISwapChain2 interface (%p) without wrapper.\n", ppvObject);
+		LogInfo("  returns result = %x for %p\n", hr, ppvObject);
+		return hr;
 	}
 	if (riid == __uuidof(IDXGISwapChain3))
 	{

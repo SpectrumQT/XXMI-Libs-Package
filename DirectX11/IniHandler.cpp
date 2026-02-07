@@ -2235,7 +2235,6 @@ wchar_t *ShaderOverrideIniKeys[] = {
 	L"hash",
 	L"allow_duplicate_hash",
 	L"depth_filter",
-	L"partner",
 	L"model",
 	L"disable_scissor",
 	L"filter_index",

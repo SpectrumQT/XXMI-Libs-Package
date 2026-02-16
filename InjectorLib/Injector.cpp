@@ -5,7 +5,7 @@
 #include <tlhelp32.h>
 #include <set>
 
-#define DLL_EXPORT extern "C" __declspec(dllexport) 
+#define DLL_EXPORT extern "C" __declspec(dllexport)
 
 
 HMODULE *module = new HMODULE;
@@ -119,7 +119,7 @@ out_close:
 // ----------------------------------------------------------------------------
 // Setups global Windows Hook for target library
 // Note:Make sure to remove hook with UnhookLibrary afterfards!
-// 
+//
 // Error codes:
 // 100 - Another instance of 3DMigotoLoader is running
 // 200 - Failed to load provided library
@@ -206,6 +206,73 @@ DLL_EXPORT int StartProcess(LPCWSTR exe_path, LPCWSTR work_dir, LPCWSTR start_ar
 		return (INT_PTR)result;
 	}
 	return EXIT_SUCCESS;
+}
+
+
+
+// ----------------------------------------------------------------------------
+// Injects a dll into a process using WriteProcessMemory
+//
+// Error codes:
+// 100 - Process {pid} not found
+// 200 - Failed to allocate memory
+// 300 - Failed to write DLL path to process memory
+// 400 - Failed to create injection thread
+// 500 - Injection thread timed out
+// 600 - DLL injection failed
+
+DLL_EXPORT int Inject(DWORD pid, LPCWSTR module_path) {
+	HANDLE process, thread = NULL;
+	LPVOID memory = NULL;
+	DWORD wait_code = NULL;
+	LPDWORD thread_code = NULL;
+	int exit_code = EXIT_SUCCESS;
+	process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+	if (!process) {
+		exit_code = 100;
+		goto cleanup;
+	}
+
+	// Length of module path in bytes
+	// Path is a wide string so the length must be multiplied by the size of a wide character
+	size_t module_path_length = (wcslen(module_path) + 1) * sizeof(wchar_t);
+
+	// Allocate memory to hold the module path
+	memory = VirtualAllocEx(process, NULL, module_path_length, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (!memory) {
+		exit_code = 200;
+		goto cleanup;
+	}
+
+	// Write module path to allocated memory
+	if (!WriteProcessMemory(process, memory, module_path, module_path_length, NULL)) {
+		exit_code = 300;
+		goto cleanup;
+	}
+
+	// Create a thread in the process to load the module from path in memory
+	thread = CreateRemoteThread(process, NULL, 0,
+		(LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandle(L"kernel32.dll"), "LoadLibraryW"), memory, 0, NULL);
+	if (!thread) {
+		exit_code = 400;
+		goto cleanup;
+	}
+
+	wait_code = WaitForSingleObject(thread, 5000);
+	switch (wait_code){
+		case WAIT_TIMEOUT:
+			exit_code = 500;
+			goto cleanup;
+		case WAIT_FAILED:
+			exit_code = 600;
+			goto cleanup;
+	}
+
+	cleanup:
+		if (thread) CloseHandle(thread);
+		if (memory) VirtualFreeEx(process, memory, 0, MEM_RELEASE);
+		if (process) CloseHandle(process);
+		return exit_code;
 }
 
 

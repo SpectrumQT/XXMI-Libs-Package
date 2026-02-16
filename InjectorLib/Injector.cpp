@@ -209,28 +209,49 @@ DLL_EXPORT int StartProcess(LPCWSTR exe_path, LPCWSTR work_dir, LPCWSTR start_ar
 }
 
 
-
 // ----------------------------------------------------------------------------
 // Injects a dll into a process using WriteProcessMemory
 //
 // Error codes:
-// 100 - Process {pid} not found
-// 200 - Failed to allocate memory
-// 300 - Failed to write DLL path to process memory
-// 400 - Failed to create injection thread
-// 500 - Injection thread timed out
-// 600 - DLL injection failed
-
-DLL_EXPORT int Inject(DWORD pid, LPCWSTR module_path) {
+//100 - Process not found / cannot open
+//110 - Invalid DLL path
+//120 - Failed to resolve kernel32.dll
+//130 - Failed to resolve LoadLibraryW
+//200 - Failed to allocate remote memory
+//300 - Failed to write DLL path
+//400 - Failed to create remote thread
+//500 - Injection thread timed out
+//510 - Injection thread wait failed
+//600 - DLL injection failed (LoadLibraryW returned NULL)
+//700 - Unknown error
+DLL_EXPORT int Inject(DWORD pid, LPCWSTR module_path, int timeout = 15)
+{
 	HANDLE process, thread = NULL;
 	LPVOID memory = NULL;
-	DWORD wait_code = NULL;
-	LPDWORD thread_code = NULL;
+	DWORD thread_exit_code = 0;
 	int exit_code = EXIT_SUCCESS;
-	process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-	if (!process) {
-		exit_code = 100;
-		goto cleanup;
+
+	// Open process with minimal rights
+	process = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, pid);
+
+	if (!process)
+		return 100;
+
+	// Validate DLL path
+	if (!module_path || GetFileAttributesW(module_path) == INVALID_FILE_ATTRIBUTES)
+		return 110;
+
+	// Resolve LoadLibraryW
+	HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+	if (!kernel32) {
+		CloseHandle(process);
+		return 120;
+	}
+
+	FARPROC load_library = GetProcAddress(kernel32, "LoadLibraryW");
+	if (!load_library) {
+		CloseHandle(process);
+		return 130;
 	}
 
 	// Length of module path in bytes
@@ -239,40 +260,58 @@ DLL_EXPORT int Inject(DWORD pid, LPCWSTR module_path) {
 
 	// Allocate memory to hold the module path
 	memory = VirtualAllocEx(process, NULL, module_path_length, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+
 	if (!memory) {
-		exit_code = 200;
-		goto cleanup;
+		CloseHandle(process);
+		return 200;
 	}
 
 	// Write module path to allocated memory
 	if (!WriteProcessMemory(process, memory, module_path, module_path_length, NULL)) {
-		exit_code = 300;
-		goto cleanup;
+		VirtualFreeEx(process, memory, 0, MEM_RELEASE);
+		CloseHandle(process);
+		return 300;
 	}
 
 	// Create a thread in the process to load the module from path in memory
-	thread = CreateRemoteThread(process, NULL, 0,
-		(LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandle(L"kernel32.dll"), "LoadLibraryW"), memory, 0, NULL);
+	thread = CreateRemoteThreadEx(process, NULL, 0, (LPTHREAD_START_ROUTINE)load_library, memory, 0, NULL, NULL);
+
 	if (!thread) {
-		exit_code = 400;
-		goto cleanup;
+		VirtualFreeEx(process, memory, 0, MEM_RELEASE);
+		CloseHandle(process);
+		return 400;
 	}
 
-	wait_code = WaitForSingleObject(thread, 5000);
-	switch (wait_code){
-		case WAIT_TIMEOUT:
-			exit_code = 500;
-			goto cleanup;
-		case WAIT_FAILED:
-			exit_code = 600;
-			goto cleanup;
+	// Wait for completion
+	DWORD wait_code = WaitForSingleObject(thread, timeout * 1000);
+
+	if (wait_code == WAIT_TIMEOUT) {
+		CloseHandle(thread);
+		VirtualFreeEx(process, memory, 0, MEM_RELEASE);
+		CloseHandle(process);
+		return 500;
 	}
 
-	cleanup:
-		if (thread) CloseHandle(thread);
-		if (memory) VirtualFreeEx(process, memory, 0, MEM_RELEASE);
-		if (process) CloseHandle(process);
-		return exit_code;
+	if (wait_code == WAIT_FAILED) {
+		CloseHandle(thread);
+		VirtualFreeEx(process, memory, 0, MEM_RELEASE);
+		CloseHandle(process);
+		return 510;
+	}
+
+	// Check LoadLibraryW result
+	if (!GetExitCodeThread(thread, &thread_exit_code)) {
+		exit_code = 700; // Unknown error
+	} else if (thread_exit_code == 0) {
+		exit_code = 600; // LoadLibrary failed
+	}
+
+	// Cleanup
+	CloseHandle(thread);
+	VirtualFreeEx(process, memory, 0, MEM_RELEASE);
+	CloseHandle(process);
+
+	return exit_code;
 }
 
 

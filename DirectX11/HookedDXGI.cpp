@@ -587,6 +587,25 @@ HRESULT __stdcall Hooked_CreateSwapChainForHwnd(
 
 	override_factory2_swap_chain(&pDesc, &descCopy, &fullscreenCopy);
 
+	// Fix: Ensure previous swap chain is properly released before creating a new one.
+	// Failure to release causes an access denied error (0x80070005) due to resource conflict.
+	HackerSwapChain* mHackerSwapChain = hackerDevice->GetHackerSwapChain();
+
+	// Validate pointer to prevent access violations
+	if (mHackerSwapChain && IsBadReadPtr(mHackerSwapChain, sizeof(HackerSwapChain))) {
+		hackerDevice->SetHackerSwapChain(nullptr);
+		mHackerSwapChain = nullptr;
+		LogInfo("Invalid swap chain pointer detected and cleared\n");
+	}
+
+	if (mHackerSwapChain) {
+		LogInfo("Releasing previous swap chain at %p before creating new one\n", mHackerSwapChain);
+		mHackerSwapChain->Release();  // Release existing swap chain to free resources
+	}
+	else {
+		LogInfo("No existing swap chain found - normal for initial creation\n");
+	}
+
 	get_tls()->hooking_quirk_protection = true;
 	HRESULT hr = fnOrigCreateSwapChainForHwnd(This, pDevice, hWnd, pDesc, &fullscreenCopy, pRestrictToOutput, ppSwapChain);
 	get_tls()->hooking_quirk_protection = false;

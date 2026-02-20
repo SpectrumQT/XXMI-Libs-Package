@@ -590,17 +590,9 @@ HRESULT __stdcall Hooked_CreateSwapChainForHwnd(
 	// Fix: Ensure previous swap chain is properly released before creating a new one.
 	// Failure to release causes an access denied error (0x80070005) due to resource conflict.
 	HackerSwapChain* mHackerSwapChain = hackerDevice->GetHackerSwapChain();
-
-	// Validate pointer to prevent access violations
-	if (mHackerSwapChain && IsBadReadPtr(mHackerSwapChain, sizeof(HackerSwapChain))) {
-		hackerDevice->SetHackerSwapChain(nullptr);
-		mHackerSwapChain = nullptr;
-		LogInfo("Invalid swap chain pointer detected and cleared\n");
-	}
-
 	if (mHackerSwapChain) {
 		LogInfo("Releasing previous swap chain at %p before creating new one\n", mHackerSwapChain);
-		mHackerSwapChain->Release();  // Release existing swap chain to free resources
+		mHackerSwapChain->HackerSwapChain::Release();
 	}
 	else {
 		LogInfo("No existing swap chain found - normal for initial creation\n");

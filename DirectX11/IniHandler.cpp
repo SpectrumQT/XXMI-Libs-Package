@@ -2505,11 +2505,26 @@ static ShaderRegexGroup* get_regex_group(std::wstring *regex_id, bool allow_crea
 	}
 }
 
-static void delete_regex_group(std::wstring *regex_id)
+// Bo3b: 
+//   If we have a bad parse, we could wind up with a dangling half-baked
+//	 command list that would crash. Now also clearing them on error exit.
+static void delete_regex_group(std::wstring* regex_id)
 {
 	ShaderRegexGroups::iterator i;
 
 	i = shader_regex_groups.find(*regex_id);
+	if (i != shader_regex_groups.end())
+	{
+		auto it = std::find(registered_command_lists.begin(), registered_command_lists.end(), &i->second.command_list);
+		if (it != registered_command_lists.end())
+			registered_command_lists.erase(it);
+		it = std::find(registered_command_lists.begin(), registered_command_lists.end(), &i->second.post_command_list);
+		if (it != registered_command_lists.end())
+			registered_command_lists.erase(it);
+
+		i->second.command_list.clear();
+		i->second.post_command_list.clear();
+	}
 	shader_regex_groups.erase(i);
 }
 

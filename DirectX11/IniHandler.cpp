@@ -379,8 +379,8 @@ static void ParseIniSectionLine(wstring *wline, wstring *section,
 		last = wline->length();
 
 	// Strip whitespace:
-	first = wline->find_first_not_of(L" \t", 1);
-	last = wline->find_last_not_of(L" \t", last - 1);
+	first = wline->find_first_not_of(L" \t\r\n", 1);
+	last = wline->find_last_not_of(L" \t\r\n", last - 1);
 	*section = wline->substr(first, last - first + 1);
 
 	// Config files aside from the main one are namespaced to reduce the
@@ -480,9 +480,9 @@ static bool ParseIniPreamble(wstring *wline, wstring *ini_namespace)
 	delim = wline->find(L"=");
 	if (delim != wline->npos) {
 		// Strip whitespace around delimiter:
-		last = wline->find_last_not_of(L" \t", delim - 1);
+		last = wline->find_last_not_of(L" \t\r\n", delim - 1);
 		key = wline->substr(0, last + 1);
-		first = wline->find_first_not_of(L" \t", delim + 1);
+		first = wline->find_first_not_of(L" \t\r\n", delim + 1);
 		if (first != wline->npos)
 			val = wline->substr(first);
 
@@ -518,9 +518,9 @@ static void ParseIniKeyValLine(wstring *wline, wstring *section,
 	delim = wline->find(L"=");
 	if (delim != wline->npos) {
 		// Strip whitespace around delimiter:
-		last = wline->find_last_not_of(L" \t", delim - 1);
+		last = wline->find_last_not_of(L" \t\r\n", delim - 1);
 		key = wline->substr(0, last + 1);
-		first = wline->find_first_not_of(L" \t", delim + 1);
+		first = wline->find_first_not_of(L" \t\r\n", delim + 1);
 		if (first != wline->npos)
 			val = wline->substr(first);
 		else {
@@ -579,8 +579,8 @@ static void ParseIniStream(wistream *stream, const wstring *_ini_namespace)
 
 	while (std::getline(*stream, wline)) {
 		// Strip preceding and trailing whitespace:
-		first = wline.find_first_not_of(L" \t");
-		last = wline.find_last_not_of(L" \t");
+		first = wline.find_first_not_of(L" \t\r\n");
+		last = wline.find_last_not_of(L" \t\r\n");
 
 		if (first == wline.npos)
 			continue;

@@ -176,14 +176,14 @@ struct WStringInsensitiveLess {
 // Case insensitive version of the wstring hashing and equality functions for
 // case insensitive maps that we can use to look up ini sections and keys:
 struct WStringInsensitiveHash {
-	size_t operator()(const wstring &s) const
+	size_t operator()(const std::wstring& s) const
 	{
-		std::wstring l;
-		std::hash<std::wstring> whash;
-
-		l.resize(s.size());
-		std::transform(s.begin(), s.end(), l.begin(), ::towlower);
-		return whash(l);
+		size_t hash = 14695981039346656037ULL;
+		for (wchar_t c : s) {
+			hash ^= ::towlower(c);
+			hash *= 1099511628211ULL;
+		}
+		return hash;
 	}
 };
 struct WStringInsensitiveEquality {

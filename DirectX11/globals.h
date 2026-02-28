@@ -473,6 +473,8 @@ struct Globals
 	std::vector<DirectX::XMFLOAT4> iniParams;
 	int iniParamsReserved;
 	int IniParamsReg;
+	uint32_t lastConfigHash;
+	uint32_t lastConfigKeyHash;
 
 	ResolutionInfo mResolutionInfo;
 	CommandList present_command_list;
@@ -654,6 +656,8 @@ struct Globals
 		gTuneStep(0.001f),
 
 		iniParamsReserved(0),
+		lastConfigHash(0),
+		lastConfigKeyHash(0),
 
 		constants_run(false),
 		frame_no(0),

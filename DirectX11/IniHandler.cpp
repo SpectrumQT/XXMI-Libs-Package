@@ -217,6 +217,34 @@ typedef std::map<wstring, IniSection, WStringInsensitiveLess> IniSections;
 
 IniSections ini_sections;
 
+static const wchar_t *s_ini_cache_key_ptr = nullptr;
+static wstring        s_ini_cache_key_str;
+static IniSection    *s_ini_cache_value    = nullptr;
+
+static IniSection* find_ini_section_cached(const wchar_t *section)
+{
+	if (section == s_ini_cache_key_ptr)
+		return s_ini_cache_value;
+
+	if (!s_ini_cache_key_str.empty() && _wcsicmp(s_ini_cache_key_str.c_str(), section) == 0) {
+		s_ini_cache_key_ptr = section;
+		return s_ini_cache_value;
+	}
+
+	auto it = ini_sections.find(section);
+	s_ini_cache_key_ptr = section;
+	s_ini_cache_key_str = section;
+	s_ini_cache_value   = (it != ini_sections.end()) ? &it->second : nullptr;
+	return s_ini_cache_value;
+}
+
+static void invalidate_ini_section_cache()
+{
+	s_ini_cache_key_ptr = nullptr;
+	s_ini_cache_key_str.clear();
+	s_ini_cache_value   = nullptr;
+}
+
 // Returns an iterator to the first element in a set that does not begin with
 // prefix in a case insensitive way. Combined with set::lower_bound, this can
 // be used to iterate over all elements in the sections set that begin with a
@@ -663,6 +691,7 @@ static void ParseNamespacedIniFile(const wchar_t *ini, const wstring *ini_namesp
 static void ParseIniFile(const wchar_t *ini)
 {
 	ini_sections.clear();
+	invalidate_ini_section_cache();
 
 	return ParseNamespacedIniFile(ini, NULL);
 }
@@ -828,11 +857,9 @@ static void ParseIniFilesRecursive(wchar_t *migoto_path, const wstring &rel_path
 
 static bool IniHasKey(const wchar_t *section, const wchar_t *key)
 {
-	try {
-		return !!ini_sections.at(section).kv_map.count(key);
-	} catch (std::out_of_range) {
-		return false;
-	}
+	auto *sec = find_ini_section_cached(section);
+	if (!sec) return false;
+	return sec->kv_map.count(key) > 0;
 }
 
 static void _GetIniSection(IniSections *custom_ini_sections, IniSectionVector **key_vals, const wchar_t *section)
@@ -849,7 +876,61 @@ static void _GetIniSection(IniSections *custom_ini_sections, IniSectionVector **
 
 void GetIniSection(IniSectionVector **key_vals, const wchar_t *section)
 {
-	return _GetIniSection(&ini_sections, key_vals, section);
+	static IniSectionVector empty_section_vector;
+
+	auto *sec = find_ini_section_cached(section);
+	if (sec) {
+		*key_vals = &sec->kv_vec;
+	} else {
+		LogDebug("WARNING: GetIniSection() called on a section not in the ini_sections map: %S\n", section);
+		*key_vals = &empty_section_vector;
+	}
+}
+
+static uint32_t hash_ini_section(uint32_t hash, const wstring *sname)
+{
+	IniSectionVector *svec = NULL;
+	IniSectionVector::iterator entry;
+
+	hash = crc32c_hw(hash, sname->c_str(), sname->size() * sizeof(wchar_t));
+
+	GetIniSection(&svec, sname->c_str());
+	for (entry = svec->begin(); entry < svec->end(); entry++) {
+		if (entry->ini_namespace == G->user_config && !G->user_config.empty())
+			continue;
+
+		hash = crc32c_hw(hash, entry->raw_line.c_str(), entry->raw_line.size() * sizeof(wchar_t));
+	}
+
+	return hash;
+}
+
+static void compute_ini_sections_hash(uint32_t &hash_non_key, uint32_t &hash_key)
+{
+	hash_non_key = 0;
+	hash_key = 0;
+	IniSections::iterator i;
+	IniSectionVector::iterator entry;
+
+	for (i = ini_sections.begin(); i != ini_sections.end(); i++) {
+		const wstring& sname = i->first;
+
+		if (!_wcsnicmp(sname.c_str(), L"Key", 3) || !_wcsnicmp(sname.c_str(), L"Preset", 6)) {
+			hash_key = hash_ini_section(hash_key, &sname);
+		} else {
+			hash_non_key = hash_ini_section(hash_non_key, &sname);
+		}
+	}
+}
+
+static bool GetFileLastWriteTime(const wchar_t *path, FILETIME *ftWrite)
+{
+	WIN32_FILE_ATTRIBUTE_DATA fileInfo;
+	if (GetFileAttributesExW(path, GetFileExInfoStandard, &fileInfo)) {
+		*ftWrite = fileInfo.ftLastWriteTime;
+		return true;
+	}
+	return false;
 }
 
 // This emulates the behaviour of the old GetPrivateProfileString API to
@@ -864,11 +945,10 @@ int GetIniString(const wchar_t *section, const wchar_t *key, const wchar_t *def,
 	int rc;
 	bool found = false;
 
-	auto ini_section = ini_sections.find(section);
+	auto *ini_section = find_ini_section_cached(section);
 
-	// Switch from try-catch to more explicit and efficient checks
-	if (ini_section != ini_sections.end()) {
-		auto& kv_map = ini_section->second.kv_map;
+	if (ini_section) {
+		auto& kv_map = ini_section->kv_map;
 		auto kv_pair = kv_map.find(key);
 		if (kv_pair != kv_map.end()) {
 			const std::wstring& val = kv_pair->second;
@@ -925,10 +1005,9 @@ bool GetIniString(const wchar_t *section, const wchar_t *key, const wchar_t *def
 		DoubleBeepExit();
 	}
 
-	// Switch from try-catch to more explicit and efficient checks
-	auto ini_section = ini_sections.find(section);
-	if (ini_section != ini_sections.end()) {
-		auto& kv_map = ini_section->second.kv_map;
+	auto *ini_section = find_ini_section_cached(section);
+	if (ini_section) {
+		auto& kv_map = ini_section->kv_map;
 		auto kv_pair = kv_map.find(key);
 		if (kv_pair != kv_map.end()) {
 			wret = kv_pair->second;
@@ -1000,7 +1079,8 @@ float GetIniFloat(const wchar_t *section, const wchar_t *key, float def, bool *f
 
 	if (GetIniString(section, key, 0, val, 32)) {
 		if (swscanf_s(val, L"%f%n", &ret, &len) != 1 || len != wcslen(val)) {
-			wstring ini_namespace = ini_sections[section].ini_namespace;
+			auto *sec = find_ini_section_cached(section);
+			wstring ini_namespace = sec ? sec->ini_namespace : L"";
 			if (ini_namespace.empty()) {
 				ini_namespace = L"d3dx.ini";
 			}
@@ -1029,7 +1109,8 @@ int GetIniInt(const wchar_t *section, const wchar_t *key, int def, bool *found, 
 	if (GetIniString(section, key, 0, val, 32)) {
 		if (swscanf_s(val, L"%d%n", &ret, &len) != 1 || len != wcslen(val)) {
 			if (warn) {
-				wstring ini_namespace = ini_sections[section].ini_namespace;
+				auto *sec = find_ini_section_cached(section);
+				wstring ini_namespace = sec ? sec->ini_namespace : L"";
 				if (ini_namespace.empty()) {
 					ini_namespace = L"d3dx.ini";
 				}
@@ -1069,7 +1150,8 @@ bool GetIniBool(const wchar_t *section, const wchar_t *key, bool def, bool *foun
 		}
 
 		if (warn) {
-			wstring ini_namespace = ini_sections[section].ini_namespace;
+			auto *sec = find_ini_section_cached(section);
+			wstring ini_namespace = sec ? sec->ini_namespace : L"";
 			if (ini_namespace.empty()) {
 				ini_namespace = L"d3dx.ini";
 			}
@@ -1092,7 +1174,8 @@ static UINT64 GetIniHash(const wchar_t *section, const wchar_t *key, UINT64 def,
 
 	if (GetIniString(section, key, NULL, &val)) {
 		if (sscanf_s(val.c_str(), "%16llx%n", &ret, &len) != 1 || len != val.length()) {
-			wstring ini_namespace = ini_sections[section].ini_namespace;
+			auto *sec = find_ini_section_cached(section);
+			wstring ini_namespace = sec ? sec->ini_namespace : L"";
 			IniWarningW(L"Hash parse error: %ls=%S\n - [%ls] @ [%ls]\n", key, val.c_str(), section, ini_namespace.c_str());
 			ret = def;
 		} else {
@@ -1116,7 +1199,8 @@ static int GetIniHexString(const wchar_t *section, const wchar_t *key, int def, 
 
 	if (GetIniString(section, key, NULL, &val)) {
 		if (sscanf_s(val.c_str(), "%x%n", &ret, &len) != 1 || len != val.length()) {
-			wstring ini_namespace = ini_sections[section].ini_namespace;
+			auto *sec = find_ini_section_cached(section);
+			wstring ini_namespace = sec ? sec->ini_namespace : L"";
 			IniWarningW(L"Hex string parse error: %ls=%S\n - [%ls] @ [%ls]\n", key, val.c_str(), section, ini_namespace.c_str());
 			ret = def;
 		} else {
@@ -1332,6 +1416,7 @@ static void ParseIncludedIniFiles()
 		include_sections.clear();
 		include_sections.insert(lower, upper);
 		ini_sections.erase(lower, upper);
+		invalidate_ini_section_cache();
 
 		for (i = include_sections.begin(); i != include_sections.end(); i++) {
 			section_id = i->first.c_str();
@@ -1781,7 +1866,7 @@ static void ParseResourceInitialData(CustomResource *custom_resource, const wcha
 	}
 }
 
-static void ParseResourceSections()
+static void ParseResourceSections(bool is_full_reload = false)
 {
 	IniSections::iterator lower, upper, i;
 	wstring resource_id;
@@ -1790,6 +1875,7 @@ static void ParseResourceSections()
 	wstring namespace_path;
 	bool found;
 
+	CustomResources oldResources = std::move(customResources);
 	customResources.clear();
 
 	lower = ini_sections.lower_bound(wstring(L"Resource"));
@@ -1809,13 +1895,17 @@ static void ParseResourceSections()
 		custom_resource = &customResources[resource_id];
 		custom_resource->name = i->first;
 
+		custom_resource->hash = hash_ini_section(0, &i->first);
+
+		auto old_it = oldResources.find(resource_id);
+		bool hash_match = (old_it != oldResources.end() && custom_resource->hash == old_it->second.hash);
+
 		custom_resource->max_copies_per_frame =
 			GetIniInt(i->first.c_str(), L"max_copies_per_frame", 0, NULL);
 
-		if (GetIniStringAndLog(i->first.c_str(), L"filename", 0, setting, MAX_PATH)) {
-			// If this section was not in the main d3dx.ini, look
-			// for a file relative to the config it came from
-			// first, then try relative to the 3DMigoto directory:
+		if (hash_match && !old_it->second.filename.empty()) {
+			custom_resource->filename = old_it->second.filename;
+		} else if (GetIniStringAndLog(i->first.c_str(), L"filename", 0, setting, MAX_PATH)) {
 			get_namespaced_section_path(i->first.c_str(), &namespace_path);
 			found = false;
 			if (!namespace_path.empty()) {
@@ -1869,6 +1959,44 @@ static void ParseResourceSections()
 		}
 
 		ParseResourceInitialData(custom_resource, i->first.c_str());
+
+		if (hash_match) {
+			CustomResource &old = old_it->second;
+			bool file_changed = false;
+			if (!custom_resource->filename.empty()) {
+				FILETIME ft;
+				if (GetFileLastWriteTime(custom_resource->filename.c_str(), &ft)) {
+					if (CompareFileTime(&ft, &old.file_timestamp) != 0) {
+						file_changed = true;
+						custom_resource->file_timestamp = ft;
+					} else {
+						custom_resource->file_timestamp = old.file_timestamp;
+					}
+				} else {
+					file_changed = true;
+				}
+			}
+			if (!file_changed) {
+				custom_resource->resource = old.resource;
+				custom_resource->view = old.view;
+				custom_resource->device = old.device;
+				custom_resource->substantiated = old.substantiated;
+
+				custom_resource->is_null = old.is_null;
+				custom_resource->bind_flags = old.bind_flags;
+				custom_resource->misc_flags = old.misc_flags;
+				custom_resource->stride = old.stride;
+				custom_resource->offset = old.offset;
+				custom_resource->buf_size = old.buf_size;
+				custom_resource->format = old.format;
+
+				custom_resource->resource_pool.cache = std::move(old.resource_pool.cache);
+
+				old.resource = nullptr;
+				old.view = nullptr;
+				LogInfo("  Reusing D3D11 resource from previous config\n");
+			}
+		}
 	}
 }
 
@@ -1926,6 +2054,11 @@ static void ParseCommandList(const wchar_t *id,
 	CommandListScope scope;
 	int i;
 
+	std::unordered_set<wstring> whitelist_set;
+	if (whitelist)
+		for (i = 0; whitelist[i]; i++)
+			whitelist_set.emplace(whitelist[i]);
+
 	// Safety check to make sure we are keeping the command list section
 	// list up to date:
 	if (!IsCommandListSection(id)) {
@@ -1962,24 +2095,18 @@ static void ParseCommandList(const wchar_t *id,
 		std::transform(raw_line->begin(), raw_line->end(), raw_line->begin(), ::towlower);
 
 		// Skip any whitelisted entries that are parsed elsewhere.
-		if (whitelist) {
-			for (i = 0; whitelist[i]; i++) {
-				if (!key->compare(whitelist[i]))
-					break;
+		if (!whitelist_set.empty() && whitelist_set.count(key->c_str())) {
+			// Entry is whitelisted and will be parsed
+			// elsewhere. Sections with command lists are
+			// allowed duplicate keys *except for these
+			// whitelisted entries*, so check for
+			// duplicates here:
+			if (whitelisted_keys.count(key->c_str())) {
+				IniWarningW(L"Duplicate non-command list key found: %ls\n - [%ls]\n", key->c_str(), id);
 			}
-			if (whitelist[i]) {
-				// Entry is whitelisted and will be parsed
-				// elsewhere. Sections with command lists are
-				// allowed duplicate keys *except for these
-				// whitelisted entries*, so check for
-				// duplicates here:
-				if (whitelisted_keys.count(key->c_str())) {
-					IniWarningW(L"Duplicate non-command list key found: %ls\n - [%ls]\n", key->c_str(), id);
-				}
-				whitelisted_keys.insert(key->c_str());
+			whitelisted_keys.insert(key->c_str());
 
-				continue;
-			}
+			continue;
 		}
 
 		command_list = pre_command_list;
@@ -2049,7 +2176,6 @@ static void ParseConstantsSection()
 {
 	VariableFlags flags;
 	IniSectionVector *section = NULL;
-	IniSectionVector::iterator entry, next;
 	wstring *key, *val, name;
 	const wchar_t *name_pos;
 	const wstring *ini_namespace;
@@ -2078,69 +2204,68 @@ static void ParseConstantsSection()
 	command_list_globals.clear();
 	persistent_variables.clear();
 	GetIniSection(&section, L"Constants");
-	for (next = section->begin(), entry = next; entry < section->end(); entry = next) {
-		next++;
-		key = &entry->first;
-		val = &entry->second;
-		ini_namespace = &entry->ini_namespace;
 
-		// The variable name will either be in the key if this line
-		// also includes an assignment, or in raw_line if it does not:
-		if (!key->empty())
-			name = *key;
-		else
-			name = entry->raw_line;
+	if (section && !section->empty()) {
+		auto write_it = section->begin();
+		for (auto read_it = section->begin(); read_it != section->end(); ++read_it) {
+			key = &read_it->first;
+			val = &read_it->second;
+			ini_namespace = &read_it->ini_namespace;
 
-		// Convert variable name to lower case since ini files are
-		// supposed to be case insensitive:
-		std::transform(name.begin(), name.end(), name.begin(), ::towlower);
+			if (!key->empty())
+				name = *key;
+			else
+				name = read_it->raw_line;
 
-		// Globals do not support pre/post since they are declarations
-		// with static initialisers where pre/post doesn't make sense
-		// (and [Constants] doesn't support them as yet either)
+			std::transform(name.begin(), name.end(), name.begin(), ::towlower);
 
-		flags = parse_enum_option_string_prefix<const wchar_t *, VariableFlags>
-			(VariableFlagNames, name.c_str(), &name_pos);
-		if (!(flags & VariableFlags::GLOBAL))
-			continue;
-		name = name_pos;
-
-		if (!valid_variable_name(name)) {
-			IniWarningW(L"Illegal global variable name: \"%ls\"\n - [Constants] @ [%ls]\n", name.c_str(), entry->ini_namespace.c_str());
-			continue;
-		}
-
-		if (!ini_namespace->empty())
-			name = get_namespaced_var_name_lower(name, ini_namespace);
-
-		// Initialisation is optional and deferred until the command
-		// list is run
-		// If the initialiser is present and simple
-		fval = 0.0f;
-		if (!val->empty()) {
-			if (swscanf_s(val->c_str(), L"%f%n", &fval, &len) != 1 || len != val->length()) {
-				IniWarningW(L"Floating point parse error: %ls=%ls\n - [Constants] @ [%ls]\n", key->c_str(), val->c_str(), entry->ini_namespace.c_str());
+			flags = parse_enum_option_string_prefix<const wchar_t *, VariableFlags>
+				(VariableFlagNames, name.c_str(), &name_pos);
+			
+			if (!(flags & VariableFlags::GLOBAL)) {
+				if (write_it != read_it) *write_it = std::move(*read_it);
+				++write_it;
 				continue;
 			}
+			name = name_pos;
+
+			if (!valid_variable_name(name)) {
+				IniWarningW(L"Illegal global variable name: \"%ls\"\n - [Constants] @ [%ls]\n", name.c_str(), read_it->ini_namespace.c_str());
+				if (write_it != read_it) *write_it = std::move(*read_it);
+				++write_it;
+				continue;
+			}
+
+			if (!ini_namespace->empty())
+				name = get_namespaced_var_name_lower(name, ini_namespace);
+
+			fval = 0.0f;
+			if (!val->empty()) {
+				if (swscanf_s(val->c_str(), L"%f%n", &fval, &len) != 1 || len != val->length()) {
+					IniWarningW(L"Floating point parse error: %ls=%ls\n - [Constants] @ [%ls]\n", key->c_str(), val->c_str(), read_it->ini_namespace.c_str());
+					if (write_it != read_it) *write_it = std::move(*read_it);
+					++write_it;
+					continue;
+				}
+			}
+
+			inserted = command_list_globals.emplace(name, CommandListVariable{name, fval, flags});
+			if (!inserted.second) {
+				IniWarningW(L"Redeclaration of %ls\n - [Constants] @ [%ls]\n", name.c_str(), read_it->ini_namespace.c_str());
+				if (write_it != read_it) *write_it = std::move(*read_it);
+				++write_it;
+				continue;
+			}
+
+			if (flags & VariableFlags::PERSIST)
+				persistent_variables.emplace_back(&inserted.first->second);
+
+			if (val->empty())
+				LogInfo("  global %S\n", name.c_str());
+			else
+				LogInfo("  global %S=%f\n", name.c_str(), fval);
 		}
-
-		inserted = command_list_globals.emplace(name, CommandListVariable{name, fval, flags});
-		if (!inserted.second) {
-			IniWarningW(L"Redeclaration of %ls\n - [Constants] @ [%ls]\n", name.c_str(), entry->ini_namespace.c_str());
-			continue;
-		}
-
-		if (flags & VariableFlags::PERSIST)
-			persistent_variables.emplace_back(&inserted.first->second);
-
-		if (val->empty())
-			LogInfo("  global %S\n", name.c_str());
-		else
-			LogInfo("  global %S=%f\n", name.c_str(), fval);
-
-		// Remove this line from the ini section data structures so the
-		// command list won't consider it in the 2nd pass:
-		next = section->erase(entry);
+		section->erase(write_it, section->end());
 	}
 
 	// Second pass for the command list:
@@ -2339,21 +2464,6 @@ template <typename T>
 static std::set<T> vec_to_set(std::vector<T> &v)
 {
 	return std::set<T>(v.begin(), v.end());
-}
-
-static uint32_t hash_ini_section(uint32_t hash, const wstring *sname)
-{
-	IniSectionVector *svec = NULL;
-	IniSectionVector::iterator entry;
-
-	hash = crc32c_hw(hash, sname->c_str(), sname->size());
-
-	GetIniSection(&svec, sname->c_str());
-	for (entry = svec->begin(); entry < svec->end(); entry++) {
-		hash = crc32c_hw(hash, entry->raw_line.c_str(), entry->raw_line.size());
-	}
-
-	return hash;
 }
 
 // List of keys in [ShaderRegex] sections that are processed in this
@@ -2831,7 +2941,8 @@ float GetConstantIniVariable(const wchar_t* section, const wchar_t* key, float d
 	if (GetIniString(section, key, NULL, &tmp)) {
 
 		var_name = wstring(tmp.begin(), tmp.end());
-		wstring ini_namespace = ini_sections[section].ini_namespace;
+		auto *sec = find_ini_section_cached(section);
+		wstring ini_namespace = sec ? sec->ini_namespace : L"";
 		CommandListVariables::iterator var = command_list_globals.end();
 
 		var = command_list_globals.find(get_namespaced_var_name_lower(var_name, &ini_namespace));
@@ -4171,7 +4282,7 @@ static void warn_of_conflicting_d3dx(wchar_t *dll_ini_path)
 			"Using this configuration: %S\n", dll_ini_path);
 }
 
-void LoadConfigFile()
+void LoadConfigFile(bool skip_parsing)
 {
 	wchar_t iniFile[MAX_PATH], logFilename[MAX_PATH];
 	wchar_t setting[MAX_PATH];
@@ -4211,8 +4322,10 @@ void LoadConfigFile()
 	LogInfo("[Logging]\n");
 	LogInfo("  calls=1\n");
 
-	ParseIniFile(iniFile);
-	InsertBuiltInIniSections();
+	if (!skip_parsing) {
+		ParseIniFile(iniFile);
+		InsertBuiltInIniSections();
+	}
 
 	G->gLogInput = GetIniBool(L"Logging", L"input", false, NULL);
 	gLogDebug = GetIniBool(L"Logging", L"debug", false, NULL);
@@ -4269,7 +4382,7 @@ void LoadConfigFile()
 		G->gConfigInitialized = true;
 	}
 
-	if (G->gConfigInitialized || !G->gSkipEarlyIncludesLoad) {
+	if (!skip_parsing && (G->gConfigInitialized || !G->gSkipEarlyIncludesLoad)) {
 		ParseIncludedIniFiles();
 	}
 
@@ -4506,7 +4619,11 @@ void LoadConfigFile()
 	EnumeratePresetOverrideSections();
 
 	// Must be done before any command lists that may refer to them:
-	ParseResourceSections();
+	ParseResourceSections(skip_parsing);
+
+	if (!skip_parsing) {
+		compute_ini_sections_hash(G->lastConfigHash, G->lastConfigKeyHash);
+	}
 
 	// This is the only command list we permit to allocate global variables,
 	// so we parse it before all other command lists, key bindings and
@@ -4672,6 +4789,56 @@ static void MarkAllShadersDeferredUnprocessed()
 	// and just update the ShaderOverrides & filter_index
 }
 
+static void ReloadConfigFastPath(std::chrono::high_resolution_clock::time_point start)
+{
+	LogOverlayW(LOG_INFO, L"> Config unchanged, checking for modified external files...\n");
+	for (auto& pair : customResources) {
+		CustomResource &res = pair.second;
+		if (!res.filename.empty() && res.substantiated) {
+			FILETIME ft;
+			if (GetFileLastWriteTime(res.filename.c_str(), &ft)) {
+				if (CompareFileTime(&ft, &res.file_timestamp) != 0) {
+					if (res.resource) res.resource->Release();
+					if (res.view) res.view->Release();
+					res.resource = nullptr;
+					res.view = nullptr;
+					res.substantiated = false;
+					res.is_null = true;
+				}
+			}
+		}
+	}
+
+	MarkAllShadersDeferredUnprocessed();
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	auto stop = std::chrono::high_resolution_clock::now();
+	std::chrono::duration<float> duration = stop - start;
+	LogOverlayW(LOG_INFO, L"> Fast reloaded config in %.3fs\n", duration.count());
+}
+
+static void ReloadConfigMidPath(std::chrono::high_resolution_clock::time_point start, uint32_t new_hash_key)
+{
+	LogOverlayW(LOG_INFO, L"> Keys/Presets changed. Mid path reloading...\n");
+	G->lastConfigKeyHash = new_hash_key;
+
+	ClearKeyBindings();
+
+	ParseHuntingSection();
+	RegisterIniKeyBinding(L"Device", L"toggle_full_screen", ToggleFullScreen, NULL, 0, NULL);
+	RegisterIniKeyBinding(L"Device", L"force_full_screen_on_key", ForceFullScreen, NULL, 0, NULL);
+
+	EnumeratePresetOverrideSections();
+	RegisterPresetKeyBindings();
+	ParsePresetOverrideSections();
+
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	auto stop = std::chrono::high_resolution_clock::now();
+	std::chrono::duration<float> duration = stop - start;
+	LogOverlayW(LOG_INFO, L"> Mid Path reloaded config in %.3fs\n", duration.count());
+}
+
 void ReloadConfig(HackerDevice *device)
 {
 	auto start = std::chrono::high_resolution_clock::now();
@@ -4692,6 +4859,34 @@ void ReloadConfig(HackerDevice *device)
 	// that could potentially be accessed from other threads (e.g. deferred
 	// contexts) while we do this
 	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	wchar_t iniFile[MAX_PATH];
+	if (GetModuleFileName(migoto_handle, iniFile, MAX_PATH)) {
+		wcsrchr(iniFile, L'\\')[1] = 0;
+		wcscat(iniFile, INI_FILENAME);
+
+		ParseIniFile(iniFile);
+		InsertBuiltInIniSections();
+
+		if (G->gConfigInitialized || !G->gSkipEarlyIncludesLoad) {
+			ParseIncludedIniFiles();
+		}
+
+		uint32_t new_hash_non_key = 0;
+		uint32_t new_hash_key = 0;
+		compute_ini_sections_hash(new_hash_non_key, new_hash_key);
+		if (new_hash_non_key == G->lastConfigHash) {
+			if (new_hash_key == G->lastConfigKeyHash) {
+				ReloadConfigFastPath(start);
+				return;
+			} else {
+				ReloadConfigMidPath(start, new_hash_key);
+				return;
+			}
+		}
+		G->lastConfigHash = new_hash_non_key;
+		G->lastConfigKeyHash = new_hash_key;
+	}
 
 	// Clears any notices currently displayed on the overlay. This ensures
 	// that any notices that haven't timed out yet (e.g. from a previous
@@ -4716,7 +4911,7 @@ void ReloadConfig(HackerDevice *device)
 	// Reset the counters on the global parameter save area:
 	OverrideSave.Reset(device);
 
-	LoadConfigFile();
+	LoadConfigFile(true);
 
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 

@@ -1659,6 +1659,7 @@ CustomShader::CustomShader() :
 	rs_override(0), rs_state(NULL),
 	topology(D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED),
 	substantiated(false),
+	hash(0),
 	max_executions_per_frame(0),
 	frame_no(0),
 	executions_this_frame(0),
@@ -4182,6 +4183,7 @@ CustomResource::CustomResource() :
 	device(NULL),
 	view(NULL),
 	is_null(true),
+	hash(0),
 	substantiated(false),
 	bind_flags((D3D11_BIND_FLAG)0),
 	misc_flags((D3D11_RESOURCE_MISC_FLAG)0),
@@ -4209,7 +4211,10 @@ CustomResource::CustomResource() :
 	height_multiply(1.0f),
 	initial_data(NULL),
 	initial_data_size(0)
-{}
+{
+	file_timestamp.dwLowDateTime = 0;
+	file_timestamp.dwHighDateTime = 0;
+}
 
 CustomResource::~CustomResource()
 {
@@ -4296,6 +4301,8 @@ void CustomResource::LoadBufferFromFile(ID3D11Device *mOrigDevice1)
 		return;
 	}
 
+	GetFileTime(f, NULL, NULL, &file_timestamp);
+
 	size = GetFileSize(f, 0);
 	buf = malloc(size); // malloc to allow realloc to resize it if the user overrode the size
 	if (!buf) {
@@ -4368,6 +4375,12 @@ void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 	if (SUCCEEDED(hr)) {
 		device = mOrigDevice1;
 		is_null = false;
+
+		WIN32_FILE_ATTRIBUTE_DATA fileInfo;
+		if (GetFileAttributesExW(filename.c_str(), GetFileExInfoStandard, &fileInfo)) {
+			file_timestamp = fileInfo.ftLastWriteTime;
+		}
+
 		// TODO:
 		// format = ...
 	} else

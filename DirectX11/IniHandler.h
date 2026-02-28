@@ -1,7 +1,7 @@
 #include "HackerDevice.h"
 
 void FlagConfigReload(HackerDevice *device, void *private_data);
-void LoadConfigFile();
+void LoadConfigFile(bool skip_parsing = false);
 void ReloadConfig(HackerDevice *device);
 void LoadProfileManagerConfig(const wchar_t *config_dir);
 void SavePersistentSettings();

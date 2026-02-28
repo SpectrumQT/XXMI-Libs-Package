@@ -321,6 +321,7 @@ public:
 	CommandList command_list;
 	CommandList post_command_list;
 
+	uint32_t hash;
 	FILETIME vs_ft, hs_ft, ds_ft, gs_ft, ps_ft, cs_ft;
 	bool substantiated;
 
@@ -497,6 +498,8 @@ public:
 	int copies_this_frame;
 
 	wstring filename;
+	FILETIME file_timestamp;
+	uint32_t hash;
 	bool substantiated;
 
 	// Used to override description when copying or synthesise resources

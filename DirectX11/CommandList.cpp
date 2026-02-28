@@ -1672,6 +1672,13 @@ CustomShader::CustomShader() :
 		blend_factor[i] = 1.0f;
 		blend_factor_merge_mask[i] = ~0;
 	}
+
+	vs_ft.dwLowDateTime = vs_ft.dwHighDateTime = 0;
+	hs_ft.dwLowDateTime = hs_ft.dwHighDateTime = 0;
+	ds_ft.dwLowDateTime = ds_ft.dwHighDateTime = 0;
+	gs_ft.dwLowDateTime = gs_ft.dwHighDateTime = 0;
+	ps_ft.dwLowDateTime = ps_ft.dwHighDateTime = 0;
+	cs_ft.dwLowDateTime = cs_ft.dwHighDateTime = 0;
 }
 
 CustomShader::~CustomShader()
@@ -1861,6 +1868,14 @@ bool CustomShader::compile(char type, wchar_t *filename, const wstring *wname, c
 
 	GetFileTime(f, NULL, NULL, &timestamp);
 	if (load_cached_shader(timestamp, cache_path, ppBytecode)) {
+		switch(type) {
+			case 'v': vs_ft = timestamp; break;
+			case 'h': hs_ft = timestamp; break;
+			case 'd': ds_ft = timestamp; break;
+			case 'g': gs_ft = timestamp; break;
+			case 'p': ps_ft = timestamp; break;
+			case 'c': cs_ft = timestamp; break;
+		}
 		CloseHandle(f);
 		return false;
 	}
@@ -1917,6 +1932,15 @@ bool CustomShader::compile(char type, wchar_t *filename, const wstring *wname, c
 			set_file_last_write_time(cache_path, &timestamp);
 		} else
 			LogInfo("    Error writing compiled shader to %S\n", cache_path);
+	}
+
+	switch(type) {
+		case 'v': vs_ft = timestamp; break;
+		case 'h': hs_ft = timestamp; break;
+		case 'd': ds_ft = timestamp; break;
+		case 'g': gs_ft = timestamp; break;
+		case 'p': ps_ft = timestamp; break;
+		case 'c': cs_ft = timestamp; break;
 	}
 
 	return false;

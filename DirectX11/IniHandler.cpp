@@ -55,6 +55,8 @@ static Section CommandListSections[] = {
 	{L"ClearUnorderedAccessViewFloat", false},
 };
 
+static CustomShaders oldShaders;
+
 // List all remaining sections so we can verify that every section listed in
 // the d3dx.ini is valid and warn about any typos. As above, the boolean value
 // indicates that this is a prefix, false if it is an exact match. No need to
@@ -3924,6 +3926,7 @@ static void EnumerateCustomShaderSections()
 {
 	IniSections::iterator lower, upper;
 
+	oldShaders = std::move(customShaders);
 	customShaders.clear();
 
 	lower = ini_sections.lower_bound(wstring(L"BuiltInCustomShader"));
@@ -3934,6 +3937,31 @@ static void EnumerateCustomShaderSections()
 	upper = prefix_upper_bound(ini_sections, wstring(L"CustomShader"));
 	_EnumerateCustomShaderSections(lower, upper);
 }
+
+static bool GetShaderFileWriteTime(const wstring& namespace_path, const wchar_t* setting, FILETIME* out_ft)
+{
+	if (!_wcsicmp(setting, L"null")) return false;
+
+	wchar_t wpath[MAX_PATH];
+	bool found_file = false;
+
+	if (!namespace_path.empty()) {
+		GetModuleFileName(migoto_handle, wpath, MAX_PATH);
+		wcsrchr(wpath, L'\\')[1] = 0;
+		wcscat(wpath, namespace_path.c_str());
+		wcscat(wpath, setting);
+		if (GetFileAttributes(wpath) != INVALID_FILE_ATTRIBUTES) found_file = true;
+	}
+
+	if (!found_file) {
+		GetModuleFileName(migoto_handle, wpath, MAX_PATH);
+		wcsrchr(wpath, L'\\')[1] = 0;
+		wcscat(wpath, setting);
+	}
+
+	return GetFileLastWriteTime(wpath, out_ft);
+}
+
 static void ParseCustomShaderSections()
 {
 	CustomShaders::iterator i;
@@ -3963,18 +3991,49 @@ static void ParseCustomShaderSections()
 
 		get_namespaced_section_path(i->first.c_str(), &namespace_path);
 
-		if (GetIniString(shader_id->c_str(), L"vs", 0, setting, MAX_PATH))
-			failed |= custom_shader->compile('v', setting, shader_id, &namespace_path);
-		if (GetIniString(shader_id->c_str(), L"hs", 0, setting, MAX_PATH))
-			failed |= custom_shader->compile('h', setting, shader_id, &namespace_path);
-		if (GetIniString(shader_id->c_str(), L"ds", 0, setting, MAX_PATH))
-			failed |= custom_shader->compile('d', setting, shader_id, &namespace_path);
-		if (GetIniString(shader_id->c_str(), L"gs", 0, setting, MAX_PATH))
-			failed |= custom_shader->compile('g', setting, shader_id, &namespace_path);
-		if (GetIniString(shader_id->c_str(), L"ps", 0, setting, MAX_PATH))
-			failed |= custom_shader->compile('p', setting, shader_id, &namespace_path);
-		if (GetIniString(shader_id->c_str(), L"cs", 0, setting, MAX_PATH))
-			failed |= custom_shader->compile('c', setting, shader_id, &namespace_path);
+		bool skip_compile = false;
+		auto old_it = oldShaders.find(*shader_id);
+
+		if (old_it != oldShaders.end() && !old_it->second.substantiated) {
+			skip_compile = true;
+			CustomShader &old = old_it->second;
+			const wchar_t *keys[] = { L"vs", L"hs", L"ds", L"gs", L"ps", L"cs" };
+			FILETIME *fts[] = { &old.vs_ft, &old.hs_ft, &old.ds_ft, &old.gs_ft, &old.ps_ft, &old.cs_ft };
+
+			for (int j = 0; j < 6; j++) {
+				if (GetIniString(shader_id->c_str(), keys[j], 0, setting, MAX_PATH)) {
+					FILETIME ft;
+					if (GetShaderFileWriteTime(namespace_path, setting, &ft)) {
+						if (CompareFileTime(&ft, fts[j]) != 0) {
+							skip_compile = false;
+							break;
+						}
+					} else if (_wcsicmp(setting, L"null") != 0) {
+						skip_compile = false;
+						break;
+					}
+				}
+			}
+		}
+
+		if (skip_compile) {
+			failed = true;
+		} else {
+			const wchar_t *stage_keys[] = { L"vs", L"hs", L"ds", L"gs", L"ps", L"cs" };
+			const char *stage_chars[] = { "v", "h", "d", "g", "p", "c" };
+			FILETIME* dest_fts[] = { &custom_shader->vs_ft, &custom_shader->hs_ft, &custom_shader->ds_ft, &custom_shader->gs_ft, &custom_shader->ps_ft, &custom_shader->cs_ft };
+
+			for (int j = 0; j < 6; j++) {
+				if (GetIniString(shader_id->c_str(), stage_keys[j], 0, setting, MAX_PATH)) {
+					failed |= custom_shader->compile(stage_chars[j][0], setting, shader_id, &namespace_path);
+					
+					FILETIME ft;
+					if (GetShaderFileWriteTime(namespace_path, setting, &ft)) {
+						*dest_fts[j] = ft;
+					}
+				}
+			}
+		}
 
 		if (failed) {
 			// Don't want to allow a shader to be run if it had an

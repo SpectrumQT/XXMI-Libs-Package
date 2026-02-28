@@ -321,6 +321,7 @@ public:
 	CommandList command_list;
 	CommandList post_command_list;
 
+	FILETIME vs_ft, hs_ft, ds_ft, gs_ft, ps_ft, cs_ft;
 	bool substantiated;
 
 	int max_executions_per_frame;

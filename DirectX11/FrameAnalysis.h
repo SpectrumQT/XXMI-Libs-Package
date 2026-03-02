@@ -98,6 +98,10 @@ private:
 	void FrameAnalysisLogMiscArray(UINT start, UINT len, void *const *array);
 	void FrameAnalysisLogAsyncQuery(ID3D11Asynchronous *async);
 	void FrameAnalysisLogData(void *buf, UINT size);
+	void FrameAnalysisLogResourceHashInline(ID3D11Resource* resource);
+	void FrameAnalysisLogConstantBuffer(int slot, char* slot_name, ID3D11Resource* resource, UINT first_constant, UINT num_constants);
+	void FrameAnalysisLogConstantBufferArray(UINT start, UINT len, ID3D11Resource* const* ppResources, const UINT* pFirstConstant, const UINT* pNumConstants);
+
 	FILE *frame_analysis_log;
 	unsigned draw_call;
 	unsigned non_draw_call_dump_counter;

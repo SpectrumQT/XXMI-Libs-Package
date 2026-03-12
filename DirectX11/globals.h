@@ -456,6 +456,7 @@ struct Globals
 	std::unordered_set<void*> frame_analysis_seen_rts;
 
 	ShaderHashType shader_hash_type;
+	bool track_region_hashes;
 	int texture_hash_version;
 	int EXPORT_HLSL;		// 0=off, 1=HLSL only, 2=HLSL+OriginalASM, 3= HLSL+OriginalASM+recompiledASM
 	bool EXPORT_SHADERS, EXPORT_FIXED, EXPORT_BINARY, CACHE_SHADERS, SCISSOR_DISABLE;
@@ -643,6 +644,7 @@ struct Globals
 		cur_analyse_options(FrameAnalysisOptions::INVALID),
 
 		shader_hash_type(ShaderHashType::FNV),
+		track_region_hashes(true),
 		texture_hash_version(0),
 		EXPORT_SHADERS(false),
 		EXPORT_HLSL(0),

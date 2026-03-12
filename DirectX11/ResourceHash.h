@@ -20,6 +20,12 @@ struct ResourceHandleInfo
 	uint32_t orig_hash;	// Original hash at the time of creation
 	uint32_t data_hash;	// Just the data hash for track_texture_updates
 
+	// region hash cache: key = ((uint64_t)offset << 32) | size
+	std::unordered_map<uint64_t, uint32_t> region_hash_cache;
+
+	std::vector<uint8_t> cached_data;
+	bool cached_data_valid = false;
+
 	// TODO: If we are sure we understand all possible differences between
 	// the original desc and that obtained by querying the resource we
 	// probably don't need to store these. One possible difference is the
@@ -192,6 +198,11 @@ uint32_t CalcTexture3DDataHash(const D3D11_TEXTURE3D_DESC *pDesc, const D3D11_SU
 ResourceHandleInfo* GetResourceHandleInfo(ID3D11Resource *resource);
 uint32_t GetOrigResourceHash(ID3D11Resource *resource);
 uint32_t GetResourceHash(ID3D11Resource *resource);
+uint32_t ComputeRegionHash(void* mappedData, UINT offset, UINT size);
+static bool CacheBufferData(ID3D11DeviceContext1* context, ID3D11Buffer* buffer, ResourceHandleInfo* info);
+UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info);
+UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info);
+uint32_t GetRegionHash(ID3D11DeviceContext1* mOrigContext1, ID3D11Buffer* buffer, UINT offset, UINT size);
 
 void MarkResourceHashContaminated(ID3D11Resource *dest, UINT DstSubresource,
 		ID3D11Resource *src, UINT srcSubresource, char type,

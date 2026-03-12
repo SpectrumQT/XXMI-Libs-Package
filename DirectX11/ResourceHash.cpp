@@ -860,6 +860,121 @@ uint32_t GetResourceHash(ID3D11Resource *resource)
 	return 0;
 }
 
+uint32_t ComputeRegionHash(void* mappedData, UINT offset, UINT size)
+{
+	if (!mappedData || !size)
+		return 0;
+
+	const uint8_t* regionPtr = reinterpret_cast<const uint8_t*>(mappedData) + offset;
+
+	return crc32c_hw(0, regionPtr, size);
+}
+
+static bool CacheBufferData(ID3D11DeviceContext1* context, ID3D11Buffer* buffer, ResourceHandleInfo* handle_info)
+{
+	if (handle_info->cached_data_valid)
+		return true;
+
+	ID3D11Device* dev = NULL;
+	context->GetDevice(&dev);
+
+	D3D11_BUFFER_DESC desc;
+	buffer->GetDesc(&desc);
+
+	LogInfo("CacheBufferData size=%d, hash=%08lx\n", desc.ByteWidth, handle_info->hash);
+
+	ID3D11Buffer* staging = NULL;
+
+	D3D11_BUFFER_DESC stagingDesc = desc;
+	stagingDesc.Usage = D3D11_USAGE_STAGING;
+	stagingDesc.BindFlags = 0;
+	stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+	stagingDesc.MiscFlags = 0;
+
+	HRESULT hr = dev->CreateBuffer(&stagingDesc, NULL, &staging);
+	if (FAILED(hr)) {
+		if (dev) dev->Release();
+		return false;
+	}
+
+	context->CopyResource(staging, buffer);
+
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	hr = context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
+
+	if (FAILED(hr)) {
+		staging->Release();
+		if (dev) dev->Release();
+		return false;
+	}
+
+	handle_info->cached_data.resize(desc.ByteWidth);
+	memcpy(handle_info->cached_data.data(), mapped.pData, desc.ByteWidth);
+
+	context->Unmap(staging, 0);
+
+	staging->Release();
+	if (dev) dev->Release();
+
+	handle_info->cached_data_valid = true;
+
+	return true;
+}
+
+UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info)
+{
+	UINT vertex_count = call_info->VertexCount > 0 ? call_info->VertexCount : call_info->IndexCount / 3;
+	UINT region_size = stride * vertex_count;
+	return region_size;
+}
+
+UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info)
+{
+	UINT index_stride = (format == DXGI_FORMAT_R32_UINT) ? 4 : 2;
+	UINT region_size = index_stride * call_info->IndexCount;
+	return region_size;
+}
+
+uint32_t GetRegionHash(ID3D11DeviceContext1* context, ID3D11Buffer* buffer, UINT offset, UINT size)
+{
+	if (!buffer) {
+		LogInfo("GetRegionHash no buffer\n");
+		return 0;
+	}
+	if (!size) {
+		LogInfo("GetRegionHash no size\n");
+		return 0;
+	}
+		
+	ResourceHandleInfo* handle_info = GetResourceHandleInfo(buffer);
+	if (!handle_info) {
+		LogInfo("GetRegionHash no handle_info\n");
+		return 0;
+	}
+
+	uint64_t cache_key = ((uint64_t)offset << 32) | size;
+
+	auto it = handle_info->region_hash_cache.find(cache_key);
+	if (it != handle_info->region_hash_cache.end()) {
+		LogInfo("GetRegionHash: From cache: offset=%d, hash=%08lx\n", offset, it->second);
+		return it->second;
+	}
+
+	if (!CacheBufferData(context, buffer, handle_info)) {
+		LogInfo("GetRegionHash no CacheBufferData\n");
+		return 0;
+	}
+
+	const uint8_t* ptr = handle_info->cached_data.data() + offset;
+
+	uint32_t hash = crc32c_hw(0, ptr, size);
+	LogInfo("GetRegionHash: New hash: offset=%d, hash=%08lx\n", offset, hash);
+
+	handle_info->region_hash_cache[cache_key] = hash;
+
+	return hash;
+}
+
 uint32_t CalcTexture1DDataHash(
 	const D3D11_TEXTURE1D_DESC *pDesc,
 	const D3D11_SUBRESOURCE_DATA *pInitialData)
@@ -1332,6 +1447,17 @@ ULONG STDMETHODCALLTYPE ResourceReleaseTracker::Release(void)
 		////////////////////////////////////////////////////////////
 
 		EnterCriticalSectionPretty(&G->mResourcesLock);
+		if (G->track_region_hashes) {
+			auto it = G->mResources.find(resource);
+			if (it != G->mResources.end()) {
+				ResourceHandleInfo& info = it->second;
+				// Clear region hashes cache
+				info.region_hash_cache.clear();
+				// Free resource data RAM copy
+				info.cached_data.clear();
+				info.cached_data_valid = false;
+			}
+		}
 		G->mResources.erase(resource);
 		LeaveCriticalSection(&G->mResourcesLock);
 		delete this;

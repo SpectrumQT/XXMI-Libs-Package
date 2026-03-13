@@ -721,45 +721,37 @@ void HackerContext::BeforeDraw(DrawContext &data)
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::start(&profiling_state);
 
-	if (G->track_region_hashes) {
-		UINT i;
-		for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
-			if (mCurrentVertexBuffers[i])
-				continue;
-			VertexBufferBinding& b = mCurrentVertexBuffersBindings[i];
-			if (!b.buffer) {
-				continue;
+	// If we are not hunting shaders, we should skip all of this shader management for a performance bump.
+	if (G->hunting == HUNTING_MODE_ENABLED)
+	{
+		if (G->track_region_hashes) {
+			UINT i;
+			for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
+				VertexBufferBinding& b = mCurrentVertexBuffersBindings[i];
+				if (b.buffer) {
+					if (b.stride) {
+						mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetVertexBufferRegionSize(b.stride, &data.call_info));
+					} else {
+						mCurrentVertexBuffers[i] = GetResourceHash(b.buffer);
+					}
+				}
+				if (mCurrentVertexBuffers[i]) {
+					EnterCriticalSectionPretty(&G->mCriticalSection);
+					G->mVisitedVertexBuffers[mCurrentVertexBuffers[i]] = G->frame_no;
+					LeaveCriticalSection(&G->mCriticalSection);
+				}
 			}
-			if (!b.stride) {
-				mCurrentVertexBuffers[i] = GetResourceHash(b.buffer);
-				LogInfo("GetRegionHash: Skipped 0 stride.\n");
-				continue;
-			}
-			mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetVertexBufferRegionSize(b.stride, &data.call_info));
-			LogInfo("GetRegionHash: VertexBuffer: offset=%d, stride=%d, VertexCount=%d, IndexCount=%d, hash=%08lx\n", b.offset, b.stride, data.call_info.VertexCount, data.call_info.IndexCount, mCurrentVertexBuffers[i]);
-			if (mCurrentVertexBuffers[i]) {
-				EnterCriticalSectionPretty(&G->mCriticalSection);
-				G->mVisitedVertexBuffers.insert(mCurrentVertexBuffers[i]);
-				LeaveCriticalSection(&G->mCriticalSection);
-			}
-		}
-		if (!mCurrentIndexBuffer) {
 			IndexBufferBinding& b = mCurrentIndexBufferBinding;
 			if (b.buffer && b.offset) {
 				mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetIndexBufferRegionSize(b.format, &data.call_info));
-				LogInfo("GetRegionHash: IndexBuffer: offset=%d, IndexCount=%d, hash=%08lx\n", b.offset, data.call_info.IndexCount, mCurrentIndexBuffer);
 				if (mCurrentIndexBuffer) {
 					EnterCriticalSectionPretty(&G->mCriticalSection);
-					G->mVisitedIndexBuffers.insert(mCurrentIndexBuffer);
+					G->mVisitedIndexBuffers[mCurrentIndexBuffer] = G->frame_no;
 					LeaveCriticalSection(&G->mCriticalSection);
 				}
 			}
 		}
-	}
 
-	// If we are not hunting shaders, we should skip all of this shader management for a performance bump.
-	if (G->hunting == HUNTING_MODE_ENABLED)
-	{
 		UINT selectedVertexBufferPos;
 		UINT selectedRenderTargetPos;
 		UINT i;
@@ -1380,26 +1372,23 @@ STDMETHODIMP_(void) HackerContext::IASetVertexBuffers(THIS_
 	 mOrigContext1->IASetVertexBuffers(StartSlot, NumBuffers, ppVertexBuffers, pStrides, pOffsets);
 
 	 if (G->track_region_hashes) {
-		 EnterCriticalSectionPretty(&G->mCriticalSection);
 		 for (UINT i = StartSlot; (i < StartSlot + NumBuffers) && (i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT); i++) {
-			 UINT idx = i - StartSlot;
-			 if (ppVertexBuffers && ppVertexBuffers[idx]) {
+			UINT idx = i - StartSlot;
+			if (ppVertexBuffers && ppVertexBuffers[idx]) {
 				// Store raw binding info. Hash is computed lazily in BeforeDraw.
 				mCurrentVertexBuffersBindings[i].buffer = ppVertexBuffers[idx];
 				mCurrentVertexBuffersBindings[i].offset = pOffsets ? pOffsets[idx] : 0;
 				mCurrentVertexBuffersBindings[i].stride = pStrides ? pStrides[idx] : 0;
-				mCurrentVertexBuffers[i] = 0;
-			 } else
-				 mCurrentVertexBuffers[i] = 0;
+			}
+			mCurrentVertexBuffers[i] = 0;
 		 }
-		 LeaveCriticalSection(&G->mCriticalSection);
 	 } else if (G->hunting == HUNTING_MODE_ENABLED) {
 		EnterCriticalSectionPretty(&G->mCriticalSection);
 		for (UINT i = StartSlot; (i < StartSlot + NumBuffers) && (i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT); i++) {
 			UINT idx = i - StartSlot;
 			if (ppVertexBuffers && ppVertexBuffers[idx]) {
 				mCurrentVertexBuffers[i] = GetResourceHash(ppVertexBuffers[i]);
-				G->mVisitedVertexBuffers.insert(mCurrentVertexBuffers[i]);
+				G->mVisitedVertexBuffers[mCurrentVertexBuffers[i]] = G->frame_no;
 			} else
 				mCurrentVertexBuffers[i] = 0;
 		}
@@ -2909,7 +2898,7 @@ STDMETHODIMP_(void) HackerContext::IASetIndexBuffer(THIS_
 			if (mCurrentIndexBuffer) {
 				// When hunting, save this as a visited index buffer to cycle through.
 				EnterCriticalSectionPretty(&G->mCriticalSection);
-				G->mVisitedIndexBuffers.insert(mCurrentIndexBuffer);
+				G->mVisitedIndexBuffers[mCurrentIndexBuffer] = G->frame_no;
 				LeaveCriticalSection(&G->mCriticalSection);
 			}
 		}

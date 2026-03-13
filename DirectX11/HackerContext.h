@@ -227,6 +227,18 @@ public:
 	ID3D11DeviceContext1* GetPassThroughOrigContext1();
 	void HookContext();
 
+	// Called from CommandList SetResource when a VB/IB is replaced via a
+	// [TextureOverride] command list, so that hunting state stays in sync
+	// with the actual pipeline state after a bypass of IASetVertexBuffers.
+	void UpdateCurrentIndexBuffer(uint32_t hash) {
+		mCurrentIndexBuffer = hash;
+	}
+	void UpdateCurrentVertexBuffer(UINT slot, uint32_t hash) {
+		if (slot < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT) {
+			mCurrentVertexBuffers[slot] = hash;
+		}
+	}
+
 	// public to allow CommandList access
 	virtual void FrameAnalysisLog(char *fmt, ...) {};
 	virtual void FrameAnalysisTrigger(FrameAnalysisOptions new_options) {};

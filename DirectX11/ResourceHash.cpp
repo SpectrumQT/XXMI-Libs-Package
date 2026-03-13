@@ -870,7 +870,7 @@ uint32_t ComputeRegionHash(void* mappedData, UINT offset, UINT size)
 	return crc32c_hw(0, regionPtr, size);
 }
 
-static bool CacheBufferData(ID3D11DeviceContext1* context, ID3D11Buffer* buffer, ResourceHandleInfo* handle_info)
+static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, ResourceHandleInfo* handle_info)
 {
 	if (handle_info->cached_data_valid)
 		return true;
@@ -938,7 +938,7 @@ UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info)
 	return region_size;
 }
 
-uint32_t GetRegionHash(ID3D11DeviceContext1* context, ID3D11Buffer* buffer, UINT offset, UINT size)
+uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size)
 {
 	if (!buffer) {
 		LogInfo("GetRegionHash no buffer\n");
@@ -1770,7 +1770,7 @@ static bool matches_draw_info(TextureOverride *tex_override, DrawCallInfo *call_
 	return true;
 }
 
-static void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches *matches, DrawCallInfo *call_info)
+void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches *matches, DrawCallInfo *call_info)
 {
 	TextureOverrideMap::iterator i;
 	TextureOverrideList::iterator j;

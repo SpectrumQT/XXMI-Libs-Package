@@ -199,10 +199,10 @@ ResourceHandleInfo* GetResourceHandleInfo(ID3D11Resource *resource);
 uint32_t GetOrigResourceHash(ID3D11Resource *resource);
 uint32_t GetResourceHash(ID3D11Resource *resource);
 uint32_t ComputeRegionHash(void* mappedData, UINT offset, UINT size);
-static bool CacheBufferData(ID3D11DeviceContext1* context, ID3D11Buffer* buffer, ResourceHandleInfo* info);
+static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, ResourceHandleInfo* info);
 UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info);
 UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info);
-uint32_t GetRegionHash(ID3D11DeviceContext1* mOrigContext1, ID3D11Buffer* buffer, UINT offset, UINT size);
+uint32_t GetRegionHash(ID3D11DeviceContext* mOrigContext1, ID3D11Buffer* buffer, UINT offset, UINT size);
 
 void MarkResourceHashContaminated(ID3D11Resource *dest, UINT DstSubresource,
 		ID3D11Resource *src, UINT srcSubresource, char type,
@@ -433,3 +433,4 @@ typedef std::vector<TextureOverride*> TextureOverrideMatches;
 template <typename DescType>
 void find_texture_overrides(uint32_t hash, const DescType *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info);
+void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches* matches, DrawCallInfo* call_info);

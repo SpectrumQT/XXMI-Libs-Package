@@ -20,3 +20,5 @@ public:
 void TimeoutHuntingBuffers();
 void ParseHuntingSection();
 void DumpUsage(wchar_t *dir);
+
+void PurgeStaleVisitedBufferHashes(HackerDevice* device);

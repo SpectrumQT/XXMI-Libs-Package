@@ -1348,7 +1348,7 @@ static void NextMarkingMode(HackerDevice *device, void *private_data)
 
 template <typename ItemType>
 static void HuntNext(char *type, std::set<ItemType> *visited,
-		ItemType *selected, int *selectedPos)
+	ItemType *selected, int *selectedPos)
 {
 	if (G->hunting != HUNTING_MODE_ENABLED)
 		return;
@@ -1373,12 +1373,51 @@ static void HuntNext(char *type, std::set<ItemType> *visited,
 				*selected = *visited->begin();
 			}
 			LogInfo("> traversing to next %s #%d. Number of %ss in frame: %d\n",
-					type, *selectedPos, type, size);
+				type, *selectedPos, type, size);
 		} else {
 			*selectedPos = 0;
 			*selected = *visited->begin();
 			LogInfo("> starting at %s #%d. Number of %ss in frame: %d\n",
-					type, *selectedPos, type, size);
+				type, *selectedPos, type, size);
+		}
+	}
+out:
+	LeaveCriticalSection(&G->mCriticalSection);
+}
+
+template <typename ItemType>
+static void HuntNext(char* type, std::map<ItemType, uint32_t>* visited,
+		ItemType* selected, int* selectedPos)
+{
+	if (G->hunting != HUNTING_MODE_ENABLED)
+		return;
+
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+	{
+		auto loc = visited->find(*selected);
+		auto end = visited->end();
+		bool found = (loc != end);
+		int size = (int) visited->size();
+
+		if (size == 0)
+			goto out;
+
+		if (found) {
+			++loc;
+			if (loc != end) {
+				(*selectedPos)++;
+				*selected = loc->first;
+			} else {
+				*selectedPos = 0;
+				*selected = visited->begin()->first;
+			}
+			LogInfo("> traversing to next %s #%d. Number of %ss in frame: %d\n",
+				type, *selectedPos, type, size);
+		} else {
+			*selectedPos = 0;
+			*selected = visited->begin()->first;
+			LogInfo("> starting at %s #%d. Number of %ss in frame: %d\n",
+				type, *selectedPos, type, size);
 		}
 	}
 out:
@@ -1476,6 +1515,46 @@ static void HuntPrev(char *type, std::set<ItemType> *visited,
 			*selected = *std::prev(end);
 			LogInfo("> starting at %s shader #%d. Number of %s shaders in frame: %d\n",
 					type, *selectedPos, type, size);
+		}
+	}
+out:
+	LeaveCriticalSection(&G->mCriticalSection);
+}
+
+template <typename ItemType>
+static void HuntPrev(char* type, std::map<ItemType, uint32_t>* visited,
+		ItemType* selected, int* selectedPos)
+{
+	if (G->hunting != HUNTING_MODE_ENABLED)
+		return;
+
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+	{
+		auto loc = visited->find(*selected);
+		auto end = visited->end();
+		auto front = visited->begin();
+		bool found = (loc != end);
+		int size = (int)visited->size();
+
+		if (size == 0)
+			goto out;
+
+		if (found) {
+			if (loc != front) {
+				(*selectedPos)--;
+				--loc;
+				*selected = loc->first;
+			} else {
+				*selectedPos = size - 1;
+				*selected = std::prev(end)->first;
+			}
+			LogInfo("> traversing to previous %s #%d. Number of %ss in frame: %d\n",
+				type, *selectedPos, type, size);
+		} else {
+			*selectedPos = size - 1;
+			*selected = std::prev(end)->first;
+			LogInfo("> starting at %s #%d. Number of %ss in frame: %d\n",
+				type, *selectedPos, type, size);
 		}
 	}
 out:
@@ -1883,6 +1962,14 @@ void ParseHuntingSection()
 	LogInfo("[Hunting]\n");
 	G->hunting = GetIniInt(L"Hunting", L"hunting", 0, NULL);
 
+	// Number of frames a IB/VB buffer hash can remain in the overlay tracking
+	// cache without being encountered again before it is purged.
+	// If > 0, stale hashes are removed by PurgeStaleVisitedBufferHashes() once per
+	// frame at the start of HackerSwapChain::Present().
+	G->overlay_buffer_hash_lifetime = GetIniInt(L"Hunting", L"overlay_buffer_hash_lifetime", -1, NULL);
+	if (G->track_region_hashes && G->overlay_buffer_hash_lifetime <= 0)
+		G->overlay_buffer_hash_lifetime = 5;
+
 	// reload_config is registered even if not hunting - this allows us to
 	// turn on hunting in the ini dynamically without having to relaunch
 	// the game. This can be useful in games that receive a significant
@@ -1991,4 +2078,51 @@ void ParseHuntingSection()
 	}
 
 	G->verbose_overlay = GetIniBool(L"Hunting", L"verbose_overlay", false, NULL);
+}
+
+void PurgeStaleVisitedBufferHashes(HackerDevice* device)
+{
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	// Vertex buffers
+	for (auto it = G->mVisitedVertexBuffers.begin(); it != G->mVisitedVertexBuffers.end(); )
+	{
+		uint64_t vb_hash = it->first;
+		uint32_t last_frame = it->second;
+
+		bool stale = (G->frame_no - last_frame) > G->overlay_buffer_hash_lifetime;
+
+		if (stale) {
+			// Advance hunting only if the selected buffer is the one being purged
+			if (G->mSelectedVertexBuffer == vb_hash) {
+				NextVertexBuffer(device, nullptr);
+			}
+			// Erase the stale buffer
+			it = G->mVisitedVertexBuffers.erase(it);
+		} else {
+			++it;
+		}
+	}
+
+	// Index buffers
+	for (auto it = G->mVisitedIndexBuffers.begin(); it != G->mVisitedIndexBuffers.end(); )
+	{
+		uint64_t ib_hash = it->first;
+		uint32_t last_frame = it->second;
+
+		bool stale = (G->frame_no - last_frame) > G->overlay_buffer_hash_lifetime;
+
+		if (stale) {
+			// Advance hunting only if the selected buffer is the one being purged
+			if (G->mSelectedIndexBuffer == ib_hash) {
+				NextIndexBuffer(device, nullptr);
+			}
+			// Erase the stale buffer
+			it = G->mVisitedIndexBuffers.erase(it);
+		} else {
+			++it;
+		}
+	}
+
+	LeaveCriticalSection(&G->mCriticalSection);
 }

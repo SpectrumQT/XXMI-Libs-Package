@@ -881,8 +881,6 @@ static bool CacheBufferData(ID3D11DeviceContext1* context, ID3D11Buffer* buffer,
 	D3D11_BUFFER_DESC desc;
 	buffer->GetDesc(&desc);
 
-	LogInfo("CacheBufferData size=%d, hash=%08lx\n", desc.ByteWidth, handle_info->hash);
-
 	ID3D11Buffer* staging = NULL;
 
 	D3D11_BUFFER_DESC stagingDesc = desc;
@@ -910,6 +908,9 @@ static bool CacheBufferData(ID3D11DeviceContext1* context, ID3D11Buffer* buffer,
 
 	handle_info->cached_data.resize(desc.ByteWidth);
 	memcpy(handle_info->cached_data.data(), mapped.pData, desc.ByteWidth);
+	//handle_info->cached_data_hash = crc32c_hw(0, handle_info->cached_data.data(), desc.ByteWidth);
+
+	LogInfo("CacheBufferData size=%d, hash=%08lx, pResource=0x%p\n", desc.ByteWidth, handle_info->hash, buffer);
 
 	context->Unmap(staging, 0);
 
@@ -925,6 +926,7 @@ UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info)
 {
 	UINT vertex_count = call_info->VertexCount > 0 ? call_info->VertexCount : call_info->IndexCount / 3;
 	UINT region_size = stride * vertex_count;
+	LogInfo("GetVertexBufferRegionSize region_size=%d, stride=%d, VertexCount=%d, IndexCount=%d ", region_size, stride, call_info->VertexCount, call_info->IndexCount);
 	return region_size;
 }
 
@@ -932,6 +934,7 @@ UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info)
 {
 	UINT index_stride = (format == DXGI_FORMAT_R32_UINT) ? 4 : 2;
 	UINT region_size = index_stride * call_info->IndexCount;
+	LogInfo("GetIndexBufferRegionSize region_size=%d, stride=%d, IndexCount=%d ", region_size, index_stride, call_info->IndexCount);
 	return region_size;
 }
 
@@ -952,11 +955,11 @@ uint32_t GetRegionHash(ID3D11DeviceContext1* context, ID3D11Buffer* buffer, UINT
 		return 0;
 	}
 
-	uint64_t cache_key = ((uint64_t)offset << 32) | size;
+	UINT cache_key = offset;
 
 	auto it = handle_info->region_hash_cache.find(cache_key);
 	if (it != handle_info->region_hash_cache.end()) {
-		LogInfo("GetRegionHash: From cache: offset=%d, hash=%08lx\n", offset, it->second);
+		LogInfo("GetRegionHash: From cache: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d\n", it->second, offset, size, handle_info->hash, buffer, handle_info->region_hash_cache.size());
 		return it->second;
 	}
 
@@ -968,7 +971,7 @@ uint32_t GetRegionHash(ID3D11DeviceContext1* context, ID3D11Buffer* buffer, UINT
 	const uint8_t* ptr = handle_info->cached_data.data() + offset;
 
 	uint32_t hash = crc32c_hw(0, ptr, size);
-	LogInfo("GetRegionHash: New hash: offset=%d, hash=%08lx\n", offset, hash);
+	LogInfo("GetRegionHash: New hash: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d\n", hash, offset, size, handle_info->hash, buffer, handle_info->region_hash_cache.size());
 
 	handle_info->region_hash_cache[cache_key] = hash;
 

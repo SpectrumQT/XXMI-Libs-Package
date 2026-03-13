@@ -21,7 +21,7 @@ struct ResourceHandleInfo
 	uint32_t data_hash;	// Just the data hash for track_texture_updates
 
 	// region hash cache: key = ((uint64_t)offset << 32) | size
-	std::unordered_map<uint64_t, uint32_t> region_hash_cache;
+	std::unordered_map<UINT, uint32_t> region_hash_cache;
 
 	std::vector<uint8_t> cached_data;
 	bool cached_data_valid = false;

@@ -4313,6 +4313,7 @@ void LoadConfigFile()
 	G->CACHE_SHADERS = GetIniBool(L"Rendering", L"cache_shaders", false, NULL);
 	G->SCISSOR_DISABLE = GetIniBool(L"Rendering", L"rasterizer_disable_scissor", false, NULL);
 	G->track_texture_updates = GetIniBoolOrInt(L"Rendering", L"track_texture_updates", 0, NULL);
+	G->track_region_hashes = GetIniBoolOrInt(L"Rendering", L"track_region_hashes", 1, NULL);
 	G->assemble_signature_comments = GetIniBool(L"Rendering", L"assemble_signature_comments", false, NULL);
 	G->disassemble_undecipherable_custom_data = GetIniBool(L"Rendering", L"disassemble_undecipherable_custom_data", false, NULL);
 	G->patch_cb_offsets = GetIniBool(L"Rendering", L"patch_assembly_cb_offsets", false, NULL);

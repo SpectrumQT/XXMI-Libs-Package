@@ -5865,7 +5865,11 @@ void ResourceCopyTarget::SetResource(
 		// BeforeDraw hunting comparisons and frame analysis keep working
 		// with the replacement buffer's combined hash (offset+stride).
 		if (G->hunting == HUNTING_MODE_ENABLED && state->mHackerContext && res) {
-			uint32_t hash = GetRegionHash(mOrigContext1, (ID3D11Buffer*)res, offset, GetVertexBufferRegionSize(stride, state->call_info));
+			bool new_hash = false;
+			uint32_t hash = GetRegionHash(mOrigContext1, (ID3D11Buffer*)res, offset, GetVertexBufferRegionSize(stride, state->call_info), &new_hash);
+			if (new_hash) {
+				LogInfo("SetResourceVB stride=%d, VertexCount=%d, IndexCount=%d", stride, state->call_info->VertexCount, state->call_info->IndexCount);
+			}
 			state->mHackerContext->UpdateCurrentVertexBuffer(slot, hash);
 			EnterCriticalSectionPretty(&G->mCriticalSection);
 			G->mVisitedVertexBuffers[hash] = G->frame_no;
@@ -5878,7 +5882,11 @@ void ResourceCopyTarget::SetResource(
 		mOrigContext1->IASetIndexBuffer(buf, format, offset);
 		// Same bypass issue as VB above - update mCurrentIndexBuffer manually.
 		if (G->hunting == HUNTING_MODE_ENABLED && state->mHackerContext && res) {
-			uint32_t hash = GetRegionHash(mOrigContext1, (ID3D11Buffer*)res, offset, GetIndexBufferRegionSize(format, state->call_info));
+			bool new_hash = false;
+			uint32_t hash = GetRegionHash(mOrigContext1, (ID3D11Buffer*)res, offset, GetIndexBufferRegionSize(format, state->call_info), &new_hash);
+			if (new_hash) {
+				LogInfo("SetResourceIB stride=%d, IndexCount=%d", (format == DXGI_FORMAT_R32_UINT) ? 4 : 2, state->call_info->IndexCount);
+			}
 			state->mHackerContext->UpdateCurrentIndexBuffer(hash);
 			EnterCriticalSectionPretty(&G->mCriticalSection);
 			G->mVisitedIndexBuffers[hash] = G->frame_no;
@@ -6105,10 +6113,18 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 	// That way the hash the user copies from the overlay matches the one looked up
 	// here, and ini [TextureOverride] sections work correctly.
 	if (type == ResourceCopyTargetType::VERTEX_BUFFER) {
-		hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, GetVertexBufferRegionSize(stride, state->call_info));
+		bool new_hash = false;
+		hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, GetVertexBufferRegionSize(stride, state->call_info), &new_hash);
+		if (new_hash) {
+			LogInfo("FindTextureOverridesVB stride=%d, VertexCount=%d, IndexCount=%d", stride, state->call_info->VertexCount, state->call_info->IndexCount);
+		}
 		find_texture_override_for_hash(hash, matches, state->call_info);
 	} else if (type == ResourceCopyTargetType::INDEX_BUFFER) {
-		hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, GetIndexBufferRegionSize(format, state->call_info));
+		bool new_hash = false;
+		hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, GetIndexBufferRegionSize(format, state->call_info), &new_hash);
+		if (new_hash) {
+			LogInfo("FindTextureOverridesIB stride=%d, IndexCount=%d", (format == DXGI_FORMAT_R32_UINT) ? 4 : 2, state->call_info->IndexCount);
+		}
 		find_texture_override_for_hash(hash, matches, state->call_info);
 	}
 

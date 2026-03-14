@@ -727,10 +727,14 @@ void HackerContext::BeforeDraw(DrawContext &data)
 		if (G->track_region_hashes) {
 			UINT i;
 			for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
+				bool new_hash = false;
 				VertexBufferBinding& b = mCurrentVertexBuffersBindings[i];
 				if (b.buffer) {
 					if (b.stride) {
-						mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetVertexBufferRegionSize(b.stride, &data.call_info));
+						mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetVertexBufferRegionSize(b.stride, &data.call_info), &new_hash);
+						if (new_hash) {
+							LogInfo("BeforeDraw stride=%d, VertexCount=%d, IndexCount=%d", b.stride, data.call_info.VertexCount, data.call_info.IndexCount);
+						}
 					} else {
 						mCurrentVertexBuffers[i] = GetResourceHash(b.buffer);
 					}
@@ -743,7 +747,11 @@ void HackerContext::BeforeDraw(DrawContext &data)
 			}
 			IndexBufferBinding& b = mCurrentIndexBufferBinding;
 			if (b.buffer && b.offset) {
-				mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetIndexBufferRegionSize(b.format, &data.call_info));
+				bool new_hash = false;
+				mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetIndexBufferRegionSize(b.format, &data.call_info), &new_hash);
+				if (new_hash) {
+					LogInfo("BeforeDraw stride=%d, IndexCount=%d ", (b.format == DXGI_FORMAT_R32_UINT) ? 4 : 2, data.call_info.IndexCount);
+				}
 				if (mCurrentIndexBuffer) {
 					EnterCriticalSectionPretty(&G->mCriticalSection);
 					G->mVisitedIndexBuffers[mCurrentIndexBuffer] = G->frame_no;
@@ -1372,7 +1380,7 @@ STDMETHODIMP_(void) HackerContext::IASetVertexBuffers(THIS_
 		for (UINT i = StartSlot; (i < StartSlot + NumBuffers) && (i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT); i++) {
 			UINT idx = i - StartSlot;
 			if (ppVertexBuffers && ppVertexBuffers[idx]) {
-				mCurrentVertexBuffers[i] = GetResourceHash(ppVertexBuffers[i]);
+				mCurrentVertexBuffers[i] = GetResourceHash(ppVertexBuffers[idx]);
 				G->mVisitedVertexBuffers[mCurrentVertexBuffers[i]] = G->frame_no;
 			} else
 				mCurrentVertexBuffers[i] = 0;

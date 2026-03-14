@@ -1331,18 +1331,10 @@ ULONG STDMETHODCALLTYPE ResourceReleaseTracker::Release(void)
 		//                                                        //
 		////////////////////////////////////////////////////////////
 
-		EnterCriticalSectionPretty(&G->mResourcesLock);
 		if (G->track_region_hashes) {
-			auto it = G->mResources.find(resource);
-			if (it != G->mResources.end()) {
-				ResourceHandleInfo& info = it->second;
-				// Clear region hashes cache
-				info.region_hash_cache.clear();
-				// Free resource data RAM copy
-				info.cached_data.clear();
-				info.cached_data_valid = false;
-			}
+			ClearResourceRegionHashCache(resource);
 		}
+		EnterCriticalSectionPretty(&G->mResourcesLock);
 		G->mResources.erase(resource);
 		LeaveCriticalSection(&G->mResourcesLock);
 		delete this;
@@ -1780,12 +1772,24 @@ bool FuzzyMatchResourceDescLess::operator() (const std::shared_ptr<FuzzyMatchRes
 // resource so the GPU buffer can be safely read by the CPU.
 static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, ResourceHandleInfo* handle_info)
 {
+	if (!context || !buffer || !handle_info)
+		return false;
+
 	// If we already captured a valid snapshot, reuse it.
-	if (handle_info->cached_data_valid)
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+	bool valid = handle_info->cached_data_valid;
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	if (valid)
 		return true;
 
 	ID3D11Device* dev = NULL;
 	context->GetDevice(&dev);
+	if (!dev)
+		return false;
+
+
+	EnterCriticalSectionPretty(&G->mCriticalSection);
 
 	// Query the buffer description so we know its size and properties.
 	D3D11_BUFFER_DESC desc;
@@ -1803,7 +1807,8 @@ static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, 
 
 	HRESULT hr = dev->CreateBuffer(&stagingDesc, NULL, &staging);
 	if (FAILED(hr)) {
-		if (dev) dev->Release();
+		dev->Release();
+		LeaveCriticalSection(&G->mCriticalSection);
 		return false;
 	}
 
@@ -1817,27 +1822,41 @@ static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, 
 
 	if (FAILED(hr)) {
 		staging->Release();
-		if (dev) dev->Release();
+		dev->Release();
+		LeaveCriticalSection(&G->mCriticalSection);
 		return false;
 	}
 
 	// Store a CPU copy of the entire buffer so region hashes can be
 	// computed without re-mapping the resource multiple times.
-	handle_info->cached_data.resize(desc.ByteWidth);
-	memcpy(handle_info->cached_data.data(), mapped.pData, desc.ByteWidth);
-
-	// Optional: compute a full-buffer hash if needed for debugging/tracking.
-	//handle_info->cached_data_hash = crc32c_hw(0, handle_info->cached_data.data(), desc.ByteWidth);
-
-	LogInfo("CacheBufferData size=%d, hash=%08lx, pResource=0x%p\n", desc.ByteWidth, handle_info->hash, buffer);
+	std::vector<uint8_t> tmp;
+	tmp.resize(desc.ByteWidth);
+	memcpy(tmp.data(), mapped.pData, desc.ByteWidth);
 
 	context->Unmap(staging, 0);
-
 	staging->Release();
-	if (dev) dev->Release();
+	dev->Release();
 
-	// Mark the cached snapshot as valid.
-	handle_info->cached_data_valid = true;
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	// Commit snapshot under lock
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	// Double-check in case another thread filled the cache while we worked
+	if (!handle_info->cached_data_valid) {
+		handle_info->cached_data.swap(tmp);
+		// Mark the cached snapshot as valid.
+		handle_info->cached_data_valid = true;
+	}
+
+	uint32_t resource_hash = handle_info->hash;
+
+	// Optional: compute a full-buffer hash if needed for debugging/tracking.
+	handle_info->cached_data_hash = crc32c_hw(0, handle_info->cached_data.data(), desc.ByteWidth);
+
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	LogInfo("\nCacheBufferData size=%d, hash=%08lx, pResource=0x%p\n", desc.ByteWidth, resource_hash, buffer);
 
 	return true;
 }
@@ -1846,9 +1865,11 @@ static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, 
 // This forces region hashes to be recomputed the next time they are requested.
 void ResourceHandleInfo::ClearRegionHashCache()
 {
+	EnterCriticalSectionPretty(&G->mCriticalSection);
 	region_hash_cache.clear();
 	cached_data.clear();
 	cached_data_valid = false;
+	LeaveCriticalSection(&G->mCriticalSection);
 }
 
 // Helper function that clears region hash cache for a specific D3D resource.
@@ -1866,7 +1887,7 @@ UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info)
 	// If VertexCount is not provided, estimate it from the index count.
 	UINT vertex_count = call_info->VertexCount > 0 ? call_info->VertexCount : call_info->IndexCount / 3;
 	UINT region_size = stride * vertex_count;
-	LogInfo("GetVertexBufferRegionSize region_size=%d, stride=%d, VertexCount=%d, IndexCount=%d ", region_size, stride, call_info->VertexCount, call_info->IndexCount);
+	//LogInfo("GetVertexBufferRegionSize region_size=%d, stride=%d, VertexCount=%d, IndexCount=%d ", region_size, stride, call_info->VertexCount, call_info->IndexCount);
 	return region_size;
 }
 
@@ -1875,14 +1896,20 @@ UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info)
 {
 	UINT index_stride = (format == DXGI_FORMAT_R32_UINT) ? 4 : 2;
 	UINT region_size = index_stride * call_info->IndexCount;
-	LogInfo("GetIndexBufferRegionSize region_size=%d, stride=%d, IndexCount=%d ", region_size, index_stride, call_info->IndexCount);
+	//LogInfo("GetIndexBufferRegionSize region_size=%d, stride=%d, IndexCount=%d ", region_size, index_stride, call_info->IndexCount);
 	return region_size;
 }
 
+std::set<uint32_t> seen_hashes;
+
 // Returns a CRC32 hash for a specific region of the buffer.
 // The hash is cached per offset to avoid recomputing it for repeated draw calls.
-uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size)
+uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size, bool* new_hash)
 {
+	if (new_hash) {
+		*new_hash = false;
+	}
+
 	if (!buffer || !size) {
 		return 0;
 	}
@@ -1892,31 +1919,57 @@ uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT 
 		return 0;
 	}
 
+	if (handle_info->reload_region_data_caches != G->reload_region_data_caches) {
+		handle_info->reload_region_data_caches = G->reload_region_data_caches;
+		handle_info->ClearRegionHashCache();
+		LogOverlay(LOG_DIRE, "Reloaded resource hash=%08lx\n", handle_info->hash);
+	}
+
 	// Use the region offset as the cache key.
 	// Each offset corresponds to a specific draw-call region.
 	UINT cache_key = offset;
 
 	// Check if we already computed the hash for this region.
+	EnterCriticalSectionPretty(&G->mCriticalSection);
 	auto it = handle_info->region_hash_cache.find(cache_key);
 	if (it != handle_info->region_hash_cache.end()) {
-		LogInfo("GetRegionHash: From cache: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d\n", it->second, offset, size, handle_info->hash, buffer, handle_info->region_hash_cache.size());
-		return it->second;
+		uint32_t hash = it->second;
+		LeaveCriticalSection(&G->mCriticalSection);
+		//LogInfo("\nGetRegionHash: From cache: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d", it->second, offset, size, handle_info->hash, buffer, handle_info->region_hash_cache.size());
+		return hash;
 	}
+	LeaveCriticalSection(&G->mCriticalSection);
 
 	// Ensure we have a CPU snapshot of the buffer contents.
 	if (!CacheBufferData(context, buffer, handle_info)) {
 		return 0;
 	}
 
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+
 	// Pointer to the start of the requested region within the cached buffer.
+	if (offset + size > handle_info->cached_data.size()) {
+		LeaveCriticalSection(&G->mCriticalSection);
+		return 0;
+	}
 	const uint8_t* ptr = handle_info->cached_data.data() + offset;
 
 	// Compute CRC32 hash for the region.
 	uint32_t hash = crc32c_hw(0, ptr, size);
-	LogInfo("GetRegionHash: New hash: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d\n", hash, offset, size, handle_info->hash, buffer, handle_info->region_hash_cache.size());
+
+	auto it_hash = seen_hashes.find(hash);
+	if (it_hash == seen_hashes.end()) {
+		if (new_hash) {
+			*new_hash = true;
+		}
+		seen_hashes.insert(hash);
+		LogInfo("\nGetRegionHash: New hash: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d, data_hash=%08lx ", hash, offset, size, handle_info->hash, buffer, handle_info->region_hash_cache.size(), handle_info->cached_data_hash);
+	}
 
 	// Store the computed hash in the region cache.
 	handle_info->region_hash_cache[cache_key] = hash;
+
+	LeaveCriticalSection(&G->mCriticalSection);
 
 	return hash;
 }

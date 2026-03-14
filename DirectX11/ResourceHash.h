@@ -53,6 +53,9 @@ struct ResourceHandleInfo
 	// Indicates whether cached_data currently contains a valid snapshot
 	// of the resource contents.
 	bool cached_data_valid = false;
+	uint32_t cached_data_hash = 0;
+
+	UINT reload_region_data_caches = 0;
 
 	// Clears cached region hashes and invalidates cached buffer data.
 	// Should be called when the underlying resource contents change.
@@ -214,7 +217,7 @@ static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, 
 void ClearResourceRegionHashCache(ID3D11Resource* resource);
 UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info);
 UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info);
-uint32_t GetRegionHash(ID3D11DeviceContext* mOrigContext1, ID3D11Buffer* buffer, UINT offset, UINT size);
+uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size, bool* new_hash = nullptr);
 
 void MarkResourceHashContaminated(ID3D11Resource *dest, UINT DstSubresource,
 		ID3D11Resource *src, UINT srcSubresource, char type,

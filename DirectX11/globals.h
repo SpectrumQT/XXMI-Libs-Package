@@ -446,6 +446,7 @@ struct Globals
 	time_t huntTime;
 	bool verbose_overlay;
 	bool suppress_overlay;
+	UINT reload_region_data_caches;
 
 	bool deferred_contexts_enabled;
 
@@ -630,6 +631,7 @@ struct Globals
 
 		hunting(HUNTING_MODE_DISABLED),
 		overlay_buffer_hash_lifetime(-1),
+		reload_region_data_caches(0),
 		fix_enabled(true),
 		config_reloadable(false),
 		show_original_enabled(false),

@@ -20,12 +20,6 @@ struct ResourceHandleInfo
 	uint32_t orig_hash;	// Original hash at the time of creation
 	uint32_t data_hash;	// Just the data hash for track_texture_updates
 
-	// region hash cache: key = ((uint64_t)offset << 32) | size
-	std::unordered_map<UINT, uint32_t> region_hash_cache;
-
-	std::vector<uint8_t> cached_data;
-	bool cached_data_valid = false;
-
 	// TODO: If we are sure we understand all possible differences between
 	// the original desc and that obtained by querying the resource we
 	// probably don't need to store these. One possible difference is the
@@ -45,6 +39,24 @@ struct ResourceHandleInfo
 		orig_hash(0),
 		data_hash(0)
 	{}
+
+	// Cache of per-region hashes for this buffer.
+	// Key = region offset, Value = CRC32 hash of that region.
+	// Avoids recomputing hashes for the same draw-call regions.
+	std::unordered_map<UINT, uint32_t> region_hash_cache;
+
+	// CPU-side copy of the resource data captured via a staging buffer.
+	// Used to compute hashes for arbitrary regions without re-mapping
+	// the GPU resource multiple times.
+	std::vector<uint8_t> cached_data;
+
+	// Indicates whether cached_data currently contains a valid snapshot
+	// of the resource contents.
+	bool cached_data_valid = false;
+
+	// Clears cached region hashes and invalidates cached buffer data.
+	// Should be called when the underlying resource contents change.
+	void ClearRegionHashCache();
 };
 
 struct CopySubresourceRegionContamination
@@ -198,8 +210,8 @@ uint32_t CalcTexture3DDataHash(const D3D11_TEXTURE3D_DESC *pDesc, const D3D11_SU
 ResourceHandleInfo* GetResourceHandleInfo(ID3D11Resource *resource);
 uint32_t GetOrigResourceHash(ID3D11Resource *resource);
 uint32_t GetResourceHash(ID3D11Resource *resource);
-uint32_t ComputeRegionHash(void* mappedData, UINT offset, UINT size);
 static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, ResourceHandleInfo* info);
+void ClearResourceRegionHashCache(ID3D11Resource* resource);
 UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info);
 UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info);
 uint32_t GetRegionHash(ID3D11DeviceContext* mOrigContext1, ID3D11Buffer* buffer, UINT offset, UINT size);

@@ -860,124 +860,6 @@ uint32_t GetResourceHash(ID3D11Resource *resource)
 	return 0;
 }
 
-uint32_t ComputeRegionHash(void* mappedData, UINT offset, UINT size)
-{
-	if (!mappedData || !size)
-		return 0;
-
-	const uint8_t* regionPtr = reinterpret_cast<const uint8_t*>(mappedData) + offset;
-
-	return crc32c_hw(0, regionPtr, size);
-}
-
-static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, ResourceHandleInfo* handle_info)
-{
-	if (handle_info->cached_data_valid)
-		return true;
-
-	ID3D11Device* dev = NULL;
-	context->GetDevice(&dev);
-
-	D3D11_BUFFER_DESC desc;
-	buffer->GetDesc(&desc);
-
-	ID3D11Buffer* staging = NULL;
-
-	D3D11_BUFFER_DESC stagingDesc = desc;
-	stagingDesc.Usage = D3D11_USAGE_STAGING;
-	stagingDesc.BindFlags = 0;
-	stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-	stagingDesc.MiscFlags = 0;
-
-	HRESULT hr = dev->CreateBuffer(&stagingDesc, NULL, &staging);
-	if (FAILED(hr)) {
-		if (dev) dev->Release();
-		return false;
-	}
-
-	context->CopyResource(staging, buffer);
-
-	D3D11_MAPPED_SUBRESOURCE mapped;
-	hr = context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
-
-	if (FAILED(hr)) {
-		staging->Release();
-		if (dev) dev->Release();
-		return false;
-	}
-
-	handle_info->cached_data.resize(desc.ByteWidth);
-	memcpy(handle_info->cached_data.data(), mapped.pData, desc.ByteWidth);
-	//handle_info->cached_data_hash = crc32c_hw(0, handle_info->cached_data.data(), desc.ByteWidth);
-
-	LogInfo("CacheBufferData size=%d, hash=%08lx, pResource=0x%p\n", desc.ByteWidth, handle_info->hash, buffer);
-
-	context->Unmap(staging, 0);
-
-	staging->Release();
-	if (dev) dev->Release();
-
-	handle_info->cached_data_valid = true;
-
-	return true;
-}
-
-UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info)
-{
-	UINT vertex_count = call_info->VertexCount > 0 ? call_info->VertexCount : call_info->IndexCount / 3;
-	UINT region_size = stride * vertex_count;
-	LogInfo("GetVertexBufferRegionSize region_size=%d, stride=%d, VertexCount=%d, IndexCount=%d ", region_size, stride, call_info->VertexCount, call_info->IndexCount);
-	return region_size;
-}
-
-UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info)
-{
-	UINT index_stride = (format == DXGI_FORMAT_R32_UINT) ? 4 : 2;
-	UINT region_size = index_stride * call_info->IndexCount;
-	LogInfo("GetIndexBufferRegionSize region_size=%d, stride=%d, IndexCount=%d ", region_size, index_stride, call_info->IndexCount);
-	return region_size;
-}
-
-uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size)
-{
-	if (!buffer) {
-		LogInfo("GetRegionHash no buffer\n");
-		return 0;
-	}
-	if (!size) {
-		LogInfo("GetRegionHash no size\n");
-		return 0;
-	}
-		
-	ResourceHandleInfo* handle_info = GetResourceHandleInfo(buffer);
-	if (!handle_info) {
-		LogInfo("GetRegionHash no handle_info\n");
-		return 0;
-	}
-
-	UINT cache_key = offset;
-
-	auto it = handle_info->region_hash_cache.find(cache_key);
-	if (it != handle_info->region_hash_cache.end()) {
-		LogInfo("GetRegionHash: From cache: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d\n", it->second, offset, size, handle_info->hash, buffer, handle_info->region_hash_cache.size());
-		return it->second;
-	}
-
-	if (!CacheBufferData(context, buffer, handle_info)) {
-		LogInfo("GetRegionHash no CacheBufferData\n");
-		return 0;
-	}
-
-	const uint8_t* ptr = handle_info->cached_data.data() + offset;
-
-	uint32_t hash = crc32c_hw(0, ptr, size);
-	LogInfo("GetRegionHash: New hash: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d\n", hash, offset, size, handle_info->hash, buffer, handle_info->region_hash_cache.size());
-
-	handle_info->region_hash_cache[cache_key] = hash;
-
-	return hash;
-}
-
 uint32_t CalcTexture1DDataHash(
 	const D3D11_TEXTURE1D_DESC *pDesc,
 	const D3D11_SUBRESOURCE_DATA *pInitialData)
@@ -1891,4 +1773,150 @@ bool TextureOverrideLess(const struct TextureOverride &lhs, const struct Texture
 bool FuzzyMatchResourceDescLess::operator() (const std::shared_ptr<FuzzyMatchResourceDesc> &lhs, const std::shared_ptr<FuzzyMatchResourceDesc> &rhs) const
 {
 	return TextureOverrideLess(*lhs->texture_override, *rhs->texture_override);
+}
+
+// Creates a CPU-readable snapshot of the buffer contents and stores it
+// in handle_info->cached_data. The snapshot is taken through a staging
+// resource so the GPU buffer can be safely read by the CPU.
+static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, ResourceHandleInfo* handle_info)
+{
+	// If we already captured a valid snapshot, reuse it.
+	if (handle_info->cached_data_valid)
+		return true;
+
+	ID3D11Device* dev = NULL;
+	context->GetDevice(&dev);
+
+	// Query the buffer description so we know its size and properties.
+	D3D11_BUFFER_DESC desc;
+	buffer->GetDesc(&desc);
+
+	ID3D11Buffer* staging = NULL;
+
+	// Create a staging buffer with CPU read access.
+	// This allows copying GPU memory into a CPU-readable resource.
+	D3D11_BUFFER_DESC stagingDesc = desc;
+	stagingDesc.Usage = D3D11_USAGE_STAGING;
+	stagingDesc.BindFlags = 0;
+	stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+	stagingDesc.MiscFlags = 0;
+
+	HRESULT hr = dev->CreateBuffer(&stagingDesc, NULL, &staging);
+	if (FAILED(hr)) {
+		if (dev) dev->Release();
+		return false;
+	}
+
+	// Copy the original GPU buffer contents into the staging buffer.
+	context->CopyResource(staging, buffer);
+
+	D3D11_MAPPED_SUBRESOURCE mapped;
+
+	// Map the staging buffer so the CPU can read its contents.
+	hr = context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
+
+	if (FAILED(hr)) {
+		staging->Release();
+		if (dev) dev->Release();
+		return false;
+	}
+
+	// Store a CPU copy of the entire buffer so region hashes can be
+	// computed without re-mapping the resource multiple times.
+	handle_info->cached_data.resize(desc.ByteWidth);
+	memcpy(handle_info->cached_data.data(), mapped.pData, desc.ByteWidth);
+
+	// Optional: compute a full-buffer hash if needed for debugging/tracking.
+	//handle_info->cached_data_hash = crc32c_hw(0, handle_info->cached_data.data(), desc.ByteWidth);
+
+	LogInfo("CacheBufferData size=%d, hash=%08lx, pResource=0x%p\n", desc.ByteWidth, handle_info->hash, buffer);
+
+	context->Unmap(staging, 0);
+
+	staging->Release();
+	if (dev) dev->Release();
+
+	// Mark the cached snapshot as valid.
+	handle_info->cached_data_valid = true;
+
+	return true;
+}
+
+// Clears all cached region hashes and invalidates the CPU-side buffer snapshot.
+// This forces region hashes to be recomputed the next time they are requested.
+void ResourceHandleInfo::ClearRegionHashCache()
+{
+	region_hash_cache.clear();
+	cached_data.clear();
+	cached_data_valid = false;
+}
+
+// Helper function that clears region hash cache for a specific D3D resource.
+// Used when the underlying resource contents may have changed.
+void ClearResourceRegionHashCache(ID3D11Resource* resource)
+{
+	ResourceHandleInfo* info = GetResourceHandleInfo(resource);
+	info->ClearRegionHashCache();
+}
+
+// Computes the byte size of the vertex buffer region used by a draw call.
+// Used to determine how much data should be hashed for change detection.
+UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info)
+{
+	// If VertexCount is not provided, estimate it from the index count.
+	UINT vertex_count = call_info->VertexCount > 0 ? call_info->VertexCount : call_info->IndexCount / 3;
+	UINT region_size = stride * vertex_count;
+	LogInfo("GetVertexBufferRegionSize region_size=%d, stride=%d, VertexCount=%d, IndexCount=%d ", region_size, stride, call_info->VertexCount, call_info->IndexCount);
+	return region_size;
+}
+
+// Computes the byte size of the index buffer region referenced by a draw call.
+UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info)
+{
+	UINT index_stride = (format == DXGI_FORMAT_R32_UINT) ? 4 : 2;
+	UINT region_size = index_stride * call_info->IndexCount;
+	LogInfo("GetIndexBufferRegionSize region_size=%d, stride=%d, IndexCount=%d ", region_size, index_stride, call_info->IndexCount);
+	return region_size;
+}
+
+// Returns a CRC32 hash for a specific region of the buffer.
+// The hash is cached per offset to avoid recomputing it for repeated draw calls.
+uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size)
+{
+	if (!buffer || !size) {
+		return 0;
+	}
+
+	ResourceHandleInfo* handle_info = GetResourceHandleInfo(buffer);
+	if (!handle_info) {
+		return 0;
+	}
+
+	// Use the region offset as the cache key.
+	// Each offset corresponds to a specific draw-call region.
+	UINT cache_key = offset;
+
+	// Check if we already computed the hash for this region.
+	auto it = handle_info->region_hash_cache.find(cache_key);
+	if (it != handle_info->region_hash_cache.end()) {
+		LogInfo("GetRegionHash: From cache: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d\n", it->second, offset, size, handle_info->hash, buffer, handle_info->region_hash_cache.size());
+		return it->second;
+	}
+
+	// Ensure we have a CPU snapshot of the buffer contents.
+	if (!CacheBufferData(context, buffer, handle_info)) {
+		return 0;
+	}
+
+	// Pointer to the start of the requested region within the cached buffer.
+	const uint8_t* ptr = handle_info->cached_data.data() + offset;
+
+	// Compute CRC32 hash for the region.
+	uint32_t hash = crc32c_hw(0, ptr, size);
+	LogInfo("GetRegionHash: New hash: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d\n", hash, offset, size, handle_info->hash, buffer, handle_info->region_hash_cache.size());
+
+	// Store the computed hash in the region cache.
+	handle_info->region_hash_cache[cache_key] = hash;
+
+	return hash;
 }

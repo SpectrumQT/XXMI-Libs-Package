@@ -1788,14 +1788,9 @@ static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, 
 	if (!dev)
 		return false;
 
-
-	EnterCriticalSectionPretty(&G->mCriticalSection);
-
 	// Query the buffer description so we know its size and properties.
 	D3D11_BUFFER_DESC desc;
 	buffer->GetDesc(&desc);
-
-	ID3D11Buffer* staging = NULL;
 
 	// Create a staging buffer with CPU read access.
 	// This allows copying GPU memory into a CPU-readable resource.
@@ -1805,10 +1800,12 @@ static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, 
 	stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
 	stagingDesc.MiscFlags = 0;
 
+	ID3D11Buffer* staging = NULL;
+	LockResourceCreationMode();
 	HRESULT hr = dev->CreateBuffer(&stagingDesc, NULL, &staging);
+	UnlockResourceCreationMode();
 	if (FAILED(hr)) {
 		dev->Release();
-		LeaveCriticalSection(&G->mCriticalSection);
 		return false;
 	}
 
@@ -1819,11 +1816,9 @@ static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, 
 
 	// Map the staging buffer so the CPU can read its contents.
 	hr = context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
-
 	if (FAILED(hr)) {
 		staging->Release();
 		dev->Release();
-		LeaveCriticalSection(&G->mCriticalSection);
 		return false;
 	}
 
@@ -1836,8 +1831,6 @@ static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, 
 	context->Unmap(staging, 0);
 	staging->Release();
 	dev->Release();
-
-	LeaveCriticalSection(&G->mCriticalSection);
 
 	// Commit snapshot under lock
 	EnterCriticalSectionPretty(&G->mCriticalSection);
@@ -1885,7 +1878,8 @@ void ClearResourceRegionHashCache(ID3D11Resource* resource)
 UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info)
 {
 	// If VertexCount is not provided, estimate it from the index count.
-	UINT vertex_count = call_info->VertexCount > 0 ? call_info->VertexCount : call_info->IndexCount / 3;
+	// 0.15 * x + 3
+	UINT vertex_count = call_info->VertexCount > 0 ? call_info->VertexCount : (3 * call_info->IndexCount + 10) / 20 + 3;
 	UINT region_size = stride * vertex_count;
 	//LogInfo("GetVertexBufferRegionSize region_size=%d, stride=%d, VertexCount=%d, IndexCount=%d ", region_size, stride, call_info->VertexCount, call_info->IndexCount);
 	return region_size;
@@ -1919,11 +1913,11 @@ uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT 
 		return 0;
 	}
 
-	if (handle_info->reload_region_data_caches != G->reload_region_data_caches) {
-		handle_info->reload_region_data_caches = G->reload_region_data_caches;
-		handle_info->ClearRegionHashCache();
-		LogOverlay(LOG_DIRE, "Reloaded resource hash=%08lx\n", handle_info->hash);
-	}
+	//if (handle_info->reload_region_data_caches != G->reload_region_data_caches) {
+	//	handle_info->reload_region_data_caches = G->reload_region_data_caches;
+	//	handle_info->ClearRegionHashCache();
+	//	LogOverlay(LOG_DIRE, "Reloaded resource hash=%08lx\n", handle_info->hash);
+	//}
 
 	// Use the region offset as the cache key.
 	// Each offset corresponds to a specific draw-call region.

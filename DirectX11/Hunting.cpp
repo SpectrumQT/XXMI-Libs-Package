@@ -1374,48 +1374,18 @@ static void HuntNext(char *type, std::set<ItemType> *visited,
 			}
 			LogInfo("> traversing to next %s #%d. Number of %ss in frame: %d\n",
 				type, *selectedPos, type, size);
+		} else if (*selected) {
+			auto it = visited->lower_bound(*selected);
+			if (it == visited->end()) {
+				it = visited->begin();
+				*selectedPos = 0;
+			} else {
+				*selectedPos = std::distance(visited->begin(), it);
+			}
+			*selected = *it;
 		} else {
 			*selectedPos = 0;
 			*selected = *visited->begin();
-			LogInfo("> starting at %s #%d. Number of %ss in frame: %d\n",
-				type, *selectedPos, type, size);
-		}
-	}
-out:
-	LeaveCriticalSection(&G->mCriticalSection);
-}
-
-template <typename ItemType>
-static void HuntNext(char* type, std::map<ItemType, uint32_t>* visited,
-		ItemType* selected, int* selectedPos)
-{
-	if (G->hunting != HUNTING_MODE_ENABLED)
-		return;
-
-	EnterCriticalSectionPretty(&G->mCriticalSection);
-	{
-		auto loc = visited->find(*selected);
-		auto end = visited->end();
-		bool found = (loc != end);
-		int size = (int) visited->size();
-
-		if (size == 0)
-			goto out;
-
-		if (found) {
-			++loc;
-			if (loc != end) {
-				(*selectedPos)++;
-				*selected = loc->first;
-			} else {
-				*selectedPos = 0;
-				*selected = visited->begin()->first;
-			}
-			LogInfo("> traversing to next %s #%d. Number of %ss in frame: %d\n",
-				type, *selectedPos, type, size);
-		} else {
-			*selectedPos = 0;
-			*selected = visited->begin()->first;
 			LogInfo("> starting at %s #%d. Number of %ss in frame: %d\n",
 				type, *selectedPos, type, size);
 		}
@@ -1510,51 +1480,21 @@ static void HuntPrev(char *type, std::set<ItemType> *visited,
 			}
 			LogInfo("> traversing to previous %s shader #%d. Number of %s shaders in frame: %d\n",
 					type, *selectedPos, type, size);
+		} else if (*selected) {
+			auto it = visited->lower_bound(*selected);
+			if (it == visited->begin()) {
+				it = std::prev(visited->end());
+				*selectedPos = size - 1;
+			} else {
+				--it;
+				*selectedPos = std::distance(visited->begin(), it);
+			}
+			*selected = *it;
 		} else {
 			*selectedPos = size - 1;
 			*selected = *std::prev(end);
 			LogInfo("> starting at %s shader #%d. Number of %s shaders in frame: %d\n",
 					type, *selectedPos, type, size);
-		}
-	}
-out:
-	LeaveCriticalSection(&G->mCriticalSection);
-}
-
-template <typename ItemType>
-static void HuntPrev(char* type, std::map<ItemType, uint32_t>* visited,
-		ItemType* selected, int* selectedPos)
-{
-	if (G->hunting != HUNTING_MODE_ENABLED)
-		return;
-
-	EnterCriticalSectionPretty(&G->mCriticalSection);
-	{
-		auto loc = visited->find(*selected);
-		auto end = visited->end();
-		auto front = visited->begin();
-		bool found = (loc != end);
-		int size = (int)visited->size();
-
-		if (size == 0)
-			goto out;
-
-		if (found) {
-			if (loc != front) {
-				(*selectedPos)--;
-				--loc;
-				*selected = loc->first;
-			} else {
-				*selectedPos = size - 1;
-				*selected = std::prev(end)->first;
-			}
-			LogInfo("> traversing to previous %s #%d. Number of %ss in frame: %d\n",
-				type, *selectedPos, type, size);
-		} else {
-			*selectedPos = size - 1;
-			*selected = std::prev(end)->first;
-			LogInfo("> starting at %s #%d. Number of %ss in frame: %d\n",
-				type, *selectedPos, type, size);
 		}
 	}
 out:
@@ -1969,8 +1909,8 @@ void ParseHuntingSection()
 	// If > 0, stale hashes are removed by PurgeStaleVisitedBufferHashes() once per
 	// frame at the start of HackerSwapChain::Present().
 	G->overlay_buffer_hash_lifetime = GetIniInt(L"Hunting", L"overlay_buffer_hash_lifetime", -1, NULL);
-	if (G->track_region_hashes && G->overlay_buffer_hash_lifetime <= 0)
-		G->overlay_buffer_hash_lifetime = 5;
+	if (G->track_region_hashes && G->overlay_buffer_hash_lifetime < 0)
+		G->overlay_buffer_hash_lifetime = 0;
 
 	// reload_config is registered even if not hunting - this allows us to
 	// turn on hunting in the ini dynamically without having to relaunch
@@ -2082,49 +2022,59 @@ void ParseHuntingSection()
 	G->verbose_overlay = GetIniBool(L"Hunting", L"verbose_overlay", false, NULL);
 }
 
+void RegisterVisitedIndexBufferNoLock(uint32_t hash)
+{
+	if (!hash)
+		return;
+	G->mVisitedIndexBuffers.insert(hash);
+	G->mVisitedIndexBuffersLastSeenFrame[hash] = G->frame_no;
+}
+
+void RegisterVisitedIndexBuffer(uint32_t hash)
+{
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+	RegisterVisitedIndexBufferNoLock(hash);
+	LeaveCriticalSection(&G->mCriticalSection);
+}
+
+void RegisterVisitedVertexBufferNoLock(uint32_t hash)
+{
+	if (!hash)
+		return;
+	G->mVisitedVertexBuffers.insert(hash);
+	G->mVisitedVertexBuffersLastSeenFrame[hash] = G->frame_no;
+}
+
+void RegisterVisitedVertexBuffer(uint32_t hash)
+{
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+	RegisterVisitedVertexBufferNoLock(hash);
+	LeaveCriticalSection(&G->mCriticalSection);
+}
+
+static void PurgeStaleBuffers(std::set<uint32_t>* hashes, std::unordered_map<uint32_t, unsigned>* lastSeenFrames, uint32_t* selectedHash, int* selectedPos)
+{
+
+	for (auto it = lastSeenFrames->begin(); it != lastSeenFrames->end(); )
+	{
+		uint32_t hash = it->first;
+		unsigned last_frame = it->second;
+
+		bool stale = (G->frame_no - last_frame) > (unsigned)G->overlay_buffer_hash_lifetime;
+
+		if (stale) {
+			hashes->erase(hash);
+			it = lastSeenFrames->erase(it);
+		} else {
+			++it;
+		}
+	}
+}
+
 void PurgeStaleVisitedBufferHashes(HackerDevice* device)
 {
 	EnterCriticalSectionPretty(&G->mCriticalSection);
-
-	// Vertex buffers
-	for (auto it = G->mVisitedVertexBuffers.begin(); it != G->mVisitedVertexBuffers.end(); )
-	{
-		uint64_t vb_hash = it->first;
-		uint32_t last_frame = it->second;
-
-		bool stale = (G->frame_no - last_frame) > G->overlay_buffer_hash_lifetime;
-
-		if (stale) {
-			// Advance hunting only if the selected buffer is the one being purged
-			if (G->mSelectedVertexBuffer == vb_hash) {
-				NextVertexBuffer(device, nullptr);
-			}
-			// Erase the stale buffer
-			it = G->mVisitedVertexBuffers.erase(it);
-		} else {
-			++it;
-		}
-	}
-
-	// Index buffers
-	for (auto it = G->mVisitedIndexBuffers.begin(); it != G->mVisitedIndexBuffers.end(); )
-	{
-		uint64_t ib_hash = it->first;
-		uint32_t last_frame = it->second;
-
-		bool stale = (G->frame_no - last_frame) > G->overlay_buffer_hash_lifetime;
-
-		if (stale) {
-			// Advance hunting only if the selected buffer is the one being purged
-			if (G->mSelectedIndexBuffer == ib_hash) {
-				NextIndexBuffer(device, nullptr);
-			}
-			// Erase the stale buffer
-			it = G->mVisitedIndexBuffers.erase(it);
-		} else {
-			++it;
-		}
-	}
-
+	PurgeStaleBuffers(&G->mVisitedVertexBuffers, &G->mVisitedVertexBuffersLastSeenFrame, &G->mSelectedVertexBuffer, &G->mSelectedVertexBufferPos);
+	PurgeStaleBuffers(&G->mVisitedIndexBuffers, &G->mVisitedIndexBuffersLastSeenFrame, &G->mSelectedIndexBuffer, &G->mSelectedIndexBufferPos);
 	LeaveCriticalSection(&G->mCriticalSection);
 }

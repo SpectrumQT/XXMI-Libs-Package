@@ -506,13 +506,17 @@ struct Globals
 
 	CRITICAL_SECTION mCriticalSection;
 
-	std::map<uint32_t, uint32_t> mVisitedIndexBuffers;		// std::map is sorted for consistent order while hunting
+	float mVisitedBuffersLastPurgeTime;
+	std::unordered_map<uint32_t, unsigned> mVisitedIndexBuffersLastSeenFrame;
+	std::unordered_map<uint32_t, unsigned> mVisitedVertexBuffersLastSeenFrame;
+
+	std::set<uint32_t> mVisitedIndexBuffers;		        // std::set is sorted for consistent order while hunting
 	uint32_t mSelectedIndexBuffer;
 	int mSelectedIndexBufferPos;
 	std::set<UINT64> mSelectedIndexBuffer_VertexShader;		// std::set so that shaders used with an index buffer will be sorted in log when marked
 	std::set<UINT64> mSelectedIndexBuffer_PixelShader;		// std::set so that shaders used with an index buffer will be sorted in log when marked
 
-	std::map<uint32_t, uint32_t> mVisitedVertexBuffers;		// std::map is sorted for consistent order while hunting
+	std::set<uint32_t> mVisitedVertexBuffers;		        // std::set is sorted for consistent order while hunting
 	uint32_t mSelectedVertexBuffer;
 	int mSelectedVertexBufferPos;
 	std::set<UINT64> mSelectedVertexBuffer_VertexShader;	// std::set so that shaders used with an index buffer will be sorted in log when marked
@@ -649,7 +653,8 @@ struct Globals
 		cur_analyse_options(FrameAnalysisOptions::INVALID),
 
 		shader_hash_type(ShaderHashType::FNV),
-		track_region_hashes(true),
+		track_region_hashes(false),
+		track_implicit_index_buffers(false),
 		allow_buffer_resize(true),
 		texture_hash_version(0),
 		EXPORT_SHADERS(false),

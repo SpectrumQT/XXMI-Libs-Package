@@ -545,7 +545,7 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 		if (profiling)
 			Profiling::start(&profiling_state);
 
-		if (G->hunting == HUNTING_MODE_ENABLED && G->overlay_buffer_hash_lifetime > 0)
+		if (G->hunting == HUNTING_MODE_ENABLED && G->overlay_buffer_hash_lifetime >= 0)
 			PurgeStaleVisitedBufferHashes(mHackerDevice);
 
 		// Every presented frame, we want to take some CPU time to run our actions,

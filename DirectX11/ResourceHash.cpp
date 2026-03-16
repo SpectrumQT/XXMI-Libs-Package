@@ -1845,11 +1845,11 @@ static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, 
 	uint32_t resource_hash = handle_info->hash;
 
 	// Optional: compute a full-buffer hash if needed for debugging/tracking.
-	handle_info->cached_data_hash = crc32c_hw(0, handle_info->cached_data.data(), desc.ByteWidth);
+	//handle_info->cached_data_hash = crc32c_hw(0, handle_info->cached_data.data(), desc.ByteWidth);
 
 	LeaveCriticalSection(&G->mCriticalSection);
 
-	LogInfo("\nCacheBufferData size=%d, hash=%08lx, pResource=0x%p\n", desc.ByteWidth, resource_hash, buffer);
+	//LogInfo("CacheBufferData size=%d, hash=%08lx, pResource=0x%p\n", desc.ByteWidth, resource_hash, buffer);
 
 	return true;
 }
@@ -1881,7 +1881,7 @@ UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info)
 	// 0.15 * x + 3
 	UINT vertex_count = call_info->VertexCount > 0 ? call_info->VertexCount : (3 * call_info->IndexCount + 10) / 20 + 3;
 	UINT region_size = stride * vertex_count;
-	//LogInfo("GetVertexBufferRegionSize region_size=%d, stride=%d, VertexCount=%d, IndexCount=%d ", region_size, stride, call_info->VertexCount, call_info->IndexCount);
+	//LogInfo("GetVertexBufferRegionSize region_size=%d, stride=%d, VertexCount=%d, IndexCount=%d \n", region_size, stride, call_info->VertexCount, call_info->IndexCount);
 	return region_size;
 }
 
@@ -1890,20 +1890,14 @@ UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info)
 {
 	UINT index_stride = (format == DXGI_FORMAT_R32_UINT) ? 4 : 2;
 	UINT region_size = index_stride * call_info->IndexCount;
-	//LogInfo("GetIndexBufferRegionSize region_size=%d, stride=%d, IndexCount=%d ", region_size, index_stride, call_info->IndexCount);
+	//LogInfo("GetIndexBufferRegionSize region_size=%d, stride=%d, IndexCount=%d \n", region_size, index_stride, call_info->IndexCount);
 	return region_size;
 }
 
-std::set<uint32_t> seen_hashes;
-
 // Returns a CRC32 hash for a specific region of the buffer.
 // The hash is cached per offset to avoid recomputing it for repeated draw calls.
-uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size, bool* new_hash)
+uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size)
 {
-	if (new_hash) {
-		*new_hash = false;
-	}
-
 	if (!buffer || !size) {
 		return 0;
 	}
@@ -1929,7 +1923,7 @@ uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT 
 	if (it != handle_info->region_hash_cache.end()) {
 		uint32_t hash = it->second;
 		LeaveCriticalSection(&G->mCriticalSection);
-		//LogInfo("\nGetRegionHash: From cache: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d", it->second, offset, size, handle_info->hash, buffer, handle_info->region_hash_cache.size());
+		//LogInfo("GetRegionHash: From cache: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d \n", it->second, offset, size, handle_info->hash, buffer, handle_info->region_hash_cache.size());
 		return hash;
 	}
 	LeaveCriticalSection(&G->mCriticalSection);
@@ -1951,14 +1945,7 @@ uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT 
 	// Compute CRC32 hash for the region.
 	uint32_t hash = crc32c_hw(0, ptr, size);
 
-	auto it_hash = seen_hashes.find(hash);
-	if (it_hash == seen_hashes.end()) {
-		if (new_hash) {
-			*new_hash = true;
-		}
-		seen_hashes.insert(hash);
-		LogInfo("\nGetRegionHash: New hash: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d, data_hash=%08lx ", hash, offset, size, handle_info->hash, buffer, handle_info->region_hash_cache.size(), handle_info->cached_data_hash);
-	}
+	//LogInfo("GetRegionHash: New hash: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d, data_hash=%08lx \n", hash, offset, size, handle_info->hash, buffer, handle_info->region_hash_cache.size(), handle_info->cached_data_hash);
 
 	// Store the computed hash in the region cache.
 	handle_info->region_hash_cache[cache_key] = hash;

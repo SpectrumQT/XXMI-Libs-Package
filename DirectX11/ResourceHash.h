@@ -217,7 +217,7 @@ static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, 
 void ClearResourceRegionHashCache(ID3D11Resource* resource);
 UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info);
 UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info);
-uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size, bool* new_hash = nullptr);
+uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size);
 
 void MarkResourceHashContaminated(ID3D11Resource *dest, UINT DstSubresource,
 		ID3D11Resource *src, UINT srcSubresource, char type,

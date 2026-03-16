@@ -459,6 +459,7 @@ struct Globals
 
 	ShaderHashType shader_hash_type;
 	bool track_region_hashes;
+	bool track_implicit_index_buffers;
 	bool allow_buffer_resize;
 	int texture_hash_version;
 	int EXPORT_HLSL;		// 0=off, 1=HLSL only, 2=HLSL+OriginalASM, 3= HLSL+OriginalASM+recompiledASM

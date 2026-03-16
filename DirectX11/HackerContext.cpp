@@ -10,7 +10,7 @@
 // Hierarchy:
 //  HackerContext <- ID3D11DeviceContext1 <- ID3D11DeviceContext <- ID3D11DeviceChild <- IUnknown
 
-#include "HackerContext.h"
+#include "Hunting.h"
 
 //#include "HookedContext.h"
 
@@ -721,41 +721,35 @@ void HackerContext::BeforeDraw(DrawContext &data)
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::start(&profiling_state);
 
+	// Register index buffer if it wasn't explicitly set in current indexed draw call.
+	// Required for CheckTextureOverride to work for indexed draw calls that are re-using previously set IB.
+	if (G->track_implicit_index_buffers)
+	{
+		IndexBufferBinding& b = mCurrentIndexBufferBinding;
+		if (!b.is_explicit && b.buffer && data.call_info.IndexCount) {
+			mOrigContext1->IASetIndexBuffer(b.buffer, b.format, b.offset);
+		}
+		b.is_explicit = false;
+	}
+
 	// If we are not hunting shaders, we should skip all of this shader management for a performance bump.
 	if (G->hunting == HUNTING_MODE_ENABLED)
 	{
-		if (G->track_region_hashes) {
-			UINT i;
-			for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
-				bool new_hash = false;
-				VertexBufferBinding& b = mCurrentVertexBuffersBindings[i];
-				if (b.buffer) {
-					if (b.stride) {
-						mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetVertexBufferRegionSize(b.stride, &data.call_info), &new_hash);
-						if (new_hash) {
-							LogInfo("BeforeDraw stride=%d, VertexCount=%d, IndexCount=%d", b.stride, data.call_info.VertexCount, data.call_info.IndexCount);
-						}
-					} else {
-						mCurrentVertexBuffers[i] = GetResourceHash(b.buffer);
-					}
-				}
-				if (mCurrentVertexBuffers[i]) {
-					EnterCriticalSectionPretty(&G->mCriticalSection);
-					G->mVisitedVertexBuffers[mCurrentVertexBuffers[i]] = G->frame_no;
-					LeaveCriticalSection(&G->mCriticalSection);
-				}
-			}
+		// Register currently set index and vertex buffers for browsing in Shader Hunting Mode overlay.
+		if (G->track_region_hashes) 
+		{
+			// Register Index Buffer hash.
 			IndexBufferBinding& b = mCurrentIndexBufferBinding;
 			if (b.buffer && b.offset) {
-				bool new_hash = false;
-				mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetIndexBufferRegionSize(b.format, &data.call_info), &new_hash);
-				if (new_hash) {
-					LogInfo("BeforeDraw stride=%d, IndexCount=%d ", (b.format == DXGI_FORMAT_R32_UINT) ? 4 : 2, data.call_info.IndexCount);
-				}
-				if (mCurrentIndexBuffer) {
-					EnterCriticalSectionPretty(&G->mCriticalSection);
-					G->mVisitedIndexBuffers[mCurrentIndexBuffer] = G->frame_no;
-					LeaveCriticalSection(&G->mCriticalSection);
+				mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetIndexBufferRegionSize(b.format, &data.call_info));
+				RegisterVisitedIndexBuffer(mCurrentIndexBuffer);
+			}
+			// Register Vertex Buffers hash.
+			for (UINT i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
+				VertexBufferBinding& b = mCurrentVertexBuffersBindings[i];
+				if (b.buffer && b.stride) {
+					mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetVertexBufferRegionSize(b.stride, &data.call_info));
+					RegisterVisitedVertexBuffer(mCurrentVertexBuffers[i]);
 				}
 			}
 		}
@@ -1309,13 +1303,40 @@ STDMETHODIMP HackerContext::Map(THIS_
 	/* [annotation] */
 	__out D3D11_MAPPED_SUBRESOURCE *pMappedResource)
 {
-	if (G->track_region_hashes && MapType != D3D11_MAP_READ) {
-		ClearResourceRegionHashCache(pResource);
-	}
-
 	HRESULT hr;
 
 	hr = mOrigContext1->Map(pResource, Subresource, MapType, MapFlags, pMappedResource);
+
+	if (G->track_region_hashes && MapType != D3D11_MAP_READ) {
+
+		ClearResourceRegionHashCache(pResource);
+
+		if (SUCCEEDED(hr) && pMappedResource) {
+			ID3D11Buffer* buffer = nullptr;
+			if (SUCCEEDED(pResource->QueryInterface(__uuidof(ID3D11Buffer), (void**)&buffer))) {
+
+				D3D11_BUFFER_DESC desc;
+				buffer->GetDesc(&desc);
+
+				if (desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER)) {
+
+					ResourceHandleInfo* info = GetResourceHandleInfo(buffer);
+
+					if (info) {
+						EnterCriticalSectionPretty(&G->mCriticalSection);
+
+						info->mapped_ptr = pMappedResource->pData;
+						info->mapped_size = desc.ByteWidth;
+						info->mapped_resource = buffer;
+
+						LeaveCriticalSection(&G->mCriticalSection);
+					}
+				}
+
+				buffer->Release();
+			}
+		}
+	}
 
 	TrackAndDivertMap(hr, pResource, Subresource, MapType, MapFlags, pMappedResource);
 
@@ -1328,6 +1349,35 @@ STDMETHODIMP_(void) HackerContext::Unmap(THIS_
 	/* [annotation] */
 	__in  UINT Subresource)
 {
+	if (G->track_region_hashes) {
+		ID3D11Buffer* buffer = nullptr;
+
+		if (SUCCEEDED(pResource->QueryInterface(__uuidof(ID3D11Buffer), (void**)&buffer))) {
+			
+			ResourceHandleInfo* info = GetResourceHandleInfo(buffer);
+
+			if (info && info->mapped_ptr && info->mapped_size) {
+
+				EnterCriticalSectionPretty(&G->mCriticalSection);
+
+				info->cached_data.resize(info->mapped_size);
+				memcpy(info->cached_data.data(), info->mapped_ptr, info->mapped_size);
+
+				info->cached_data_valid = true;
+
+				info->mapped_ptr = nullptr;
+				info->mapped_size = 0;
+				info->mapped_resource = nullptr;
+
+				LeaveCriticalSection(&G->mCriticalSection);
+
+				//LogInfo("UnmapCacheBufferData size=%d, pResource=0x%p\n", info->mapped_size, buffer);
+			}
+
+			buffer->Release();
+		}
+	}
+
 	TrackAndDivertUnmap(pResource, Subresource);
 	mOrigContext1->Unmap(pResource, Subresource);
 }
@@ -1364,28 +1414,33 @@ STDMETHODIMP_(void) HackerContext::IASetVertexBuffers(THIS_
 {
 	 mOrigContext1->IASetVertexBuffers(StartSlot, NumBuffers, ppVertexBuffers, pStrides, pOffsets);
 
+	 // Register hashes of vertex buffers for browsing in Shader Hunting Mode.
+	 if (G->hunting == HUNTING_MODE_ENABLED) {
+		 EnterCriticalSectionPretty(&G->mCriticalSection);
+		 for (UINT i = StartSlot; (i < StartSlot + NumBuffers) && (i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT); i++) {
+			 UINT idx = i - StartSlot;
+			 if (ppVertexBuffers && ppVertexBuffers[idx]) {
+				 mCurrentVertexBuffers[i] = GetResourceHash(ppVertexBuffers[idx]);
+				 // When hunting, save this hash as a visited vertex buffer to cycle through.
+				 RegisterVisitedVertexBufferNoLock(mCurrentVertexBuffers[i]);
+			 } else {
+				 mCurrentVertexBuffers[i] = 0;
+			 }
+		 }
+		 LeaveCriticalSection(&G->mCriticalSection);
+	 }
+
+	 // Store raw binding for current vertex buffers. Usage:
+	 // 1. For vertex buffer region hashes support in Shader Hunting Mode (to calculate region hash in BeforeDraw, with its draw context).
 	 if (G->track_region_hashes) {
 		 for (UINT i = StartSlot; (i < StartSlot + NumBuffers) && (i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT); i++) {
 			UINT idx = i - StartSlot;
 			if (ppVertexBuffers && ppVertexBuffers[idx]) {
-				// Store raw binding info. Hash is computed lazily in BeforeDraw.
 				mCurrentVertexBuffersBindings[i].buffer = ppVertexBuffers[idx];
 				mCurrentVertexBuffersBindings[i].offset = pOffsets ? pOffsets[idx] : 0;
 				mCurrentVertexBuffersBindings[i].stride = pStrides ? pStrides[idx] : 0;
 			}
-			mCurrentVertexBuffers[i] = 0;
 		 }
-	 } else if (G->hunting == HUNTING_MODE_ENABLED) {
-		EnterCriticalSectionPretty(&G->mCriticalSection);
-		for (UINT i = StartSlot; (i < StartSlot + NumBuffers) && (i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT); i++) {
-			UINT idx = i - StartSlot;
-			if (ppVertexBuffers && ppVertexBuffers[idx]) {
-				mCurrentVertexBuffers[i] = GetResourceHash(ppVertexBuffers[idx]);
-				G->mVisitedVertexBuffers[mCurrentVertexBuffers[i]] = G->frame_no;
-			} else
-				mCurrentVertexBuffers[i] = 0;
-		}
-		LeaveCriticalSection(&G->mCriticalSection);
 	 }
 }
 
@@ -2876,25 +2931,25 @@ STDMETHODIMP_(void) HackerContext::IASetIndexBuffer(THIS_
 {
 	mOrigContext1->IASetIndexBuffer(pIndexBuffer, Format, Offset);
 
-	// This is only used for index buffer hunting nowadays since the
-	// command list checks the hash on demand only when it is needed
-	mCurrentIndexBuffer = 0;
-
-	if (pIndexBuffer) {
-		if (G->track_region_hashes) {
-			// Store raw binding; hash computed in BeforeDraw from actual data.
-			mCurrentIndexBufferBinding.buffer = pIndexBuffer;
-			mCurrentIndexBufferBinding.offset = Offset;
-			mCurrentIndexBufferBinding.format = Format;
-		} else if (G->hunting == HUNTING_MODE_ENABLED) {
+	// Register hash of index buffer for browsing in Shader Hunting Mode.
+	if (G->hunting == HUNTING_MODE_ENABLED) {
+		if (pIndexBuffer) {
 			mCurrentIndexBuffer = GetResourceHash(pIndexBuffer);
-			if (mCurrentIndexBuffer) {
-				// When hunting, save this as a visited index buffer to cycle through.
-				EnterCriticalSectionPretty(&G->mCriticalSection);
-				G->mVisitedIndexBuffers[mCurrentIndexBuffer] = G->frame_no;
-				LeaveCriticalSection(&G->mCriticalSection);
-			}
+			// When hunting, save this hash as a visited index buffer to cycle through.
+			RegisterVisitedIndexBuffer(mCurrentIndexBuffer);
+		} else {
+			mCurrentIndexBuffer = 0;
 		}
+	}
+
+	// Store raw binding for current index buffer. Usage:
+	// 1. For index buffer region hashes support in Shader Hunting Mode (to calculate region hash in BeforeDraw, with its draw context).
+	// 2. For implicit index buffer tracking (to call IASetIndexBuffer in BeforeDraw of next draws without IB explicitly set).
+	if (G->track_region_hashes || G->track_implicit_index_buffers) {
+		mCurrentIndexBufferBinding.buffer = pIndexBuffer;
+		mCurrentIndexBufferBinding.format = Format;
+		mCurrentIndexBufferBinding.offset = Offset;
+		mCurrentIndexBufferBinding.is_explicit = true;
 	}
 }
 

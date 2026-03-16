@@ -126,6 +126,7 @@ private:
 		ID3D11Buffer* buffer;
 		UINT offset;
 		DXGI_FORMAT format;
+		bool is_explicit;
 	} mCurrentIndexBufferBinding;
 	std::vector<ID3D11Resource *> mCurrentRenderTargets;
 	ID3D11Resource *mCurrentDepthTarget;

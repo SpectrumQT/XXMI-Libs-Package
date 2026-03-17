@@ -1845,8 +1845,6 @@ static void DoneHunting(HackerDevice *device, void *private_data)
 	if (G->hunting != HUNTING_MODE_ENABLED)
 		return;
 
-	G->reload_region_data_caches += 1;
-
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 
 	TimeoutHuntingBuffers();

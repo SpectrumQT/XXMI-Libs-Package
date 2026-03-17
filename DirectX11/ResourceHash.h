@@ -55,8 +55,6 @@ struct ResourceHandleInfo
 	bool cached_data_valid = false;
 	uint32_t cached_data_hash = 0;
 
-	UINT reload_region_data_caches = 0;
-
 	void* mapped_ptr = nullptr;
 	size_t mapped_size = 0;
 	ID3D11Buffer* mapped_resource = nullptr;

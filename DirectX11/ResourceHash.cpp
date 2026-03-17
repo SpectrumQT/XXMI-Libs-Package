@@ -1907,12 +1907,6 @@ uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT 
 		return 0;
 	}
 
-	//if (handle_info->reload_region_data_caches != G->reload_region_data_caches) {
-	//	handle_info->reload_region_data_caches = G->reload_region_data_caches;
-	//	handle_info->ClearRegionHashCache();
-	//	LogOverlay(LOG_DIRE, "Reloaded resource hash=%08lx\n", handle_info->hash);
-	//}
-
 	// Use the region offset as the cache key.
 	// Each offset corresponds to a specific draw-call region.
 	UINT cache_key = offset;

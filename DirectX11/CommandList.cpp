@@ -6083,7 +6083,6 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 	// mCurrentVertexBuffers[] /mCurrentIndexBuffer, and that the hunting overlay displays.
 	// That way the hash the user copies from the overlay matches the one looked up
 	// here, and ini `CheckTextureOverride` triggers [TextureOverride] sections correctly.
-
 	if (G->track_region_hashes)
 	{
 		UINT region_size;

@@ -773,7 +773,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 		{
 			// Selection
 			for (selectedVertexBufferPos = 0; selectedVertexBufferPos < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++selectedVertexBufferPos) {
-				if (mCurrentVertexBuffers[selectedVertexBufferPos] == G->mSelectedVertexBuffer)
+				if (G->mSelectedVertexBuffer && mCurrentVertexBuffers[selectedVertexBufferPos] == G->mSelectedVertexBuffer)
 					break;
 			}
 			for (selectedRenderTargetPos = 0; selectedRenderTargetPos < mCurrentRenderTargets.size(); ++selectedRenderTargetPos) {
@@ -801,12 +801,12 @@ void HackerContext::BeforeDraw(DrawContext &data)
 				G->mSelectedRenderTargetSnapshotList.insert(mCurrentRenderTargets.begin(), mCurrentRenderTargets.end());
 				// Snapshot info.
 				for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
-					if (mCurrentVertexBuffers[i] == G->mSelectedVertexBuffer) {
+					if (G->mSelectedVertexBuffer && mCurrentVertexBuffers[i] == G->mSelectedVertexBuffer) {
 						G->mSelectedVertexBuffer_VertexShader.insert(mCurrentVertexShader);
 						G->mSelectedVertexBuffer_PixelShader.insert(mCurrentPixelShader);
 					}
 				}
-				if (mCurrentIndexBuffer == G->mSelectedIndexBuffer)
+				if (G->mSelectedIndexBuffer && mCurrentIndexBuffer == G->mSelectedIndexBuffer)
 				{
 					G->mSelectedIndexBuffer_VertexShader.insert(mCurrentVertexShader);
 					G->mSelectedIndexBuffer_PixelShader.insert(mCurrentPixelShader);
@@ -3156,7 +3156,7 @@ STDMETHODIMP_(void) HackerContext::ClearRenderTargetView(THIS_
 //	Requires Win7 Platform Update
 
 // Hierarchy:
-//  HackerContext <- ID3D11DeviceContext1 <- ID3D11DeviceContext <- ID3D11DeviceChild <- IUnknownUpdateSubresource1
+//  HackerContext <- ID3D11DeviceContext1 <- ID3D11DeviceContext <- ID3D11DeviceChild <- IUnknown
 
 
 void STDMETHODCALLTYPE HackerContext::CopySubresourceRegion1(

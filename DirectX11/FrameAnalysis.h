@@ -175,7 +175,7 @@ private:
 	void finish_deferred_resources(ID3D11CommandList *command_list);
 
 	HRESULT FrameAnalysisFilename(wchar_t *filename, size_t size, bool compute,
-			wchar_t *reg, char shader_type, int idx, ID3D11Resource *handle);
+			wchar_t *reg, char shader_type, int idx, ID3D11Resource *handle, uint32_t override_hash = 0);
 	HRESULT FrameAnalysisFilenameResource(wchar_t *filename, size_t size, const wchar_t *type,
 			ID3D11Resource *handle, bool force_filename_handle);
 	const wchar_t* dedupe_tex2d_filename(ID3D11Texture2D *resource,

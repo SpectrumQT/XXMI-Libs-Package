@@ -439,6 +439,7 @@ struct Globals
 	MarkingAction marking_actions;
 
 	UINT hunting;
+	int overlay_buffer_hash_lifetime;
 	bool fix_enabled;
 	bool config_reloadable;
 	bool show_original_enabled;
@@ -456,6 +457,9 @@ struct Globals
 	std::unordered_set<void*> frame_analysis_seen_rts;
 
 	ShaderHashType shader_hash_type;
+	bool track_region_hashes;
+	bool track_implicit_index_buffers;
+	bool allow_buffer_resize;
 	int texture_hash_version;
 	int EXPORT_HLSL;		// 0=off, 1=HLSL only, 2=HLSL+OriginalASM, 3= HLSL+OriginalASM+recompiledASM
 	bool EXPORT_SHADERS, EXPORT_FIXED, EXPORT_BINARY, CACHE_SHADERS, SCISSOR_DISABLE;
@@ -502,16 +506,20 @@ struct Globals
 
 	CRITICAL_SECTION mCriticalSection;
 
-	std::set<uint32_t> mVisitedIndexBuffers;				// std::set is sorted for consistent order while hunting
+	float mVisitedBuffersLastPurgeTime;
+	std::unordered_map<uint32_t, unsigned> mVisitedIndexBuffersLastSeenFrame;
+	std::unordered_map<uint32_t, unsigned> mVisitedVertexBuffersLastSeenFrame;
+
+	std::set<uint32_t> mVisitedIndexBuffers;		        // std::set is sorted for consistent order while hunting
 	uint32_t mSelectedIndexBuffer;
 	int mSelectedIndexBufferPos;
 	std::set<UINT64> mSelectedIndexBuffer_VertexShader;		// std::set so that shaders used with an index buffer will be sorted in log when marked
 	std::set<UINT64> mSelectedIndexBuffer_PixelShader;		// std::set so that shaders used with an index buffer will be sorted in log when marked
 
-	std::set<uint32_t> mVisitedVertexBuffers;				// std::set is sorted for consistent order while hunting
+	std::set<uint32_t> mVisitedVertexBuffers;		        // std::set is sorted for consistent order while hunting
 	uint32_t mSelectedVertexBuffer;
 	int mSelectedVertexBufferPos;
-	std::set<UINT64> mSelectedVertexBuffer_VertexShader;		// std::set so that shaders used with an index buffer will be sorted in log when marked
+	std::set<UINT64> mSelectedVertexBuffer_VertexShader;	// std::set so that shaders used with an index buffer will be sorted in log when marked
 	std::set<UINT64> mSelectedVertexBuffer_PixelShader;		// std::set so that shaders used with an index buffer will be sorted in log when marked
 
 	std::set<UINT64> mVisitedVertexShaders;					// Only shaders seen since last hunting timeout; std::set for consistent order while hunting
@@ -627,6 +635,7 @@ struct Globals
 		mPinkingShader(0),
 
 		hunting(HUNTING_MODE_DISABLED),
+		overlay_buffer_hash_lifetime(-1),
 		fix_enabled(true),
 		config_reloadable(false),
 		show_original_enabled(false),
@@ -643,6 +652,9 @@ struct Globals
 		cur_analyse_options(FrameAnalysisOptions::INVALID),
 
 		shader_hash_type(ShaderHashType::FNV),
+		track_region_hashes(false),
+		track_implicit_index_buffers(false),
+		allow_buffer_resize(true),
 		texture_hash_version(0),
 		EXPORT_SHADERS(false),
 		EXPORT_HLSL(0),

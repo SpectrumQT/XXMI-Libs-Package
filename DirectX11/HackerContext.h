@@ -117,6 +117,17 @@ private:
 	// These are per-context, moved from globals.h:
 	uint32_t mCurrentVertexBuffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
 	uint32_t mCurrentIndexBuffer; // Only valid while hunting=1
+	struct VertexBufferBinding {
+		ID3D11Buffer* buffer;
+		UINT offset;
+		UINT stride;
+	} mCurrentVertexBuffersBindings[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
+	struct IndexBufferBinding {
+		ID3D11Buffer* buffer;
+		UINT offset;
+		DXGI_FORMAT format;
+		bool is_explicit;
+	} mCurrentIndexBufferBinding;
 	std::vector<ID3D11Resource *> mCurrentRenderTargets;
 	ID3D11Resource *mCurrentDepthTarget;
 	UINT mCurrentPSUAVStartSlot;

@@ -39,6 +39,29 @@ struct ResourceHandleInfo
 		orig_hash(0),
 		data_hash(0)
 	{}
+
+	// Cache of per-region hashes for this buffer.
+	// Key = region offset, Value = CRC32 hash of that region.
+	// Avoids recomputing hashes for the same draw-call regions.
+	std::unordered_map<UINT, uint32_t> region_hash_cache;
+
+	// CPU-side copy of the resource data captured via a staging buffer.
+	// Used to compute hashes for arbitrary regions without re-mapping
+	// the GPU resource multiple times.
+	std::vector<uint8_t> cached_data;
+
+	// Indicates whether cached_data currently contains a valid snapshot
+	// of the resource contents.
+	bool cached_data_valid = false;
+	uint32_t cached_data_hash = 0;
+
+	void* mapped_ptr = nullptr;
+	size_t mapped_size = 0;
+	ID3D11Buffer* mapped_resource = nullptr;
+
+	// Clears cached region hashes and invalidates cached buffer data.
+	// Should be called when the underlying resource contents change.
+	void ClearRegionHashCache();
 };
 
 struct CopySubresourceRegionContamination
@@ -192,6 +215,11 @@ uint32_t CalcTexture3DDataHash(const D3D11_TEXTURE3D_DESC *pDesc, const D3D11_SU
 ResourceHandleInfo* GetResourceHandleInfo(ID3D11Resource *resource);
 uint32_t GetOrigResourceHash(ID3D11Resource *resource);
 uint32_t GetResourceHash(ID3D11Resource *resource);
+static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, ResourceHandleInfo* info);
+void ClearResourceRegionHashCache(ID3D11Resource* resource);
+UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info);
+UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info);
+uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size);
 
 void MarkResourceHashContaminated(ID3D11Resource *dest, UINT DstSubresource,
 		ID3D11Resource *src, UINT srcSubresource, char type,
@@ -422,3 +450,4 @@ typedef std::vector<TextureOverride*> TextureOverrideMatches;
 template <typename DescType>
 void find_texture_overrides(uint32_t hash, const DescType *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info);
+void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches* matches, DrawCallInfo* call_info);

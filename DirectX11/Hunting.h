@@ -20,3 +20,9 @@ public:
 void TimeoutHuntingBuffers();
 void ParseHuntingSection();
 void DumpUsage(wchar_t *dir);
+
+void RegisterVisitedIndexBufferNoLock(uint32_t hash);
+void RegisterVisitedIndexBuffer(uint32_t hash);
+void RegisterVisitedVertexBufferNoLock(uint32_t hash);
+void RegisterVisitedVertexBuffer(uint32_t hash);
+void PurgeStaleVisitedBufferHashes(HackerDevice* device);

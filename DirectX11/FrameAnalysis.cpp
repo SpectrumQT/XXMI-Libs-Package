@@ -1937,7 +1937,7 @@ void FrameAnalysisContext::get_deduped_dir(wchar_t *path, size_t size)
 }
 
 HRESULT FrameAnalysisContext::FrameAnalysisFilename(wchar_t *filename, size_t size, bool compute,
-		wchar_t *reg, char shader_type, int idx, ID3D11Resource *handle)
+		wchar_t *reg, char shader_type, int idx, ID3D11Resource *handle, uint32_t override_hash)
 {
 	struct ResourceHashInfo *info;
 	uint32_t hash, orig_hash;
@@ -1978,8 +1978,19 @@ HRESULT FrameAnalysisContext::FrameAnalysisFilename(wchar_t *filename, size_t si
 
 	EnterCriticalSectionPretty(&G->mResourcesLock);
 	try {
-		hash = G->mResources.at(handle).hash;
-		orig_hash = G->mResources.at(handle).orig_hash;
+		// If override_hash is provided (e.g. region hash for VB/IB,
+		// use it as the display hash so the dumped filename
+		// matches exactly what the hunting overlay shows and what must be
+		// placed in the ini [TextureOverride] hash. Fall back to the
+		// resource's stored base hash when no override is given.
+		if (override_hash) {
+			hash = override_hash;
+			orig_hash = G->mResources.at(handle).orig_hash;
+		}
+		else {
+			hash = G->mResources.at(handle).hash;
+			orig_hash = G->mResources.at(handle).orig_hash;
+		}
 	} catch (std::out_of_range) {
 		hash = orig_hash = 0;
 	}
@@ -2521,7 +2532,13 @@ void FrameAnalysisContext::DumpVBs(DrawCallInfo *call_info, ID3D11Buffer *staged
 		if (!vb_slot_in_layout(i, layout_desc))
 			goto continue_release;
 
-		hr = FrameAnalysisFilename(filename, MAX_PATH, false, L"vb", NULL, i, buffers[i]);
+		uint32_t region_hash = 0;
+		if (G->track_region_hashes && strides[i]) {
+			UINT region_size = GetVertexBufferRegionSize(strides[i], call_info);
+			region_hash = GetRegionHash(GetPassThroughOrigContext1(), buffers[i], offsets[i], region_size);
+		}
+
+		hr = FrameAnalysisFilename(filename, MAX_PATH, false, L"vb", NULL, i, buffers[i], region_hash);
 		if (SUCCEEDED(hr)) {
 			DumpBuffer(buffers[i], filename,
 				FrameAnalysisOptions::DUMP_VB, i,
@@ -2559,7 +2576,13 @@ void FrameAnalysisContext::DumpIB(DrawCallInfo *call_info, ID3D11Buffer **staged
 		return;
 	GetPassThroughOrigContext1()->IAGetPrimitiveTopology(&topology);
 
-	hr = FrameAnalysisFilename(filename, MAX_PATH, false, L"ib", NULL, -1, buffer);
+	uint32_t region_hash = 0;
+	if (G->track_region_hashes) {
+		UINT region_size = GetIndexBufferRegionSize(*format, call_info);
+		region_hash = GetRegionHash(GetPassThroughOrigContext1(), buffer, *offset, region_size);
+	}
+
+	hr = FrameAnalysisFilename(filename, MAX_PATH, false, L"ib", NULL, -1, buffer, region_hash);
 	if (SUCCEEDED(hr)) {
 		DumpBuffer(buffer, filename,
 				FrameAnalysisOptions::DUMP_IB, -1,

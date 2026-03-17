@@ -5859,7 +5859,7 @@ void ResourceCopyTarget::SetResource(
 	case ResourceCopyTargetType::VERTEX_BUFFER:
 		buf = (ID3D11Buffer*)res;
 		mOrigContext1->IASetVertexBuffers(slot, 1, &buf, &stride, &offset);
-		return;
+		break;
 
 	case ResourceCopyTargetType::INDEX_BUFFER:
 		buf = (ID3D11Buffer*)res;
@@ -6064,9 +6064,11 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 	TextureOverrideMap::iterator i;
 	ID3D11Resource *resource = NULL;
 	ID3D11View *view = NULL;
-	uint32_t hash = 0;
 
-	resource = GetResource(state, &view, NULL, NULL, NULL, NULL);
+	UINT stride = 0, offset = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+
+	resource = GetResource(state, &view, &stride, &offset, &format, NULL);
 
 	if (resource_found)
 		*resource_found = !!resource;
@@ -6074,7 +6076,43 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 	if (!resource)
 		return;
 
-	find_texture_overrides_for_resource(resource, matches, state->call_info);
+	// For vertex and index buffers the game may pack multiple meshes into
+	// one buffer and bind them at different offsets. In that case the base
+	// resource hash alone is not enough – we must use the same region data hash 
+	// that IASetVertexBuffers / IASetIndexBuffer computed and stored in 
+	// mCurrentVertexBuffers[] /mCurrentIndexBuffer, and that the hunting overlay displays.
+	// That way the hash the user copies from the overlay matches the one looked up
+	// here, and ini `CheckTextureOverride` triggers [TextureOverride] sections correctly.
+	if (G->track_region_hashes)
+	{
+		UINT region_size;
+		uint32_t hash;
+		switch (type) {
+			case ResourceCopyTargetType::VERTEX_BUFFER:
+			{
+				region_size = GetVertexBufferRegionSize(stride, state->call_info);
+				hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, region_size);
+				find_texture_override_for_hash(hash, matches, state->call_info);
+				break;
+			}
+			case ResourceCopyTargetType::INDEX_BUFFER:
+			{
+				region_size = GetIndexBufferRegionSize(format, state->call_info);
+				hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, region_size);
+				find_texture_override_for_hash(hash, matches, state->call_info);
+				break;
+			}
+			default:
+			{
+				find_texture_overrides_for_resource(resource, matches, state->call_info);
+				break;
+			}
+		}
+	}
+	else
+	{
+		find_texture_overrides_for_resource(resource, matches, state->call_info);
+	}
 
 	//COMMAND_LIST_LOG(state, "  found texture hash = %08llx\n", hash);
 

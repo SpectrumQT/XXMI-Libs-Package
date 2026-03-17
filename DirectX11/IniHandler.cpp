@@ -2871,33 +2871,36 @@ static void parse_texture_override_common(const wchar_t *id, TextureOverride *ov
 	override->width_multiply = GetIniFloat(id, L"width_multiply", 1.0f, NULL);
 	override->height_multiply = GetIniFloat(id, L"height_multiply", 1.0f, NULL);
 
-	// Handle buffer resize aka vertex limit raise feature.
-	int override_vertex_count = (int)GetConstantIniVariable(id, L"override_vertex_count", -1.0f, &found);
-	if (override_vertex_count > 0) {
-		// Ensure that stride is specified.
-		int override_byte_stride = GetIniInt(id, L"override_byte_stride", -1, NULL);
-		if (override_byte_stride <= 0) {
-			LogOverlayW(LOG_DIRE, L"Failed to detect stride for override_vertex_count=%d, please set override_byte_stride!\n - [%ls]\n", override_vertex_count, override->ini_section.c_str());
-			return;
-		}
-		// Override buffer size according to section params.
-		override->override_byte_width = override_byte_stride * override_vertex_count;
-		
-		// Handle UAV resize
-		int uav_byte_stride = (int)GetConstantIniVariable(id, L"uav_byte_stride", -1.0f, &found);
-		if (uav_byte_stride > 0) {
-			// Use StructureByteStride override (useful when actual buffer stride is different from the one declared by a game)
-			override->override_num_elements = override_vertex_count * override_byte_stride / uav_byte_stride;
+	if (G->allow_buffer_resize) 
+	{
+		// Handle buffer resize aka vertex limit raise feature.
+		int override_vertex_count = (int)GetConstantIniVariable(id, L"override_vertex_count", -1.0f, &found);
+		if (override_vertex_count > 0) {
+			// Ensure that stride is specified.
+			int override_byte_stride = GetIniInt(id, L"override_byte_stride", -1, NULL);
+			if (override_byte_stride <= 0) {
+				LogOverlayW(LOG_DIRE, L"Failed to detect stride for override_vertex_count=%d, please set override_byte_stride!\n - [%ls]\n", override_vertex_count, override->ini_section.c_str());
+				return;
+			}
+			// Override buffer size according to section params.
+			override->override_byte_width = override_byte_stride * override_vertex_count;
+
+			// Handle UAV resize
+			int uav_byte_stride = (int)GetConstantIniVariable(id, L"uav_byte_stride", -1.0f, &found);
+			if (uav_byte_stride > 0) {
+				// Use StructureByteStride override (useful when actual buffer stride is different from the one declared by a game)
+				override->override_num_elements = override_vertex_count * override_byte_stride / uav_byte_stride;
+			} else {
+				// Use VertexCount override
+				override->override_num_elements = override_vertex_count;
+			}
+		} else if (wcsstr(override->ini_section.c_str(), L"VertexLimitRaise") != 0) {
+			// Fall back to ~8MB buffer to mimic original GIMI behaviour if `VertexLimitRaise` keyword is found in the section header.
+			override->override_byte_width = 8800000;
 		} else {
-			// Use VertexCount override
-			override->override_num_elements = override_vertex_count;
+			// Do not override original buffer size.
+			override->override_byte_width = -1;
 		}
-	} else if(wcsstr(override->ini_section.c_str(), L"VertexLimitRaise") != 0) {
-		// Fall back to ~8MB buffer to mimic original GIMI behaviour if `VertexLimitRaise` keyword is found in the section header.
-		override->override_byte_width = 8800000;
-	} else {
-		// Do not override original buffer size.
-		override->override_byte_width = -1;
 	}
 	
 	if (GetIniString(id, L"Iteration", 0, setting, MAX_PATH))
@@ -4313,6 +4316,9 @@ void LoadConfigFile()
 	G->CACHE_SHADERS = GetIniBool(L"Rendering", L"cache_shaders", false, NULL);
 	G->SCISSOR_DISABLE = GetIniBool(L"Rendering", L"rasterizer_disable_scissor", false, NULL);
 	G->track_texture_updates = GetIniBoolOrInt(L"Rendering", L"track_texture_updates", 0, NULL);
+	G->track_region_hashes = GetIniBool(L"Rendering", L"track_region_hashes", false, NULL);
+	G->track_implicit_index_buffers = GetIniBool(L"Rendering", L"track_implicit_index_buffers", false, NULL);
+	G->allow_buffer_resize = GetIniBool(L"Rendering", L"allow_buffer_resize", true, NULL);
 	G->assemble_signature_comments = GetIniBool(L"Rendering", L"assemble_signature_comments", false, NULL);
 	G->disassemble_undecipherable_custom_data = GetIniBool(L"Rendering", L"disassemble_undecipherable_custom_data", false, NULL);
 	G->patch_cb_offsets = GetIniBool(L"Rendering", L"patch_assembly_cb_offsets", false, NULL);

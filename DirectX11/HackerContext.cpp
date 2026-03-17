@@ -744,14 +744,19 @@ void HackerContext::BeforeDraw(DrawContext &data)
 				mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetIndexBufferRegionSize(b.format, &data.call_info));
 				RegisterVisitedIndexBuffer(mCurrentIndexBuffer);
 			}
-			// Register Vertex Buffers hash.
+			// Update Vertex Buffers hashes.
 			for (UINT i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
 				VertexBufferBinding& b = mCurrentVertexBuffersBindings[i];
 				if (b.buffer && b.stride) {
 					mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetVertexBufferRegionSize(b.stride, &data.call_info));
-					RegisterVisitedVertexBuffer(mCurrentVertexBuffers[i]);
 				}
 			}
+			// Register Vertex Buffers hashes under the same lock.
+			EnterCriticalSectionPretty(&G->mCriticalSection);
+			for (UINT i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
+				RegisterVisitedVertexBufferNoLock(mCurrentVertexBuffers[i]);
+			}
+			LeaveCriticalSection(&G->mCriticalSection);
 		}
 
 		UINT selectedVertexBufferPos;

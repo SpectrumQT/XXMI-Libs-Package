@@ -1374,7 +1374,7 @@ static void HuntNext(char *type, std::set<ItemType> *visited,
 			}
 			LogInfo("> traversing to next %s #%d. Number of %ss in frame: %d\n",
 				type, *selectedPos, type, size);
-		} else if (*selected) {
+		} else if (G->overlay_buffer_hash_lifetime >= 0 && *selected && (strcmp(type, "vertex buffer") == 0 || strcmp(type, "index buffer") == 0)) {
 			auto it = visited->lower_bound(*selected);
 			if (it == visited->end()) {
 				it = visited->begin();
@@ -1480,7 +1480,7 @@ static void HuntPrev(char *type, std::set<ItemType> *visited,
 			}
 			LogInfo("> traversing to previous %s shader #%d. Number of %s shaders in frame: %d\n",
 					type, *selectedPos, type, size);
-		} else if (*selected) {
+		} else if (G->overlay_buffer_hash_lifetime >= 0 && *selected && (strcmp(type, "vertex buffer") == 0 || strcmp(type, "index buffer") == 0)) {
 			auto it = visited->lower_bound(*selected);
 			if (it == visited->begin()) {
 				it = std::prev(visited->end());
@@ -2027,7 +2027,8 @@ void RegisterVisitedIndexBufferNoLock(uint32_t hash)
 	if (!hash)
 		return;
 	G->mVisitedIndexBuffers.insert(hash);
-	G->mVisitedIndexBuffersLastSeenFrame[hash] = G->frame_no;
+	if (G->overlay_buffer_hash_lifetime >= 0)
+		G->mVisitedIndexBuffersLastSeenFrame[hash] = G->frame_no;
 }
 
 void RegisterVisitedIndexBuffer(uint32_t hash)
@@ -2042,7 +2043,8 @@ void RegisterVisitedVertexBufferNoLock(uint32_t hash)
 	if (!hash)
 		return;
 	G->mVisitedVertexBuffers.insert(hash);
-	G->mVisitedVertexBuffersLastSeenFrame[hash] = G->frame_no;
+	if (G->overlay_buffer_hash_lifetime >= 0)
+		G->mVisitedVertexBuffersLastSeenFrame[hash] = G->frame_no;
 }
 
 void RegisterVisitedVertexBuffer(uint32_t hash)

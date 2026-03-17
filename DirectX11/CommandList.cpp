@@ -6089,20 +6089,30 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 		uint32_t hash;
 		switch (type) {
 			case ResourceCopyTargetType::VERTEX_BUFFER:
+			{
 				region_size = GetVertexBufferRegionSize(stride, state->call_info);
 				hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, region_size);
 				find_texture_override_for_hash(hash, matches, state->call_info);
 				break;
-
+			}
 			case ResourceCopyTargetType::INDEX_BUFFER:
+			{
 				region_size = GetIndexBufferRegionSize(format, state->call_info);
 				hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, region_size);
 				find_texture_override_for_hash(hash, matches, state->call_info);
 				break;
+			}
+			default:
+			{
+				find_texture_overrides_for_resource(resource, matches, state->call_info);
+				break;
+			}
 		}
 	}
-
-	find_texture_overrides_for_resource(resource, matches, state->call_info);
+	else
+	{
+		find_texture_overrides_for_resource(resource, matches, state->call_info);
+	}
 
 	//COMMAND_LIST_LOG(state, "  found texture hash = %08llx\n", hash);
 

@@ -1904,7 +1904,7 @@ void ParseHuntingSection()
 
 	// Number of frames a IB/VB buffer hash can remain in the overlay tracking
 	// cache without being encountered again before it is purged.
-	// If > 0, stale hashes are removed by PurgeStaleVisitedBufferHashes() once per
+	// If >= 0, stale hashes are removed by PurgeStaleVisitedBufferHashes() once per
 	// frame at the start of HackerSwapChain::Present().
 	G->overlay_buffer_hash_lifetime = GetIniInt(L"Hunting", L"overlay_buffer_hash_lifetime", -1, NULL);
 	if (G->track_region_hashes && G->overlay_buffer_hash_lifetime < 0)

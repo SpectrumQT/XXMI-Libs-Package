@@ -57,7 +57,6 @@ struct ResourceHandleInfo
 
 	void* mapped_ptr = nullptr;
 	size_t mapped_size = 0;
-	ID3D11Buffer* mapped_resource = nullptr;
 
 	// Clears cached region hashes and invalidates cached buffer data.
 	// Should be called when the underlying resource contents change.

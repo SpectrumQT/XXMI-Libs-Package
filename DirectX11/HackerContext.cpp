@@ -1205,6 +1205,16 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 			break;
 	}
 
+	if (G->track_region_hashes) {
+		pResource->GetType(&dim);
+		if (dim == D3D11_RESOURCE_DIMENSION_BUFFER && MapType != D3D11_MAP_READ) {
+			buf = (ID3D11Buffer*)pResource;
+			buf->GetDesc(&buf_desc);
+			if (buf_desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER))
+				divert = true;
+		}
+	}
+
 	if (!track && !divert)
 		goto out_profile;
 
@@ -1256,6 +1266,23 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 	map_info->map.pData = replace;
 	pMappedResource->pData = replace;
 
+	if (G->track_region_hashes && dim == D3D11_RESOURCE_DIMENSION_BUFFER && MapType != D3D11_MAP_READ) {
+
+		ClearResourceRegionHashCache(pResource);
+
+		if (buf_desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER)) {
+
+			ResourceHandleInfo* info = GetResourceHandleInfo(pResource);
+
+			if (info) {
+				EnterCriticalSectionPretty(&G->mCriticalSection);
+				info->mapped_ptr = pMappedResource->pData;
+				info->mapped_size = buf_desc.ByteWidth;
+				LeaveCriticalSection(&G->mCriticalSection);
+			}
+		}
+	}
+
 out_profile:
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::end(&profiling_state, &Profiling::map_overhead);
@@ -1280,6 +1307,28 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 
 	if (G->track_texture_updates == 1 && Subresource == 0 && map_info->mapped_writable)
 		UpdateResourceHashFromCPU(pResource, map_info->map.pData, map_info->map.RowPitch, map_info->map.DepthPitch);
+
+	if (G->track_region_hashes) {
+		ResourceHandleInfo* info = GetResourceHandleInfo(pResource);
+
+		if (info && info->mapped_ptr && info->mapped_size) {
+
+			EnterCriticalSectionPretty(&G->mCriticalSection);
+
+			info->cached_data.resize(info->mapped_size);
+			memcpy(info->cached_data.data(), info->mapped_ptr, info->mapped_size);
+
+			info->cached_data_valid = true;
+
+			LogInfo("UnmapCacheBufferData size=%d, pResource=0x%p\n", info->mapped_size, pResource);
+
+			info->mapped_ptr = nullptr;
+			info->mapped_size = 0;
+
+			LeaveCriticalSection(&G->mCriticalSection);
+
+		}
+	}
 
 	if (map_info->orig_pData) {
 		// TODO: Measure performance vs. not diverting:
@@ -1312,37 +1361,6 @@ STDMETHODIMP HackerContext::Map(THIS_
 
 	hr = mOrigContext1->Map(pResource, Subresource, MapType, MapFlags, pMappedResource);
 
-	if (G->track_region_hashes && MapType != D3D11_MAP_READ) {
-
-		ClearResourceRegionHashCache(pResource);
-
-		if (SUCCEEDED(hr) && pMappedResource) {
-			ID3D11Buffer* buffer = nullptr;
-			if (SUCCEEDED(pResource->QueryInterface(__uuidof(ID3D11Buffer), (void**)&buffer))) {
-
-				D3D11_BUFFER_DESC desc;
-				buffer->GetDesc(&desc);
-
-				if (desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER)) {
-
-					ResourceHandleInfo* info = GetResourceHandleInfo(buffer);
-
-					if (info) {
-						EnterCriticalSectionPretty(&G->mCriticalSection);
-
-						info->mapped_ptr = pMappedResource->pData;
-						info->mapped_size = desc.ByteWidth;
-						info->mapped_resource = buffer;
-
-						LeaveCriticalSection(&G->mCriticalSection);
-					}
-				}
-
-				buffer->Release();
-			}
-		}
-	}
-
 	TrackAndDivertMap(hr, pResource, Subresource, MapType, MapFlags, pMappedResource);
 
 	return hr;
@@ -1354,35 +1372,6 @@ STDMETHODIMP_(void) HackerContext::Unmap(THIS_
 	/* [annotation] */
 	__in  UINT Subresource)
 {
-	if (G->track_region_hashes) {
-		ID3D11Buffer* buffer = nullptr;
-
-		if (SUCCEEDED(pResource->QueryInterface(__uuidof(ID3D11Buffer), (void**)&buffer))) {
-			
-			ResourceHandleInfo* info = GetResourceHandleInfo(buffer);
-
-			if (info && info->mapped_ptr && info->mapped_size) {
-
-				EnterCriticalSectionPretty(&G->mCriticalSection);
-
-				info->cached_data.resize(info->mapped_size);
-				memcpy(info->cached_data.data(), info->mapped_ptr, info->mapped_size);
-
-				info->cached_data_valid = true;
-
-				info->mapped_ptr = nullptr;
-				info->mapped_size = 0;
-				info->mapped_resource = nullptr;
-
-				LeaveCriticalSection(&G->mCriticalSection);
-
-				//LogInfo("UnmapCacheBufferData size=%d, pResource=0x%p\n", info->mapped_size, buffer);
-			}
-
-			buffer->Release();
-		}
-	}
-
 	TrackAndDivertUnmap(pResource, Subresource);
 	mOrigContext1->Unmap(pResource, Subresource);
 }

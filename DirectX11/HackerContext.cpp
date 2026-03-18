@@ -1288,6 +1288,36 @@ out_profile:
 		Profiling::end(&profiling_state, &Profiling::map_overhead);
 }
 
+void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource)
+{
+	ResourceHandleInfo* info = GetResourceHandleInfo(pResource);
+
+	if (!info)
+		return;
+
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	if (!info->mapped_ptr || !info->mapped_size) {
+		LeaveCriticalSection(&G->mCriticalSection);
+		return;
+	}
+
+	info->cached_data.resize(info->mapped_size);
+	memcpy(info->cached_data.data(), info->mapped_ptr, info->mapped_size);
+
+	info->cached_data_valid = true;
+
+	size_t size = info->mapped_size;
+	//info->cached_data_hash = crc32c_hw(0, info->cached_data.data(), info->mapped_size);
+
+	info->mapped_ptr = nullptr;
+	info->mapped_size = 0;
+
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	//LogInfo("Unmap CacheBufferData size=%d, hash=%08lx, data_hash=%08lx, pResource=0x%p\n", size, info->hash, info->cached_data_hash, pResource);
+}
+
 void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresource)
 {
 	MappedResources::iterator i;
@@ -1308,27 +1338,8 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 	if (G->track_texture_updates == 1 && Subresource == 0 && map_info->mapped_writable)
 		UpdateResourceHashFromCPU(pResource, map_info->map.pData, map_info->map.RowPitch, map_info->map.DepthPitch);
 
-	if (G->track_region_hashes) {
-		ResourceHandleInfo* info = GetResourceHandleInfo(pResource);
-
-		if (info && info->mapped_ptr && info->mapped_size) {
-
-			EnterCriticalSectionPretty(&G->mCriticalSection);
-
-			info->cached_data.resize(info->mapped_size);
-			memcpy(info->cached_data.data(), info->mapped_ptr, info->mapped_size);
-
-			info->cached_data_valid = true;
-
-			LogInfo("UnmapCacheBufferData size=%d, pResource=0x%p\n", info->mapped_size, pResource);
-
-			info->mapped_ptr = nullptr;
-			info->mapped_size = 0;
-
-			LeaveCriticalSection(&G->mCriticalSection);
-
-		}
-	}
+	if (G->track_region_hashes)
+		UpdateResourceDataCacheFromMap(pResource);
 
 	if (map_info->orig_pData) {
 		// TODO: Measure performance vs. not diverting:
@@ -1733,6 +1744,70 @@ bool HackerContext::ExpandRegionCopy(ID3D11Resource *pDstResource, UINT DstX,
 	return true;
 }
 
+// Replicate current region copy on cached data for region hash tracking system.
+// Useful when game constructs semi-static buffer out of multiple resources that are set via Map().
+void CopySubresourceRegionCache(ID3D11Resource* pSrcResource, ID3D11Resource* pDstResource, UINT DstX, const D3D11_BOX* pSrcBox)
+{
+	ResourceHandleInfo* src_info = GetResourceHandleInfo(pSrcResource);
+	ResourceHandleInfo* dst_info = GetResourceHandleInfo(pDstResource);
+
+	if (!src_info || !dst_info)
+		return;
+
+	D3D11_RESOURCE_DIMENSION dim;
+	pDstResource->GetType(&dim);
+	if (dim != D3D11_RESOURCE_DIMENSION_BUFFER)
+		return;
+
+	D3D11_BUFFER_DESC dst_desc;
+	((ID3D11Buffer*)pDstResource)->GetDesc(&dst_desc);
+
+	UINT src_offset = 0;
+	UINT region_size = 0;
+
+	// Calculate src data copy range.
+	if (pSrcBox) {
+		// Use range from D3D11_BOX.
+		src_offset = pSrcBox->left;
+		region_size = pSrcBox->right - pSrcBox->left;
+	}
+
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	UINT src_size = src_info->cached_data.size();
+
+	if (!src_info->cached_data_valid || src_offset + region_size > src_size) {
+		LeaveCriticalSection(&G->mCriticalSection);
+		// Copy is happening from uncached data -> reset dst cache and leave it to slow fallback path.
+		ClearResourceRegionHashCache(pDstResource);
+		return;
+	}
+
+	// If range is not specified, we must copy the entire src buffer.
+	if (!region_size)
+		region_size = src_size;
+
+	// Initialize new cache of dst size.
+	if (!dst_info->cached_data_valid) {
+		dst_info->cached_data.resize(dst_desc.ByteWidth);
+		dst_info->cached_data_valid = true;
+	}
+
+	// Copy region bytes from src to dst cache.
+	if (DstX + region_size <= dst_desc.ByteWidth) {
+		memcpy(dst_info->cached_data.data() + DstX, src_info->cached_data.data() + src_offset, region_size);
+	} else {
+		LogInfo("CopySubresourceRegion CacheBufferData Failed (out of bounds):\n");
+	}
+
+	//dst_info->cached_data_hash = crc32c_hw(0, dst_info->cached_data.data(), dst_desc.ByteWidth);
+
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	//LogInfo("CopySubresourceRegion CacheBufferData region_size=%d, src_offset=%d, dst_offset=%d, src_hash=%08lx, src_data_hash=%08lx, dst_hash=%08lx, dst_data_hash=%08lx, srcResource=0x%p, dstResource=0x%p\n",
+	//	region_size, src_offset, DstX, src_info->hash, src_info->cached_data_hash, dst_info->hash, dst_info->cached_data_hash, pSrcResource, pDstResource);
+}
+
 STDMETHODIMP_(void) HackerContext::CopySubresourceRegion(THIS_
 	/* [annotation] */
 	__in  ID3D11Resource *pDstResource,
@@ -1758,10 +1833,6 @@ STDMETHODIMP_(void) HackerContext::CopySubresourceRegion(THIS_
 		MarkResourceHashContaminated(pDstResource, DstSubresource, pSrcResource, SrcSubresource, 'S', DstX, DstY, DstZ, pSrcBox);
 	}
 
-	if (G->track_region_hashes) {
-		ClearResourceRegionHashCache(pDstResource);
-	}
-
 	if (ExpandRegionCopy(pDstResource, DstX, DstY, pSrcResource, pSrcBox, &replaceDstX, &replaceSrcBox))
 		pSrcBox = &replaceSrcBox;
 
@@ -1776,6 +1847,9 @@ STDMETHODIMP_(void) HackerContext::CopySubresourceRegion(THIS_
 	// enable as an option in the future if there is a proven need.
 	if (G->track_texture_updates == 1 && DstSubresource == 0 && DstX == 0 && DstY == 0 && DstZ == 0 && pSrcBox == NULL)
 		PropagateResourceHash(pDstResource, pSrcResource);
+
+	if (G->track_region_hashes)
+		CopySubresourceRegionCache(pSrcResource, pDstResource, DstX, pSrcBox);
 }
 
 STDMETHODIMP_(void) HackerContext::CopyResource(THIS_

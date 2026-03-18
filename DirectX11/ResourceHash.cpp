@@ -1849,7 +1849,7 @@ static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, 
 
 	LeaveCriticalSection(&G->mCriticalSection);
 
-	//LogInfo("CacheBufferData size=%d, hash=%08lx, pResource=0x%p\n", desc.ByteWidth, resource_hash, buffer);
+	//LogInfo("Fallback CacheBufferData size=%d, hash=%08lx, data_hash=%08lx, pResource=0x%p\n", desc.ByteWidth, resource_hash, handle_info->cached_data_hash, buffer);
 
 	return true;
 }

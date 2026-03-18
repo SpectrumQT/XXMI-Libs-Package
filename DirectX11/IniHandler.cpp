@@ -13,6 +13,7 @@
 #include "log.h"
 #include "Globals.h"
 #include "Override.h"
+#include "ResourceHash.h"
 #include "Hunting.h"
 #include "ShaderRegex.h"
 #include "cursor.h"

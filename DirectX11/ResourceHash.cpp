@@ -1894,6 +1894,19 @@ UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info)
 	return region_size;
 }
 
+UINT GetConstantBufferRegionSize(UINT byte_width, UINT offset, UINT num_constants)
+{
+	if (offset >= byte_width) {
+		return 0;
+	}
+
+	if (!num_constants) {
+		return byte_width - offset;
+	}
+
+	return min(byte_width - offset, num_constants * 16);
+}
+
 // Returns a CRC32 hash for a specific region of the buffer.
 // The hash is cached per offset to avoid recomputing it for repeated draw calls.
 uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size)

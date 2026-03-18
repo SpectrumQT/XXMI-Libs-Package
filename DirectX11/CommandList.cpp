@@ -11,6 +11,7 @@
 #include "HackerDevice.h"
 #include "HackerContext.h"
 #include "Override.h"
+#include "ResourceHash.h"
 #include "D3D11Wrapper.h"
 #include "IniHandler.h"
 #include "profiling.h"
@@ -124,7 +125,7 @@ static void _RunCommandList(CommandList *command_list, CommandListState *state, 
 {
 	CommandList::Commands::iterator i;
 	command_list_profiling_state profiling_state;
-	
+
 	if (state->recursion > MAX_COMMAND_LIST_RECURSION) {
 		LogOverlayW(LOG_WARNING, L"Command list recursion limit exceeded! Circular reference?\n - [%ls]\n", command_list->ini_section.c_str());
 		return;
@@ -1593,7 +1594,7 @@ void FrameAnalysisDumpCommand::run(CommandListState *state)
 
 	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
 
-	resource = target.GetResource(state, &view, &stride, &offset, &format, NULL);
+	resource = target.GetResource(state, &view, &stride, &offset, &format, &buf_size);
 	if (!resource) {
 		COMMAND_LIST_LOG(state, "  No resource to dump\n");
 		return;
@@ -1604,7 +1605,7 @@ void FrameAnalysisDumpCommand::run(CommandListState *state)
 	// resources:
 	FillInMissingInfo(target.type, resource, view, &stride, &offset, &buf_size, &format);
 
-	state->mHackerContext->FrameAnalysisDump(resource, analyse_options, target_name.c_str(), format, stride, offset);
+	state->mHackerContext->FrameAnalysisDump(resource, analyse_options, target_name.c_str(), format, stride, offset, buf_size);
 
 	if (resource)
 		resource->Release();
@@ -3204,7 +3205,7 @@ next_token:
 		//   up . \ and $ for potential use as operators in the future.
 		if (remain[0] < '0' || remain[0] > '9') {
 			// To support UTF-8 namespaces, we'll have to match a string with any characters between two `\`
-			// So we must match the first token from `$\utf8name\var`, `Resource\utf8name\Test = null` or even `$var && $\utf8name\test` 
+			// So we must match the first token from `$\utf8name\var`, `Resource\utf8name\Test = null` or even `$var && $\utf8name\test`
 			//
 			// Match token substring before namespace (i.e. `$` or `Resource`) or entire token without namespace (i.e. `$var`)
 			pos = remain.find_first_not_of(L"abcdefghijklmnopqrstuvwxyz_0123456789$.");
@@ -5480,6 +5481,97 @@ bool CommandPlaceholder::noop(bool post, bool ignore_cto_pre, bool ignore_cto_po
 	return true;
 }
 
+static bool GetConstantBuffer1Binding(CommandListState *state, wchar_t shader_type,
+        UINT slot, ID3D11Buffer **buffer, UINT *first_constant,
+        UINT *num_constants)
+{
+    ID3D11DeviceContext1 *context1;
+
+    if (buffer)
+        *buffer = NULL;
+    if (first_constant)
+        *first_constant = 0;
+    if (num_constants)
+        *num_constants = 0;
+
+    if (!state || !state->mHackerContext)
+        return false;
+
+    context1 = state->mHackerContext->GetPassThroughOrigContext1();
+    if (!context1)
+        return false;
+
+    switch(shader_type) {
+    case L'v':
+        context1->VSGetConstantBuffers1(slot, 1, buffer, first_constant, num_constants);
+        return true;
+    case L'h':
+        context1->HSGetConstantBuffers1(slot, 1, buffer, first_constant, num_constants);
+        return true;
+    case L'd':
+        context1->DSGetConstantBuffers1(slot, 1, buffer, first_constant, num_constants);
+        return true;
+    case L'g':
+        context1->GSGetConstantBuffers1(slot, 1, buffer, first_constant, num_constants);
+        return true;
+    case L'p':
+        context1->PSGetConstantBuffers1(slot, 1, buffer, first_constant, num_constants);
+        return true;
+    case L'c':
+        context1->CSGetConstantBuffers1(slot, 1, buffer, first_constant, num_constants);
+        return true;
+    }
+
+    return false;
+}
+
+static bool SetConstantBuffer1Binding(CommandListState *state, wchar_t shader_type,
+        UINT slot, ID3D11Buffer *buffer, UINT offset, UINT buf_size)
+{
+    ID3D11DeviceContext1 *context1;
+    UINT first_constant = offset / 16;
+    UINT num_constants = 0;
+    const UINT *pFirstConstant = NULL;
+    const UINT *pNumConstants = NULL;
+
+    if (!state || !state->mHackerContext)
+        return false;
+
+    context1 = state->mHackerContext->GetPassThroughOrigContext1();
+    if (!context1)
+        return false;
+
+    if (buffer && (offset || buf_size)) {
+        pFirstConstant = &first_constant;
+        if (buf_size > offset) {
+            num_constants = (buf_size - offset) / 16;
+            pNumConstants = &num_constants;
+        }
+    }
+
+    switch(shader_type) {
+    case L'v':
+        context1->VSSetConstantBuffers1(slot, 1, &buffer, pFirstConstant, pNumConstants);
+        return true;
+    case L'h':
+        context1->HSSetConstantBuffers1(slot, 1, &buffer, pFirstConstant, pNumConstants);
+        return true;
+    case L'd':
+        context1->DSSetConstantBuffers1(slot, 1, &buffer, pFirstConstant, pNumConstants);
+        return true;
+    case L'g':
+        context1->GSSetConstantBuffers1(slot, 1, &buffer, pFirstConstant, pNumConstants);
+        return true;
+    case L'p':
+        context1->PSSetConstantBuffers1(slot, 1, &buffer, pFirstConstant, pNumConstants);
+        return true;
+    case L'c':
+        context1->CSSetConstantBuffers1(slot, 1, &buffer, pFirstConstant, pNumConstants);
+        return true;
+    }
+
+    return false;
+}
 ID3D11Resource *ResourceCopyTarget::GetResource(
 		CommandListState *state,
 		ID3D11View **view,   // Used by textures, render targets, depth/stencil buffers & UAVs
@@ -5505,33 +5597,56 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 
 	switch(type) {
 	case ResourceCopyTargetType::CONSTANT_BUFFER:
-		// FIXME: On win8 (or with evil update?), we should use
-		// Get/SetConstantBuffers1 and copy the offset into the buffer as well
-		switch(shader_type) {
-		case L'v':
-			mOrigContext1->VSGetConstantBuffers(slot, 1, &buf);
-			return buf;
-		case L'h':
-			mOrigContext1->HSGetConstantBuffers(slot, 1, &buf);
-			return buf;
-		case L'd':
-			mOrigContext1->DSGetConstantBuffers(slot, 1, &buf);
-			return buf;
-		case L'g':
-			mOrigContext1->GSGetConstantBuffers(slot, 1, &buf);
-			return buf;
-		case L'p':
-			mOrigContext1->PSGetConstantBuffers(slot, 1, &buf);
-			return buf;
-		case L'c':
-			mOrigContext1->CSGetConstantBuffers(slot, 1, &buf);
-			return buf;
-		default:
-			// Should not happen
-			return NULL;
-		}
-		break;
+        {
+            UINT first_constant = 0, num_constants = 0;
+            D3D11_BUFFER_DESC desc;
+            UINT region_offset;
+            UINT region_size;
 
+            if (!GetConstantBuffer1Binding(state, shader_type, slot, &buf, &first_constant, &num_constants)) {
+                switch(shader_type) {
+                case L'v':
+                    mOrigContext1->VSGetConstantBuffers(slot, 1, &buf);
+                    break;
+                case L'h':
+                    mOrigContext1->HSGetConstantBuffers(slot, 1, &buf);
+                    break;
+                case L'd':
+                    mOrigContext1->DSGetConstantBuffers(slot, 1, &buf);
+                    break;
+                case L'g':
+                    mOrigContext1->GSGetConstantBuffers(slot, 1, &buf);
+                    break;
+                case L'p':
+                    mOrigContext1->PSGetConstantBuffers(slot, 1, &buf);
+                    break;
+                case L'c':
+                    mOrigContext1->CSGetConstantBuffers(slot, 1, &buf);
+                    break;
+                default:
+                    return NULL;
+                }
+            }
+
+            if (!buf)
+                return NULL;
+
+            if (stride)
+                *stride = 16;
+
+            if (offset || buf_size) {
+                buf->GetDesc(&desc);
+                region_offset = min(first_constant * 16, desc.ByteWidth);
+                region_size = GetConstantBufferRegionSize(desc.ByteWidth, region_offset, num_constants);
+
+                if (offset)
+                    *offset = region_offset;
+                if (buf_size)
+                    *buf_size = region_offset + region_size;
+            }
+
+            return buf;
+        }
 	case ResourceCopyTargetType::SHADER_RESOURCE:
 		switch(shader_type) {
 		case L'v':
@@ -5798,34 +5913,32 @@ void ResourceCopyTarget::SetResource(
 
 	switch(type) {
 	case ResourceCopyTargetType::CONSTANT_BUFFER:
-		// FIXME: On win8 (or with evil update?), we should use
-		// Get/SetConstantBuffers1 and copy the offset into the buffer as well
-		buf = (ID3D11Buffer*)res;
-		switch(shader_type) {
-		case L'v':
-			mOrigContext1->VSSetConstantBuffers(slot, 1, &buf);
-			return;
-		case L'h':
-			mOrigContext1->HSSetConstantBuffers(slot, 1, &buf);
-			return;
-		case L'd':
-			mOrigContext1->DSSetConstantBuffers(slot, 1, &buf);
-			return;
-		case L'g':
-			mOrigContext1->GSSetConstantBuffers(slot, 1, &buf);
-			return;
-		case L'p':
-			mOrigContext1->PSSetConstantBuffers(slot, 1, &buf);
-			return;
-		case L'c':
-			mOrigContext1->CSSetConstantBuffers(slot, 1, &buf);
-			return;
-		default:
-			// Should not happen
-			return;
-		}
-		break;
-
+        buf = (ID3D11Buffer*)res;
+        if (SetConstantBuffer1Binding(state, shader_type, slot, buf, offset, buf_size))
+            return;
+        switch(shader_type) {
+        case L'v':
+            mOrigContext1->VSSetConstantBuffers(slot, 1, &buf);
+            return;
+        case L'h':
+            mOrigContext1->HSSetConstantBuffers(slot, 1, &buf);
+            return;
+        case L'd':
+            mOrigContext1->DSSetConstantBuffers(slot, 1, &buf);
+            return;
+        case L'g':
+            mOrigContext1->GSSetConstantBuffers(slot, 1, &buf);
+            return;
+        case L'p':
+            mOrigContext1->PSSetConstantBuffers(slot, 1, &buf);
+            return;
+        case L'c':
+            mOrigContext1->CSSetConstantBuffers(slot, 1, &buf);
+            return;
+        default:
+            // Should not happen
+            return;
+        }
 	case ResourceCopyTargetType::SHADER_RESOURCE:
 		resource_view = (ID3D11ShaderResourceView*)view;
 		switch(shader_type) {
@@ -6065,10 +6178,11 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 	ID3D11Resource *resource = NULL;
 	ID3D11View *view = NULL;
 
-	UINT stride = 0, offset = 0;
+	UINT stride = 0, offset = 0, buf_size = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+	D3D11_BUFFER_DESC desc;
 
-	resource = GetResource(state, &view, &stride, &offset, &format, NULL);
+	resource = GetResource(state, &view, &stride, &offset, &format, &buf_size);
 
 	if (resource_found)
 		*resource_found = !!resource;
@@ -6078,8 +6192,8 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 
 	// For vertex and index buffers the game may pack multiple meshes into
 	// one buffer and bind them at different offsets. In that case the base
-	// resource hash alone is not enough – we must use the same region data hash 
-	// that IASetVertexBuffers / IASetIndexBuffer computed and stored in 
+	// resource hash alone is not enough ?we must use the same region data hash
+	// that IASetVertexBuffers / IASetIndexBuffer computed and stored in
 	// mCurrentVertexBuffers[] /mCurrentIndexBuffer, and that the hunting overlay displays.
 	// That way the hash the user copies from the overlay matches the one looked up
 	// here, and ini `CheckTextureOverride` triggers [TextureOverride] sections correctly.
@@ -6101,6 +6215,16 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 				hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, region_size);
 				find_texture_override_for_hash(hash, matches, state->call_info);
 				break;
+			}
+			case ResourceCopyTargetType::CONSTANT_BUFFER:
+			{
+				((ID3D11Buffer*)resource)->GetDesc(&desc);
+				if ((offset || (buf_size && buf_size < desc.ByteWidth)) && buf_size > offset) {
+					region_size = buf_size - offset;
+					hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, region_size);
+					find_texture_override_for_hash(hash, matches, state->call_info);
+					break;
+				}
 			}
 			default:
 			{

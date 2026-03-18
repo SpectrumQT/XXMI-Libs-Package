@@ -29,6 +29,7 @@ struct FrameAnalysisDeferredDumpBufferArgs {
 	DXGI_FORMAT ib_fmt;
 	UINT stride;
 	UINT offset;
+	UINT dump_size;
 	UINT first;
 	UINT count;
 	DrawCallInfo call_info;
@@ -37,13 +38,13 @@ struct FrameAnalysisDeferredDumpBufferArgs {
 
 	FrameAnalysisDeferredDumpBufferArgs(FrameAnalysisOptions analyse_options, ID3D11Buffer *staging,
 			D3D11_BUFFER_DESC *orig_desc, wchar_t *filename, FrameAnalysisOptions buf_type_mask, int idx,
-			DXGI_FORMAT ib_fmt, UINT stride, UINT offset, UINT first, UINT count, ID3DBlob *layout,
+			DXGI_FORMAT ib_fmt, UINT stride, UINT offset, UINT dump_size, UINT first, UINT count, ID3DBlob *layout,
 			D3D11_PRIMITIVE_TOPOLOGY topology, DrawCallInfo *call_info,
 			ID3D11Buffer *staged_ib_for_vb, UINT ib_off_for_vb) :
 		analyse_options(analyse_options), staging(staging),
 		orig_desc(*orig_desc), filename(filename),
 		buf_type_mask(buf_type_mask), idx(idx), ib_fmt(ib_fmt),
-		stride(stride), offset(offset), first(first), count(count),
+		stride(stride), offset(offset), dump_size(dump_size), first(first), count(count),
 		layout(layout), topology(topology),
 		call_info(call_info ? *call_info : DrawCallInfo()),
 		staged_ib_for_vb(staged_ib_for_vb), ib_off_for_vb(ib_off_for_vb)
@@ -137,27 +138,29 @@ private:
 
 	void DumpBuffer(ID3D11Buffer *buffer, wchar_t *filename,
 			FrameAnalysisOptions buf_type_mask, int idx, DXGI_FORMAT ib_fmt,
-			UINT stride, UINT offset, UINT first, UINT count, ID3DBlob *layout,
+			UINT stride, UINT offset, UINT dump_size, UINT first, UINT count, ID3DBlob *layout,
 			D3D11_PRIMITIVE_TOPOLOGY topology, DrawCallInfo *call_info,
 			ID3D11Buffer **staged_ib_ret, ID3D11Buffer *staged_ib_for_vb, UINT ib_off_for_vb);
 	bool DeferDumpBuffer(ID3D11Buffer *staging,
 			D3D11_BUFFER_DESC *orig_desc, wchar_t *filename,
 			FrameAnalysisOptions buf_type_mask, int idx, DXGI_FORMAT ib_fmt,
-			UINT stride, UINT offset, UINT first, UINT count, ID3DBlob *layout,
+			UINT stride, UINT offset, UINT dump_size, UINT first, UINT count, ID3DBlob *layout,
 			D3D11_PRIMITIVE_TOPOLOGY topology, DrawCallInfo *call_info,
 			ID3D11Buffer *staged_ib_for_vb, UINT ib_off_for_vb);
 	void DumpBufferImmediateCtx(ID3D11Buffer *staging, D3D11_BUFFER_DESC *orig_desc,
 			wstring filename, FrameAnalysisOptions buf_type_mask,
-			int idx, DXGI_FORMAT ib_fmt, UINT stride, UINT offset,
+			int idx, DXGI_FORMAT ib_fmt, UINT stride, UINT offset, UINT dump_size,
 			UINT first, UINT count, ID3DBlob *layout,
 			D3D11_PRIMITIVE_TOPOLOGY topology, DrawCallInfo *call_info,
 			ID3D11Buffer *staged_ib_for_vb, UINT ib_off_for_vb);
 
 	void DumpResource(ID3D11Resource *resource, wchar_t *filename,
 			FrameAnalysisOptions buf_type_mask, int idx, DXGI_FORMAT format,
-			UINT stride, UINT offset);
+			UINT stride, UINT offset, UINT buf_size);
 	void _DumpCBs(char shader_type, bool compute,
-		ID3D11Buffer *buffers[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT]);
+		ID3D11Buffer *buffers[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT],
+		UINT first_constants[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT],
+		UINT num_constants[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT]);
 	void _DumpTextures(char shader_type, bool compute,
 		ID3D11ShaderResourceView *views[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT]);
 	void DumpCBs(bool compute);
@@ -187,7 +190,7 @@ private:
 			wchar_t *dedupe_filename, size_t size);
 	void dedupe_buf_filename_txt(const wchar_t *bin_filename,
 			wchar_t *txt_filename, size_t size, char type, int idx,
-			UINT stride, UINT offset);
+			UINT stride, UINT offset, UINT dump_size);
 	void dedupe_buf_filename_vb_txt(const wchar_t *bin_filename,
 			wchar_t *txt_filename, size_t size, int idx,
 			UINT stride, UINT offset, UINT first, UINT count, ID3DBlob *layout,
@@ -234,7 +237,7 @@ public:
 
 	void FrameAnalysisTrigger(FrameAnalysisOptions new_options) override;
 	void FrameAnalysisDump(ID3D11Resource *resource, FrameAnalysisOptions options,
-		const wchar_t *target, DXGI_FORMAT format, UINT stride, UINT offset) override;
+		const wchar_t *target, DXGI_FORMAT format, UINT stride, UINT offset, UINT buf_size) override;
 
 	/*** IUnknown methods ***/
 

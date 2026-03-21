@@ -277,6 +277,10 @@ void optimise_command_lists(HackerDevice *device)
 				ignore_cto_post = ignore_cto_post && to.post_command_list.commands.empty();
 			}
 		}
+		for (TextureOverride &to : G->mTextureOverridePrefilterData.overrides) {
+			ignore_cto_pre = ignore_cto_pre && to.command_list.commands.empty();
+			ignore_cto_post = ignore_cto_post && to.post_command_list.commands.empty();
+		}
 		for (auto &tof : G->mFuzzyTextureOverrides) {
 			ignore_cto_pre = ignore_cto_pre && tof->texture_override->command_list.commands.empty();
 			ignore_cto_post = ignore_cto_post && tof->texture_override->post_command_list.commands.empty();
@@ -6174,7 +6178,6 @@ D3D11_BIND_FLAG ResourceCopyTarget::BindFlags(CommandListState *state, D3D11_RES
 
 void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *resource_found, TextureOverrideMatches *matches)
 {
-	TextureOverrideMap::iterator i;
 	ID3D11Resource *resource = NULL;
 	ID3D11View *view = NULL;
 
@@ -6232,19 +6235,46 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 	}
 
 	if (use_region_hash) {
-		Profiling::State profiling_state;
-		if (Profiling::mode == Profiling::Mode::SUMMARY)
-			Profiling::start(&profiling_state);
+		TextureOverrideMatches prefilter_candidates;
+		TextureOverrideMatches legacy_matches;
+		bool hash_computed = false;
+		auto compute_hash_once = [&]() {
+			if (hash_computed)
+				return;
 
-		hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, region_size);
+			Profiling::State profiling_state;
+			if (Profiling::mode == Profiling::Mode::SUMMARY)
+				Profiling::start(&profiling_state);
 
-		if (Profiling::mode == Profiling::Mode::SUMMARY)
-			Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
+			hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, region_size);
+			hash_computed = true;
 
-		if (hash)
-			find_texture_override_for_hash(hash, matches, state->call_info);
-		else
-			find_texture_overrides_for_resource(resource, matches, state->call_info);
+			if (Profiling::mode == Profiling::Mode::SUMMARY)
+				Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
+		};
+
+		if ((type == ResourceCopyTargetType::VERTEX_BUFFER || type == ResourceCopyTargetType::INDEX_BUFFER)
+		 && find_texture_override_prefilter_candidates(&prefilter_candidates, state->call_info)) {
+			compute_hash_once();
+
+			for (TextureOverride *override : prefilter_candidates) {
+				if (override->hash == hash)
+					matches->push_back(override);
+			}
+		}
+
+		if (!G->mTextureOverrideMap.empty()) {
+			compute_hash_once();
+			find_texture_override_for_hash(hash, &legacy_matches, state->call_info);
+			matches->insert(matches->end(), legacy_matches.begin(), legacy_matches.end());
+		}
+
+		if (!matches->empty()) {
+			std::sort(matches->begin(), matches->end(),
+				[](TextureOverride *lhs, TextureOverride *rhs) {
+					return TextureOverrideLess(*lhs, *rhs);
+				});
+		}
 	} else {
 		find_texture_overrides_for_resource(resource, matches, state->call_info);
 	}

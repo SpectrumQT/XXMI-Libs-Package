@@ -1643,6 +1643,63 @@ static bool matches_draw_info(TextureOverride *tex_override, DrawCallInfo *call_
 	return true;
 }
 
+static bool TextureOverridePtrLess(TextureOverride *lhs, TextureOverride *rhs)
+{
+	return TextureOverrideLess(*lhs, *rhs);
+}
+
+static void append_prefilter_index_matches(TextureOverridePrefilterIndex &index, uint32_t value,
+		std::unordered_set<TextureOverride*> *seen, TextureOverrideMatches *matches)
+{
+	TextureOverridePrefilterIndex::iterator i;
+
+	i = index.find(value);
+	if (i == index.end())
+		return;
+
+	for (TextureOverride *override : i->second) {
+		if (seen->insert(override).second)
+			matches->push_back(override);
+	}
+}
+
+bool find_texture_override_prefilter_candidates(TextureOverrideMatches *matches, DrawCallInfo *call_info)
+{
+	std::unordered_set<TextureOverride*> seen;
+	TextureOverrideMatches candidates;
+	TextureOverrideMatches filtered;
+
+	if (!call_info || G->mTextureOverridePrefilterData.empty())
+		return false;
+
+	append_prefilter_index_matches(G->mTextureOverridePrefilterData.by_match_first_vertex, call_info->FirstVertex, &seen, &candidates);
+	append_prefilter_index_matches(G->mTextureOverridePrefilterData.by_match_first_index, call_info->FirstIndex, &seen, &candidates);
+	append_prefilter_index_matches(G->mTextureOverridePrefilterData.by_match_first_instance, call_info->FirstInstance, &seen, &candidates);
+	append_prefilter_index_matches(G->mTextureOverridePrefilterData.by_match_vertex_count, call_info->VertexCount, &seen, &candidates);
+	append_prefilter_index_matches(G->mTextureOverridePrefilterData.by_match_index_count, call_info->IndexCount, &seen, &candidates);
+	append_prefilter_index_matches(G->mTextureOverridePrefilterData.by_match_instance_count, call_info->InstanceCount, &seen, &candidates);
+
+	for (TextureOverride *override : G->mTextureOverridePrefilterData.fallback_overrides) {
+		if (seen.insert(override).second)
+			candidates.push_back(override);
+	}
+
+	if (candidates.empty())
+		return false;
+
+	for (TextureOverride *override : candidates) {
+		if (matches_draw_info(override, call_info))
+			filtered.push_back(override);
+	}
+
+	if (filtered.empty())
+		return false;
+
+	std::sort(filtered.begin(), filtered.end(), TextureOverridePtrLess);
+	matches->insert(matches->end(), filtered.begin(), filtered.end());
+	return true;
+}
+
 void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches *matches, DrawCallInfo *call_info)
 {
 	TextureOverrideMap::iterator i;

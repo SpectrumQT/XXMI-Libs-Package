@@ -3,6 +3,7 @@
 #include <d3d11_1.h>
 #include <ctime>
 #include <vector>
+#include <list>
 #include <set>
 #include <map>
 #include <unordered_map>
@@ -274,6 +275,7 @@ typedef std::unordered_map<UINT64, struct ShaderOverride> ShaderOverrideMap;
 
 struct TextureOverride {
 	std::wstring ini_section;
+	uint32_t hash;
 	int format;
 	int width;
 	int height;
@@ -289,6 +291,7 @@ struct TextureOverride {
 
 	bool has_draw_context_match;
 	bool has_match_priority;
+	bool prefilter_before_hash;
 	int priority;
 	FuzzyMatch match_first_vertex;
 	FuzzyMatch match_first_index;
@@ -301,6 +304,7 @@ struct TextureOverride {
 	CommandList post_command_list;
 
 	TextureOverride() :
+		hash(0),
 		format(-1),
 		width(-1),
 		height(-1),
@@ -313,6 +317,7 @@ struct TextureOverride {
 		filter_index(FLT_MAX),
 		has_draw_context_match(false),
 		has_match_priority(false),
+		prefilter_before_hash(false),
 		priority(0)
 	{}
 };
@@ -327,6 +332,36 @@ typedef std::unordered_map<ID3D11Resource *, ResourceHandleInfo> ResourceMap;
 // will sort it in the ini parser when we create the list.
 typedef std::vector<struct TextureOverride> TextureOverrideList;
 typedef std::unordered_map<uint32_t, TextureOverrideList> TextureOverrideMap;
+typedef std::list<struct TextureOverride> TextureOverridePrefilterList;
+typedef std::unordered_map<uint32_t, TextureOverrideMatches> TextureOverridePrefilterIndex;
+
+struct TextureOverridePrefilterData {
+	TextureOverridePrefilterList overrides;
+	TextureOverridePrefilterIndex by_match_first_vertex;
+	TextureOverridePrefilterIndex by_match_first_index;
+	TextureOverridePrefilterIndex by_match_first_instance;
+	TextureOverridePrefilterIndex by_match_vertex_count;
+	TextureOverridePrefilterIndex by_match_index_count;
+	TextureOverridePrefilterIndex by_match_instance_count;
+	TextureOverrideMatches fallback_overrides;
+
+	void clear()
+	{
+		overrides.clear();
+		by_match_first_vertex.clear();
+		by_match_first_index.clear();
+		by_match_first_instance.clear();
+		by_match_vertex_count.clear();
+		by_match_index_count.clear();
+		by_match_instance_count.clear();
+		fallback_overrides.clear();
+	}
+
+	bool empty() const
+	{
+		return overrides.empty();
+	}
+};
 
 // We use this when collecting resource info for ShaderUsage.txt to take a
 // snapshot of the resource handle, hash and original hash. We used to just
@@ -558,6 +593,7 @@ struct Globals
 
 	ShaderOverrideMap mShaderOverrideMap;
 	TextureOverrideMap mTextureOverrideMap;
+	TextureOverridePrefilterData mTextureOverridePrefilterData;
 	FuzzyTextureOverrides mFuzzyTextureOverrides;
 
 	// Statistics

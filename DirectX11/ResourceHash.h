@@ -697,5 +697,6 @@ template <typename DescType>
 void find_texture_overrides(uint32_t hash, const DescType *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches* matches, DrawCallInfo* call_info);
-
 void ClearRegionHashesGlobalCache();
+bool find_texture_override_prefilter_candidates(TextureOverrideMatches *matches, DrawCallInfo *call_info);
+bool find_texture_override_prefilter_candidates(TextureOverrideMatches *matches, DrawCallInfo *call_info);

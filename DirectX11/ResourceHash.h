@@ -12,6 +12,251 @@
 #include "util.h"
 #include "DrawCallInfo.h"
 
+// A cache-friendly hash table implementation using:
+// - Contiguous storage(std::vector)
+// - Open addressing(linear probing)
+// - No per-element heap allocations
+//
+// Design goals :
+// - Minimize cache misses
+// - Avoid pointer chasing
+// - Provide predictable performance for real-time systems
+// - Keep implementation simple and deterministic
+//
+// Characteristics :
+// - Average O(1) lookup and insert
+// - High performance at moderate load factors(<= ~0.5 recommended)
+// - Rehashing is O(n) but infrequent if capacity is preallocated
+// - No support for deletion(can be extended with tombstones if needed)
+//
+// Thread safety :
+// - Not thread-safe.
+template<typename K, typename V, typename Hasher = std::hash<K>>
+class FlatHashMap
+{
+public:
+	// Entry represents a single slot in the hash table.
+	// 'occupied' indicates whether the slot contains a valid key-value pair.
+	// Empty slots are treated as termination points during probing.
+	struct Entry {
+		K key;
+		V value;
+		uint32_t generation = 0;
+	};
+
+	static size_t NextPow2(size_t v)
+	{
+		if (v <= 1) return 1;
+		v--;
+		v |= v >> 1;
+		v |= v >> 2;
+		v |= v >> 4;
+		v |= v >> 8;
+		v |= v >> 16;
+		if constexpr (sizeof(size_t) == 8)
+			v |= v >> 32;
+		v++;
+		return v;
+	}
+
+	// Constructs the hash map with an initial capacity.
+	// - Capacity should ideally be a power of two for optimal performance
+	// - Larger initial capacity reduces need for rehashing
+	FlatHashMap(size_t capacity = 1024)
+	{
+		capacity = NextPow2(capacity);
+		table.resize(capacity);
+		mask = capacity - 1;
+		count = 0;
+		current_generation = 1; // 0 reserved as "empty"
+	}
+
+	// Inserts or updates a key-value pair.
+	// Behavior:
+	// - If the key already exists, its value is updated
+	// - Otherwise, a new entry is inserted
+	// Performance:
+	// - Amortized O(1)
+	// - May trigger rehash if load factor exceeds threshold
+	inline void insert(const K& key, const V& value)
+	{
+		// Maintain load factor <= 0.5
+		if ((count * 2) >= table.size()) {
+			rehash(table.size() * 2);
+		}
+
+		size_t idx = hasher(key) & mask;
+
+		while (true)
+		{
+			Entry& e = table[idx];
+
+			// Empty slot (generation mismatch)
+			if (e.generation != current_generation) {
+				e.key = key;
+				e.value = value;
+				e.generation = current_generation;
+				++count;
+				return;
+			}
+
+			// Update existing
+			if (e.key == key) {
+				e.value = value;
+				return;
+			}
+
+			idx = (idx + 1) & mask;
+		}
+	}
+
+	// Finds a value by key.
+	// Returns:
+	// - true if found (value written to 'out')
+	// - false if not found
+	// Performance:
+	// - Average O(1)
+	// - Depends on load factor and clustering
+	inline bool find(const K& key, V& out) const
+	{
+		size_t idx = hasher(key) & mask;
+
+		// Probe sequence
+		while (true)
+		{
+			const Entry& e = table[idx];
+
+			// Empty slot to key not present
+			if (e.generation != current_generation)
+				return false;
+
+			if (e.key == key)
+			{
+				out = e.value;
+				return true;
+			}
+
+			idx = (idx + 1) & mask;
+		}
+	}
+
+	// Finds value by key (no copy, faster)
+	inline V* find_ptr(const K& key)
+	{
+		size_t idx = hasher(key) & mask;
+
+		while (true)
+		{
+			Entry& e = table[idx];
+
+			if (e.generation != current_generation)
+				return nullptr;
+
+			if (e.key == key)
+				return &e.value;
+
+			idx = (idx + 1) & mask;
+		}
+	}
+
+	// Clears the hash map.
+	// Behavior:
+	// - Instead of touching memory, we just bump generation
+	// - Does NOT shrink capacity
+	// - Keeps allocated memory for reuse
+	// Performance:
+	// - O(1) clear
+	inline void clear()
+	{
+		++current_generation;
+		count = 0;
+
+		// Handle rare wraparound (very unlikely: 2^32 clears)
+		if (current_generation == 0)
+		{
+			// Full reset fallback
+			for (auto& e : table)
+				e.generation = 0;
+
+			current_generation = 1;
+		}
+	}
+
+	// Returns the number of active entries.
+	size_t size() const
+	{
+		return count;
+	}
+
+	// Returns the total capacity of the table.
+	size_t capacity() const
+	{
+		return table.size();
+	}
+
+private:
+	std::vector<Entry> table; // Contiguous storage for cache efficiency
+	size_t count = 0;         // Number of active entries
+	size_t mask = 0;
+	uint32_t current_generation = 1;
+	Hasher hasher;
+
+	// Rehashes the table into a larger capacity.
+	// Complexity:
+	// - O(n)
+	// - Should happen infrequently if capacity is sized appropriately
+	void rehash(size_t new_capacity)
+	{
+		// Allocate new table
+		std::vector<Entry> old = std::move(table);
+
+		new_capacity = NextPow2(new_capacity);
+
+		table.clear();
+		table.resize(new_capacity);
+
+		mask = new_capacity - 1;
+		count = 0;
+
+		// Reset generation space
+		uint32_t old_generation = current_generation;
+		current_generation = 1;
+
+		// Reinsert all valid entries
+		for (auto& e : old)
+		{
+			if (e.generation == old_generation)
+			{
+				insert(e.key, e.value);
+			}
+		}
+	}
+};
+
+struct RegionHashesCache
+{
+	struct RegionCacheEntry {
+		uint32_t hash;
+		uint32_t version;
+	};
+public:
+	static constexpr UINT PAGE_SIZE = 256;
+
+	void Initialize(size_t buffer_size);
+	void Add(UINT offset, uint32_t hash);
+	uint32_t Get(UINT offset);
+	size_t GetSize();
+	void Invalidate(UINT start, UINT end);
+	void Clear();
+
+private:
+	// Cache of per-region hashes for given buffer.
+	// Key = region offset, Value = CRC32 hash of that region.
+	// Avoids recomputing hashes for the same draw-call regions.
+	FlatHashMap<UINT, RegionCacheEntry> cache;
+	std::vector<UINT> page_versions;
+};
+
 // Tracks info about specific resource instances:
 struct ResourceHandleInfo
 {
@@ -40,27 +285,28 @@ struct ResourceHandleInfo
 		data_hash(0)
 	{}
 
-	// Cache of per-region hashes for this buffer.
-	// Key = region offset, Value = CRC32 hash of that region.
-	// Avoids recomputing hashes for the same draw-call regions.
-	std::unordered_map<UINT, uint32_t> region_hash_cache;
+	RegionHashesCache region_hashes_cache;
 
 	// CPU-side copy of the resource data captured via a staging buffer.
 	// Used to compute hashes for arbitrary regions without re-mapping
 	// the GPU resource multiple times.
 	std::vector<uint8_t> cached_data;
+	size_t cached_data_size = 0;
 
 	// Indicates whether cached_data currently contains a valid snapshot
 	// of the resource contents.
 	bool cached_data_valid = false;
 	uint32_t cached_data_hash = 0;
 
-	void* mapped_ptr = nullptr;
-	size_t mapped_size = 0;
-
+	void InitializeDataCache(size_t size);
+	void WriteDataCache(const void* src, size_t size);
+	void WriteDataCacheRegion(const void* src, size_t size, UINT offset);
 	// Clears cached region hashes and invalidates cached buffer data.
 	// Should be called when the underlying resource contents change.
-	void ClearRegionHashCache();
+	void ClearDataCache();
+
+	void CacheRegionHash(UINT offset, uint32_t hash);
+	uint32_t GetCachedRegionHash(UINT offset);
 };
 
 struct CopySubresourceRegionContamination
@@ -450,3 +696,5 @@ template <typename DescType>
 void find_texture_overrides(uint32_t hash, const DescType *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches* matches, DrawCallInfo* call_info);
+
+void ClearRegionHashesGlobalCache();

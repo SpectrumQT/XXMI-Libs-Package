@@ -548,6 +548,10 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 		if (G->hunting == HUNTING_MODE_ENABLED && G->overlay_buffer_hash_lifetime >= 0)
 			PurgeStaleVisitedBufferHashes(mHackerDevice);
 
+		if (G->track_region_hashes) {
+			ClearRegionHashesGlobalCache();
+		}
+
 		// Every presented frame, we want to take some CPU time to run our actions,
 		// which enables hunting, and snapshots, and aiming overrides and other inputs
 		RunFrameActions();

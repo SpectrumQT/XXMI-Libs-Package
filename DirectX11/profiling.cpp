@@ -17,6 +17,7 @@ namespace Profiling {
 	Overhead draw_overhead;
 	Overhead map_overhead;
 	Overhead hash_tracking_overhead;
+	Overhead region_tracking_overhead;
 	Overhead stat_overhead;
 	Overhead shaderregex_overhead;
 	Overhead cursor_overhead;
@@ -32,7 +33,7 @@ namespace Profiling {
 	Overhead texture_handle_info_lookup_overhead;
 	Overhead textureoverride_lookup_overhead;
 	Overhead resource_pool_lookup_overhead;
-
+	
 	unsigned resource_full_copies;
 	unsigned resource_reference_copies;
 	unsigned inter_device_copies;
@@ -126,6 +127,7 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 	LARGE_INTEGER draw_overhead;
 	LARGE_INTEGER map_overhead;
 	LARGE_INTEGER hash_tracking_overhead;
+	LARGE_INTEGER region_tracking_overhead;
 	LARGE_INTEGER stat_overhead;
 	LARGE_INTEGER shaderregex_overhead;
 	LARGE_INTEGER cursor_overhead;
@@ -156,6 +158,7 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 	draw_overhead.QuadPart = Profiling::draw_overhead.cpu.QuadPart * 1000000 / freq.QuadPart;
 	map_overhead.QuadPart = Profiling::map_overhead.cpu.QuadPart * 1000000 / freq.QuadPart;
 	hash_tracking_overhead.QuadPart = Profiling::hash_tracking_overhead.cpu.QuadPart * 1000000 / freq.QuadPart;
+	region_tracking_overhead.QuadPart = Profiling::region_tracking_overhead.cpu.QuadPart * 1000000 / freq.QuadPart;
 	stat_overhead.QuadPart = Profiling::stat_overhead.cpu.QuadPart * 1000000 / freq.QuadPart;
 	shaderregex_overhead.QuadPart = Profiling::shaderregex_overhead.cpu.QuadPart * 1000000 / freq.QuadPart;
 	cursor_overhead.QuadPart = Profiling::cursor_overhead.cpu.QuadPart * 1000000 / freq.QuadPart;
@@ -176,6 +179,7 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 			    L"  Command lists total: %7.2fus/frame ~%ffps\n"
 			    L"   Map/Unmap overhead: %7.2fus/frame ~%ffps\n"
 			    L"track_texture_updates: %7.2fus/frame ~%ffps\n"
+		        L"  track_region_hashes: %7.2fus/frame ~%ffps\n"
 			    L"  dump_usage overhead: %7.2fus/frame ~%ffps\n"
 			    L" ShaderRegex overhead: %7.2fus/frame ~%ffps\n"
 			    L"Mouse cursor overhead: %7.2fus/frame ~%ffps\n"
@@ -197,6 +201,9 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 
 			    (float)hash_tracking_overhead.QuadPart / frames,
 			    60.0 * hash_tracking_overhead.QuadPart / collection_duration.QuadPart,
+
+				(float)region_tracking_overhead.QuadPart / frames,
+				60.0 * region_tracking_overhead.QuadPart / collection_duration.QuadPart,
 
 			    (float)stat_overhead.QuadPart / frames,
 			    60.0 * stat_overhead.QuadPart / collection_duration.QuadPart,
@@ -439,6 +446,7 @@ void Profiling::clear()
 	draw_overhead.clear();
 	map_overhead.clear();
 	hash_tracking_overhead.clear();
+	region_tracking_overhead.clear();
 	stat_overhead.clear();
 	shaderregex_overhead.clear();
 	cursor_overhead.clear();

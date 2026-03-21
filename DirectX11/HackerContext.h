@@ -74,11 +74,13 @@ struct MappedResourceInfo {
 	bool mapped_writable;
 	void *orig_pData;
 	size_t size;
+	UINT bind_flags;
 
 	MappedResourceInfo() :
 		orig_pData(NULL),
 		size(0),
-		mapped_writable(false)
+		mapped_writable(false),
+		bind_flags(0)
 	{}
 };
 
@@ -156,6 +158,7 @@ private:
 	bool MapDenyCPURead(ID3D11Resource *pResource, UINT Subresource,
 			D3D11_MAP MapType, UINT MapFlags,
 			D3D11_MAPPED_SUBRESOURCE *pMappedResource);
+	bool MapTrackRegionHashes(ID3D11Resource* pResource, D3D11_MAP MapType, D3D11_RESOURCE_DIMENSION* dim);
 	void TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 		UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
 		D3D11_MAPPED_SUBRESOURCE *pMappedResource);

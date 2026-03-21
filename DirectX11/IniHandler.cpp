@@ -4318,6 +4318,7 @@ void LoadConfigFile()
 	G->SCISSOR_DISABLE = GetIniBool(L"Rendering", L"rasterizer_disable_scissor", false, NULL);
 	G->track_texture_updates = GetIniBoolOrInt(L"Rendering", L"track_texture_updates", 0, NULL);
 	G->track_region_hashes = GetIniBool(L"Rendering", L"track_region_hashes", false, NULL);
+	G->track_cb_region_hashes = GetIniBool(L"Rendering", L"track_cb_region_hashes", false, NULL);
 	G->track_implicit_index_buffers = GetIniBool(L"Rendering", L"track_implicit_index_buffers", false, NULL);
 	G->allow_buffer_resize = GetIniBool(L"Rendering", L"allow_buffer_resize", true, NULL);
 	G->assemble_signature_comments = GetIniBool(L"Rendering", L"assemble_signature_comments", false, NULL);

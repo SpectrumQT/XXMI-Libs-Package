@@ -1330,6 +1330,9 @@ ULONG STDMETHODCALLTYPE ResourceReleaseTracker::Release(void)
 		// lock held to protect it's notices data structure.      //
 		//                                                        //
 		////////////////////////////////////////////////////////////
+		if (G->track_region_hashes || G->track_cb_region_hashes) {
+			ClearResourceRegionHashCache(resource);
+		}
 		EnterCriticalSectionPretty(&G->mResourcesLock);
 		G->mResources.erase(resource);
 		LeaveCriticalSection(&G->mResourcesLock);

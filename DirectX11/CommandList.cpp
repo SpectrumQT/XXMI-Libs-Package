@@ -6192,45 +6192,60 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 
 	// For vertex and index buffers the game may pack multiple meshes into
 	// one buffer and bind them at different offsets. In that case the base
-	// resource hash alone is not enough ?we must use the same region data hash
+	// resource hash alone is not enough - we must use the same region data hash
 	// that IASetVertexBuffers / IASetIndexBuffer computed and stored in
 	// mCurrentVertexBuffers[] /mCurrentIndexBuffer, and that the hunting overlay displays.
 	// That way the hash the user copies from the overlay matches the one looked up
 	// here, and ini `CheckTextureOverride` triggers [TextureOverride] sections correctly.
-	if (G->track_region_hashes)
-	{
-		UINT region_size = 0;
+	UINT region_size = 0;
+	uint32_t hash = 0;
+	bool use_region_hash = false;
 
-		switch (type) {
+	switch (type) {
 		case ResourceCopyTargetType::VERTEX_BUFFER:
-			region_size = GetVertexBufferRegionSize(stride, state->call_info);
+		{
+			if (G->track_region_hashes) {
+				region_size = GetVertexBufferRegionSize(stride, state->call_info);
+				use_region_hash = !!region_size;
+			}
 			break;
-
+		}
 		case ResourceCopyTargetType::INDEX_BUFFER:
-			region_size = GetIndexBufferRegionSize(format, state->call_info);
+		{
+			if (G->track_region_hashes) {
+				region_size = GetIndexBufferRegionSize(format, state->call_info);
+				use_region_hash = !!region_size;
+			}
 			break;
 		}
-
-		uint32_t hash = 0;
-
-		if (region_size) {
-			Profiling::State profiling_state;
-			if (Profiling::mode == Profiling::Mode::SUMMARY)
-				Profiling::start(&profiling_state);
-
-			hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, region_size);
-
-			if (Profiling::mode == Profiling::Mode::SUMMARY)
-				Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
+		case ResourceCopyTargetType::CONSTANT_BUFFER:
+		{
+			if (G->track_cb_region_hashes) {
+				((ID3D11Buffer*)resource)->GetDesc(&desc);
+				if ((offset || (buf_size && buf_size < desc.ByteWidth)) && buf_size > offset) {
+					region_size = buf_size - offset;
+					use_region_hash = !!region_size;
+				}
+			}
+			break;
 		}
+	}
+
+	if (use_region_hash) {
+		Profiling::State profiling_state;
+		if (Profiling::mode == Profiling::Mode::SUMMARY)
+			Profiling::start(&profiling_state);
+
+		hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, region_size);
+
+		if (Profiling::mode == Profiling::Mode::SUMMARY)
+			Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
 
 		if (hash)
 			find_texture_override_for_hash(hash, matches, state->call_info);
 		else
 			find_texture_overrides_for_resource(resource, matches, state->call_info);
-	}
-	else
-	{
+	} else {
 		find_texture_overrides_for_resource(resource, matches, state->call_info);
 	}
 

@@ -2376,7 +2376,7 @@ void FrameAnalysisContext::_DumpCBs(char shader_type, bool compute,
 		region_size = GetConstantBufferRegionSize(desc.ByteWidth, offset, num_constants[i]);
 		dump_size = offset + region_size;
 
-		if (G->track_region_hashes && region_size && (offset || dump_size < desc.ByteWidth)) {
+		if (G->track_cb_region_hashes && region_size && (offset || dump_size < desc.ByteWidth)) {
 			region_hash = GetRegionHash(GetPassThroughOrigContext1(), buffers[i], offset, region_size);
 		}
 

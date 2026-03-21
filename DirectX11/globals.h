@@ -458,6 +458,7 @@ struct Globals
 
 	ShaderHashType shader_hash_type;
 	bool track_region_hashes;
+	bool track_cb_region_hashes;
 	bool track_implicit_index_buffers;
 	bool allow_buffer_resize;
 	int texture_hash_version;
@@ -653,6 +654,7 @@ struct Globals
 
 		shader_hash_type(ShaderHashType::FNV),
 		track_region_hashes(false),
+		track_cb_region_hashes(false),
 		track_implicit_index_buffers(false),
 		allow_buffer_resize(true),
 		texture_hash_version(0),

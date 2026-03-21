@@ -41,9 +41,9 @@ struct ResourceHandleInfo
 	{}
 
 	// Cache of per-region hashes for this buffer.
-	// Key = region offset, Value = CRC32 hash of that region.
+	// Key = packed (offset,size), Value = CRC32 hash of that region.
 	// Avoids recomputing hashes for the same draw-call regions.
-	std::unordered_map<UINT, uint32_t> region_hash_cache;
+	std::unordered_map<uint64_t, uint32_t> region_hash_cache;
 
 	// CPU-side copy of the resource data captured via a staging buffer.
 	// Used to compute hashes for arbitrary regions without re-mapping

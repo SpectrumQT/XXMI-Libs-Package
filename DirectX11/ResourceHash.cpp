@@ -1331,7 +1331,7 @@ ULONG STDMETHODCALLTYPE ResourceReleaseTracker::Release(void)
 		//                                                        //
 		////////////////////////////////////////////////////////////
 
-		if (G->track_region_hashes) {
+		if (G->track_region_hashes || G->track_cb_region_hashes) {
 			ClearResourceRegionHashCache(resource);
 		}
 		EnterCriticalSectionPretty(&G->mResourcesLock);
@@ -1920,9 +1920,9 @@ uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT 
 		return 0;
 	}
 
-	// Use the region offset as the cache key.
-	// Each offset corresponds to a specific draw-call region.
-	UINT cache_key = offset;
+	// Use the region offset and size as the cache key so distinct subranges
+	// that start at the same offset do not accidentally reuse the same hash.
+	uint64_t cache_key = (static_cast<uint64_t>(offset) << 32) | size;
 
 	// Check if we already computed the hash for this region.
 	EnterCriticalSectionPretty(&G->mCriticalSection);

@@ -1215,6 +1215,12 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 		}
 	}
 
+	if (G->track_region_hashes || G->track_cb_region_hashes) {
+		pResource->GetType(&dim);
+		if (dim == D3D11_RESOURCE_DIMENSION_BUFFER && MapType != D3D11_MAP_READ)
+			ClearResourceRegionHashCache(pResource);
+	}
+
 	if (!track && !divert)
 		goto out_profile;
 
@@ -1267,9 +1273,6 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 	pMappedResource->pData = replace;
 
 	if (G->track_region_hashes && dim == D3D11_RESOURCE_DIMENSION_BUFFER && MapType != D3D11_MAP_READ) {
-
-		ClearResourceRegionHashCache(pResource);
-
 		if (buf_desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER)) {
 
 			ResourceHandleInfo* info = GetResourceHandleInfo(pResource);
@@ -1308,7 +1311,7 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 	if (G->track_texture_updates == 1 && Subresource == 0 && map_info->mapped_writable)
 		UpdateResourceHashFromCPU(pResource, map_info->map.pData, map_info->map.RowPitch, map_info->map.DepthPitch);
 
-	if (G->track_region_hashes) {
+	if (G->track_region_hashes || G->track_cb_region_hashes) {
 		ResourceHandleInfo* info = GetResourceHandleInfo(pResource);
 
 		if (info && info->mapped_ptr && info->mapped_size) {
@@ -1758,7 +1761,7 @@ STDMETHODIMP_(void) HackerContext::CopySubresourceRegion(THIS_
 		MarkResourceHashContaminated(pDstResource, DstSubresource, pSrcResource, SrcSubresource, 'S', DstX, DstY, DstZ, pSrcBox);
 	}
 
-	if (G->track_region_hashes) {
+	if (G->track_region_hashes || G->track_cb_region_hashes) {
 		ClearResourceRegionHashCache(pDstResource);
 	}
 
@@ -1788,7 +1791,7 @@ STDMETHODIMP_(void) HackerContext::CopyResource(THIS_
 		MarkResourceHashContaminated(pDstResource, 0, pSrcResource, 0, 'C', 0, 0, 0, NULL);
 	}
 
-	if (G->track_region_hashes) {
+	if (G->track_region_hashes || G->track_cb_region_hashes) {
 		ClearResourceRegionHashCache(pDstResource);
 	}
 
@@ -1851,7 +1854,7 @@ STDMETHODIMP_(void) HackerContext::UpdateSubresource(THIS_
 		MarkResourceHashContaminated(pDstResource, DstSubresource, NULL, 0, 'U', 0, 0, 0, NULL);
 	}
 
-	if (G->track_region_hashes) {
+	if (G->track_region_hashes || G->track_cb_region_hashes) {
 		ClearResourceRegionHashCache(pDstResource);
 	}
 
@@ -3168,7 +3171,7 @@ void STDMETHODCALLTYPE HackerContext::CopySubresourceRegion1(
 	/* [annotation] */
 	_In_  UINT CopyFlags)
 {
-	if (G->track_region_hashes) {
+	if (G->track_region_hashes || G->track_cb_region_hashes) {
 		ClearResourceRegionHashCache(pDstResource);
 	}
 	mOrigContext1->CopySubresourceRegion1(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox, CopyFlags);
@@ -3190,7 +3193,7 @@ void STDMETHODCALLTYPE HackerContext::UpdateSubresource1(
 	/* [annotation] */
 	_In_  UINT CopyFlags)
 {
-	if (G->track_region_hashes) {
+	if (G->track_region_hashes || G->track_cb_region_hashes) {
 		ClearResourceRegionHashCache(pDstResource);
 	}
 
@@ -3204,7 +3207,7 @@ void STDMETHODCALLTYPE HackerContext::DiscardResource(
 	/* [annotation] */
 	_In_  ID3D11Resource *pResource)
 {
-	if (G->track_region_hashes) {
+	if (G->track_region_hashes || G->track_cb_region_hashes) {
 		ClearResourceRegionHashCache(pResource);
 	}
 	mOrigContext1->DiscardResource(pResource);

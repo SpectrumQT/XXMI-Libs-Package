@@ -2929,7 +2929,6 @@ static void parse_texture_override_common(const wchar_t *id, TextureOverride *ov
 
 	override->expand_region_copy = GetIniBool(id, L"expand_region_copy", false, NULL);
 	override->deny_cpu_read = GetIniBool(id, L"deny_cpu_read", false, NULL);
-	override->prefilter_before_hash = GetIniBool(id, L"prefilter_before_hash", false, NULL);
 
 	// Draw call context matching:
 	if (GetIniStringAndLog(id, L"match_first_vertex", 0, setting, MAX_PATH)) {
@@ -2966,27 +2965,6 @@ static bool texture_override_section_has_fuzzy_match_keys(const wchar_t *section
 
 	for (i = 0; TextureOverrideFuzzyMatchesIniKeys[i]; i++) {
 		if (IniHasKey(section, TextureOverrideFuzzyMatchesIniKeys[i]))
-			return true;
-	}
-
-	return false;
-}
-
-static bool texture_override_section_has_draw_call_match_keys(const wchar_t *section)
-{
-	static const wchar_t *keys[] = {
-		L"match_first_vertex",
-		L"match_first_index",
-		L"match_first_instance",
-		L"match_vertex_count",
-		L"match_index_count",
-		L"match_instance_count",
-		NULL
-	};
-	int i;
-
-	for (i = 0; keys[i]; i++) {
-		if (IniHasKey(section, keys[i]))
 			return true;
 	}
 
@@ -3276,8 +3254,9 @@ static void ParseTextureOverrideSections()
 	TextureOverride *override;
 	uint32_t hash;
 	bool found;
-	bool has_draw_call_match_keys;
 	map<uint32_t, int> max_byte_width_map;
+	unsigned indexed_prefilter_overrides = 0;
+	unsigned hash_only_exact_overrides = 0;
 
 	// Lock entire routine, this can be re-inited.  These shaderoverrides
 	// are unlikely to be changing much, but for consistency.
@@ -3310,36 +3289,21 @@ static void ParseTextureOverrideSections()
 		if (texture_override_section_has_fuzzy_match_keys(id))
 			IniWarningW(L"Cannot use hash= and match options together!\n - [%ls]\n", id);
 
-		has_draw_call_match_keys = texture_override_section_has_draw_call_match_keys(id);
-		if (GetIniBool(id, L"prefilter_before_hash", false, NULL) && !has_draw_call_match_keys) {
-			IniWarningW(L"prefilter_before_hash requires at least one draw-context match and will fall back to legacy hash-first matching\n - [%ls]\n", id);
-		}
-
-		if (GetIniBool(id, L"prefilter_before_hash", false, NULL) && has_draw_call_match_keys) {
-			G->mTextureOverridePrefilterData.overrides.emplace_back();
-			override = &G->mTextureOverridePrefilterData.overrides.back();
-		} else {
-			G->mTextureOverrideMap[hash].emplace_back(); // C++ gotcha: invalidates pointers into the vector
-			override = &G->mTextureOverrideMap[hash].back();
-		}
-
+		G->mTextureOverrideMap[hash].emplace_back(); // C++ gotcha: invalidates pointers into the vector
+		override = &G->mTextureOverrideMap[hash].back();
 		override->ini_section = id;
 		override->hash = hash;
 
 		// Important that we do *not* register the command lists yet:
 		parse_texture_override_common(id, override, false);
 
-		if (override->prefilter_before_hash && override->has_draw_context_match) {
-			index_texture_override_prefilter(override);
-		} else {
-			// Warn if same hash is used two or more times in sections that
-			// do not have a draw context match or match_priority:
-			warn_if_duplicate_texture_hash(override, hash);
+		// Warn if same hash is used two or more times in sections that
+		// do not have a draw context match or match_priority:
+		warn_if_duplicate_texture_hash(override, hash);
 
-			// Record the largest `override_byte_width` value for the hash.
-			if (override->override_byte_width != -1) {
-				index_byte_width_override(override, hash, max_byte_width_map);
-			}
+		// Record the largest `override_byte_width` value for the hash.
+		if (override->override_byte_width != -1) {
+			index_byte_width_override(override, hash, max_byte_width_map);
 		}
 	}
 
@@ -3371,12 +3335,22 @@ static void ParseTextureOverrideSections()
 		for (TextureOverride &to : tolkv.second) {
 			registered_command_lists.push_back(&to.command_list);
 			registered_command_lists.push_back(&to.post_command_list);
+			if (G->prefilter_before_hash && G->track_region_hashes) {
+				if (to.has_draw_context_match) {
+					index_texture_override_prefilter(&to);
+					indexed_prefilter_overrides++;
+				} else {
+					hash_only_exact_overrides++;
+				}
+			}
 		}
 	}
 
-	for (TextureOverride &to : G->mTextureOverridePrefilterData.overrides) {
-		registered_command_lists.push_back(&to.command_list);
-		registered_command_lists.push_back(&to.post_command_list);
+	if (G->prefilter_before_hash && G->track_region_hashes) {
+		LogInfo("Strict VB/IB prefilter mode enabled: indexed %u exact-hash TextureOverride sections with draw-context matches; %u exact-hash sections without draw-context matches will not participate in the VB/IB hot path.\n",
+			indexed_prefilter_overrides, hash_only_exact_overrides);
+	} else if (G->prefilter_before_hash) {
+		LogInfo("VB/IB prefilter mode is enabled, but track_region_hashes=0 so it has no effect until VB/IB region hashing is enabled.\n");
 	}
 	LeaveCriticalSection(&G->mCriticalSection);
 }
@@ -4409,6 +4383,7 @@ void LoadConfigFile()
 	G->track_texture_updates = GetIniBoolOrInt(L"Rendering", L"track_texture_updates", 0, NULL);
 	G->track_region_hashes = GetIniBool(L"Rendering", L"track_region_hashes", false, NULL);
 	G->track_cb_region_hashes = GetIniBool(L"Rendering", L"track_cb_region_hashes", false, NULL);
+	G->prefilter_before_hash = GetIniBool(L"Rendering", L"prefilter_before_hash", false, NULL);
 	G->track_implicit_index_buffers = GetIniBool(L"Rendering", L"track_implicit_index_buffers", false, NULL);
 	G->allow_buffer_resize = GetIniBool(L"Rendering", L"allow_buffer_resize", true, NULL);
 	G->assemble_signature_comments = GetIniBool(L"Rendering", L"assemble_signature_comments", false, NULL);

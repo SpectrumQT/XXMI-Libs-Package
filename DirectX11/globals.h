@@ -3,7 +3,6 @@
 #include <d3d11_1.h>
 #include <ctime>
 #include <vector>
-#include <list>
 #include <set>
 #include <map>
 #include <unordered_map>
@@ -291,7 +290,6 @@ struct TextureOverride {
 
 	bool has_draw_context_match;
 	bool has_match_priority;
-	bool prefilter_before_hash;
 	int priority;
 	FuzzyMatch match_first_vertex;
 	FuzzyMatch match_first_index;
@@ -317,7 +315,6 @@ struct TextureOverride {
 		filter_index(FLT_MAX),
 		has_draw_context_match(false),
 		has_match_priority(false),
-		prefilter_before_hash(false),
 		priority(0)
 	{}
 };
@@ -332,11 +329,9 @@ typedef std::unordered_map<ID3D11Resource *, ResourceHandleInfo> ResourceMap;
 // will sort it in the ini parser when we create the list.
 typedef std::vector<struct TextureOverride> TextureOverrideList;
 typedef std::unordered_map<uint32_t, TextureOverrideList> TextureOverrideMap;
-typedef std::list<struct TextureOverride> TextureOverridePrefilterList;
 typedef std::unordered_map<uint32_t, TextureOverrideMatches> TextureOverridePrefilterIndex;
 
 struct TextureOverridePrefilterData {
-	TextureOverridePrefilterList overrides;
 	TextureOverridePrefilterIndex by_match_first_vertex;
 	TextureOverridePrefilterIndex by_match_first_index;
 	TextureOverridePrefilterIndex by_match_first_instance;
@@ -347,7 +342,6 @@ struct TextureOverridePrefilterData {
 
 	void clear()
 	{
-		overrides.clear();
 		by_match_first_vertex.clear();
 		by_match_first_index.clear();
 		by_match_first_instance.clear();
@@ -359,7 +353,13 @@ struct TextureOverridePrefilterData {
 
 	bool empty() const
 	{
-		return overrides.empty();
+		return by_match_first_vertex.empty()
+			&& by_match_first_index.empty()
+			&& by_match_first_instance.empty()
+			&& by_match_vertex_count.empty()
+			&& by_match_index_count.empty()
+			&& by_match_instance_count.empty()
+			&& fallback_overrides.empty();
 	}
 };
 
@@ -494,6 +494,7 @@ struct Globals
 	ShaderHashType shader_hash_type;
 	bool track_region_hashes;
 	bool track_cb_region_hashes;
+	bool prefilter_before_hash;
 	bool track_implicit_index_buffers;
 	bool allow_buffer_resize;
 	int texture_hash_version;
@@ -691,6 +692,7 @@ struct Globals
 		shader_hash_type(ShaderHashType::FNV),
 		track_region_hashes(false),
 		track_cb_region_hashes(false),
+		prefilter_before_hash(false),
 		track_implicit_index_buffers(false),
 		allow_buffer_resize(true),
 		texture_hash_version(0),

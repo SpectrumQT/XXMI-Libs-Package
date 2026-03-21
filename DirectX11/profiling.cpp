@@ -108,8 +108,6 @@ void Profiling::update_cto_warning(bool warn)
 		for (TextureOverride &to : tolkv.second)
 			cto_warn_post_commands(&to.post_command_list);
 	}
-	for (TextureOverride &to : G->mTextureOverridePrefilterData.overrides)
-		cto_warn_post_commands(&to.post_command_list);
 	for (auto &tof : G->mFuzzyTextureOverrides)
 		cto_warn_post_commands(&tof->texture_override->post_command_list);
 

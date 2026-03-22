@@ -3218,6 +3218,47 @@ static void index_texture_override_prefilter(TextureOverride *override)
 		G->mTextureOverridePrefilterData.fallback_overrides.push_back(override);
 }
 
+static bool section_has_case_insensitive_prefix(const wchar_t *section, const wchar_t *prefix)
+{
+	return !_wcsnicmp(section, prefix, wcslen(prefix));
+}
+
+static bool texture_override_section_is_named_vb_ib(const wchar_t *section)
+{
+	const wchar_t *basename = wcsrchr(section, L'\\');
+	if (basename)
+		basename++;
+	else
+		basename = section;
+
+	return section_has_case_insensitive_prefix(section, L"TextureOverride_IB_")
+		|| section_has_case_insensitive_prefix(section, L"TextureOverride_VB_")
+		|| section_has_case_insensitive_prefix(basename, L"_IB_")
+		|| section_has_case_insensitive_prefix(basename, L"_VB_");
+}
+
+static void warn_reload_about_hash_only_vb_ib_sections(const std::vector<std::wstring> &sections)
+{
+	if (sections.empty())
+		return;
+
+	std::wstringstream msg;
+	size_t shown = std::min<size_t>(sections.size(), 8);
+
+	msg << L"prefilter_before_hash compatibility fallback is active.\n"
+		<< L"The following VB/IB TextureOverride sections have no match_* and will reduce optimization:\n";
+
+	for (size_t i = 0; i < shown; i++)
+		msg << L" - [" << sections[i] << L"]\n";
+
+	if (sections.size() > shown)
+		msg << L" - ... and " << (sections.size() - shown) << L" more\n";
+
+	msg << L"Consider adding match_index_count or match_vertex_count.";
+
+	LogOverlayW(LOG_WARNING, L"%ls\n", msg.str().c_str());
+}
+
 static void update_byte_width_overrides(map<uint32_t, int>& max_byte_width_map)
 {
 	map<uint32_t, int>::iterator max_byte_width;
@@ -3257,6 +3298,7 @@ static void ParseTextureOverrideSections()
 	map<uint32_t, int> max_byte_width_map;
 	unsigned indexed_prefilter_overrides = 0;
 	unsigned hash_only_exact_overrides = 0;
+	std::vector<std::wstring> named_vb_ib_hash_only_exact_sections;
 
 	// Lock entire routine, this can be re-inited.  These shaderoverrides
 	// are unlikely to be changing much, but for consistency.
@@ -3266,6 +3308,7 @@ static void ParseTextureOverrideSections()
 	G->mTextureOverrideMap.clear();
 	G->mTextureOverridePrefilterData.clear();
 	G->mFuzzyTextureOverrides.clear();
+	G->mHashOnlyExactTextureOverrideCount = 0;
 
 	lower = ini_sections.lower_bound(wstring(L"TextureOverride"));
 	upper = prefix_upper_bound(ini_sections, wstring(L"TextureOverride"));
@@ -3341,14 +3384,19 @@ static void ParseTextureOverrideSections()
 					indexed_prefilter_overrides++;
 				} else {
 					hash_only_exact_overrides++;
+					if (texture_override_section_is_named_vb_ib(to.ini_section.c_str()))
+						named_vb_ib_hash_only_exact_sections.push_back(to.ini_section);
 				}
 			}
 		}
 	}
 
+	G->mHashOnlyExactTextureOverrideCount = hash_only_exact_overrides;
+
 	if (G->prefilter_before_hash && G->track_region_hashes) {
-		LogInfo("Strict VB/IB prefilter mode enabled: indexed %u exact-hash TextureOverride sections with draw-context matches; %u exact-hash sections without draw-context matches will not participate in the VB/IB hot path.\n",
+		LogInfo("VB/IB prefilter mode enabled: indexed %u exact-hash TextureOverride sections with draw-context matches; %u hash-only exact sections may trigger compatibility fallback at runtime.\n",
 			indexed_prefilter_overrides, hash_only_exact_overrides);
+		warn_reload_about_hash_only_vb_ib_sections(named_vb_ib_hash_only_exact_sections);
 	} else if (G->prefilter_before_hash) {
 		LogInfo("VB/IB prefilter mode is enabled, but track_region_hashes=0 so it has no effect until VB/IB region hashing is enabled.\n");
 	}

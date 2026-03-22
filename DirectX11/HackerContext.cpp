@@ -25,8 +25,6 @@
 #include "FrameAnalysis.h"
 #include "profiling.h"
 
-// -----------------------------------------------------------------------------------------------
-
 HackerContext* HackerContextFactory(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pContext1)
 {
 	// We can either create a straight HackerContext, or a souped up
@@ -741,14 +739,16 @@ void HackerContext::BeforeDraw(DrawContext &data)
 			// Register Index Buffer hash.
 			IndexBufferBinding& b = mCurrentIndexBufferBinding;
 			if (b.buffer && b.offset) {
-				mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetIndexBufferRegionSize(b.format, &data.call_info));
+				UINT region_size = GetIndexBufferRegionSize(b.format, &data.call_info);
+				mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, b.offset, region_size);
 				RegisterVisitedIndexBuffer(mCurrentIndexBuffer);
 			}
 			// Update Vertex Buffers hashes.
 			for (UINT i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
 				VertexBufferBinding& b = mCurrentVertexBuffersBindings[i];
 				if (b.buffer && b.stride) {
-					mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetVertexBufferRegionSize(b.stride, &data.call_info));
+					UINT region_size = GetVertexBufferRegionSize(b.stride, &data.call_info);
+					mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, b.offset, region_size);
 				}
 			}
 			// Register Vertex Buffers hashes under the same lock.
@@ -1764,21 +1764,23 @@ void CopySubresourceRegionCache(ID3D11Resource* pSrcResource, ID3D11Resource* pD
 	ResourceHandleInfo* src_info = GetResourceHandleInfo(pSrcResource);
 	ResourceHandleInfo* dst_info = GetResourceHandleInfo(pDstResource);
 
-	if (!src_info || !dst_info)
+	if (!src_info || !dst_info) {
+		LeaveCriticalSection(&G->mCriticalSection);
 		return;
+	}
 
 	UINT src_size = src_info->cached_data.size();
 
-	if (!src_info->cached_data_valid || src_offset + region_size > src_size) {
+	// If range is not specified, we must copy the entire src buffer.
+	if (!region_size)
+		region_size = src_size;
+
+	if (!src_info->IsDataCacheRangeValid(src_offset, region_size)) {
 		// Copy is happening from uncached data -> reset dst cache and leave it to slow fallback path.
 		dst_info->ClearDataCache();
 		LeaveCriticalSection(&G->mCriticalSection);
 		return;
 	}
-
-	// If range is not specified, we must copy the entire src buffer.
-	if (!region_size)
-		region_size = src_size;
 
 	// Initialize new cache of dst size.
 	if (!dst_info->cached_data_size) {

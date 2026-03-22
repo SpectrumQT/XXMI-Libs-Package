@@ -6234,8 +6234,16 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 		if ((type == ResourceCopyTargetType::VERTEX_BUFFER || type == ResourceCopyTargetType::INDEX_BUFFER)
 		 && G->prefilter_before_hash) {
 			TextureOverrideMatches prefilter_candidates;
+			TextureOverrideMatches fallback_matches;
+			bool have_prefilter_candidates = find_texture_override_prefilter_candidates(&prefilter_candidates, state->call_info);
+			bool allow_legacy_fallback = G->mHashOnlyExactTextureOverrideCount > 0;
 
-			if (find_texture_override_prefilter_candidates(&prefilter_candidates, state->call_info)) {
+			auto append_unique_match = [&](TextureOverride *override) {
+				if (std::find(matches->begin(), matches->end(), override) == matches->end())
+					matches->push_back(override);
+			};
+
+			if (have_prefilter_candidates || allow_legacy_fallback) {
 				Profiling::State profiling_state;
 				if (Profiling::mode == Profiling::Mode::SUMMARY)
 					Profiling::start(&profiling_state);
@@ -6245,10 +6253,26 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 				if (Profiling::mode == Profiling::Mode::SUMMARY)
 					Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
 
-				for (TextureOverride *override : prefilter_candidates) {
-					if (override->hash == hash)
-						matches->push_back(override);
+				if (hash) {
+					for (TextureOverride *override : prefilter_candidates) {
+						if (override->hash == hash)
+							append_unique_match(override);
+					}
+
+					if (allow_legacy_fallback) {
+						find_texture_override_for_hash(hash, &fallback_matches, state->call_info);
+
+						for (TextureOverride *override : fallback_matches)
+							append_unique_match(override);
+					}
 				}
+			}
+
+			if (matches->size() > 1) {
+				std::sort(matches->begin(), matches->end(),
+					[](TextureOverride *lhs, TextureOverride *rhs) {
+						return TextureOverrideLess(*lhs, *rhs);
+					});
 			}
 		} else {
 			Profiling::State profiling_state;

@@ -1834,39 +1834,57 @@ void RegionHashesCache::Initialize(size_t buffer_size)
 	UINT num_pages = (UINT)((buffer_size + PAGE_SIZE - 1) / PAGE_SIZE);
 	page_versions.assign(num_pages, 0);
 	// Reserve to avoid container rehashing during runtime.
-	cache = FlatHashMap<UINT, RegionCacheEntry>(buffer_size / PAGE_SIZE / 2);
+	cache = FlatHashMap<RegionCacheKey, RegionCacheEntry, RegionCacheKeyHasher>(buffer_size / PAGE_SIZE / 2);
 }
 
-// Store hash together with the current page version.
-// This allows fast invalidation by comparing stored version vs current page version.
-void RegionHashesCache::Add(UINT offset, uint32_t hash)
+uint64_t RegionHashesCache::ComputePagesFingerprint(UINT start_page, UINT end_page) const
 {
-	// Compute page index for this offset.
-	UINT page = offset / PAGE_SIZE;
-	if (page >= page_versions.size())
+	uint64_t fingerprint = 1469598103934665603ull;
+
+	for (UINT page = start_page; page <= end_page; ++page) {
+		fingerprint ^= page_versions[page];
+		fingerprint *= 1099511628211ull;
+	}
+
+	return fingerprint;
+}
+
+// Store hash together with the current covered-pages fingerprint.
+// This allows invalidation when any page within the cached region changes.
+void RegionHashesCache::Add(UINT offset, UINT size, uint32_t hash)
+{
+	UINT start_page = offset / PAGE_SIZE;
+	if (start_page >= page_versions.size())
 		return;
+
+	UINT end_page = (offset + size - 1) / PAGE_SIZE;
+	end_page = min(end_page, (UINT)page_versions.size() - 1);
 
 	RegionCacheEntry entry;
 	entry.hash = hash;
-	entry.version = page_versions[page];
+	entry.pages_fingerprint = ComputePagesFingerprint(start_page, end_page);
 
-	cache.insert(offset, entry);
+	cache.insert(RegionCacheKey{ offset, size }, entry);
 }
 
-uint32_t RegionHashesCache::Get(UINT offset)
+uint32_t RegionHashesCache::Get(UINT offset, UINT size)
 {
-	UINT page = offset / PAGE_SIZE;
-	if (page >= page_versions.size())
+	UINT start_page = offset / PAGE_SIZE;
+	if (start_page >= page_versions.size())
 		return 0;
 
+	UINT end_page = (offset + size - 1) / PAGE_SIZE;
+	end_page = min(end_page, (UINT)page_versions.size() - 1);
+
 	// Lookup exact offset (hot path, performance critical).
-	const RegionCacheEntry* entry = cache.find_ptr(offset);
+	const RegionCacheEntry* entry = cache.find_ptr(RegionCacheKey{ offset, size });
 	if (!entry)
 		return 0;
 
-	// Validate against page version
-	// If page version changed, this entry is stale.
-	if (entry->version != page_versions[page])
+	// Validate against all covered pages.
+	// Large VB/IB slices can span many pages, so checking only the start page
+	// would incorrectly keep stale hashes alive after later pages are updated.
+	if (entry->pages_fingerprint != ComputePagesFingerprint(start_page, end_page))
 		return 0;
 
 	return entry->hash;
@@ -1919,15 +1937,19 @@ void ResourceHandleInfo::InitializeDataCache(size_t size)
 {
 	//LogInfo("ResourceHandleInfo::InitializeDataCache size=%d\n", size);
 
-	if (!cached_data_size) {
+	if (!cached_data_size || cached_data_size != size) {
 		// First-time initialization.
 		cached_data.resize(size);
 		cached_data_size = size;
 		// Initialize region cache for this buffer size.
 		region_hashes_cache.Initialize(size);
+		cached_data_valid_ranges.clear();
 	} else {
 		// Buffer reused: invalidate all region hashes.
+		if (cached_data.size() != size)
+			cached_data.resize(size);
 		region_hashes_cache.Clear();
+		cached_data_valid_ranges.clear();
 	}
 
 	// Mark snapshot as invalid until data is written.
@@ -1946,7 +1968,9 @@ void ResourceHandleInfo::WriteDataCache(const void* src, size_t size)
 	// Full overwrite of CPU snapshot.
 	memcpy(cached_data.data(), src, size);
 
-	// Snapshot is now valid for hashing.
+	// Full overwrite makes the entire cached snapshot valid.
+	cached_data_valid_ranges.clear();
+	cached_data_valid_ranges.emplace_back(0, (UINT)size);
 	cached_data_valid = true;
 
 	//info->cached_data_hash = crc32c_hw(0, info->cached_data.data(), size);
@@ -1970,38 +1994,108 @@ void ResourceHandleInfo::WriteDataCacheRegion(const void* src, size_t region_siz
 		return;
 	}
 
+	if (cached_data.size() != cached_data_size)
+		cached_data.resize(cached_data_size);
+
 	// Update only the affected region.
 	memcpy(cached_data.data() + offset, src, region_size);
 
 	// Invalidate only affected pages (cheap, avoids clearing whole cache).
 	region_hashes_cache.Invalidate(offset, offset + (UINT)region_size);
 
-	// Snapshot is now valid for hashing.
-	cached_data_valid = true;
+	MarkDataCacheRangeValid(offset, region_size);
+}
+
+void ResourceHandleInfo::MarkDataCacheRangeValid(UINT offset, size_t size)
+{
+	if (!size)
+		return;
+
+	if (offset > cached_data_size || size > cached_data_size - offset)
+		return;
+
+	UINT start = offset;
+	UINT end = offset + (UINT)size;
+	std::pair<UINT, UINT> merged(start, end);
+	std::vector<std::pair<UINT, UINT>> updated_ranges;
+	updated_ranges.reserve(cached_data_valid_ranges.size() + 1);
+
+	bool inserted = false;
+	for (const auto& range : cached_data_valid_ranges) {
+		if (range.second < merged.first) {
+			updated_ranges.push_back(range);
+			continue;
+		}
+
+		if (merged.second < range.first) {
+			if (!inserted) {
+				updated_ranges.push_back(merged);
+				inserted = true;
+			}
+			updated_ranges.push_back(range);
+			continue;
+		}
+
+		merged.first = min(merged.first, range.first);
+		merged.second = max(merged.second, range.second);
+	}
+
+	if (!inserted)
+		updated_ranges.push_back(merged);
+
+	cached_data_valid_ranges.swap(updated_ranges);
+	cached_data_valid = cached_data_valid_ranges.size() == 1
+		&& cached_data_valid_ranges[0].first == 0
+		&& cached_data_valid_ranges[0].second >= cached_data_size;
+}
+
+bool ResourceHandleInfo::IsDataCacheRangeValid(UINT offset, UINT size) const
+{
+	if (!size || !cached_data_size || cached_data.size() != cached_data_size)
+		return false;
+
+	if (offset > cached_data_size || size > cached_data_size - offset)
+		return false;
+
+	if (cached_data_valid)
+		return true;
+
+	UINT requested_start = offset;
+	UINT requested_end = offset + size;
+
+	for (const auto& range : cached_data_valid_ranges) {
+		if (range.first > requested_start)
+			return false;
+
+		if (range.second > requested_start)
+			requested_start = range.second;
+
+		if (requested_start >= requested_end)
+			return true;
+	}
+
+	return false;
 }
 
 // Clears all cached region hashes and invalidates the CPU-side buffer snapshot.
 // This forces region hashes to be recomputed the next time they are requested.
 void ResourceHandleInfo::ClearDataCache()
 {
-	if (!cached_data_valid)
-		return;
 	//LogInfo("ResourceHandleInfo::ClearDataCache\n");
-	// Drop all cached hashes and CPU snapshot.
+	// Drop all cached hashes and mark the snapshot contents as unknown.
 	region_hashes_cache.Clear();
-	cached_data.clear();
-
+	cached_data_valid_ranges.clear();
 	cached_data_valid = false;
 }
 
-void ResourceHandleInfo::CacheRegionHash(UINT offset, uint32_t hash)
+void ResourceHandleInfo::CacheRegionHash(UINT offset, UINT size, uint32_t hash)
 {
-	region_hashes_cache.Add(offset, hash);
+	region_hashes_cache.Add(offset, size, hash);
 }
 
-uint32_t ResourceHandleInfo::GetCachedRegionHash(UINT offset)
+uint32_t ResourceHandleInfo::GetCachedRegionHash(UINT offset, UINT size)
 {
-	return region_hashes_cache.Get(offset);
+	return region_hashes_cache.Get(offset, size);
 }
 
 // Helper function that clears region hash cache for a specific D3D resource.
@@ -2186,8 +2280,10 @@ uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT 
 
 	uint32_t hash;
 
-	// Lookup offset in L2 cache. This one is slower and requires `handle_info` lookup.
-	hash = handle_info->GetCachedRegionHash(offset);
+	// Lookup offset+size in L2 cache. Matching by offset alone can return the
+	// wrong region hash when multiple draw calls share the same start offset
+	// but consume different sizes from a large buffer.
+	hash = handle_info->GetCachedRegionHash(offset, size);
 	if (hash) {
 		region_hashes_global_cache.insert(cache_key, hash);
 		LeaveCriticalSection(&G->mCriticalSection);
@@ -2195,10 +2291,11 @@ uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT 
 		return hash;
 	}
 
+	bool range_valid = handle_info->IsDataCacheRangeValid(offset, size);
 	LeaveCriticalSection(&G->mCriticalSection);
 
 	// Ensure buffer snapshot exists in RAM (will stall GPU to fetch it from VRAM otherwise).
-	if (!CacheBufferData(context, buffer, handle_info)) {
+	if (!range_valid && !CacheBufferData(context, buffer, handle_info)) {
 		return 0;
 	}
 
@@ -2216,7 +2313,7 @@ uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT 
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 
 	// Store computed hash in the region cache.
-	handle_info->CacheRegionHash(offset, hash);
+	handle_info->CacheRegionHash(offset, size, hash);
 	// Store computed hash in the global region cache.
 	region_hashes_global_cache.insert(cache_key, hash);
 

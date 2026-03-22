@@ -235,25 +235,46 @@ private:
 
 struct RegionHashesCache
 {
+	struct RegionCacheKey {
+		UINT offset;
+		UINT size;
+
+		bool operator==(const RegionCacheKey& other) const
+		{
+			return offset == other.offset && size == other.size;
+		}
+	};
+
+	struct RegionCacheKeyHasher
+	{
+		size_t operator()(const RegionCacheKey& k) const
+		{
+			return ((uint64_t)k.offset << 32) ^ (uint64_t)k.size;
+		}
+	};
+
 	struct RegionCacheEntry {
 		uint32_t hash;
-		uint32_t version;
+		uint64_t pages_fingerprint;
 	};
 public:
 	static constexpr UINT PAGE_SIZE = 256;
 
 	void Initialize(size_t buffer_size);
-	void Add(UINT offset, uint32_t hash);
-	uint32_t Get(UINT offset);
+	void Add(UINT offset, UINT size, uint32_t hash);
+	uint32_t Get(UINT offset, UINT size);
 	size_t GetSize();
 	void Invalidate(UINT start, UINT end);
 	void Clear();
 
 private:
+	uint64_t ComputePagesFingerprint(UINT start_page, UINT end_page) const;
+
 	// Cache of per-region hashes for given buffer.
-	// Key = region offset, Value = CRC32 hash of that region.
-	// Avoids recomputing hashes for the same draw-call regions.
-	FlatHashMap<UINT, RegionCacheEntry> cache;
+	// Key = region offset + region size, Value = CRC32 hash of that region.
+	// Avoids reusing the wrong hash when different draw calls start at the
+	// same offset but consume different amounts of the shared buffer.
+	FlatHashMap<RegionCacheKey, RegionCacheEntry, RegionCacheKeyHasher> cache;
 	std::vector<UINT> page_versions;
 };
 
@@ -292,21 +313,25 @@ struct ResourceHandleInfo
 	// the GPU resource multiple times.
 	std::vector<uint8_t> cached_data;
 	size_t cached_data_size = 0;
+	std::vector<std::pair<UINT, UINT>> cached_data_valid_ranges;
 
-	// Indicates whether cached_data currently contains a valid snapshot
-	// of the resource contents.
+	// Indicates whether cached_data currently contains a complete valid
+	// snapshot of the resource contents. Partial updates track valid ranges
+	// separately and should not set this unless they cover the full buffer.
 	bool cached_data_valid = false;
 	uint32_t cached_data_hash = 0;
 
 	void InitializeDataCache(size_t size);
 	void WriteDataCache(const void* src, size_t size);
 	void WriteDataCacheRegion(const void* src, size_t size, UINT offset);
+	void MarkDataCacheRangeValid(UINT offset, size_t size);
+	bool IsDataCacheRangeValid(UINT offset, UINT size) const;
 	// Clears cached region hashes and invalidates cached buffer data.
 	// Should be called when the underlying resource contents change.
 	void ClearDataCache();
 
-	void CacheRegionHash(UINT offset, uint32_t hash);
-	uint32_t GetCachedRegionHash(UINT offset);
+	void CacheRegionHash(UINT offset, UINT size, uint32_t hash);
+	uint32_t GetCachedRegionHash(UINT offset, UINT size);
 };
 
 struct CopySubresourceRegionContamination

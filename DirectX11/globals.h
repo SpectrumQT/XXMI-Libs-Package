@@ -552,7 +552,6 @@ struct Globals
 	int mSelectedIndexBufferPos;
 	std::set<UINT64> mSelectedIndexBuffer_VertexShader;		// std::set so that shaders used with an index buffer will be sorted in log when marked
 	std::set<UINT64> mSelectedIndexBuffer_PixelShader;		// std::set so that shaders used with an index buffer will be sorted in log when marked
-
 	std::set<uint32_t> mVisitedVertexBuffers;		        // std::set is sorted for consistent order while hunting
 	uint32_t mSelectedVertexBuffer;
 	int mSelectedVertexBufferPos;
@@ -596,6 +595,7 @@ struct Globals
 	TextureOverrideMap mTextureOverrideMap;
 	TextureOverridePrefilterData mTextureOverridePrefilterData;
 	FuzzyTextureOverrides mFuzzyTextureOverrides;
+	unsigned mHashOnlyExactTextureOverrideCount;
 
 	// Statistics
 	///////////////////////////////////////////////////////////////////////
@@ -766,6 +766,8 @@ struct Globals
 
 		for (i = 0; i < 11; i++)
 			FILTER_REFRESH[i] = 0;
+
+		mHashOnlyExactTextureOverrideCount = 0;
 
 		ticks_at_launch = GetTickCount();
 	}

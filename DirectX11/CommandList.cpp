@@ -6217,17 +6217,17 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 			}
 			break;
 		}
-		case ResourceCopyTargetType::CONSTANT_BUFFER:
-		{
-			if (G->track_cb_region_hashes) {
-				((ID3D11Buffer*)resource)->GetDesc(&desc);
-				if ((offset || (buf_size && buf_size < desc.ByteWidth)) && buf_size > offset) {
-					region_size = buf_size - offset;
-					use_region_hash = !!region_size;
-				}
+	case ResourceCopyTargetType::CONSTANT_BUFFER:
+	{
+		if (G->track_cb_region_hashes) {
+			((ID3D11Buffer*)resource)->GetDesc(&desc);
+			if ((offset || (buf_size && buf_size < desc.ByteWidth)) && buf_size > offset) {
+				region_size = buf_size - offset;
+				use_region_hash = !!region_size;
 			}
-			break;
 		}
+		break;
+	}
 	}
 
 	if (use_region_hash) {

@@ -1223,7 +1223,7 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 
 	// Divert IB or VB buffer for use in region hashes system cache.
 	// Data will be copied during TrackAndDivertUnmap from allocated replacement.
-	if (G->track_region_hashes) {
+	if (G->track_region_hashes || G->track_cb_region_hashes) {
 		if (!divert)
 			divert = MapTrackRegionHashes(pResource, MapType, &dim);
 	}
@@ -1331,7 +1331,7 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 		goto out_profile;
 	map_info = &i->second;
 
-	if (G->track_region_hashes && map_info->bind_flags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER))
+	if ((G->track_region_hashes || G->track_cb_region_hashes) && map_info->bind_flags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER))
 		UpdateResourceDataCacheFromMap(pResource, map_info->map.pData, map_info->size);
 
 	if (G->track_texture_updates == 1 && Subresource == 0 && map_info->mapped_writable)
@@ -1842,7 +1842,7 @@ STDMETHODIMP_(void) HackerContext::CopySubresourceRegion(THIS_
 	if (G->track_texture_updates == 1 && DstSubresource == 0 && DstX == 0 && DstY == 0 && DstZ == 0 && pSrcBox == NULL)
 		PropagateResourceHash(pDstResource, pSrcResource);
 
-	if (G->track_region_hashes)
+	if (G->track_region_hashes || G->track_cb_region_hashes)
 		CopySubresourceRegionCache(pSrcResource, pDstResource, DstX, pSrcBox);
 }
 

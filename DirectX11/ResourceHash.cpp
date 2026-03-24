@@ -1656,19 +1656,24 @@ void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches *match
 	}
 }
 
-static void find_texture_override_for_resource_by_hash(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info)
+static uint32_t get_hash_for_resource(ID3D11Resource* resource)
 {
-	uint32_t hash = 0;
-
 	if (!resource)
-		return;
+		return 0;
 
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+	uint32_t hash = GetResourceHash(resource);
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	return hash;
+}
+
+void find_texture_overrides_for_resource_by_hash(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info)
+{
 	if (G->mTextureOverrideMap.empty())
 		return;
 
-	EnterCriticalSectionPretty(&G->mCriticalSection);
-		hash = GetResourceHash(resource);
-	LeaveCriticalSection(&G->mCriticalSection);
+	uint32_t hash = get_hash_for_resource(resource);
 	if (!hash)
 		return;
 
@@ -1705,19 +1710,45 @@ template void find_texture_overrides<D3D11_TEXTURE1D_DESC>(uint32_t hash, const 
 template void find_texture_overrides<D3D11_TEXTURE2D_DESC>(uint32_t hash, const D3D11_TEXTURE2D_DESC *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 template void find_texture_overrides<D3D11_TEXTURE3D_DESC>(uint32_t hash, const D3D11_TEXTURE3D_DESC *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 
-void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info)
+void find_texture_overrides_for_resource_desc(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info)
 {
 	D3D11_RESOURCE_DIMENSION dimension;
-	ID3D11Buffer *buf = NULL;
-	ID3D11Texture1D *tex1d = NULL;
-	ID3D11Texture2D *tex2d = NULL;
-	ID3D11Texture3D *tex3d = NULL;
-	D3D11_BUFFER_DESC buf_desc;
-	D3D11_TEXTURE1D_DESC tex1d_desc;
-	D3D11_TEXTURE2D_DESC tex2d_desc;
-	D3D11_TEXTURE3D_DESC tex3d_desc;
+	resource->GetType(&dimension);
+	switch (dimension) {
+		case D3D11_RESOURCE_DIMENSION_BUFFER:
+		{
+			ID3D11Buffer* buf = (ID3D11Buffer*)resource;
+			D3D11_BUFFER_DESC buf_desc;
+			buf->GetDesc(&buf_desc);
+			return find_texture_overrides_for_desc(&buf_desc, matches, call_info);
+		}
+		case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+		{
+			ID3D11Texture1D* tex1d = (ID3D11Texture1D*)resource;
+			D3D11_TEXTURE1D_DESC tex1d_desc;
+			tex1d->GetDesc(&tex1d_desc);
+			return find_texture_overrides_for_desc(&tex1d_desc, matches, call_info);
+		}
+		case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+		{
+			ID3D11Texture2D* tex2d = (ID3D11Texture2D*)resource;
+			D3D11_TEXTURE2D_DESC tex2d_desc;
+			tex2d->GetDesc(&tex2d_desc);
+			return find_texture_overrides_for_desc(&tex2d_desc, matches, call_info);
+		}
+		case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+		{
+			ID3D11Texture3D* tex3d = (ID3D11Texture3D*)resource;
+			D3D11_TEXTURE3D_DESC tex3d_desc;
+			tex3d->GetDesc(&tex3d_desc);
+			return find_texture_overrides_for_desc(&tex3d_desc, matches, call_info);
+	}
+}
+}
 
-	find_texture_override_for_resource_by_hash(resource, matches, call_info);
+void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info)
+{
+	find_texture_overrides_for_resource_by_hash(resource, matches, call_info);
 
 	// Allow fuzzy matches to be processed even when exact matches exist
 	//if (!matches->empty()) {
@@ -1726,25 +1757,7 @@ void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverri
 	//	return;
 	//}
 
-	resource->GetType(&dimension);
-	switch (dimension) {
-		case D3D11_RESOURCE_DIMENSION_BUFFER:
-			buf = (ID3D11Buffer*)resource;
-			buf->GetDesc(&buf_desc);
-			return find_texture_overrides_for_desc(&buf_desc, matches, call_info);
-		case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
-			tex1d = (ID3D11Texture1D*)resource;
-			tex1d->GetDesc(&tex1d_desc);
-			return find_texture_overrides_for_desc(&tex1d_desc, matches, call_info);
-		case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
-			tex2d = (ID3D11Texture2D*)resource;
-			tex2d->GetDesc(&tex2d_desc);
-			return find_texture_overrides_for_desc(&tex2d_desc, matches, call_info);
-		case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
-			tex3d = (ID3D11Texture3D*)resource;
-			tex3d->GetDesc(&tex3d_desc);
-			return find_texture_overrides_for_desc(&tex3d_desc, matches, call_info);
-	}
+	find_texture_overrides_for_resource_desc(resource, matches, call_info);
 }
 
 bool TextureOverrideLess(const struct TextureOverride &lhs, const struct TextureOverride &rhs)

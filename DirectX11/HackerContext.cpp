@@ -1319,8 +1319,6 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 
 	if (read && !deny)
 		memcpy(replace, pMappedResource->pData, map_info->size);
-	else
-		memset(replace, 0, map_info->size);
 
 	map_info->orig_pData = pMappedResource->pData;
 	map_info->map.pData = replace;

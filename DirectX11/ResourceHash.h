@@ -233,6 +233,49 @@ private:
 	}
 };
 
+struct RegionHashKeyL2
+{
+	uint32_t offset;
+	uint32_t size;
+
+	bool operator==(const RegionHashKeyL2& other) const
+	{
+		return offset == other.offset && size == other.size;
+	}
+};
+
+struct RegionHashKeyHasherL2
+{
+	size_t operator()(const RegionHashKeyL2& k) const
+	{
+		return (static_cast<uint64_t>(k.offset) << 32) | k.size;
+	}
+};
+
+struct RegionHashKeyL3
+{
+	uint64_t ptr;
+	uint32_t offset;
+	uint32_t size;
+
+	bool operator==(const RegionHashKeyL3& other) const
+	{
+		return ptr == other.ptr && offset == other.offset && size == other.size;
+	}
+};
+
+struct RegionHashKeyHasherL3
+{
+	size_t operator()(const RegionHashKeyL3& k) const
+	{
+		uint64_t h = k.ptr;            // Use 64-bit pointer as base
+		h ^= (uint64_t)k.offset << 32; // XOR offset with upper bits
+		h ^= (uint64_t)k.size;         // XOR size with lower bits
+		h ^= h >> 32;                  // XOR ptr+size entropy with lower bits
+		return h;
+	}
+};
+
 struct RegionHashesCache
 {
 	struct RegionCacheEntry {
@@ -243,8 +286,8 @@ public:
 	static constexpr UINT PAGE_SIZE = 256;
 
 	void Initialize(size_t buffer_size);
-	void Add(UINT offset, uint32_t hash);
-	uint32_t Get(UINT offset);
+	void Add(const RegionHashKeyL2& key, uint32_t hash);
+	uint32_t Get(const RegionHashKeyL2& key);
 	size_t GetSize();
 	void Invalidate(UINT start, UINT end);
 	void Clear();
@@ -253,7 +296,7 @@ private:
 	// Cache of per-region hashes for given buffer.
 	// Key = region offset, Value = CRC32 hash of that region.
 	// Avoids recomputing hashes for the same draw-call regions.
-	FlatHashMap<UINT, RegionCacheEntry> cache;
+	FlatHashMap<RegionHashKeyL2, RegionCacheEntry, RegionHashKeyHasherL2> cache;
 	std::vector<UINT> page_versions;
 };
 
@@ -285,13 +328,17 @@ struct ResourceHandleInfo
 		data_hash(0)
 	{}
 
-	RegionHashesCache region_hashes_cache;
+	~ResourceHandleInfo()
 
 	// CPU-side copy of the resource data captured via a staging buffer.
 	// Used to compute hashes for arbitrary regions without re-mapping
 	// the GPU resource multiple times.
 	std::vector<uint8_t> cached_data;
 	size_t cached_data_size = 0;
+	//uint32_t cached_data_hash = 0;
+
+	RegionHashesCache region_hashes_cache;
+
 
 	// Indicates whether cached_data currently contains a valid snapshot
 	// of the resource contents.
@@ -305,8 +352,8 @@ struct ResourceHandleInfo
 	// Should be called when the underlying resource contents change.
 	void ClearDataCache();
 
-	void CacheRegionHash(UINT offset, uint32_t hash);
-	uint32_t GetCachedRegionHash(UINT offset);
+	void CacheRegionHash(const RegionHashKeyL2& key, uint32_t hash);
+	uint32_t GetCachedRegionHash(const RegionHashKeyL2& key);
 };
 
 struct CopySubresourceRegionContamination

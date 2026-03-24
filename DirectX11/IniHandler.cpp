@@ -4115,6 +4115,32 @@ static void warn_of_conflicting_d3dx(wchar_t *dll_ini_path)
 			"Using this configuration: %S\n", dll_ini_path);
 }
 
+// Caches TextureOverrides with match_index_count and match_vertex_count along with hash for fast lookup.
+// Used in buffer region hashes tracking system.
+void BuildTextureOverrideDrawMaps()
+{
+	G->mTextureOverrideDrawIndexMap.clear();
+	G->mTextureOverrideDrawVertexMap.clear();
+
+	for (auto& pair : G->mTextureOverrideMap)
+	{
+		uint32_t hash = pair.first;
+		TextureOverrideList& list = pair.second;
+
+		for (TextureOverride& ov : list)
+		{
+			if (ov.match_index_count.op == FuzzyMatchOp::EQUAL && ov.match_index_count.rhs_type1 == FuzzyMatchOperandType::VALUE) {
+				G->mTextureOverrideDrawIndexMap[ov.match_index_count.val].emplace_back(TextureOverrideFuzzyMatch{ hash, const_cast<TextureOverride*>(&ov) });
+				continue;
+			}
+			if (ov.match_vertex_count.op == FuzzyMatchOp::EQUAL && ov.match_vertex_count.rhs_type1 == FuzzyMatchOperandType::VALUE) {
+				G->mTextureOverrideDrawVertexMap[ov.match_vertex_count.val].emplace_back(TextureOverrideFuzzyMatch{ hash, const_cast<TextureOverride*>(&ov) });
+				continue;
+			}
+		}
+	}
+}
+
 void LoadConfigFile()
 {
 	wchar_t iniFile[MAX_PATH], logFilename[MAX_PATH];
@@ -4472,6 +4498,10 @@ void LoadConfigFile()
 	ParseShaderOverrideSections();
 	ParseShaderRegexSections();
 	ParseTextureOverrideSections();
+
+	// Build match_index_cound and match_vertex_count based cache for TextureOverride's
+	if (G->track_region_hashes)
+		BuildTextureOverrideDrawMaps();
 
 	LogInfo("[Present]\n");
 	G->present_command_list.clear();

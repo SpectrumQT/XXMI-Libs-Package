@@ -6061,14 +6061,11 @@ D3D11_BIND_FLAG ResourceCopyTarget::BindFlags(CommandListState *state, D3D11_RES
 
 void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *resource_found, TextureOverrideMatches *matches)
 {
-	TextureOverrideMap::iterator i;
-	ID3D11Resource *resource = NULL;
 	ID3D11View *view = NULL;
-
 	UINT stride = 0, offset = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 
-	resource = GetResource(state, &view, &stride, &offset, &format, NULL);
+	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, NULL);
 
 	if (resource_found)
 		*resource_found = !!resource;
@@ -6085,37 +6082,66 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 	// here, and ini `CheckTextureOverride` triggers [TextureOverride] sections correctly.
 	if (G->track_region_hashes)
 	{
-		UINT region_size = 0;
+		// Region hashing is only applicable to vertex/index buffers where offsets define subregions of a shared resource.
+		UINT region_offset = 0, region_size = 0;
+		switch (this->type) {
+			case ResourceCopyTargetType::VERTEX_BUFFER:
+				region_offset = GetVertexBufferRegionOffset(stride, state->call_info, offset);
+				region_size = GetVertexBufferRegionSize(stride, state->call_info);
+				break;
 
-		switch (type) {
-		case ResourceCopyTargetType::VERTEX_BUFFER:
-				offset = GetVertexBufferRegionOffset(stride, state->call_info, offset);
-			region_size = GetVertexBufferRegionSize(stride, state->call_info);
-			break;
-
-		case ResourceCopyTargetType::INDEX_BUFFER:
-				offset = GetIndexBufferRegionOffset(format, state->call_info, offset);
-			region_size = GetIndexBufferRegionSize(format, state->call_info);
-			break;
+			case ResourceCopyTargetType::INDEX_BUFFER:
+				region_offset = GetIndexBufferRegionOffset(format, state->call_info, offset);
+				region_size = GetIndexBufferRegionSize(format, state->call_info);
+				break;
 		}
 
-		uint32_t hash = 0;
-
-		if (region_size) {
-			Profiling::State profiling_state;
-			if (Profiling::mode == Profiling::Mode::SUMMARY)
-				Profiling::start(&profiling_state);
-
-			hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, offset, region_size);
-
-			if (Profiling::mode == Profiling::Mode::SUMMARY)
-				Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
-		}
-
-		if (hash)
-			find_texture_override_for_hash(hash, matches, state->call_info);
-		else
+		// Originally, 3dmigoto has 2 methods of TextureOverride matching:
+		// 1. Hash Matching - prefilter by hash, filter by call_info: stored in G->mTextureOverrideMap (hash -> vector<TextureOverride>).
+		// 2. Fuzzy Matching - prefilter by match options, filter by call_info: stored in G->mFuzzyTextureOverrides (set<FuzzyMatchResourceDesc, FuzzyMatchResourceDescLess>).
+		// Those methods cannot be used for SAME TextureOverride - if hash is defined, fuzzy match options will be ignored by INI parser.
+		if (!region_size) 
+		{
+			// Resource isn't index or vertex buffer, or region size cannot be computed.
+			// Fallback to original behavior. 
+			// Run Hash Matching and Fuzzy Matching.
 			find_texture_overrides_for_resource(resource, matches, state->call_info);
+		} 
+		else 
+		{
+			// For region hashes we need another method - prefilter by call_info, filter by hash.
+			// This path has higher CPU cost than Hash Matching, but it's still WAY cheaper than to region-hash every IB or VB.
+
+			// Prefilter TextureOverride sections from G->mTextureOverrideMap by call_info.
+			TextureOverrideFuzzyMatches* draw_info_matches = get_fuzzy_matches_by_draw_info(state->call_info);
+
+			uint32_t region_hash = 0;
+
+			// Filter prefiltering results by hash.
+			if (draw_info_matches) {
+				Profiling::State profiling_state;
+				if (Profiling::mode == Profiling::Mode::SUMMARY)
+					Profiling::start(&profiling_state);
+
+				// Calculate region hash.
+				region_hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, region_offset, region_size);
+
+				if (Profiling::mode == Profiling::Mode::SUMMARY)
+					Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
+			}
+
+			// Run Hash Matching.
+			if (region_hash) {
+				// By region hash.
+				find_texture_overrides_by_hash_from_fuzzy_matches(region_hash, draw_info_matches, matches, state->call_info);
+			} else {
+				// By full resource hash.
+				find_texture_overrides_for_resource_by_hash_from_fuzzy_matches(resource, draw_info_matches, matches, state->call_info);
+			}
+
+			// Run Fuzzy Matching.
+			find_texture_overrides_for_resource_desc(resource, matches, state->call_info);
+		}
 	}
 	else
 	{

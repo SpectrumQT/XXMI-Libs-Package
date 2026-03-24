@@ -565,6 +565,9 @@ struct Globals
 
 	std::unordered_map<UINT64, ShaderModelCacheEntry> mShaderModelCache;
 
+	unordered_map<uint32_t, TextureOverrideFuzzyMatches> mTextureOverrideDrawIndexMap;  // Contains hash+TextureOverrides pairs indexed by match_index_count
+	unordered_map<uint32_t, TextureOverrideFuzzyMatches> mTextureOverrideDrawVertexMap; // Contains hash+TextureOverrides pairs indexed by match_vertex_count
+
 	// Statistics
 	///////////////////////////////////////////////////////////////////////
 	//                                                                   //

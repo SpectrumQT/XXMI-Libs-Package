@@ -1680,6 +1680,45 @@ void find_texture_overrides_for_resource_by_hash(ID3D11Resource *resource, Textu
 	find_texture_override_for_hash(hash, matches, call_info);
 }
 
+TextureOverrideFuzzyMatches* get_fuzzy_matches_by_draw_info(DrawCallInfo* call_info)
+{
+	if (call_info->IndexCount)
+	{
+		auto it = G->mTextureOverrideDrawIndexMap.find(call_info->IndexCount);
+		if (it != G->mTextureOverrideDrawIndexMap.end()) {
+			return &it->second;
+		}
+	}
+	else if (call_info->VertexCount)
+	{
+		auto it = G->mTextureOverrideDrawVertexMap.find(call_info->VertexCount);
+		if (it != G->mTextureOverrideDrawVertexMap.end()){
+			return &it->second;
+		}
+	}
+	return nullptr;
+}
+
+void find_texture_overrides_by_hash_from_fuzzy_matches(uint32_t hash, TextureOverrideFuzzyMatches* fuzzy_matches, TextureOverrideMatches* matches, DrawCallInfo* call_info)
+{
+	TextureOverrideFuzzyMatches::iterator it;
+
+	for (it = fuzzy_matches->begin(); it != fuzzy_matches->end(); ++it) {
+		if (it->hash == hash && matches_draw_info(it->texture_override, call_info)) {
+			matches->push_back(it->texture_override);
+		}
+	}
+}
+
+void find_texture_overrides_for_resource_by_hash_from_fuzzy_matches(ID3D11Resource* resource, TextureOverrideFuzzyMatches* fuzzy_matches, TextureOverrideMatches* matches, DrawCallInfo* call_info)
+{
+	uint32_t hash = get_hash_for_resource(resource);
+	if (!hash)
+		return;
+
+	find_texture_overrides_by_hash_from_fuzzy_matches(hash, fuzzy_matches, matches, call_info);
+}
+
 template <typename DescType>
 static void find_texture_overrides_for_desc(const DescType *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info)
 {
@@ -1968,9 +2007,10 @@ void ClearResourceRegionHashCache(ID3D11Resource* resource)
 {
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 	ResourceHandleInfo* info = GetResourceHandleInfo(resource);
-	if (!info)
+	if (!info) {
+		LeaveCriticalSection(&G->mCriticalSection);
 		return;
-	EnterCriticalSectionPretty(&G->mCriticalSection);
+	}
 	info->ClearDataCache();
 	LeaveCriticalSection(&G->mCriticalSection);
 }

@@ -1625,18 +1625,19 @@ static bool matches_draw_info(TextureOverride *tex_override, DrawCallInfo *call_
 	if (!call_info)
 		return false;
 
-	if (!tex_override->match_first_vertex.matches_uint(call_info->FirstVertex))
+	if (!tex_override->match_index_count.matches_uint(call_info->IndexCount))
 		return false;
 	if (!tex_override->match_first_index.matches_uint(call_info->FirstIndex))
 		return false;
-	if (!tex_override->match_first_instance.matches_uint(call_info->FirstInstance))
-		return false;
 	if (!tex_override->match_vertex_count.matches_uint(call_info->VertexCount))
 		return false;
-	if (!tex_override->match_index_count.matches_uint(call_info->IndexCount))
+	if (!tex_override->match_first_vertex.matches_uint(call_info->FirstVertex))
 		return false;
 	if (!tex_override->match_instance_count.matches_uint(call_info->InstanceCount))
 		return false;
+	if (!tex_override->match_first_instance.matches_uint(call_info->FirstInstance))
+		return false;
+
 	return true;
 }
 

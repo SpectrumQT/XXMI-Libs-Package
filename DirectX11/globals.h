@@ -559,6 +559,11 @@ struct Globals
 	TextureOverrideMap mTextureOverrideMap;
 	FuzzyTextureOverrides mFuzzyTextureOverrides;
 
+	struct ShaderModelCacheEntry {
+		std::string shaderModel;
+	};
+	std::unordered_map<UINT64, ShaderModelCacheEntry> mShaderModelCache;
+
 	// Statistics
 	///////////////////////////////////////////////////////////////////////
 	//                                                                   //

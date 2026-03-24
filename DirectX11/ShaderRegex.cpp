@@ -643,6 +643,115 @@ void save_shader_regex_cache_bin(UINT64 hash, const wchar_t *shader_type, vector
 	fclose(f);
 }
 
+bool get_shader_model_from_bytecode(const void* data, size_t size, std::string* out_model)
+{
+	if (!data || size < 32 || !out_model)
+		return false;
+
+	const uint8_t* buffer = static_cast<const uint8_t*>(data);
+
+	// Validate DXBC header
+	if (memcmp(buffer, "DXBC", 4) != 0)
+		return false;
+
+	const uint8_t* ptr = buffer + 4 + 16; // Skip FOURCC + hash
+
+	// Read header fields
+	if (ptr + 12 > buffer + size)
+		return false;
+
+	uint32_t one, totalSize, numChunks;
+	memcpy(&one, ptr, 4); ptr += 4;
+	memcpy(&totalSize, ptr, 4); ptr += 4;
+	memcpy(&numChunks, ptr, 4); ptr += 4;
+
+	if (numChunks == 0)
+		return false;
+
+	// Validate chunk table bounds
+	if (ptr + numChunks * sizeof(uint32_t) > buffer + size)
+		return false;
+
+	const uint32_t* chunkOffsets = reinterpret_cast<const uint32_t*>(ptr);
+
+	// Iterate chunks backwards (same as disassembler)
+	for (int32_t i = (int32_t)numChunks - 1; i >= 0; --i)
+	{
+		uint32_t offset = chunkOffsets[i];
+
+		if (offset + 12 > size)
+			continue;
+
+		const uint8_t* chunk = buffer + offset;
+
+		// Look for shader code chunk
+		if (memcmp(chunk, "SHEX", 4) != 0 && memcmp(chunk, "SHDR", 4) != 0)
+			continue;
+
+		// Version token is at +8
+		uint32_t versionToken;
+		memcpy(&versionToken, chunk + 8, 4);
+
+		uint32_t type = (versionToken >> 16) & 0xFFFF;
+		uint32_t major = (versionToken >> 4) & 0xF;
+		uint32_t minor = (versionToken >> 0) & 0xF;
+
+		const char* prefix = "xx";
+		switch (type)
+		{
+			case 0: prefix = "ps"; break;
+			case 1: prefix = "vs"; break;
+			case 2: prefix = "gs"; break;
+			case 3: prefix = "hs"; break;
+			case 4: prefix = "ds"; break;
+			case 5: prefix = "cs"; break;
+		}
+
+		char buf[16];
+		snprintf(buf, sizeof(buf), "%s_%u_%u", prefix, major, minor);
+
+		*out_model = buf;
+		return true;
+	}
+
+	return false;
+}
+
+// Process groups that do not have patches to apply. Those can be handled without disassembly.
+bool link_shader_regex_groups_without_patterns(const wchar_t* shader_type, std::string* shader_model, UINT64 hash, bool* decompilation_required)
+{
+	ShaderRegexGroups::iterator i;
+	ShaderRegexGroup* group;
+	vector<uint32_t> match_ids;
+	uint32_t j;
+
+	for (i = shader_regex_groups.begin(), j = 0; i != shader_regex_groups.end(); i++, j++) {
+		group = &i->second;
+
+		// Skip group without matching shader model.
+		if (!group->shader_models.count(*shader_model)) {
+			continue;
+		}
+
+		// Skip group with patterns. Those ones need txt to match.
+		if (!group->patterns.empty()) {
+			if (decompilation_required)
+				*decompilation_required = true;
+			continue;
+		}
+
+		// Enable CommandList sections execution for this group.
+		group->link_command_lists_and_filter_index(hash);
+
+		match_ids.push_back(j);
+
+		LogInfo("ShaderRegex (no pattern): %S %016I64x matches [%S]\n", shader_type, hash, group->ini_section.c_str());
+	}
+
+	if(decompilation_required && !*decompilation_required)
+		save_shader_regex_cache_meta(hash, shader_type, &match_ids, false, nullptr, nullptr);
+}
+
 bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type, std::string *shader_model, UINT64 hash, std::wstring *tagline)
 {
 	ShaderRegexGroups::iterator i;
@@ -652,22 +761,21 @@ bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type
 	vector<uint32_t> match_ids;
 	uint32_t j;
 
-	if (*shader_model == std::string("bin")) {
-		// This will update the data structure, because we may as well
-		// - it will save effort if we have to redo this again later.
-		if (!get_shader_model(asm_text, shader_model))
-			return false;
-	}
-
 	for (i = shader_regex_groups.begin(), j = 0; i != shader_regex_groups.end(); i++, j++) {
 		group = &i->second;
 
-		// FIXME: Don't even disassemble if the shader model isn't in
-		// any of the regex groups and we aren't applying any other
-		// forms of deferred patches
-		if (!group->shader_models.count(*shader_model))
+		// Skip group without matching shader model.
+		if (!group->shader_models.count(*shader_model)) {
 			continue;
+		}
 
+		// Skip group without patterns. We've already processed them.
+		if (group->patterns.empty()) {
+			match_ids.push_back(j);
+			continue;
+		}
+
+		// Run patch.
 		group->apply_regex_patterns(asm_text, &match, &patch);
 		if (!match)
 			continue;
@@ -676,9 +784,11 @@ bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type
 		patched = patched || patch;
 		match_ids.push_back(j);
 
+		// Append section to patch sequence.
 		if (patch && tagline)
 			tagline->append(std::wstring(L"[") + group->ini_section + std::wstring(L"]"));
 
+		// Enable CommandList sections execution for this group.
 		group->link_command_lists_and_filter_index(hash);
 	}
 

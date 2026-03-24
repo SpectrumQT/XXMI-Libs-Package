@@ -558,6 +558,45 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 	case ShaderRegexCache::NO_CACHE:
 		LogInfo("Performing deferred shader analysis on %S %016I64x...\n", shader_type, hash);
 
+		// Detect shader model
+		auto it = G->mShaderModelCache.find(hash);
+		if (it != G->mShaderModelCache.end()) {
+			orig_info->shaderModel = it->second.shaderModel;
+			LogInfo("%S %016I64x shader model %s is loaded from cache.\n", shader_type, hash, orig_info->shaderModel.c_str());
+		} else {
+			if (orig_info->shaderModel == "bin") {
+				// Get shader model from bytecode.
+				if (!get_shader_model_from_bytecode(orig_info->byteCode->GetBufferPointer(), orig_info->byteCode->GetBufferSize(), &orig_info->shaderModel)) {
+					LogInfo("%S %016I64x shader model detection from bytecode failed.\n", shader_type, hash);
+					goto out_drop;
+				}
+				// Store shader modeli in cache.
+				G->mShaderModelCache.emplace(hash, ShaderModelCacheEntry{ orig_info->shaderModel });
+				LogInfo("%S %016I64x shader model %s detected from bytecode.\n", shader_type, hash, orig_info->shaderModel.c_str());
+			}
+		}
+
+		bool decompilation_required = false;
+
+		// Process ShaderRegex sections that don't require bytecode decompilation.
+		link_shader_regex_groups_without_patterns(shader_type, &orig_info->shaderModel, hash, &decompilation_required);
+
+		// Skip disassemble entirely if there are no matching ShaderRegex with Patterns found.
+		if (!decompilation_required) {
+			LogInfo("%S %016I64x disassembly skipped: no matching ShaderRegex with Patterns found for %s.\n", shader_type, hash, orig_info->shaderModel.c_str());
+			goto out_drop;
+		}
+
+		// Disassemble shader bytecode.
+		asm_text = BinaryToAsmText(
+			orig_info->byteCode->GetBufferPointer(),
+			orig_info->byteCode->GetBufferSize(),
+			G->patch_cb_offsets,
+			G->disassemble_undecipherable_custom_data);
+
+		if (asm_text.empty())
+			goto out_drop;
+
 		asm_text = BinaryToAsmText(orig_info->byteCode->GetBufferPointer(),
 				orig_info->byteCode->GetBufferSize(),
 				G->patch_cb_offsets,
@@ -565,6 +604,7 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 		if (asm_text.empty())
 			goto out_drop;
 
+		// Apply patches from ShaderRegex with Patterns (and Templates).
 		try {
 			patch_regex = apply_shader_regex_groups(&asm_text, shader_type, &orig_info->shaderModel, hash, &tagline);
 		} catch (...) {

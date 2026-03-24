@@ -2534,8 +2534,9 @@ void FrameAnalysisContext::DumpVBs(DrawCallInfo *call_info, ID3D11Buffer *staged
 
 		uint32_t region_hash = 0;
 		if (G->track_region_hashes && strides[i]) {
+			UINT region_offset = GetVertexBufferRegionOffset(strides[i], call_info, offsets[i]);
 			UINT region_size = GetVertexBufferRegionSize(strides[i], call_info);
-			region_hash = GetRegionHash(GetPassThroughOrigContext1(), buffers[i], offsets[i], region_size);
+			region_hash = GetRegionHash(GetPassThroughOrigContext1(), buffers[i], region_offset, region_size);
 		}
 
 		hr = FrameAnalysisFilename(filename, MAX_PATH, false, L"vb", NULL, i, buffers[i], region_hash);
@@ -2578,8 +2579,9 @@ void FrameAnalysisContext::DumpIB(DrawCallInfo *call_info, ID3D11Buffer **staged
 
 	uint32_t region_hash = 0;
 	if (G->track_region_hashes) {
+		UINT region_offset = GetIndexBufferRegionOffset(*format, call_info, *offset);
 		UINT region_size = GetIndexBufferRegionSize(*format, call_info);
-		region_hash = GetRegionHash(GetPassThroughOrigContext1(), buffer, *offset, region_size);
+		region_hash = GetRegionHash(GetPassThroughOrigContext1(), buffer, region_offset, region_size);
 	}
 
 	hr = FrameAnalysisFilename(filename, MAX_PATH, false, L"ib", NULL, -1, buffer, region_hash);

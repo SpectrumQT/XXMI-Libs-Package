@@ -2030,6 +2030,19 @@ static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, 
 	return true;
 }
 
+UINT GetVertexBufferRegionOffset(UINT stride, DrawCallInfo* call_info, UINT byte_offset)
+{
+	UINT byte_size = stride * call_info->FirstVertex;
+	return byte_offset + byte_size;
+}
+
+UINT GetIndexBufferRegionOffset(DXGI_FORMAT format, DrawCallInfo* call_info, UINT byte_offset)
+{
+	UINT index_stride = (format == DXGI_FORMAT_R32_UINT) ? 4 : 2;
+	UINT byte_size = index_stride * call_info->FirstIndex;
+	return byte_offset + byte_size;
+}
+
 // Computes the byte size of the vertex buffer region used by a draw call.
 // Used to determine how much data should be hashed for change detection.
 UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info)

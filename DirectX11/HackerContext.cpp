@@ -781,14 +781,18 @@ void HackerContext::BeforeDraw(DrawContext &data)
 			// Register Index Buffer hash.
 			IndexBufferBinding& b = mCurrentIndexBufferBinding;
 			if (b.buffer && b.offset) {
-				mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetIndexBufferRegionSize(b.format, &data.call_info));
+				UINT region_offset = GetIndexBufferRegionOffset(b.format, &data.call_info, b.offset);
+				UINT region_size = GetIndexBufferRegionSize(b.format, &data.call_info);
+				mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, region_offset, region_size);
 				RegisterVisitedIndexBuffer(mCurrentIndexBuffer);
 			}
 			// Update Vertex Buffers hashes.
 			for (UINT i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
 				VertexBufferBinding& b = mCurrentVertexBuffersBindings[i];
 				if (b.buffer && b.stride) {
-					mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, b.offset, GetVertexBufferRegionSize(b.stride, &data.call_info));
+					UINT region_offset = GetVertexBufferRegionOffset(b.stride, &data.call_info, b.offset);
+					UINT region_size = GetVertexBufferRegionSize(b.stride, &data.call_info);
+					mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, region_offset, region_size);
 				}
 			}
 			// Register Vertex Buffers hashes under the same lock.

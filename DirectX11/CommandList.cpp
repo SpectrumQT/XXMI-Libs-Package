@@ -6089,10 +6089,12 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 
 		switch (type) {
 		case ResourceCopyTargetType::VERTEX_BUFFER:
+				offset = GetVertexBufferRegionOffset(stride, state->call_info, offset);
 			region_size = GetVertexBufferRegionSize(stride, state->call_info);
 			break;
 
 		case ResourceCopyTargetType::INDEX_BUFFER:
+				offset = GetIndexBufferRegionOffset(format, state->call_info, offset);
 			region_size = GetIndexBufferRegionSize(format, state->call_info);
 			break;
 		}

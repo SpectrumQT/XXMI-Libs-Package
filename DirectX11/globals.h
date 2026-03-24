@@ -391,6 +391,10 @@ enum class AsyncQueryType
 	COUNTER,
 };
 
+struct ShaderModelCacheEntry {
+	std::string shaderModel;
+};
+
 struct Globals
 {
 	bool gInitialized;
@@ -559,9 +563,6 @@ struct Globals
 	TextureOverrideMap mTextureOverrideMap;
 	FuzzyTextureOverrides mFuzzyTextureOverrides;
 
-	struct ShaderModelCacheEntry {
-		std::string shaderModel;
-	};
 	std::unordered_map<UINT64, ShaderModelCacheEntry> mShaderModelCache;
 
 	// Statistics

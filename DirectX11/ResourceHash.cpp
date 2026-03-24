@@ -1781,8 +1781,8 @@ void find_texture_overrides_for_resource_desc(ID3D11Resource* resource, TextureO
 			D3D11_TEXTURE3D_DESC tex3d_desc;
 			tex3d->GetDesc(&tex3d_desc);
 			return find_texture_overrides_for_desc(&tex3d_desc, matches, call_info);
+		}
 	}
-}
 }
 
 void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info)

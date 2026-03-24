@@ -798,7 +798,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 			// Register Vertex Buffers hashes under the same lock.
 			EnterCriticalSectionPretty(&G->mCriticalSection);
 			for (UINT i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
-				RegisterVisitedVertexBufferNoLock(mCurrentVertexBuffers[i]);
+				RegisterVisitedVertexBufferNoLock(mCurrentVertexBuffers[i], i);
 			}
 			LeaveCriticalSection(&G->mCriticalSection);
 		}
@@ -817,8 +817,14 @@ void HackerContext::BeforeDraw(DrawContext &data)
 		{
 			// Selection
 			for (selectedVertexBufferPos = 0; selectedVertexBufferPos < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++selectedVertexBufferPos) {
-				if (G->mSelectedVertexBuffer && mCurrentVertexBuffers[selectedVertexBufferPos] == G->mSelectedVertexBuffer)
-					break;
+				if (G->mSelectedVertexBuffer > 0) {
+					if (mCurrentVertexBuffers[selectedVertexBufferPos] == G->mSelectedVertexBuffer) {
+						G->gVisitedVertexBufferSlotIds.insert(selectedVertexBufferPos);
+						if (G->gSelectedVertexBufferSlotId == -1 || selectedVertexBufferPos == G->gSelectedVertexBufferSlotId) {
+							G->gSelectedVertexBufferDrawInfo = data.call_info;
+						}
+					}
+				}
 			}
 			for (selectedRenderTargetPos = 0; selectedRenderTargetPos < mCurrentRenderTargets.size(); ++selectedRenderTargetPos) {
 				if (mCurrentRenderTargets[selectedRenderTargetPos] == G->mSelectedRenderTarget)
@@ -852,6 +858,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 				}
 				if (G->mSelectedIndexBuffer && mCurrentIndexBuffer == G->mSelectedIndexBuffer)
 				{
+					G->gSelectedIndexBufferDrawInfo = data.call_info;
 					G->mSelectedIndexBuffer_VertexShader.insert(mCurrentVertexShader);
 					G->mSelectedIndexBuffer_PixelShader.insert(mCurrentPixelShader);
 				}
@@ -1466,7 +1473,7 @@ STDMETHODIMP_(void) HackerContext::IASetVertexBuffers(THIS_
 			 if (ppVertexBuffers && ppVertexBuffers[idx]) {
 				 mCurrentVertexBuffers[i] = GetResourceHash(ppVertexBuffers[idx]);
 				 // When hunting, save this hash as a visited vertex buffer to cycle through.
-				 RegisterVisitedVertexBufferNoLock(mCurrentVertexBuffers[i]);
+				 RegisterVisitedVertexBufferNoLock(mCurrentVertexBuffers[i], i);
 			 } else {
 				 mCurrentVertexBuffers[i] = 0;
 			 }

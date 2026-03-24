@@ -545,8 +545,17 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 		if (profiling)
 			Profiling::start(&profiling_state);
 
-		if (G->hunting == HUNTING_MODE_ENABLED && G->overlay_buffer_hash_lifetime >= 0)
-			PurgeStaleVisitedBufferHashes(mHackerDevice);
+		if (G->hunting == HUNTING_MODE_ENABLED) {
+			if (G->overlay_buffer_hash_lifetime >= 0)
+				PurgeStaleVisitedBufferHashes(mHackerDevice);
+			if (G->gResetSelectedVertexBufferSlotId) {
+				if (!G->mVisitedVertexBuffers.empty()) {
+					G->mSelectedVertexBuffer = *G->mVisitedVertexBuffers.begin();
+					G->mSelectedVertexBufferPos = 0;
+					G->gResetSelectedVertexBufferSlotId = false;
+				}
+			}
+		}
 
 		if (G->track_region_hashes) {
 			ClearRegionHashesGlobalCache();

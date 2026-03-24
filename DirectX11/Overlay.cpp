@@ -541,12 +541,15 @@ void Overlay::DrawOutlinedString(DirectX::SpriteFont *font, wchar_t const *text,
 
 static void AppendShaderText(wchar_t *fullLine, wchar_t *type, int pos, size_t size)
 {
-	if (size == 0)
+	bool vb = type && type[0] == L'V' && type[1] == L'B';
+	if (size == 0 && (!vb))
 		return;
 
 	// The position is zero based, so we'll make it +1 for the humans.
-	if (++pos == 0)
+	if (size != 0 && ++pos == 0)
 		size = 0;
+	else if (pos < 0)
+		pos = 0;
 
 	// Format: "VS:1/15"
 	wchar_t append[maxstring];
@@ -573,8 +576,11 @@ static void CreateShaderCountString(wchar_t *counts)
 	AppendShaderText(counts, L"GS", G->mSelectedGeometryShaderPos, G->mVisitedGeometryShaders.size());
 	AppendShaderText(counts, L"DS", G->mSelectedDomainShaderPos, G->mVisitedDomainShaders.size());
 	AppendShaderText(counts, L"HS", G->mSelectedHullShaderPos, G->mVisitedHullShaders.size());
-	if (G->mSelectedVertexBuffer != -1)
-		AppendShaderText(counts, L"VB", G->mSelectedVertexBufferPos, G->mVisitedVertexBuffers.size());
+	if (G->mSelectedVertexBuffer != -1 || G->gSelectedVertexBufferSlotId != -1) {
+		wchar_t osdString[maxstring];
+		swprintf_s(osdString, maxstring, (G->gSelectedVertexBufferSlotId == -1) ? L"VB" : L"VB%u", G->gSelectedVertexBufferSlotId);
+		AppendShaderText(counts, osdString, G->mSelectedVertexBufferPos, G->mVisitedVertexBuffers.size());
+	}
 	if (G->mSelectedIndexBuffer != -1)
 		AppendShaderText(counts, L"IB", G->mSelectedIndexBufferPos, G->mVisitedIndexBuffers.size());
 	if (G->mSelectedRenderTarget != (ID3D11Resource *)-1)
@@ -613,6 +619,25 @@ static bool FindInfoText(wchar_t *info, UINT64 selectedShader)
 	return false;
 }
 
+std::wstring FormatSet(const std::set<uint32_t>& s, const std::wstring& sep, const uint32_t def)
+{
+	if (s.empty())
+		return std::to_wstring(def);
+
+	std::wstring result;
+	bool first = true;
+
+	for (uint32_t v : s)
+	{
+		if (!first)
+			result += sep;
+
+		result += std::to_wstring(v);
+		first = false;
+	}
+
+	return result;
+}
 
 // This is for a line of text as info about the currently selected shader.
 // The line is pulled out of the header of the HLSL text file, and can be
@@ -642,7 +667,23 @@ void Overlay::DrawShaderInfoLine(char *type, UINT64 selectedShader, float *y, bo
 		if (selectedShader == 0xffffffff || !G->verbose_overlay)
 			return;
 
-		swprintf_s(osdString, maxstring, L"%S %08llx", type, selectedShader);
+		DrawCallInfo* drawInfo;
+
+		if (strcmp(type, "VB") == 0) {
+			drawInfo = &G->gSelectedVertexBufferDrawInfo;
+			uint32_t fallback_slot_id = G->gSelectedVertexBufferSlotId >= 0 ? G->gSelectedVertexBufferSlotId : 0;
+			swprintf_s(osdString, maxstring, L"%S%s %08llx", type, FormatSet(G->gVisitedVertexBufferSlotIds, L"/", fallback_slot_id).c_str(), selectedShader);
+		} else {
+			drawInfo = &G->gSelectedIndexBufferDrawInfo;
+			swprintf_s(osdString, maxstring, L"%S %08llx", type, selectedShader);
+		}
+
+		size_t len = wcslen(osdString);
+
+		if (drawInfo->IndexCount)
+			swprintf_s(osdString + len, maxstring - len, L" (IndexCount: %u, FirstIndex: %u)", drawInfo->IndexCount, drawInfo->FirstIndex);
+		else if (drawInfo->VertexCount)
+			swprintf_s(osdString + len, maxstring - len, L" (VertexCount: %u, FirstVertex: %u)", drawInfo->VertexCount, drawInfo->FirstVertex);
 	}
 
 	strSize = mFont->MeasureString(osdString);

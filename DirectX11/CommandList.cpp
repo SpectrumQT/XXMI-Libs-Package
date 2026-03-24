@@ -6128,15 +6128,15 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 
 				if (Profiling::mode == Profiling::Mode::SUMMARY)
 					Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
-			}
 
-			// Run Hash Matching.
-			if (region_hash) {
-				// By region hash.
-				find_texture_overrides_by_hash_from_fuzzy_matches(region_hash, draw_info_matches, matches, state->call_info);
-			} else {
-				// By full resource hash.
-				find_texture_overrides_for_resource_by_hash_from_fuzzy_matches(resource, draw_info_matches, matches, state->call_info);
+				// Run Hash Matching.
+				if (region_hash) {
+					// By region hash.
+					find_texture_overrides_by_hash_from_fuzzy_matches(region_hash, draw_info_matches, matches, state->call_info);
+				} else {
+					// By full resource hash.
+					find_texture_overrides_for_resource_by_hash_from_fuzzy_matches(resource, draw_info_matches, matches, state->call_info);
+				}
 			}
 
 			// Run Fuzzy Matching.

@@ -1329,7 +1329,7 @@ out_profile:
 		Profiling::end(&profiling_state, &Profiling::map_overhead);
 }
 
-void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, const void* data, size_t size)
+void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, const void* data, size_t size, bool* deallocate_diverted_memory)
 {
 	if (!data || !size)
 		return;
@@ -1344,6 +1344,9 @@ void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, const void* data,
 	}
 
 	info->WriteDataCache(data, size);
+
+	if (deallocate_diverted_memory)
+		*deallocate_diverted_memory = false;
 
 	LeaveCriticalSection(&G->mCriticalSection);
 
@@ -1367,8 +1370,10 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 		goto out_profile;
 	map_info = &i->second;
 
+	bool deallocate_diverted_memory = true;
+
 	if (G->track_region_hashes && map_info->bind_flags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER))
-		UpdateResourceDataCacheFromMap(pResource, map_info->map.pData, map_info->size);
+		UpdateResourceDataCacheFromMap(pResource, map_info->map.pData, map_info->size, &deallocate_diverted_memory);
 
 	if (G->track_texture_updates == 1 && Subresource == 0 && map_info->mapped_writable)
 		UpdateResourceHashFromCPU(pResource, map_info->map.pData, map_info->map.RowPitch, map_info->map.DepthPitch);
@@ -1378,7 +1383,9 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 		if (map_info->mapped_writable)
 			memcpy(map_info->orig_pData, map_info->map.pData, map_info->size);
 
+		if (deallocate_diverted_memory) {
 		free(map_info->map.pData);
+	}
 	}
 
 	mMappedResources.erase(i);
@@ -1800,12 +1807,12 @@ void CopySubresourceRegionCache(ID3D11Resource* pSrcResource, ID3D11Resource* pD
 	ResourceHandleInfo* src_info = GetResourceHandleInfo(pSrcResource);
 	ResourceHandleInfo* dst_info = GetResourceHandleInfo(pDstResource);
 
-	if (!src_info || !dst_info)
+	if (!src_info || !dst_info) {
+		LeaveCriticalSection(&G->mCriticalSection);
 		return;
+	}
 
-	UINT src_size = src_info->cached_data.size();
-
-	if (!src_info->cached_data_valid || src_offset + region_size > src_size) {
+	if (!src_info->cached_data_size || src_offset + region_size > src_info->cached_data_size) {
 		// Copy is happening from uncached data -> reset dst cache and leave it to slow fallback path.
 		dst_info->ClearDataCache();
 		LeaveCriticalSection(&G->mCriticalSection);
@@ -1814,7 +1821,7 @@ void CopySubresourceRegionCache(ID3D11Resource* pSrcResource, ID3D11Resource* pD
 
 	// If range is not specified, we must copy the entire src buffer.
 	if (!region_size)
-		region_size = src_size;
+		region_size = src_info->cached_data_size;
 
 	// Initialize new cache of dst size.
 	if (!dst_info->cached_data_size) {
@@ -1823,9 +1830,9 @@ void CopySubresourceRegionCache(ID3D11Resource* pSrcResource, ID3D11Resource* pD
 		dst_info->InitializeDataCache(dst_desc.ByteWidth);
 	}
 
-	dst_info->WriteDataCacheRegion(src_info->cached_data.data() + src_offset, region_size, DstX);
+	dst_info->WriteDataCacheRegion(src_info->cached_data + src_offset, region_size, DstX);
 
-	//dst_info->cached_data_hash = crc32c_hw(0, dst_info->cached_data.data(), dst_desc.ByteWidth);
+	//dst_info->cached_data_hash = crc32c_hw(0, dst_info->cached_data, dst_desc.ByteWidth);
 
 	LeaveCriticalSection(&G->mCriticalSection);
 

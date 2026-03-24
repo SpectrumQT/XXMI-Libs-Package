@@ -1857,11 +1857,9 @@ void RegionHashesCache::Clear()
 // This buffer allows hashing without repeated GPU Map() calls.
 void ResourceHandleInfo::InitializeDataCache(size_t size)
 {
-	//LogInfo("ResourceHandleInfo::InitializeDataCache size=%d\n", size);
-
+	//LogInfo("InitializeDataCache size=%d\n", size);
 	if (!cached_data_size) {
 		// First-time initialization.
-		cached_data.resize(size);
 		cached_data_size = size;
 		// Initialize region cache for this buffer size.
 		region_hashes_cache.Initialize(size);
@@ -1869,9 +1867,6 @@ void ResourceHandleInfo::InitializeDataCache(size_t size)
 		// Buffer reused: invalidate all region hashes.
 		region_hashes_cache.Clear();
 	}
-
-	// Mark snapshot as invalid until data is written.
-	cached_data_valid = false;
 }
 
 void ResourceHandleInfo::WriteDataCache(const void* src, size_t size)
@@ -1879,22 +1874,24 @@ void ResourceHandleInfo::WriteDataCache(const void* src, size_t size)
 	if (!src)
 		return;
 
-	//LogInfo("ResourceHandleInfo::WriteDataCache size=%d\n", size);
+	//LogInfo("WriteDataCache size=%d\n", size);
 
 	InitializeDataCache(size);
 
+	if (cached_data) {
+		free(cached_data);
+		cached_data = nullptr;
+	}
+
 	// Full overwrite of CPU snapshot.
-	memcpy(cached_data.data(), src, size);
+	cached_data = (uint8_t*)src;
 
-	// Snapshot is now valid for hashing.
-	cached_data_valid = true;
-
-	//info->cached_data_hash = crc32c_hw(0, info->cached_data.data(), size);
+	//info->cached_data_hash = crc32c_hw(0, info->cached_data, size);
 }
 
 void ResourceHandleInfo::WriteDataCacheRegion(const void* src, size_t region_size, UINT offset)
 {
-	if (!src)
+	if (!src || !region_size)
 		return;
 
 	// Cannot write partial region if cache not initialized.
@@ -1903,35 +1900,42 @@ void ResourceHandleInfo::WriteDataCacheRegion(const void* src, size_t region_siz
 		return;
 	}
 
-	//LogInfo("ResourceHandleInfo::WriteDataCacheRegion offset=%d, region_size=%d!\n", offset, region_size);
-
 	if (offset > cached_data_size || region_size > cached_data_size - offset){
 		LogInfo("WriteDataCacheRegion Failed (out of bounds): offset=%d, region_size=%d, dst_size=%d!\n", offset, region_size, cached_data_size);
 		return;
 	}
 
+	//LogInfo("WriteDataCacheRegion: offset=%d, region_size=%d!\n", offset, region_size);
+
+	if (!cached_data)
+		cached_data = (uint8_t*)malloc(cached_data_size);
+
+	if (cached_data) {
 	// Update only the affected region.
-	memcpy(cached_data.data() + offset, src, region_size);
+		memcpy(cached_data + offset, src, region_size);
+	}
 
-	// Invalidate only affected pages (cheap, avoids clearing whole cache).
+	// Invalidate only affected pages (cheap, avoids clearing the whole cache).
 	region_hashes_cache.Invalidate(offset, offset + (UINT)region_size);
-
-	// Snapshot is now valid for hashing.
-	cached_data_valid = true;
 }
 
 // Clears all cached region hashes and invalidates the CPU-side buffer snapshot.
 // This forces region hashes to be recomputed the next time they are requested.
 void ResourceHandleInfo::ClearDataCache()
 {
-	if (!cached_data_valid)
+	if (!cached_data_size)
 		return;
+
 	//LogInfo("ResourceHandleInfo::ClearDataCache\n");
+
+	if (cached_data) {
+		free(cached_data);
+		cached_data = nullptr;
+	}
+	cached_data_size = 0;
+
 	// Drop all cached hashes and CPU snapshot.
 	region_hashes_cache.Clear();
-	cached_data.clear();
-
-	cached_data_valid = false;
 }
 
 void ResourceHandleInfo::CacheRegionHash(const RegionHashKeyL2& key, uint32_t hash)
@@ -1968,7 +1972,7 @@ static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, 
 	// Fast path: reuse existing CPU snapshot.
 	// Avoids expensive GPU sync (CopyResource + Map).
 	EnterCriticalSectionPretty(&G->mCriticalSection);
-	if (handle_info->cached_data_valid) {
+	if (handle_info->cached_data_size) {
 		LeaveCriticalSection(&G->mCriticalSection);
 		return true;
 	}
@@ -2126,7 +2130,7 @@ uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT 
 	}
 
 	// Make pointer for given offset in L1 cache (raw data).
-	const uint8_t* ptr = handle_info->cached_data.data() + offset;
+	const uint8_t* ptr = handle_info->cached_data + offset;
 
 	// Compute CRC32 hash for the region.
 	hash = crc32c_hw(0, ptr, size);

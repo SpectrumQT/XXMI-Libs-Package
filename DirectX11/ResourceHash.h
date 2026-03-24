@@ -308,6 +308,15 @@ struct ResourceHandleInfo
 	uint32_t orig_hash;	// Original hash at the time of creation
 	uint32_t data_hash;	// Just the data hash for track_texture_updates
 
+	// CPU-side copy of the resource data captured via hooks or staging buffer.
+	// Used to compute hashes for arbitrary regions without re-mapping
+	// the GPU resource multiple times.
+	uint8_t* cached_data;
+	size_t cached_data_size = 0;
+	//uint32_t cached_data_hash = 0;
+
+	RegionHashesCache region_hashes_cache;
+
 	// TODO: If we are sure we understand all possible differences between
 	// the original desc and that obtained by querying the resource we
 	// probably don't need to store these. One possible difference is the
@@ -325,25 +334,17 @@ struct ResourceHandleInfo
 		type(D3D11_RESOURCE_DIMENSION_UNKNOWN),
 		hash(0),
 		orig_hash(0),
-		data_hash(0)
+		data_hash(0),
+		cached_data(nullptr)
 	{}
 
 	~ResourceHandleInfo()
-
-	// CPU-side copy of the resource data captured via a staging buffer.
-	// Used to compute hashes for arbitrary regions without re-mapping
-	// the GPU resource multiple times.
-	std::vector<uint8_t> cached_data;
-	size_t cached_data_size = 0;
-	//uint32_t cached_data_hash = 0;
-
-	RegionHashesCache region_hashes_cache;
-
-
-	// Indicates whether cached_data currently contains a valid snapshot
-	// of the resource contents.
-	bool cached_data_valid = false;
-	uint32_t cached_data_hash = 0;
+	{
+		if (cached_data) {
+			free(cached_data);
+			cached_data = nullptr;
+		}
+	}
 
 	void InitializeDataCache(size_t size);
 	void WriteDataCache(const void* src, size_t size);

@@ -283,7 +283,15 @@ struct RegionHashesCache
 		uint32_t version;
 	};
 public:
+	// Data cache invalidation step size in bytes.
+	// So, for page size of 256 and buffer size of 16MB we'll get 16MB/256=65536 page count.
+	// Page size of 256 looks like a good balance between invalidation precision and memory usage.
 	static constexpr UINT PAGE_SIZE = 256;
+	// How many region hashes we expect to use per page.
+	// Controls initial L2 cache size.
+	// So, for 2 hashes per page, page size of 256 and 65536 pages we'll get 65536/(256/2)=512 size.
+	// If we're interested in region hashes only as entry points, 512 unique IB/VB0 per 16MB should be a good start.
+	static constexpr UINT HASHES_PER_PAGE = 2;
 
 	void Initialize(size_t buffer_size);
 	void Add(const RegionHashKeyL2& key, uint32_t hash);
@@ -296,7 +304,7 @@ private:
 	// Cache of per-region hashes for given buffer.
 	// Key = region offset, Value = CRC32 hash of that region.
 	// Avoids recomputing hashes for the same draw-call regions.
-	FlatHashMap<RegionHashKeyL2, RegionCacheEntry, RegionHashKeyHasherL2> cache;
+	std::unique_ptr <FlatHashMap<RegionHashKeyL2, RegionCacheEntry, RegionHashKeyHasherL2>> cache;
 	std::vector<UINT> page_versions;
 };
 
@@ -315,7 +323,7 @@ struct ResourceHandleInfo
 	size_t cached_data_size = 0;
 	//uint32_t cached_data_hash = 0;
 
-	RegionHashesCache region_hashes_cache;
+	std::unique_ptr<RegionHashesCache> region_hashes_cache;
 
 	// TODO: If we are sure we understand all possible differences between
 	// the original desc and that obtained by querying the resource we

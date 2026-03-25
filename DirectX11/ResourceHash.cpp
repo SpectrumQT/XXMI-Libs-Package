@@ -1826,14 +1826,17 @@ void RegionHashesCache::Initialize(size_t buffer_size)
 	//LogInfo("RegionHashesCache::Initialize buffer_size=%d \n", buffer_size);
 	UINT num_pages = (UINT)((buffer_size + PAGE_SIZE - 1) / PAGE_SIZE);
 	page_versions.assign(num_pages, 0);
-	// Reserve to avoid container rehashing during runtime.
-	cache = FlatHashMap<RegionHashKeyL2, RegionCacheEntry, RegionHashKeyHasherL2>(buffer_size / PAGE_SIZE / 2);
+	if (cache)
+		cache->clear();
 }
 
 // Store hash together with the current page version.
 // This allows fast invalidation by comparing stored version vs current page version.
 void RegionHashesCache::Add(const RegionHashKeyL2& key, uint32_t hash)
 {
+	if (!cache)
+		cache = std::make_unique<FlatHashMap<RegionHashKeyL2, RegionCacheEntry, RegionHashKeyHasherL2>>(page_versions.size() / (PAGE_SIZE / HASHES_PER_PAGE));
+
 	// Compute page index for this offset.
 	UINT page = key.offset / PAGE_SIZE;
 	if (page >= page_versions.size())
@@ -1843,17 +1846,20 @@ void RegionHashesCache::Add(const RegionHashKeyL2& key, uint32_t hash)
 	entry.hash = hash;
 	entry.version = page_versions[page];
 
-	cache.insert(key, entry);
+	cache->insert(key, entry);
 }
 
 uint32_t RegionHashesCache::Get(const RegionHashKeyL2& key)
 {
+	if (!cache)
+		return 0;
+
 	UINT page = key.offset / PAGE_SIZE;
 	if (page >= page_versions.size())
 		return 0;
 
 	// Lookup exact offset (hot path, performance critical).
-	const RegionCacheEntry* entry = cache.find_ptr(key);
+	const RegionCacheEntry* entry = cache->find_ptr(key);
 	if (!entry)
 		return 0;
 
@@ -1867,7 +1873,7 @@ uint32_t RegionHashesCache::Get(const RegionHashKeyL2& key)
 
 size_t RegionHashesCache::GetSize()
 {
-	return cache.size();
+	return cache ? cache->size() : 0;
 }
 
 // Invalidate a byte range by bumping page versions.
@@ -1901,7 +1907,8 @@ void RegionHashesCache::Invalidate(UINT start, UINT end)
 void RegionHashesCache::Clear()
 {
 	//LogInfo("RegionHashesCache::Clear\n");
-	cache.clear();
+	if (cache)
+		cache->clear();
 	// Reset all versions so existing entries (if any reused) become invalid.
 	std::fill(page_versions.begin(), page_versions.end(), 0);
 }
@@ -1910,15 +1917,18 @@ void RegionHashesCache::Clear()
 // This buffer allows hashing without repeated GPU Map() calls.
 void ResourceHandleInfo::InitializeDataCache(size_t size)
 {
+	// Initialize region hashes cache.
+	if (!region_hashes_cache)
+		region_hashes_cache = std::make_unique<RegionHashesCache>();
 	//LogInfo("InitializeDataCache size=%d\n", size);
 	if (!cached_data_size) {
 		// First-time initialization.
 		cached_data_size = size;
 		// Initialize region cache for this buffer size.
-		region_hashes_cache.Initialize(size);
+		region_hashes_cache->Initialize(size);
 	} else {
 		// Buffer reused: invalidate all region hashes.
-		region_hashes_cache.Clear();
+		region_hashes_cache->Clear();
 	}
 }
 
@@ -1969,7 +1979,8 @@ void ResourceHandleInfo::WriteDataCacheRegion(const void* src, size_t region_siz
 	}
 
 	// Invalidate only affected pages (cheap, avoids clearing the whole cache).
-	region_hashes_cache.Invalidate(offset, offset + (UINT)region_size);
+	if (region_hashes_cache)
+		region_hashes_cache->Invalidate(offset, offset + (UINT)region_size);
 }
 
 // Clears all cached region hashes and invalidates the CPU-side buffer snapshot.
@@ -1988,17 +1999,21 @@ void ResourceHandleInfo::ClearDataCache()
 	cached_data_size = 0;
 
 	// Drop all cached hashes and CPU snapshot.
-	region_hashes_cache.Clear();
+	if (region_hashes_cache)
+		region_hashes_cache->Clear();
 }
 
 void ResourceHandleInfo::CacheRegionHash(const RegionHashKeyL2& key, uint32_t hash)
 {
-	region_hashes_cache.Add(key, hash);
+	if (region_hashes_cache)
+		region_hashes_cache->Add(key, hash);
 }
 
 uint32_t ResourceHandleInfo::GetCachedRegionHash(const RegionHashKeyL2& key)
 {
-	return region_hashes_cache.Get(key);
+	if (!region_hashes_cache)
+		return 0;
+	return region_hashes_cache->Get(key);
 }
 
 // Helper function that clears region hash cache for a specific D3D resource.
@@ -2167,7 +2182,7 @@ uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT 
 	if (hash) {
 		region_hashes_global_cache.insert(level_3_cache_key, hash);
 		LeaveCriticalSection(&G->mCriticalSection);
-		//LogInfo("GetRegionHash: From L2 cache: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d \n", hash, offset, size, handle_info->hash, buffer, handle_info->region_hashes_cache.GetSize());
+		//LogInfo("GetRegionHash: From L2 cache: hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d \n", hash, offset, size, handle_info->hash, buffer, handle_info->region_hashes_cache->GetSize());
 		return hash;
 	}
 
@@ -2198,7 +2213,7 @@ uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT 
 
 	LeaveCriticalSection(&G->mCriticalSection);
 
-	//LogInfo("GetRegionHash: New hash: frame=%d, hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d, data_hash=%08lx \n", G->frame_no, hash, offset, size, handle_info->hash, buffer, handle_info->region_hashes_cache.GetSize(), handle_info->cached_data_hash);
+	//LogInfo("GetRegionHash: New hash: frame=%d, hash=%08lx, offset=%d, size=%d, full_hash=%08lx, pResource=0x%p, cache_size=%d, data_hash=%08lx \n", G->frame_no, hash, offset, size, handle_info->hash, buffer, handle_info->region_hashes_cache->GetSize(), handle_info->cached_data_hash);
 
 	return hash;
 }

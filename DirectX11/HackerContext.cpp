@@ -1391,8 +1391,8 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 			memcpy(map_info->orig_pData, map_info->map.pData, map_info->size);
 
 		if (deallocate_diverted_memory) {
-		free(map_info->map.pData);
-	}
+			free(map_info->map.pData);
+		}
 	}
 
 	mMappedResources.erase(i);

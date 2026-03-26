@@ -803,7 +803,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 			LeaveCriticalSection(&G->mCriticalSection);
 		}
 
-		UINT selectedVertexBufferPos;
+		UINT selectedVertexBufferPos = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
 		UINT selectedRenderTargetPos;
 		UINT i;
 
@@ -816,12 +816,13 @@ void HackerContext::BeforeDraw(DrawContext &data)
 		EnterCriticalSectionPretty(&G->mCriticalSection);
 		{
 			// Selection
-			for (selectedVertexBufferPos = 0; selectedVertexBufferPos < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++selectedVertexBufferPos) {
-				if (G->mSelectedVertexBuffer > 0) {
-					if (mCurrentVertexBuffers[selectedVertexBufferPos] == G->mSelectedVertexBuffer) {
-						G->gVisitedVertexBufferSlotIds.insert(selectedVertexBufferPos);
-						if (G->gSelectedVertexBufferSlotId == -1 || selectedVertexBufferPos == G->gSelectedVertexBufferSlotId) {
+			if (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != 0xFFFFFFFF) {
+				for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++i) {
+					if (mCurrentVertexBuffers[i] == G->mSelectedVertexBuffer) {
+						G->gVisitedVertexBufferSlotIds.insert(i);
+						if (G->gSelectedVertexBufferSlotId == -1 || i == G->gSelectedVertexBufferSlotId) {
 							G->gSelectedVertexBufferDrawInfo = data.call_info;
+							selectedVertexBufferPos = i;
 						}
 					}
 				}

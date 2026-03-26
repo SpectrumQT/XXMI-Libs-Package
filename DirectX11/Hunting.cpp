@@ -1525,8 +1525,15 @@ out:
 
 static void PrevVertexBuffer(HackerDevice *device, void *private_data)
 {
-	HuntPrev<uint32_t>("vertex buffer", &G->mVisitedVertexBuffers, &G->mSelectedVertexBuffer, &G->mSelectedVertexBufferPos);
-
+	if (G->mVisitedVertexBuffers.size() == 0 || G->mSelectedVertexBufferPos <= 0) {
+		EnterCriticalSectionPretty(&G->mCriticalSection);
+		G->mSelectedVertexBuffer = UINT32_MAX;
+		G->mSelectedVertexBufferPos = INT_MAX;
+		LeaveCriticalSection(&G->mCriticalSection);
+	}
+	else {
+		HuntPrev<uint32_t>("vertex buffer", &G->mVisitedVertexBuffers, &G->mSelectedVertexBuffer, &G->mSelectedVertexBufferPos);
+	}
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 	G->mSelectedVertexBuffer_PixelShader.clear();
 	G->mSelectedVertexBuffer_VertexShader.clear();
@@ -1556,8 +1563,14 @@ static void PrevVertexBufferSlot(HackerDevice* device, void* private_data)
 }
 static void PrevIndexBuffer(HackerDevice *device, void *private_data)
 {
-	HuntPrev<uint32_t>("index buffer", &G->mVisitedIndexBuffers, &G->mSelectedIndexBuffer, &G->mSelectedIndexBufferPos);
-
+	if (G->mVisitedIndexBuffers.size() == 0 || G->mSelectedIndexBufferPos <= 0) {
+		EnterCriticalSectionPretty(&G->mCriticalSection);
+		G->mSelectedIndexBuffer = UINT32_MAX;
+		G->mSelectedIndexBufferPos = INT_MAX;
+		LeaveCriticalSection(&G->mCriticalSection);
+	} else {
+		HuntPrev<uint32_t>("index buffer", &G->mVisitedIndexBuffers, &G->mSelectedIndexBuffer, &G->mSelectedIndexBufferPos);
+	}
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 	G->mSelectedIndexBuffer_PixelShader.clear();
 	G->mSelectedIndexBuffer_VertexShader.clear();
@@ -2070,7 +2083,7 @@ void ParseHuntingSection()
 
 void RegisterVisitedIndexBufferNoLock(uint32_t hash)
 {
-	if (!hash)
+	if (!hash || hash == UINT32_MAX)
 		return;
 	G->mVisitedIndexBuffers.insert(hash);
 	if (G->overlay_buffer_hash_lifetime >= 0)
@@ -2086,7 +2099,7 @@ void RegisterVisitedIndexBuffer(uint32_t hash)
 
 void RegisterVisitedVertexBufferNoLock(uint32_t hash, uint32_t slot_id)
 {
-	if (!hash)
+	if (!hash || hash == UINT32_MAX)
 		return;
 	if (G->gSelectedVertexBufferSlotId != -1 && slot_id != G->gSelectedVertexBufferSlotId) {
 		return;

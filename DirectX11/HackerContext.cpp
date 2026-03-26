@@ -779,28 +779,37 @@ void HackerContext::BeforeDraw(DrawContext &data)
 		if (G->track_region_hashes) 
 		{
 			// Register Index Buffer hash.
-			IndexBufferBinding& b = mCurrentIndexBufferBinding;
-			if (b.buffer && b.offset) {
-				UINT region_offset = GetIndexBufferRegionOffset(b.format, &data.call_info, b.offset);
-				UINT region_size = GetIndexBufferRegionSize(b.format, &data.call_info);
-				mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, region_offset, region_size);
-				RegisterVisitedIndexBuffer(mCurrentIndexBuffer);
-			}
-			// Update Vertex Buffers hashes.
-			for (UINT i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
-				VertexBufferBinding& b = mCurrentVertexBuffersBindings[i];
-				if (b.buffer && b.stride) {
-					UINT region_offset = GetVertexBufferRegionOffset(b.stride, &data.call_info, b.offset);
-					UINT region_size = GetVertexBufferRegionSize(b.stride, &data.call_info);
-					mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, region_offset, region_size);
+			if (G->mSelectedIndexBuffer != 0 && G->mSelectedIndexBuffer != UINT32_MAX || G->mSelectedIndexBufferPos == INT_MAX) {
+				IndexBufferBinding& b = mCurrentIndexBufferBinding;
+				if (b.buffer && b.offset) {
+					UINT region_offset = GetIndexBufferRegionOffset(b.format, &data.call_info, b.offset);
+					UINT region_size = GetIndexBufferRegionSize(b.format, &data.call_info);
+					mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, region_offset, region_size);
+					RegisterVisitedIndexBuffer(mCurrentIndexBuffer);
 				}
 			}
-			// Register Vertex Buffers hashes under the same lock.
-			EnterCriticalSectionPretty(&G->mCriticalSection);
-			for (UINT i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
-				RegisterVisitedVertexBufferNoLock(mCurrentVertexBuffers[i], i);
+			// Update Vertex Buffers hashes.
+			if (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != UINT32_MAX || G->mSelectedVertexBufferPos == INT_MAX) {
+				UINT start_pos = 0, end_pos = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
+				if (G->gSelectedVertexBufferSlotId >= 0) {
+					start_pos = G->gSelectedVertexBufferSlotId;
+					end_pos = G->gSelectedVertexBufferSlotId + 1;
+				}
+				for (UINT i = start_pos; i < end_pos; i++) {
+					VertexBufferBinding& b = mCurrentVertexBuffersBindings[i];
+					if (b.buffer && b.stride) {
+						UINT region_offset = GetVertexBufferRegionOffset(b.stride, &data.call_info, b.offset);
+						UINT region_size = GetVertexBufferRegionSize(b.stride, &data.call_info);
+						mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, region_offset, region_size);
+					}
+				}
+				// Register Vertex Buffers hashes under the same lock.
+				EnterCriticalSectionPretty(&G->mCriticalSection);
+				for (UINT i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
+					RegisterVisitedVertexBufferNoLock(mCurrentVertexBuffers[i], i);
+				}
+				LeaveCriticalSection(&G->mCriticalSection);
 			}
-			LeaveCriticalSection(&G->mCriticalSection);
 		}
 
 		UINT selectedVertexBufferPos = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
@@ -816,7 +825,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 		EnterCriticalSectionPretty(&G->mCriticalSection);
 		{
 			// Selection
-			if (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != 0xFFFFFFFF) {
+			if (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != UINT32_MAX) {
 				for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++i) {
 					if (mCurrentVertexBuffers[i] == G->mSelectedVertexBuffer) {
 						G->gVisitedVertexBufferSlotIds.insert(i);
@@ -851,17 +860,25 @@ void HackerContext::BeforeDraw(DrawContext &data)
 				}
 				G->mSelectedRenderTargetSnapshotList.insert(mCurrentRenderTargets.begin(), mCurrentRenderTargets.end());
 				// Snapshot info.
-				for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
-					if (G->mSelectedVertexBuffer && mCurrentVertexBuffers[i] == G->mSelectedVertexBuffer) {
-						G->mSelectedVertexBuffer_VertexShader.insert(mCurrentVertexShader);
-						G->mSelectedVertexBuffer_PixelShader.insert(mCurrentPixelShader);
+				if (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != UINT32_MAX) {
+					UINT start_pos = 0, end_pos = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
+					if (G->gSelectedVertexBufferSlotId >= 0) {
+						start_pos = G->gSelectedVertexBufferSlotId;
+						end_pos = G->gSelectedVertexBufferSlotId + 1;
+					}
+					for (i = start_pos; i < end_pos; i++) {
+						if (mCurrentVertexBuffers[i] == G->mSelectedVertexBuffer) {
+							G->mSelectedVertexBuffer_VertexShader.insert(mCurrentVertexShader);
+							G->mSelectedVertexBuffer_PixelShader.insert(mCurrentPixelShader);
+						}
 					}
 				}
-				if (G->mSelectedIndexBuffer && mCurrentIndexBuffer == G->mSelectedIndexBuffer)
-				{
-					G->gSelectedIndexBufferDrawInfo = data.call_info;
-					G->mSelectedIndexBuffer_VertexShader.insert(mCurrentVertexShader);
-					G->mSelectedIndexBuffer_PixelShader.insert(mCurrentPixelShader);
+				if (G->mSelectedIndexBuffer != 0 && G->mSelectedIndexBuffer != UINT32_MAX) {
+					if (mCurrentIndexBuffer == G->mSelectedIndexBuffer) {
+						G->gSelectedIndexBufferDrawInfo = data.call_info;
+						G->mSelectedIndexBuffer_VertexShader.insert(mCurrentVertexShader);
+						G->mSelectedIndexBuffer_PixelShader.insert(mCurrentPixelShader);
+					}
 				}
 				if (mCurrentVertexShader == G->mSelectedVertexShader) {
 					for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {

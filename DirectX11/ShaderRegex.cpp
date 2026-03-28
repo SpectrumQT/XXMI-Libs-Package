@@ -721,12 +721,12 @@ bool get_shader_model_from_bytecode(const void* data, size_t size, std::string* 
 bool link_shader_regex_groups_without_patterns(const wchar_t* shader_type, std::string* shader_model, UINT64 hash, bool* decompilation_required)
 {
 	ShaderRegexGroups::iterator i;
-	ShaderRegexGroup* group;
 	vector<uint32_t> match_ids;
+	vector<ShaderRegexGroup*> match_groups;
 	uint32_t j;
 
 	for (i = shader_regex_groups.begin(), j = 0; i != shader_regex_groups.end(); i++, j++) {
-		group = &i->second;
+		ShaderRegexGroup* group = &i->second;
 
 		// Skip group without matching shader model.
 		if (!group->shader_models.count(*shader_model)) {
@@ -740,16 +740,24 @@ bool link_shader_regex_groups_without_patterns(const wchar_t* shader_type, std::
 			continue;
 		}
 
-		// Enable CommandList sections execution for this group.
-		group->link_command_lists_and_filter_index(hash);
-
 		match_ids.push_back(j);
+		match_groups.push_back(group);
 
 		LogInfo("ShaderRegex (no pattern): %S %016I64x matches [%S]\n", shader_type, hash, group->ini_section.c_str());
 	}
 
-	if(decompilation_required && !*decompilation_required)
+	// If no ShaderRegEx requires decompilation, link CommandLists and update shader cache here instead of `apply_shader_regex_groups`. 
+	if (decompilation_required && !*decompilation_required) {
+		// Enable CommandList sections execution for this group.
+		for (ShaderRegexGroup* group : match_groups) {
+			group->link_command_lists_and_filter_index(hash);
+		}
+		// We save the cache metadata even if we didn't match anything. That
+		// way we can skip checking for a match next time when we know there
+		// won't be any. This only saves the metadata - the caller will use
+		// save_shader_regex_cache_bin to save the assembled binary.
 		save_shader_regex_cache_meta(hash, shader_type, &match_ids, false, nullptr, nullptr);
+	}
 }
 
 bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type, std::string *shader_model, UINT64 hash, std::wstring *tagline)
@@ -769,24 +777,22 @@ bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type
 			continue;
 		}
 
-		// Skip group without patterns. We've already processed them.
-		if (group->patterns.empty()) {
-			match_ids.push_back(j);
-			continue;
+		// Match/patch only ShaderRegEx with Pattern.
+		if (!group->patterns.empty()) {
+			// Run patch.
+			group->apply_regex_patterns(asm_text, &match, &patch);
+			if (!match)
+				continue;
+
+			LogInfo("ShaderRegex: %s %016I64x matches [%S]\n", shader_model->c_str(), hash, group->ini_section.c_str());
+			patched = patched || patch;
+
+			// Append section to patch sequence.
+			if (patch && tagline)
+				tagline->append(std::wstring(L"[") + group->ini_section + std::wstring(L"]"));
 		}
 
-		// Run patch.
-		group->apply_regex_patterns(asm_text, &match, &patch);
-		if (!match)
-			continue;
-
-		LogInfo("ShaderRegex: %s %016I64x matches [%S]\n", shader_model->c_str(), hash, group->ini_section.c_str());
-		patched = patched || patch;
 		match_ids.push_back(j);
-
-		// Append section to patch sequence.
-		if (patch && tagline)
-			tagline->append(std::wstring(L"[") + group->ini_section + std::wstring(L"]"));
 
 		// Enable CommandList sections execution for this group.
 		group->link_command_lists_and_filter_index(hash);

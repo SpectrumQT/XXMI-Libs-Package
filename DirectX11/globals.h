@@ -409,6 +409,7 @@ struct Globals
 	float gTime;
 	float gSettingsSaveTime;
 	DWORD ticks_at_launch;
+	std::wstring additionalForegroundWindowTitle;
 
 	wchar_t SHADER_PATH[MAX_PATH];
 	wchar_t SHADER_CACHE_PATH[MAX_PATH];

@@ -50,11 +50,12 @@ struct LogLevelParams {
 };
 
 struct LogLevelParams log_levels[] = {
-	{ DirectX::Colors::Red,       20000, false, &Overlay::mFontNotifications }, // DIRE
-	{ DirectX::Colors::OrangeRed, 10000, false, &Overlay::mFontNotifications }, // WARNING
-	{ DirectX::Colors::OrangeRed, 10000, false, &Overlay::mFontProfiling     }, // WARNING_MONOSPACE
-	{ DirectX::Colors::Orange,     5000, false, &Overlay::mFontNotifications }, // NOTICE
-	{ DirectX::Colors::LimeGreen,  2000, false, &Overlay::mFontNotifications }, // INFO
+	{ DirectX::Colors::Red,       1000, false, &Overlay::mFontNotifications }, // DIRE
+	{ DirectX::Colors::OrangeRed, 1000, false, &Overlay::mFontNotifications }, // WARNING
+	{ DirectX::Colors::OrangeRed, 1000, false, &Overlay::mFontProfiling     }, // WARNING_MONOSPACE
+	{ DirectX::Colors::Orange,     1000, false, &Overlay::mFontNotifications }, // NOTICE
+	{ DirectX::Colors::LimeGreen,  1000, false, &Overlay::mFontNotifications }, // INFO
+	{ DirectX::Colors::MediumPurple,  2000, false, &Overlay::mFontNotifications }, // PURPLE
 };
 
 // Side note: Not really stoked with C++ string handling.  There are like 4 or
@@ -871,7 +872,7 @@ void ClearNotices()
 
 void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
 {
-	if (!G->gShowWarnings && level != LOG_INFO) {
+	if (!G->gShowWarnings && level != LOG_INFO && level != LOG_PURPLE) {
 		return;
 	}
 

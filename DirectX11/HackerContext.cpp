@@ -24,6 +24,7 @@
 #include "ShaderRegex.h"
 #include "FrameAnalysis.h"
 #include "profiling.h"
+#include <chrono>
 
 // -----------------------------------------------------------------------------------------------
 
@@ -556,6 +557,8 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 		LogInfo("Loaded %S %016I64x bytecode from ShaderRegex cache\n", shader_type, hash);
 		break;
 	case ShaderRegexCache::NO_CACHE:
+		auto t_total_start = std::chrono::high_resolution_clock::now();
+
 		LogInfo("Performing deferred shader analysis on %S %016I64x...\n", shader_type, hash);
 
 		// Detect shader model
@@ -644,6 +647,16 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 		}
 
 		save_shader_regex_cache_bin(hash, shader_type, &patched_bytecode);
+
+		auto t_total_end = std::chrono::high_resolution_clock::now();
+		auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+			t_total_end - t_total_start
+		).count();
+
+		if (elapsed_ms > 5)
+		{
+			LogOverlayW(LOG_PURPLE, L"No Cache ShaderRegex %ls: %lld ms for %016llx\n", tagline.c_str(), std::chrono::duration_cast<std::chrono::milliseconds>(t_total_end - t_total_start).count(), hash);
+		}
 	}
 
 	hr = (mOrigDevice1->*CreateShader)(patched_bytecode.data(), patched_bytecode.size(),

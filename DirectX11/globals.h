@@ -780,23 +780,46 @@ struct TLS
 
 	LockStack locks_held;
 
+	bool com_initialized;
+
 	TLS() :
-		hooking_quirk_protection(false)
+		hooking_quirk_protection(false),
+		com_initialized(false)
 	{}
 };
 
 extern DWORD tls_idx;
 static struct TLS* get_tls()
 {
-	TLS *tls;
+	TLS* tls = (TLS*)TlsGetValue(tls_idx);
 
-	tls = (TLS*)TlsGetValue(tls_idx);
-	if (!tls) {
+	if (!tls)
+	{
 		tls = new TLS();
 		TlsSetValue(tls_idx, tls);
 	}
 
 	return tls;
+}
+
+inline bool EnsureCOM()
+{
+	TLS* tls = get_tls();
+
+	if (tls->com_initialized)
+		return true;
+
+	HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+	if (hr == RPC_E_CHANGED_MODE)
+		return true;
+
+	if (FAILED(hr))
+		return false;
+
+	tls->com_initialized = (hr == S_OK);
+
+	return true;
 }
 
 extern Globals *G;

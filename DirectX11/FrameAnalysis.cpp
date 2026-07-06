@@ -507,7 +507,7 @@ ID3D11DeviceContext* FrameAnalysisContext::GetDumpingContext()
 void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 		wstring filename, D3D11_TEXTURE2D_DESC *orig_desc, DXGI_FORMAT format)
 {
-	HRESULT hr = S_OK, dont_care;
+	HRESULT hr = S_OK;
 	wchar_t dedupe_filename[MAX_PATH];
 	wstring save_filename;
 	wchar_t *wic_ext = L".jpg";
@@ -523,7 +523,7 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 	}
 
 	// Needs to be called at some point before SaveXXXTextureToFile:
-	dont_care = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+	EnsureCOM();
 
 	if ((analyse_options & FrameAnalysisOptions::FMT_2D_JPS) ||
 	    (analyse_options & FrameAnalysisOptions::FMT_2D_AUTO)) {
@@ -569,8 +569,6 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 			DumpDesc(orig_desc, save_filename.c_str());
 		link_deduplicated_files(filename.c_str(), save_filename.c_str());
 	}
-
-	CoUninitialize();
 }
 
 void FrameAnalysisContext::Dump2DResource(ID3D11Texture2D *resource, wchar_t
@@ -2276,13 +2274,12 @@ static bool create_shortcut(const wchar_t *filename, const wchar_t *dedupe_filen
 {
 	IShellLink *psl;
 	IPersistFile *ppf;
-	HRESULT hr, dont_care;
 	wchar_t lnk_path[MAX_PATH];
 
-	dont_care = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+	EnsureCOM();
 
 	// https://msdn.microsoft.com/en-us/library/aa969393.aspx#Shellink_Creating_Shortcut
-	hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLink, (LPVOID*)&psl);
+	HRESULT hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLink, (LPVOID*)&psl);
 	if (SUCCEEDED(hr)) {
 		psl->SetPath(dedupe_filename);
 		hr = psl->QueryInterface(IID_IPersistFile, (LPVOID*)&ppf);
@@ -2293,8 +2290,6 @@ static bool create_shortcut(const wchar_t *filename, const wchar_t *dedupe_filen
 		}
 		psl->Release();
 	}
-
-	CoUninitialize();
 
 	return SUCCEEDED(hr);
 }

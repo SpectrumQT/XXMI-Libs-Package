@@ -4522,6 +4522,9 @@ void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 	// could do something smart here, like only using it if the
 	// bind_flags indicate it will be used as a shader resource.
 
+	// Needs to be called at some point before CreateXXXTextureFromFile:
+	EnsureCOM();
+
 	ext = filename.substr(filename.rfind(L"."));
 	if (!_wcsicmp(ext.c_str(), L".dds")) {
 		LogInfoW(L"Loading custom resource %s as DDS, bind_flags=0x%03x\n", filename.c_str(), bind_flags);
@@ -4534,7 +4537,7 @@ void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 		hr = DirectX::CreateWICTextureFromFileEx(mOrigDevice1,
 				filename.c_str(), 0,
 				D3D11_USAGE_DEFAULT, bind_flags, 0, misc_flags,
-				false, &resource, NULL);
+				DirectX::WIC_LOADER_FLAGS::WIC_LOADER_FORCE_SRGB, &resource, NULL);
 	}
 	if (SUCCEEDED(hr)) {
 		device = mOrigDevice1;
@@ -5349,10 +5352,10 @@ bool ResourceCopyTarget::ParseMemberArgument(const std::wstring& text, const std
 	return true;
 }
 
-bool ResourceCopyTarget::GetNextArgument(const wchar_t*& arg_start, const wchar_t* args_end, std::wstring& text)
+IniParserResult ResourceCopyTarget::GetNextArgument(const wchar_t*& arg_start, const wchar_t* args_end, std::wstring& text)
 {
 	if (arg_start >= args_end)
-		return false;
+		return IniParserResult::TOKEN_NOT_FOUND;
 
 	const wchar_t* arg_end = wcschr(arg_start, L',');
 
@@ -5374,7 +5377,7 @@ bool ResourceCopyTarget::GetNextArgument(const wchar_t*& arg_start, const wchar_
 
 	arg_start = (arg_end < args_end) ? arg_end + 1 : args_end;
 
-	return true;
+	return text.empty() ? IniParserResult::SYNTAX_ERROR : IniParserResult::TOKEN_FOUND;
 }
 
 IniParserResult ResourceCopyTarget::ParseTargetMemberArguments(
@@ -5397,17 +5400,19 @@ IniParserResult ResourceCopyTarget::ParseTargetMemberArguments(
 
 	const wchar_t* arg_start = args_open_pos + 1;
 
-	for (size_t i = 0; i < MAX_MEMBER_ARGS_COUNT; ++i)
+	while (true)
 	{
 		std::wstring text;
 
-		if (!GetNextArgument(arg_start, args_end, text))
+		IniParserResult ret = GetNextArgument(arg_start, args_end, text);
+
+		if (ret == IniParserResult::SYNTAX_ERROR)
+			return IniParserResult::SYNTAX_ERROR;
+
+		if (ret == IniParserResult::TOKEN_NOT_FOUND)
 			break;
 
-		if (text.empty())
-			break;
-
-		if (!ParseMemberArgument(text, ini_namespace, scope, member_args[i]))
+		if (!ParseMemberArgument(text, ini_namespace, scope, member_args[num_args]))
 			return IniParserResult::SYNTAX_ERROR;
 
 		++num_args;
@@ -5612,6 +5617,11 @@ static constexpr bool is_shader_resource(wchar_t shader_type) {
 	}
 }
 
+constexpr bool token_equals(const wchar_t* str, size_t len, const wchar_t* token, size_t token_len)
+{
+	return len == token_len && wmemcmp(str, token, token_len) == 0;
+}
+
 IniParserResult ResourceCopyTarget::ParseTargetPipelineSlot(const wchar_t*& target, size_t length, bool is_source)
 {
 	//LogInfo("ParseTargetPipelineSlot: target=%ls, length=%d, is_source=%d\n", target, length, is_source);
@@ -5694,7 +5704,7 @@ IniParserResult ResourceCopyTarget::ParseTargetPipelineSlot(const wchar_t*& targ
 			}
 		}
 		// Match token against exact string.
-		else if (suffix_equals(target, length, t.keyword, t.len)) {
+		else if (token_equals(target, length, t.keyword, t.len)) {
 			type = t.type;
 
 			if (type & ResourceCopyTargetType::SWAP_CHAIN_MASK) {
@@ -5714,35 +5724,52 @@ IniParserResult ResourceCopyTarget::ParseTargetPipelineSlot(const wchar_t*& targ
 	return IniParserResult::TOKEN_NOT_FOUND;
 }
 
+bool contains_whitespace(const wchar_t* str, size_t len)
+{
+	while (len--)
+		if (iswspace(*str++))
+			return true;
+	return false;
+}
+
 bool ResourceCopyTarget::ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope)
 {
-	IniParserResult ret, len;
+	IniParserResult ret;
 	size_t length = wcslen(target);
 	std::wstring temp_target;
 
 	if (!target || length < 2)
 		return false;
 
+	// Consume an optional target prefix (`@` or `#`).
 	ret = ParseTargetPrefix(target, length);
 	//LogInfo("ParseTarget: %d at ParseTargetPrefix\n", ret);
 	if (ret == IniParserResult::SYNTAX_ERROR)
 		return false;
 
+	// Consume an optional resource member suffix (e.g. `->HashRegion(0, 16)` or `->Length`).
 	ret = ParseTargetMember(target, length, temp_target, ini_namespace, scope);
 	//LogInfo("ParseTarget: %d at ParseTargetMember\n", ret);
 	if (ret == IniParserResult::SYNTAX_ERROR)
 		return false;
 
+	// Reject whitespace: ParseTarget() expects a single token.
+	if (contains_whitespace(target, length))
+		return false;
+
+	// Parse the remainder as a custom resource (e.g. `ResourceFoo`).
 	ret = ParseTargetCustomResource(target, length, ini_namespace, scope);
 	//LogInfo("ParseTarget: %d at ParseTargetCustomResource\n", ret);
 	if (ret != IniParserResult::TOKEN_NOT_FOUND)
 		return ret == IniParserResult::TOKEN_FOUND;
 
+	// Parse the remainder as a resource pool (e.g. `PoolFoo`).
 	ret = ParseTargetPool(target, length, ini_namespace, scope);
 	//LogInfo("ParseTarget: %d at ParseTargetPool\n", ret);
 	if (ret != IniParserResult::TOKEN_NOT_FOUND)
 		return ret == IniParserResult::TOKEN_FOUND;
 
+	// Parse the remainder as a pipeline slot (e.g. `vb0`, `this`, `null`).
 	ret = ParseTargetPipelineSlot(target, length, is_source);
 	//LogInfo("ParseTarget: %d at ParseTargetPipelineSlot\n", ret);
 	if (ret != IniParserResult::TOKEN_NOT_FOUND)
@@ -5751,7 +5778,6 @@ bool ResourceCopyTarget::ParseTarget(const wchar_t *target, bool is_source, cons
 	//LogInfo("ParseTarget: 0 at END\n");
 	return false;
 }
-
 
 bool ParseCommandListResourceCopyDirective(const wchar_t *section,
 		const wchar_t *key, wstring *val, CommandList *command_list,

@@ -1240,7 +1240,7 @@ bool HackerContext::MapTrackRegionHashes(ID3D11Resource* pResource, D3D11_MAP Ma
 	ID3D11Buffer* buf = (ID3D11Buffer*)pResource;
 	D3D11_BUFFER_DESC buf_desc;
 	buf->GetDesc(&buf_desc);
-	if (buf_desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER)) {
+	if (buf_desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER)) {
 		return true;
 	}
 	return false;
@@ -1367,7 +1367,7 @@ out_profile:
 		Profiling::end(&profiling_state, &Profiling::map_overhead);
 }
 
-void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, const void* data, size_t size, bool* deallocate_diverted_memory)
+void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, void* data, size_t size, bool* deallocate_diverted_memory)
 {
 	if (!data || !size)
 		return;
@@ -1381,7 +1381,8 @@ void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, const void* data,
 		return;
 	}
 
-	info->WriteDataCache(data, size);
+	//LogInfo("UpdateResourceDataCacheFromMap size=%d, pResource=%p\n", size, pResource);
+	info->SetDataCache(data, size);
 
 	if (deallocate_diverted_memory)
 		*deallocate_diverted_memory = false;
@@ -1410,7 +1411,7 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 
 	bool deallocate_diverted_memory = true;
 
-	if (G->track_region_hashes && map_info->bind_flags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER))
+	if (G->track_region_hashes && map_info->bind_flags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER))
 		UpdateResourceDataCacheFromMap(pResource, map_info->map.pData, map_info->size, &deallocate_diverted_memory);
 
 	if (G->track_texture_updates == 1 && Subresource == 0 && map_info->mapped_writable)
@@ -1868,7 +1869,7 @@ void CopySubresourceRegionCache(ID3D11Resource* pSrcResource, ID3D11Resource* pD
 		dst_info->InitializeDataCache(dst_desc.ByteWidth);
 	}
 
-	dst_info->WriteDataCacheRegion(src_info->cached_data + src_offset, region_size, DstX);
+	dst_info->SetDataCacheRegion(src_info->GetCachedData() + src_offset, region_size, DstX);
 
 	//dst_info->cached_data_hash = crc32c_hw(0, dst_info->cached_data, dst_desc.ByteWidth);
 

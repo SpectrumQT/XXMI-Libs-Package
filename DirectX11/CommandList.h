@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <array>
 #include <unordered_map>
 #include <unordered_set>
 #include <forward_list>
@@ -480,6 +481,7 @@ public:
 	wstring name;
 
 	ID3D11Resource *resource;
+	std::unique_ptr<ResourceHandleInfo> handle_info;
 	ResourcePool resource_pool;
 	ID3D11Device *device;
 	ID3D11View *view;
@@ -530,7 +532,10 @@ public:
 	CustomResource();
 	~CustomResource();
 
-	void AddFlags(D3D11_BIND_FLAG extra_bind_flags, D3D11_RESOURCE_MISC_FLAG extra_misc_flags);
+	bool AddFlags(D3D11_BIND_FLAG extra_bind_flags, D3D11_RESOURCE_MISC_FLAG extra_misc_flags, bool recursive = true);
+	void InitializeHandleInfo(void* data, size_t data_size);
+	void SetHandleInfo(ID3D11Resource* source, size_t offset, size_t data_size);
+	ResourceHandleInfo* GetHandleInfo();
 	void Substantiate(ID3D11Device *mOrigDevice, D3D11_BIND_FLAG bind_flags, D3D11_RESOURCE_MISC_FLAG misc_flags);
 	void OverrideBufferDesc(D3D11_BUFFER_DESC *desc);
 	void OverrideTexDesc(D3D11_TEXTURE1D_DESC *desc);
@@ -578,7 +583,7 @@ public:
 	std::vector<float> fifo_index_table;        // O(1) lookup of pool_index -> uid currently occupying slot
 	size_t last_fifo_index = 0;                 // Ring pointer for FIFO eviction
 
-	void PropagateFlags(D3D11_BIND_FLAG bind_flags, D3D11_RESOURCE_MISC_FLAG misc_flags);
+	bool PropagateFlags(D3D11_BIND_FLAG bind_flags, D3D11_RESOURCE_MISC_FLAG misc_flags);
 	CustomResource* InitializeResource(int pool_index);
 	CustomResource* GetResource(float id, bool static_evaluation = false);
 };
@@ -589,28 +594,64 @@ extern CustomResourcePools customResourcePools;
 // Forward declaration since TextureOverride also contains a command list
 struct TextureOverride;
 
-enum class ResourceCopyTargetType {
-	INVALID,
-	EMPTY,
-	CONSTANT_BUFFER,
-	SHADER_RESOURCE,
-	// TODO: SAMPLER, // Not really a resource, but might still be useful
-	VERTEX_BUFFER,
-	INDEX_BUFFER,
-	STREAM_OUTPUT,
-	RENDER_TARGET,
-	DEPTH_STENCIL_TARGET,
-	UNORDERED_ACCESS_VIEW,
-	CUSTOM_RESOURCE,
-	INI_PARAMS,
-	CURSOR_MASK,
-	CURSOR_COLOR,
-	THIS_RESOURCE, // For constant buffer analysis & render/depth target clearing
-	CUSTOM_RESOURCE_POOL,
-	SWAP_CHAIN, // Meaning depends on whether or not upscaling has run yet this frame
-	REAL_SWAP_CHAIN, // need this for upscaling used with "r_bb"
-	FAKE_SWAP_CHAIN, // need this for upscaling used with "f_bb"
-	CPU, // For staging resources to the CPU
+enum class ResourceCopyTargetType : uint32_t {
+	INVALID                = 0b00000000000000000000000000000000, // 0x00000000
+
+	// D3D resources
+	EMPTY                  = 0b00000000000000000000000000000001, // 0x00000001
+	CONSTANT_BUFFER        = 0b00000000000000000000000000000010, // 0x00000002
+	SHADER_RESOURCE        = 0b00000000000000000000000000000100, // 0x00000004
+	// SAMPLER             = 0b00000000000000000000000000001000, // 0x00000008
+	VERTEX_BUFFER          = 0b00000000000000000000000000010000, // 0x00000010
+	INDEX_BUFFER           = 0b00000000000000000000000000100000, // 0x00000020
+	STREAM_OUTPUT          = 0b00000000000000000000000001000000, // 0x00000040
+	RENDER_TARGET          = 0b00000000000000000000000010000000, // 0x00000080
+	DEPTH_STENCIL_TARGET   = 0b00000000000000000000000100000000, // 0x00000100
+	UNORDERED_ACCESS_VIEW  = 0b00000000000000000000001000000000, // 0x00000200
+	CUSTOM_RESOURCE        = 0b00000000000000000000010000000000, // 0x00000400
+
+	D3D_RESOURCE_MASK      = 0b00000000000000000000011111111110, // 0x000007FE
+
+	// Special resources / pseudo-resources
+	INI_PARAMS             = 0b00000000000000000000100000000000, // 0x00000800
+	CURSOR_MASK            = 0b00000000000000000001000000000000, // 0x00001000
+	CURSOR_COLOR           = 0b00000000000000000010000000000000, // 0x00002000
+	THIS_RESOURCE          = 0b00000000000000000100000000000000, // 0x00004000
+	CUSTOM_RESOURCE_POOL   = 0b00000000000000001000000000000000, // 0x00008000
+	CPU                    = 0b00000000000000010000000000000000, // 0x00010000
+
+	SPECIAL_RESOURCE_MASK  = 0b00000000000000011111100000000000, // 0x0001F800
+
+	// Swap chains
+	SWAP_CHAIN             = 0b00000000000000100000000000000000, // 0x00020000 - Meaning depends on whether or not upscaling has run yet this frame
+	REAL_SWAP_CHAIN        = 0b00000000000001000000000000000000, // 0x00040000 - need this for upscaling used with "r_bb"
+	FAKE_SWAP_CHAIN        = 0b00000000000010000000000000000000, // 0x00080000 - need this for upscaling used with "f_bb"
+
+	SWAP_CHAIN_MASK        = 0b00000000000011100000000000000000, // 0x000E0000
+};
+SENSIBLE_ENUM(ResourceCopyTargetType);
+static EnumName_t<const wchar_t*, ResourceCopyTargetType> ResourceCopyTargetTypeNames[] = {
+	{L"Empty", ResourceCopyTargetType::EMPTY},
+	{L"ConstantBuffer", ResourceCopyTargetType::CONSTANT_BUFFER},
+	{L"ShaderResource", ResourceCopyTargetType::SHADER_RESOURCE},
+	{L"VertexBuffer", ResourceCopyTargetType::VERTEX_BUFFER},
+	{L"IndexBuffer", ResourceCopyTargetType::INDEX_BUFFER},
+	{L"StreamOutput", ResourceCopyTargetType::STREAM_OUTPUT},
+	{L"RenderTarget", ResourceCopyTargetType::RENDER_TARGET},
+	{L"DepthStencilTarget", ResourceCopyTargetType::DEPTH_STENCIL_TARGET},
+	{L"UnorderedAccessView", ResourceCopyTargetType::UNORDERED_ACCESS_VIEW},
+	{L"CustomResource", ResourceCopyTargetType::CUSTOM_RESOURCE},
+	{L"IniParams", ResourceCopyTargetType::INI_PARAMS},
+	{L"CursorMask", ResourceCopyTargetType::CURSOR_MASK},
+	{L"CursorColor", ResourceCopyTargetType::CURSOR_COLOR},
+	{L"ThisResource", ResourceCopyTargetType::THIS_RESOURCE},
+	{L"Pool", ResourceCopyTargetType::CUSTOM_RESOURCE_POOL},
+	{L"SwapChain", ResourceCopyTargetType::SWAP_CHAIN},
+	{L"RealSwapChain", ResourceCopyTargetType::REAL_SWAP_CHAIN},
+	{L"FakeSwapChain", ResourceCopyTargetType::FAKE_SWAP_CHAIN},
+	{L"CPU", ResourceCopyTargetType::CPU},
+
+	{NULL, ResourceCopyTargetType::INVALID} // End of list marker
 };
 
 enum class ResourceCopyTargetEvaluationMode : uint16_t {
@@ -621,12 +662,14 @@ enum class ResourceCopyTargetEvaluationMode : uint16_t {
 	RESOURCE_STRIDE        = 0b0000000000000100, // 0x0004
 	RESOURCE_SOURCE_STRIDE = 0b0000000000001000, // 0x0008
 	RESOURCE_SIZE          = 0b0000000000010000, // 0x0010
-	//                       0b0000000000100000, // 0x0020
-	//                       0b0000000001000000, // 0x0040
+	RESOURCE_OFFSET        = 0b0000000000100000, // 0x0020
+	RESOURCE_REGION_HASH   = 0b0000000001000000, // 0x0040
 	//                       0b0000000010000000, // 0x0080
 	//                       0b0000000100000000, // 0x0100
 	//                       0b0000001000000000, // 0x0200
+
 	RESOURCE_MASK          = 0b0000001111111111, // lower 10 bits
+
 	// POOL
 	POOL_IDENTITY          = 0b0000010000000000, // 0x0400
 	POOL_SIZE              = 0b0000100000000000, // 0x0800
@@ -634,11 +677,41 @@ enum class ResourceCopyTargetEvaluationMode : uint16_t {
 	//                       0b0010000000000000, // 0x2000
 	//                       0b0100000000000000, // 0x4000
 	//                       0b1000000000000000, // 0x8000
+
 	POOL_MASK              = 0b1111110000000000  // upper 6 bits
 };
 SENSIBLE_ENUM(ResourceCopyTargetEvaluationMode);
 
+
+struct MemberArg
+{
+	float constant = 0.0f;
+	CommandListVariable* var = nullptr;
+
+	MemberArg(float constant) :
+		constant(constant)
+	{}
+	MemberArg(CommandListVariable* var) :
+		var(var)
+	{}
+	MemberArg()
+	{}
+
+	bool IsVariable() const { return var != nullptr; }
+
+	float GetValue() const {
+		return var ? var->fval : constant;
+	}
+};
+
+enum class IniParserResult : uint8_t {
+	TOKEN_NOT_FOUND = 0,
+	TOKEN_FOUND = 1,
+	SYNTAX_ERROR = 2,
+};
+
 class ResourceCopyTarget {
+	static constexpr size_t MAX_MEMBER_ARGS_COUNT = 2;
 private:
 	CustomResource* _custom_resource;  // Read access should go via GetCustomResource
 public:
@@ -648,6 +721,9 @@ public:
 	unsigned slot;
 	CustomResourcePool *custom_resource_pool;
 	CommandListVariable* custom_resource_pool_index_var;
+
+	std::array<MemberArg, MAX_MEMBER_ARGS_COUNT> member_args;
+
 	bool forbid_view_cache;
 
 	ResourceCopyTarget() :
@@ -658,9 +734,18 @@ public:
 		_custom_resource(NULL),
 		custom_resource_pool(NULL),
 		custom_resource_pool_index_var(NULL),
+		member_args{},
 		forbid_view_cache(false)
 	{}
 
+	IniParserResult ParseTargetPrefix(const wchar_t*& target, size_t& length);
+	bool ResourceCopyTarget::GetNextArgument(const wchar_t*& arg_start, const wchar_t* args_end, std::wstring& text);
+	bool ResourceCopyTarget::ParseMemberArgument(const std::wstring& text, const std::wstring* ini_namespace, CommandListScope* scope, MemberArg& arg);
+	IniParserResult ParseTargetMemberArguments(const wchar_t*& target, size_t& length, const wstring* ini_namespace, CommandListScope* scope, size_t& num_args);
+	IniParserResult ParseTargetMember(const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope);
+	IniParserResult ParseTargetPipelineSlot(const wchar_t*& target, size_t length, bool is_source);
+	IniParserResult ParseTargetCustomResource(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope);
+	IniParserResult ParseTargetPool(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope);
 	bool ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope);
 	CustomResource* GetCustomResource(bool static_evaluation = false);
 	ID3D11Resource *GetResource(CommandListState *state,
@@ -685,6 +770,8 @@ public:
 	float GetPoolId();
 	float GetResourceStride(CommandListState* state);
 	float GetResourceSize(CommandListState* state);
+	float GetResourceOffset(CommandListState* state);
+	float GetResourceRegionHash(CommandListState* state);
 	D3D11_BIND_FLAG BindFlags(CommandListState *state, D3D11_RESOURCE_MISC_FLAG *misc_flags=NULL);
 };
 

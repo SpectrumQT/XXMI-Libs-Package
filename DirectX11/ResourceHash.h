@@ -306,20 +306,22 @@ private:
 	// Avoids recomputing hashes for the same draw-call regions.
 	std::unique_ptr <FlatHashMap<RegionHashKeyL2, RegionCacheEntry, RegionHashKeyHasherL2>> cache;
 	std::vector<UINT> page_versions;
+	size_t data_size;
 };
 
 // Tracks info about specific resource instances:
 struct ResourceHandleInfo
 {
-	D3D11_RESOURCE_DIMENSION type;
-	uint32_t hash;
-	uint32_t orig_hash;	// Original hash at the time of creation
-	uint32_t data_hash;	// Just the data hash for track_texture_updates
+	D3D11_RESOURCE_DIMENSION type = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+	uint32_t hash = 0;
+	uint32_t orig_hash = 0;	// Original hash at the time of creation
+	uint32_t data_hash = 0;	// Just the data hash for track_texture_updates
 
 	// CPU-side copy of the resource data captured via hooks or staging buffer.
 	// Used to compute hashes for arbitrary regions without re-mapping
 	// the GPU resource multiple times.
-	uint8_t* cached_data;
+	std::shared_ptr<uint8_t[]> cached_data;
+	size_t cached_data_offset = 0;
 	size_t cached_data_size = 0;
 	//uint32_t cached_data_hash = 0;
 
@@ -338,28 +340,13 @@ struct ResourceHandleInfo
 		D3D11_TEXTURE3D_DESC desc3D;
 	};
 
-	ResourceHandleInfo() :
-		type(D3D11_RESOURCE_DIMENSION_UNKNOWN),
-		hash(0),
-		orig_hash(0),
-		data_hash(0),
-		cached_data(nullptr)
-	{}
-
-	~ResourceHandleInfo()
-	{
-		if (cached_data) {
-			free(cached_data);
-			cached_data = nullptr;
-		}
-	}
-
 	void InitializeDataCache(size_t size);
-	void WriteDataCache(const void* src, size_t size);
-	void WriteDataCacheRegion(const void* src, size_t size, UINT offset);
+	void SetDataCache(void* src, size_t size);
+	void SetDataCacheRegion(const void* src, size_t size, UINT offset);
 	// Clears cached region hashes and invalidates cached buffer data.
 	// Should be called when the underlying resource contents change.
 	void ClearDataCache();
+	uint8_t* GetCachedData();
 
 	void CacheRegionHash(const RegionHashKeyL2& key, uint32_t hash);
 	uint32_t GetCachedRegionHash(const RegionHashKeyL2& key);
@@ -474,6 +461,8 @@ struct ResourceHashInfo
 
 typedef std::unordered_map<uint32_t, struct ResourceHashInfo> ResourceInfoMap;
 
+class CustomResource;
+
 // This is a COM object that can be attached to a resource via
 // ID3D11DeviceChild::SetPrivateDataInterface(), so that when the resource is
 // released this class will be as well, giving us a way to reliably know when a
@@ -522,7 +511,7 @@ UINT GetVertexBufferRegionOffset(UINT stride, DrawCallInfo* call_info, UINT byte
 UINT GetIndexBufferRegionOffset(DXGI_FORMAT format, DrawCallInfo* call_info, UINT byte_offset);
 UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info);
 UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info);
-uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size);
+uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size, CustomResource* custom_resource = nullptr);
 
 void MarkResourceHashContaminated(ID3D11Resource *dest, UINT DstSubresource,
 		ID3D11Resource *src, UINT srcSubresource, char type,

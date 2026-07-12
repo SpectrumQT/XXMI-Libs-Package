@@ -1244,6 +1244,17 @@ public:
 	bool noop(bool post, bool ignore_cto_pre, bool ignore_cto_post) override;
 };
 
+class FrameAnalysisSaveCommand : public CommandListCommand {
+public:
+	ResourceCopyTarget target;
+	FrameAnalysisOptions analyse_options;
+	wstring save_filepath_template;
+	wstring namespace_path;
+
+	void run(CommandListState*) override;
+	bool noop(bool post, bool ignore_cto_pre, bool ignore_cto_post) override;
+};
+
 class UpscalingFlipBBCommand : public CommandListCommand {
 public:
 	wstring ini_section;

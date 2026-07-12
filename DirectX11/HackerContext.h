@@ -236,6 +236,9 @@ public:
 	virtual void FrameAnalysisTrigger(FrameAnalysisOptions new_options) {};
 	virtual void FrameAnalysisDump(ID3D11Resource *resource, FrameAnalysisOptions options,
 		const wchar_t *target, DXGI_FORMAT format, UINT stride, UINT offset) {};
+	virtual void FrameAnalysisSave(ID3D11Resource *resource, FrameAnalysisOptions options,
+		const wchar_t *custom_filepath, DXGI_FORMAT format, UINT stride, UINT offset) {};
+	virtual unsigned GetDrawCall() { return 0; };
 
 	// These are the shaders the game has set, which may be different from
 	// the ones we have bound to the pipeline:

@@ -235,6 +235,9 @@ public:
 	void FrameAnalysisTrigger(FrameAnalysisOptions new_options) override;
 	void FrameAnalysisDump(ID3D11Resource *resource, FrameAnalysisOptions options,
 		const wchar_t *target, DXGI_FORMAT format, UINT stride, UINT offset) override;
+	void FrameAnalysisSave(ID3D11Resource *resource, FrameAnalysisOptions options,
+		const wchar_t *custom_filepath, DXGI_FORMAT format, UINT stride, UINT offset) override;
+	unsigned GetDrawCall() override { return draw_call; };
 
 	/*** IUnknown methods ***/
 

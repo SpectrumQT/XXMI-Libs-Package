@@ -2993,6 +2993,171 @@ void FrameAnalysisContext::FrameAnalysisDump(ID3D11Resource *resource, FrameAnal
 	non_draw_call_dump_counter++;
 }
 
+// Create parent directories for a full file path (uses existing CreateDirectoryEnsuringAccess).
+static void CreateDirectoryRecursive(const wchar_t *filepath)
+{
+	wchar_t path[MAX_PATH];
+	wchar_t *slash, *p;
+
+	wcsncpy_s(path, filepath, MAX_PATH);
+	slash = wcsrchr(path, L'\\');
+	if (!slash)
+		slash = wcsrchr(path, L'/');
+	if (!slash)
+		return;
+	*slash = 0;
+
+	// Skip drive prefix (C:\...), create each component:
+	for (p = path; *p; p++) {
+		if (*p != L'\\' && *p != L'/')
+			continue;
+		if (p <= path + 2 && path[1] == L':')
+			continue;
+		*p = 0;
+		CreateDirectoryEnsuringAccess(path);
+		*p = L'\\';
+	}
+	CreateDirectoryEnsuringAccess(path);
+}
+
+// Fixed-path save: write path derived from Dump2DResourceImmediateCtx / DumpBuffer
+// (StageResource, Save*TextureToFile, DumpBufferTxt), without de-dupe or AnalyseFrame dirs.
+// Spectrum: OK to keep a thin copy; a shared helper can be extracted later.
+void FrameAnalysisContext::FrameAnalysisSave(ID3D11Resource *resource, FrameAnalysisOptions options,
+		const wchar_t *custom_filepath, DXGI_FORMAT format, UINT stride, UINT offset)
+{
+	D3D11_RESOURCE_DIMENSION dim;
+	const wchar_t *ext;
+	HRESULT hr;
+
+	if (!resource || !custom_filepath) {
+		FALogErr(L"FrameAnalysisSave: missing resource or path\n");
+		return;
+	}
+
+	CreateDirectoryRecursive(custom_filepath);
+
+	// Infer format from extension when the command did not specify one:
+	// (SENSIBLE_ENUM bitwise ops return int — cast like the rest of FA)
+	if (!((int)options & ((int)FrameAnalysisOptions::FMT_2D_MASK | (int)FrameAnalysisOptions::FMT_BUF_MASK))) {
+		ext = wcsrchr(custom_filepath, L'.');
+		if (ext) {
+			if (!_wcsicmp(ext, L".dds"))
+				options |= FrameAnalysisOptions::FMT_2D_DDS;
+			else if (!_wcsicmp(ext, L".png") || !_wcsicmp(ext, L".jpg") ||
+					!_wcsicmp(ext, L".jpeg") || !_wcsicmp(ext, L".bmp"))
+				options |= FrameAnalysisOptions::FMT_2D_AUTO;
+			else if (!_wcsicmp(ext, L".txt"))
+				options |= FrameAnalysisOptions::FMT_BUF_TXT;
+			else if (!_wcsicmp(ext, L".bin") || !_wcsicmp(ext, L".buf") ||
+					!_wcsicmp(ext, L".ib") || !_wcsicmp(ext, L".vb"))
+				options |= FrameAnalysisOptions::FMT_BUF_BIN;
+		}
+	}
+
+	resource->GetType(&dim);
+
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+	setlocale(LC_CTYPE, "en_US.UTF-8");
+
+	switch (dim) {
+	case D3D11_RESOURCE_DIMENSION_BUFFER:
+	{
+		// Staging path mirrors DumpBuffer:
+		ID3D11Buffer *buffer = (ID3D11Buffer*)resource;
+		ID3D11Buffer *staging = NULL;
+		D3D11_BUFFER_DESC desc;
+		D3D11_MAPPED_SUBRESOURCE map;
+		UINT byte_width;
+
+		buffer->GetDesc(&desc);
+		byte_width = desc.ByteWidth;
+		desc.Usage = D3D11_USAGE_STAGING;
+		desc.BindFlags = 0;
+		desc.MiscFlags = 0;
+		desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+
+		LockResourceCreationMode();
+		hr = GetHackerDevice()->GetPassThroughOrigDevice1()->CreateBuffer(&desc, NULL, &staging);
+		UnlockResourceCreationMode();
+		if (FAILED(hr)) {
+			FALogErr(L"FrameAnalysisSave failed to create staging buffer: 0x%x\n", hr);
+			break;
+		}
+
+		GetDumpingContext()->CopyResource(staging, buffer);
+		hr = GetDumpingContext()->Map(staging, 0, D3D11_MAP_READ, 0, &map);
+		if (SUCCEEDED(hr)) {
+			if (options & FrameAnalysisOptions::FMT_BUF_BIN) {
+				FILE *fd = NULL;
+				errno_t err = wfopen_ensuring_access(&fd, custom_filepath, L"wb");
+				if (fd) {
+					fwrite(map.pData, 1, byte_width, fd);
+					fclose(fd);
+				} else {
+					FALogErr(L"Unable to create %ls: %u\n", custom_filepath, err);
+				}
+			}
+			if (options & FrameAnalysisOptions::FMT_BUF_TXT) {
+				DumpBufferTxt(const_cast<wchar_t*>(custom_filepath), &map, byte_width,
+						'?', -1, stride, offset);
+			}
+			GetDumpingContext()->Unmap(staging, 0);
+		} else {
+			FALogErr(L"FrameAnalysisSave failed to map staging resource: 0x%x\n", hr);
+		}
+		staging->Release();
+		break;
+	}
+	case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+	{
+		// Staging + write mirrors Dump2DResource / Dump2DResourceImmediateCtx:
+		ID3D11Texture2D *tex = (ID3D11Texture2D*)resource;
+		ID3D11Texture2D *staging = tex;
+		D3D11_TEXTURE2D_DESC staging_desc;
+		GUID container = GUID_ContainerFormatJpeg;
+
+		tex->GetDesc(&staging_desc);
+		if ((staging_desc.Usage != D3D11_USAGE_STAGING) ||
+				!(staging_desc.CPUAccessFlags & D3D11_CPU_ACCESS_READ) ||
+				(staging_desc.Format != format)) {
+			hr = StageResource(tex, &staging_desc, &staging, format);
+			if (FAILED(hr))
+				break;
+		}
+
+		CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+
+		ext = wcsrchr(custom_filepath, L'.');
+		if ((options & FrameAnalysisOptions::FMT_2D_JPS) ||
+				(options & FrameAnalysisOptions::FMT_2D_AUTO)) {
+			if (ext && !_wcsicmp(ext, L".png"))
+				container = GUID_ContainerFormatPng;
+			else if (ext && !_wcsicmp(ext, L".bmp"))
+				container = GUID_ContainerFormatBmp;
+			hr = DirectX::SaveWICTextureToFile(GetDumpingContext(), staging, container, custom_filepath);
+			if (FAILED(hr))
+				FALogErr(L"Failed to save WIC texture to %ls: 0x%x\n", custom_filepath, hr);
+		} else if (options & FrameAnalysisOptions::FMT_2D_DDS) {
+			hr = DirectX::SaveDDSTextureToFile(GetDumpingContext(), staging, custom_filepath);
+			if (FAILED(hr))
+				FALogErr(L"Failed to save DDS texture to %ls: 0x%x\n", custom_filepath, hr);
+		}
+
+		CoUninitialize();
+		if (staging != tex)
+			staging->Release();
+		break;
+	}
+	default:
+		FALogInfo(L"Skipped saving resource of unsupported type %i: %ls\n", dim, custom_filepath);
+		break;
+	}
+
+	setlocale(LC_CTYPE, G->gDefaultLocale.c_str());
+	LeaveCriticalSection(&G->mCriticalSection);
+}
+
 // -----------------------------------------------------------------------------------------------
 
 ULONG STDMETHODCALLTYPE FrameAnalysisContext::AddRef(void)

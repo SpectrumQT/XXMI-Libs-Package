@@ -354,7 +354,7 @@ static bool _get_namespaced_section_path(IniSections *custom_ini_sections, const
 	return true;
 }
 
-static bool get_namespaced_section_path(const wchar_t *section, wstring *ret)
+bool get_namespaced_section_path(const wchar_t *section, wstring *ret)
 {
 	return _get_namespaced_section_path(&ini_sections, section, ret);
 }
@@ -4246,6 +4246,11 @@ void LoadConfigFile()
 	ParseIniFile(iniFile);
 	InsertBuiltInIniSections();
 
+	// Anti-clown: only the main d3dx.ini may enable save= I/O. Mods can
+	// override global [Rendering] keys after includes; snapshot now so a
+	// malicious mod cannot set export_command_list_save = true.
+	G->export_command_list_save = GetIniBool(L"Rendering", L"export_command_list_save", false, NULL);
+
 	G->gLogInput = GetIniBool(L"Logging", L"input", false, NULL);
 	gLogDebug = GetIniBool(L"Logging", L"debug", false, NULL);
 
@@ -4417,6 +4422,9 @@ void LoadConfigFile()
 	G->EXPORT_HLSL = GetIniInt(L"Rendering", L"export_hlsl", 0, NULL);
 	G->EXPORT_BINARY = GetIniBool(L"Rendering", L"export_binary", false, NULL);
 	G->DumpUsage = GetIniBool(L"Rendering", L"dump_usage", false, NULL);
+	// export_command_list_save already snapshotted from main d3dx.ini only
+	// (before includes) — do not re-read here or mods could override it.
+	LogInfo("  export_command_list_save=%i (d3dx.ini only)\n", G->export_command_list_save);
 
 	G->IniParamsReg = GetIniInt(L"Rendering", L"ini_params", 120, NULL);
 	G->decompiler_settings.IniParamsReg = G->IniParamsReg;

@@ -16,6 +16,7 @@
 #include "profiling.h"
 #include "Hunting.h"
 #include "cursor.h"
+#include "globals.h"
 
 #include <D3DCompiler.h>
 
@@ -871,6 +872,211 @@ bail:
 	return false;
 }
 
+// --- save = helpers (fixed-path cousin of dump =) ---
+
+static bool get_migoto_dir(wstring *out)
+{
+	wchar_t path[MAX_PATH];
+	wchar_t *slash;
+
+	if (!GetModuleFileName(migoto_handle, path, MAX_PATH))
+		return false;
+	slash = wcsrchr(path, L'\\');
+	if (!slash)
+		return false;
+	slash[1] = 0;
+	*out = path;
+	return true;
+}
+
+static void normalize_save_path(wstring &path)
+{
+	wstring clean;
+
+	std::replace(path.begin(), path.end(), L'/', L'\\');
+	std::transform(path.begin(), path.end(), path.begin(), ::towlower);
+
+	clean.reserve(path.size());
+	for (wchar_t c : path) {
+		if (c == L'\\' && !clean.empty() && clean.back() == L'\\')
+			continue;
+		clean += c;
+	}
+	path.swap(clean);
+}
+
+static bool path_under_dir(const wstring &path, wstring dir)
+{
+	normalize_save_path(dir);
+	if (dir.empty())
+		return false;
+	if (dir.back() != L'\\')
+		dir += L'\\';
+	return path.size() >= dir.size() && path.compare(0, dir.size(), dir) == 0;
+}
+
+// True when the owning ini lives directly under Mods\ (e.g. Mods\foo.ini),
+// not in a mod subfolder (Mods\MyMod\...). Bare-root mods would otherwise be
+// able to write into any other mod under Mods\.
+static bool is_mods_root_namespace(wstring ns)
+{
+	normalize_save_path(ns);
+	if (!ns.empty() && ns.back() != L'\\')
+		ns += L'\\';
+	return ns == L"mods\\";
+}
+
+// Sandbox: keep writes under the 3DMigoto tree, never into system dirs,
+// ShaderFixes/Cache/FromGame, core, or foreign Mods folders.
+static bool IsSafeSavePath(const wstring &resolved_path, const wstring &namespace_path)
+{
+	wstring root, path, rel, ext, ns;
+	size_t slash, dot;
+	static const wchar_t *whitelist[] = {
+		L".dds", L".png", L".jpg", L".jpeg", L".bmp",
+		L".txt", L".buf", L".bin", L".ib", L".vb"
+	};
+	bool allowed = false;
+
+	// Anti-clown: ini dropped straight into Mods\ may not use save= at all.
+	// Require at least Mods\<ModName>\ so the write sandbox has a private root.
+	if (is_mods_root_namespace(namespace_path))
+		return false;
+
+	if (!get_migoto_dir(&root))
+		return false;
+	normalize_save_path(root);
+	if (root.empty() || root.back() != L'\\')
+		root += L'\\';
+
+	path = resolved_path;
+	normalize_save_path(path);
+
+	if (path.find(L"..") != wstring::npos)
+		return false;
+	if (path.compare(0, root.size(), root) != 0)
+		return false;
+
+	// Require a subdirectory — no files in the 3DMigoto root itself:
+	rel = path.substr(root.size());
+	slash = rel.find(L'\\');
+	if (slash == wstring::npos)
+		return false;
+
+	dot = path.rfind(L'.');
+	if (dot == wstring::npos || dot < root.size() + slash)
+		return false;
+	ext = path.substr(dot);
+	for (const wchar_t *w : whitelist) {
+		if (ext == w) {
+			allowed = true;
+			break;
+		}
+	}
+	if (!allowed)
+		return false;
+
+	if (path_under_dir(path, root + L"core"))
+		return false;
+	if (G->SHADER_PATH[0] && path_under_dir(path, G->SHADER_PATH))
+		return false;
+	if (G->SHADER_CACHE_PATH[0] && path_under_dir(path, G->SHADER_CACHE_PATH))
+		return false;
+	if (path_under_dir(path, root + L"shaderfromgame"))
+		return false;
+
+	if (path_under_dir(path, root + L"mods")) {
+		ns = namespace_path;
+		normalize_save_path(ns);
+		// Only the owning mod subfolder may write under Mods\:
+		// ns must be Mods\<name>\ (longer than just Mods\).
+		if (ns.size() <= 5 || ns.compare(0, 5, L"mods\\") != 0)
+			return false;
+		if (!path_under_dir(path, root + ns))
+			return false;
+	}
+
+	return true;
+}
+
+// Syntax: save = [analyse_options...] target, path
+// Comma separates the resource target from the destination path (Spectrum review).
+// Left side reuses dump's parse_enum_option_string + ParseTarget.
+static bool ParseFrameAnalysisSave(const wchar_t *section,
+		const wchar_t *key, wstring *val,
+		CommandList *explicit_command_list,
+		CommandList *pre_command_list,
+		CommandList *post_command_list,
+		const wstring *ini_namespace)
+{
+	FrameAnalysisSaveCommand *operation = new FrameAnalysisSaveCommand();
+	wchar_t *buf = NULL;
+	wchar_t *target = NULL;
+	size_t comma, size;
+	wstring left, filepath, namespace_path, root, resolved;
+
+	comma = val->find(L',');
+	if (comma == wstring::npos)
+		goto bail;
+
+	left = val->substr(0, comma);
+	filepath = val->substr(comma + 1);
+
+	while (!filepath.empty() && (filepath[0] == L' ' || filepath[0] == L'\t' || filepath[0] == L'"'))
+		filepath.erase(0, 1);
+	while (!filepath.empty() && (filepath.back() == L' ' || filepath.back() == L'\t' ||
+			filepath.back() == L'"' || filepath.back() == L'\r' || filepath.back() == L'\n'))
+		filepath.pop_back();
+	if (filepath.empty())
+		goto bail;
+
+	// Reject absolute / traversal forms before resolution:
+	if (filepath.find(L"..") != wstring::npos || filepath.find(L':') != wstring::npos ||
+			filepath[0] == L'\\' || filepath[0] == L'/')
+		goto bail;
+
+	// parse_enum_option_string replaces spaces with NULLs — same as dump:
+	size = left.size() + 1;
+	buf = new wchar_t[size];
+	wcscpy_s(buf, size, left.c_str());
+
+	operation->analyse_options = parse_enum_option_string<wchar_t *, FrameAnalysisOptions>
+		(FrameAnalysisOptionNames, buf, &target);
+	if (!target)
+		goto bail;
+	if (!operation->target.ParseTarget(target, true, ini_namespace, pre_command_list->scope))
+		goto bail;
+
+	get_namespaced_section_path(section, &namespace_path);
+	if (is_mods_root_namespace(namespace_path)) {
+		// Bare Mods\foo.ini has no private sandbox root — refuse save=.
+		LogOverlayW(LOG_WARNING, L"save= not allowed from an ini in Mods\\ root; put it in Mods\\<ModName>\\\n - [%ls]\n", section);
+		goto bail;
+	}
+	if (!get_migoto_dir(&root))
+		goto bail;
+
+	if (filepath.size() >= 2 && filepath[0] == L'.' &&
+			(filepath[1] == L'\\' || filepath[1] == L'/'))
+		resolved = root + filepath.substr(2);
+	else
+		resolved = root + namespace_path + filepath;
+
+	if (!IsSafeSavePath(resolved, namespace_path))
+		goto bail;
+
+	operation->save_filepath_template = resolved;
+	operation->namespace_path = namespace_path;
+
+	delete[] buf;
+	return AddCommandToList(operation, explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
+
+bail:
+	delete[] buf;
+	delete operation;
+	return false;
+}
+
 bool ParseStoreCommand(const wchar_t* section,
 	const wchar_t* key, wstring* val,
 	CommandList* explicit_command_list,
@@ -978,6 +1184,9 @@ bool ParseCommandListGeneralCommands(const wchar_t *section,
 
 	if (!wcscmp(key, L"dump"))
 		return ParseFrameAnalysisDump(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
+
+	if (!wcscmp(key, L"save"))
+		return ParseFrameAnalysisSave(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 
 	if (!wcscmp(key, L"special")) {
 		if (!wcscmp(val->c_str(), L"upscaling_switch_bb"))
@@ -1618,6 +1827,120 @@ void FrameAnalysisDumpCommand::run(CommandListState *state)
 bool FrameAnalysisDumpCommand::noop(bool post, bool ignore_cto_pre, bool ignore_cto_post)
 {
 	return (G->hunting == HUNTING_MODE_DISABLED || G->frame_analysis_registered == false);
+}
+
+static void replace_token_ci(wstring &str, const wchar_t *token, const wchar_t *value)
+{
+	size_t tlen = wcslen(token);
+	size_t vlen = wcslen(value);
+	size_t i = 0;
+
+	while (i + tlen <= str.size()) {
+		if (_wcsnicmp(str.c_str() + i, token, tlen) == 0) {
+			str.replace(i, tlen, value);
+			i += vlen;
+		} else {
+			i++;
+		}
+	}
+}
+
+static wstring FormatSavePath(const wstring &template_path, CommandListState *state)
+{
+	wstring result = template_path;
+	SYSTEMTIME lt;
+	FILETIME ft;
+	ULONGLONG ticks;
+	wchar_t buf[32];
+	size_t start, end;
+	wstring name, name_lower;
+	CommandListVariables::iterator it;
+
+	GetLocalTime(&lt);
+	swprintf_s(buf, L"%04u-%02u-%02u", lt.wYear, lt.wMonth, lt.wDay);
+	replace_token_ci(result, L"%DATE%", buf);
+	swprintf_s(buf, L"%02u-%02u-%02u", lt.wHour, lt.wMinute, lt.wSecond);
+	replace_token_ci(result, L"%TIME%", buf);
+	swprintf_s(buf, L"%03u", lt.wMilliseconds);
+	replace_token_ci(result, L"%MS%", buf);
+
+	GetSystemTimeAsFileTime(&ft);
+	ticks = ((ULONGLONG)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+	swprintf_s(buf, L"%06u", (unsigned)((ticks / 10) % 1000000));
+	replace_token_ci(result, L"%US%", buf);
+
+	swprintf_s(buf, L"%u", G->frame_no);
+	replace_token_ci(result, L"%FRAME%", buf);
+	swprintf_s(buf, L"%u", state->mHackerContext ? state->mHackerContext->GetDrawCall() : 0);
+	replace_token_ci(result, L"%DRAW%", buf);
+
+	// Remaining %name% tokens → command list globals (same map as ini vars):
+	start = 0;
+	while ((start = result.find(L'%', start)) != wstring::npos) {
+		end = result.find(L'%', start + 1);
+		if (end == wstring::npos)
+			break;
+		name = result.substr(start + 1, end - start - 1);
+		name_lower = name;
+		std::transform(name_lower.begin(), name_lower.end(), name_lower.begin(), ::towlower);
+		it = command_list_globals.find(name_lower);
+		if (it != command_list_globals.end()) {
+			if (it->second.fval == (int)it->second.fval)
+				swprintf_s(buf, L"%i", (int)it->second.fval);
+			else
+				swprintf_s(buf, L"%f", it->second.fval);
+			result.replace(start, end - start + 1, buf);
+			start += wcslen(buf);
+		} else {
+			start = end + 1;
+		}
+	}
+
+	return result;
+}
+
+void FrameAnalysisSaveCommand::run(CommandListState *state)
+{
+	ID3D11Resource *resource = NULL;
+	ID3D11View *view = NULL;
+	UINT stride = 0;
+	UINT offset = 0;
+	UINT buf_size = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+	wstring resolved;
+
+	if (!G->export_command_list_save)
+		return;
+
+	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
+
+	resource = target.GetResource(state, &view, &stride, &offset, &format, NULL);
+	if (!resource) {
+		COMMAND_LIST_LOG(state, "  No resource to save\n");
+		return;
+	}
+
+	FillInMissingInfo(target.type, resource, view, &stride, &offset, &buf_size, &format);
+
+	resolved = FormatSavePath(save_filepath_template, state);
+	if (!IsSafeSavePath(resolved, namespace_path)) {
+		COMMAND_LIST_LOG(state, "  Save path is not safe/allowed: %S\n", resolved.c_str());
+		resource->Release();
+		if (view)
+			view->Release();
+		return;
+	}
+
+	state->mHackerContext->FrameAnalysisSave(resource, analyse_options, resolved.c_str(), format, stride, offset);
+
+	resource->Release();
+	if (view)
+		view->Release();
+}
+
+bool FrameAnalysisSaveCommand::noop(bool post, bool ignore_cto_pre, bool ignore_cto_post)
+{
+	return !G->export_command_list_save;
 }
 
 UpscalingFlipBBCommand::UpscalingFlipBBCommand(wstring section) :
@@ -6935,7 +7258,7 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 
 	// For vertex and index buffers the game may pack multiple meshes into
 	// one buffer and bind them at different offsets. In that case the base
-	// resource hash alone is not enough � we must use the same region data hash 
+	// resource hash alone is not enough  we must use the same region data hash 
 	// that IASetVertexBuffers / IASetIndexBuffer computed and stored in 
 	// mCurrentVertexBuffers[] /mCurrentIndexBuffer, and that the hunting overlay displays.
 	// That way the hash the user copies from the overlay matches the one looked up

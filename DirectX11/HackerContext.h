@@ -117,7 +117,6 @@ private:
 	HackerDevice *mHackerDevice;
 
 	// These are per-context, moved from globals.h:
-	uint32_t mCurrentVertexBuffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
 	uint32_t mCurrentIndexBuffer; // Only valid while hunting=1
 	struct VertexBufferBinding {
 		ID3D11Buffer* buffer;
@@ -222,6 +221,7 @@ protected:
 	UINT64 mCurrentGeometryShader;
 	UINT64 mCurrentPixelShader;
 	UINT64 mCurrentComputeShader;
+	uint32_t mCurrentVertexBuffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
 
 public:
 	HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pContext1);

@@ -2847,6 +2847,33 @@ void FrameAnalysisContext::FrameAnalysisAfterDraw(bool compute, DrawCallInfo *ca
 {
 	update_per_draw_analyse_options();
 
+	// new: VB-hunting override. While a VB is selected, force dump_tex-only
+	// for draws using that VB, ignoring whatever analyse_options is set via
+	// ini/[Hunting]/[TextureOverride] triggers, and skip dumping entirely
+	// for any draw call not using the selected VB.
+	if (G->hunting == HUNTING_MODE_ENABLED && G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != UINT32_MAX) {
+		bool vb_matched = false;
+		for (UINT i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
+			if (mCurrentVertexBuffers[i] == G->mSelectedVertexBuffer) {
+				vb_matched = true;
+				break;
+			}
+		}
+		if (vb_matched) {
+			// Force texture-only dumping and enable all 2D texture formats, completely ignoring the .ini
+			analyse_options = (FrameAnalysisOptions)(
+				(uint32_t)FrameAnalysisOptions::DUMP_SRV |
+				(uint32_t)FrameAnalysisOptions::FMT_2D_AUTO |
+				(uint32_t)FrameAnalysisOptions::FMT_2D_DDS |
+				(uint32_t)FrameAnalysisOptions::FMT_2D_JPS
+				);
+		}
+		else {
+			draw_call++;
+			return;
+		}
+	}
+
 	// Update: We now have an option to allow analysis on deferred
 	// contexts, because it can still be useful to dump some types of
 	// resources in these cases. Render and depth targets will be pretty

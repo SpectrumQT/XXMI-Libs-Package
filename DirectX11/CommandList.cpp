@@ -912,6 +912,17 @@ static bool path_under_dir(const wstring &path, wstring dir)
 	return path.size() >= dir.size() && path.compare(0, dir.size(), dir) == 0;
 }
 
+// True when the owning ini lives directly under Mods\ (e.g. Mods\foo.ini),
+// not in a mod subfolder (Mods\MyMod\...). Bare-root mods would otherwise be
+// able to write into any other mod under Mods\.
+static bool is_mods_root_namespace(wstring ns)
+{
+	normalize_save_path(ns);
+	if (!ns.empty() && ns.back() != L'\\')
+		ns += L'\\';
+	return ns == L"mods\\";
+}
+
 // Sandbox: keep writes under the 3DMigoto tree, never into system dirs,
 // ShaderFixes/Cache/FromGame, core, or foreign Mods folders.
 static bool IsSafeSavePath(const wstring &resolved_path, const wstring &namespace_path)
@@ -923,6 +934,11 @@ static bool IsSafeSavePath(const wstring &resolved_path, const wstring &namespac
 		L".txt", L".buf", L".bin", L".ib", L".vb"
 	};
 	bool allowed = false;
+
+	// Anti-clown: ini dropped straight into Mods\ may not use save= at all.
+	// Require at least Mods\<ModName>\ so the write sandbox has a private root.
+	if (is_mods_root_namespace(namespace_path))
+		return false;
 
 	if (!get_migoto_dir(&root))
 		return false;
@@ -969,8 +985,9 @@ static bool IsSafeSavePath(const wstring &resolved_path, const wstring &namespac
 	if (path_under_dir(path, root + L"mods")) {
 		ns = namespace_path;
 		normalize_save_path(ns);
-		// Only the owning mod namespace may write under Mods\:
-		if (ns.size() < 5 || ns.compare(0, 5, L"mods\\") != 0)
+		// Only the owning mod subfolder may write under Mods\:
+		// ns must be Mods\<name>\ (longer than just Mods\).
+		if (ns.size() <= 5 || ns.compare(0, 5, L"mods\\") != 0)
 			return false;
 		if (!path_under_dir(path, root + ns))
 			return false;
@@ -1028,6 +1045,11 @@ static bool ParseFrameAnalysisSave(const wchar_t *section,
 		goto bail;
 
 	get_namespaced_section_path(section, &namespace_path);
+	if (is_mods_root_namespace(namespace_path)) {
+		// Bare Mods\foo.ini has no private sandbox root — refuse save=.
+		LogOverlayW(LOG_WARNING, L"save= not allowed from an ini in Mods\\ root; put it in Mods\\<ModName>\\\n - [%ls]\n", section);
+		goto bail;
+	}
 	if (!get_migoto_dir(&root))
 		goto bail;
 

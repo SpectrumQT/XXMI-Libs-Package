@@ -1773,9 +1773,6 @@ void FrameAnalysisDumpCommand::run(CommandListState *state)
 	UINT buf_size = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 
-	if (!G->export_command_list_dump)
-		return;
-
 	// Fast exit if frame analysis is currently inactive:
 	if (!G->analyse_frame)
 		return;
@@ -1803,7 +1800,7 @@ void FrameAnalysisDumpCommand::run(CommandListState *state)
 
 bool FrameAnalysisDumpCommand::noop(bool post, bool ignore_cto_pre, bool ignore_cto_post)
 {
-	return !G->export_command_list_dump || (G->hunting == HUNTING_MODE_DISABLED || G->frame_analysis_registered == false);
+	return (G->hunting == HUNTING_MODE_DISABLED || G->frame_analysis_registered == false);
 }
 
 static void replace_token_ci(wstring &str, const wchar_t *token, const wchar_t *value)

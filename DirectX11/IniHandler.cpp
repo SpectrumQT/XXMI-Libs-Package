@@ -4422,8 +4422,8 @@ void LoadConfigFile()
 	G->EXPORT_HLSL = GetIniInt(L"Rendering", L"export_hlsl", 0, NULL);
 	G->EXPORT_BINARY = GetIniBool(L"Rendering", L"export_binary", false, NULL);
 	G->DumpUsage = GetIniBool(L"Rendering", L"dump_usage", false, NULL);
-	G->export_command_list_dump = GetIniBool(L"Rendering", L"export_command_list_dump", true, NULL);
-	G->export_command_list_save = GetIniBool(L"Rendering", L"export_command_list_save", true, NULL);
+	// Opt-in: save= is disabled until explicitly enabled (I/O from command lists).
+	G->export_command_list_save = GetIniBool(L"Rendering", L"export_command_list_save", false, NULL);
 
 	G->IniParamsReg = GetIniInt(L"Rendering", L"ini_params", 120, NULL);
 	G->decompiler_settings.IniParamsReg = G->IniParamsReg;

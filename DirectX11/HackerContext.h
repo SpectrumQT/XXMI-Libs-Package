@@ -139,6 +139,9 @@ private:
 	typedef std::unordered_map<ID3D11Resource*, MappedResourceInfo> MappedResources;
 	MappedResources mMappedResources;
 
+	uint32_t mCurrentPSShaderResourceHashes[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+	ID3D11ShaderResourceView* mCurrentPSShaderResourceViews[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+
 	// These private methods are utility routines for HackerContext.
 	void BeforeDraw(DrawContext &data);
 	void AfterDraw(DrawContext &data);

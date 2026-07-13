@@ -584,8 +584,10 @@ static void CreateShaderCountString(wchar_t *counts)
 	}
 	if (G->mSelectedIndexBuffer != -1)
 		AppendShaderText(counts, L"IB", G->mSelectedIndexBufferPos, G->mVisitedIndexBuffers.size());
-	if (G->mSelectedRenderTarget != (ID3D11Resource *)-1)
+	if (G->mSelectedRenderTarget != (ID3D11Resource*)-1)
 		AppendShaderText(counts, L"RT", G->mSelectedRenderTargetPos, G->mVisitedRenderTargets.size());
+	if (G->mSelectedTexture != 0)   // new
+		AppendShaderText(counts, L"TEX", G->mSelectedTexturePos, G->mSelectedVertexBuffer_Texture.size());
 }
 
 
@@ -716,6 +718,8 @@ void Overlay::DrawShaderInfoLines(float *y)
 	// FIXME? This one is stored as a handle, not a hash:
 	if (G->mSelectedRenderTarget != (ID3D11Resource *)-1)
 		DrawShaderInfoLine("RT", GetOrigResourceHash(G->mSelectedRenderTarget), y, false);
+	if (G->mSelectedTexture != 0)   // new
+		DrawShaderInfoLine("TEX", G->mSelectedTexture, y, false);
 }
 
 void Overlay::DrawNotices(float *y)
@@ -821,6 +825,19 @@ void Overlay::DrawOverlay(void)
 				y += strSize.y;
 
 				DrawShaderInfoLines(&y);
+
+				// new
+				if (G->mSelectedTexture != 0 && G->mSelectedTextureSRV) {
+					D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
+					G->mSelectedTextureSRV->GetDesc(&srvDesc);
+					if (srvDesc.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D) {
+						const int size = mResolution.y / 4;
+						RECT dest = { 10, (LONG)y, 10 + size, (LONG)y + size };
+						DrawRectangle(10, y, (float)size, (float)size, 0, 0, 0, 1.0);
+						mSpriteBatch->Draw(G->mSelectedTextureSRV, dest);
+						y += size;
+					}
+				}
 
 				// Bottom of screen
 				CreateInfoString(osdString);

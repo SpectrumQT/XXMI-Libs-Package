@@ -827,6 +827,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 
 		UINT selectedVertexBufferPos = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
 		UINT selectedRenderTargetPos;
+		UINT selectedTexturePos = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; // new
 		UINT i;
 
 		// In some cases stat collection can have a significant
@@ -853,14 +854,33 @@ void HackerContext::BeforeDraw(DrawContext &data)
 				if (mCurrentRenderTargets[selectedRenderTargetPos] == G->mSelectedRenderTarget)
 					break;
 			}
+			// new
+			if (G->mSelectedTexture != 0) {
+				for (i = 0; i < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; ++i) {
+					if (mCurrentPSShaderResourceHashes[i] == G->mSelectedTexture) {
+						selectedTexturePos = i;
+						break;
+					}
+				}
+				// new
+				if (selectedTexturePos < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
+					ID3D11ShaderResourceView* srv = mCurrentPSShaderResourceViews[selectedTexturePos];
+					if (srv != G->mSelectedTextureSRV) {
+						if (srv) srv->AddRef();
+						if (G->mSelectedTextureSRV) G->mSelectedTextureSRV->Release();
+						G->mSelectedTextureSRV = srv;
+					}
+				}
+			}
 			if (mCurrentIndexBuffer == G->mSelectedIndexBuffer ||
 				mCurrentVertexShader == G->mSelectedVertexShader ||
 				mCurrentPixelShader == G->mSelectedPixelShader ||
 				mCurrentGeometryShader == G->mSelectedGeometryShader ||
 				mCurrentDomainShader == G->mSelectedDomainShader ||
 				mCurrentHullShader == G->mSelectedHullShader ||
-				selectedVertexBufferPos < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT ||
-				selectedRenderTargetPos < mCurrentRenderTargets.size())
+				(selectedVertexBufferPos < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT && G->mSelectedTexture == 0) ||
+				selectedRenderTargetPos < mCurrentRenderTargets.size() ||
+				selectedTexturePos < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT)
 			{
 				LogDebug("  Skipping selected operation. CurrentIndexBuffer = %08lx, CurrentVertexShader = %016I64x, CurrentPixelShader = %016I64x\n",
 					mCurrentIndexBuffer, mCurrentVertexShader, mCurrentPixelShader);
@@ -879,10 +899,18 @@ void HackerContext::BeforeDraw(DrawContext &data)
 						start_pos = G->gSelectedVertexBufferSlotId;
 						end_pos = G->gSelectedVertexBufferSlotId + 1;
 					}
+					bool vb_matched = false; //new
 					for (i = start_pos; i < end_pos; i++) {
 						if (mCurrentVertexBuffers[i] == G->mSelectedVertexBuffer) {
 							G->mSelectedVertexBuffer_VertexShader.insert(mCurrentVertexShader);
 							G->mSelectedVertexBuffer_PixelShader.insert(mCurrentPixelShader);
+							vb_matched = true; //new
+						} // new
+					} //new
+					if (vb_matched) { //new
+						for (UINT t = 0; t < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; t++) { //new
+							if (mCurrentPSShaderResourceHashes[t]) // new
+								G->mSelectedVertexBuffer_Texture.insert(mCurrentPSShaderResourceHashes[t]); //new
 						}
 					}
 				}
@@ -3003,6 +3031,23 @@ STDMETHODIMP_(void) HackerContext::PSSetShaderResources(THIS_
 	__in_ecount(NumViews) ID3D11ShaderResourceView *const *ppShaderResourceViews)
 {
 	SetShaderResources<&ID3D11DeviceContext::PSSetShaderResources>(StartSlot, NumViews, ppShaderResourceViews);
+
+	// new
+	if (G->hunting == HUNTING_MODE_ENABLED) {
+		for (UINT i = 0; i < NumViews; i++) {
+			uint32_t hash = 0;
+			if (ppShaderResourceViews[i]) {
+				ID3D11Resource* resource = NULL;
+				ppShaderResourceViews[i]->GetResource(&resource);
+				if (resource) {
+					hash = GetResourceHash(resource);
+					resource->Release();
+				}
+			}
+			mCurrentPSShaderResourceHashes[StartSlot + i] = hash;
+			mCurrentPSShaderResourceViews[StartSlot + i] = ppShaderResourceViews[i];   // new
+		}
+	}
 }
 
 STDMETHODIMP_(void) HackerContext::PSSetShader(THIS_

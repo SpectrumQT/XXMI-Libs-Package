@@ -532,6 +532,12 @@ struct Globals
 	int mSelectedVertexBufferPos;
 	std::set<UINT64> mSelectedVertexBuffer_VertexShader;	// std::set so that shaders used with an index buffer will be sorted in log when marked
 	std::set<UINT64> mSelectedVertexBuffer_PixelShader;		// std::set so that shaders used with an index buffer will be sorted in log when marked
+	
+	std::set<uint32_t> mSelectedVertexBuffer_Texture;
+	uint32_t mSelectedTexture = 0;
+	int mSelectedTexturePos = -1;
+
+	ID3D11ShaderResourceView* mSelectedTextureSRV = nullptr;
 
 	std::set<UINT64> mVisitedVertexShaders;					// Only shaders seen since last hunting timeout; std::set for consistent order while hunting
 	UINT64 mSelectedVertexShader;				 			// Hash.  -1 now for unselected state. The shader selected using Input object.

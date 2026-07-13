@@ -1396,6 +1396,7 @@ static void NextVertexBuffer(HackerDevice *device, void *private_data)
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 	G->mSelectedVertexBuffer_PixelShader.clear();
 	G->mSelectedVertexBuffer_VertexShader.clear();
+	G->mSelectedVertexBuffer_Texture.clear(); // new
 	G->gVisitedVertexBufferSlotIds.clear();
 	LeaveCriticalSection(&G->mCriticalSection);
 }
@@ -1429,6 +1430,12 @@ static void NextVertexBufferSlot(HackerDevice* device, void* private_data)
 
 	LeaveCriticalSection(&G->mCriticalSection);
 }
+
+static void NextTexture(HackerDevice* device, void* private_data)
+{
+	HuntNext<uint32_t>("texture", &G->mSelectedVertexBuffer_Texture, &G->mSelectedTexture, &G->mSelectedTexturePos);
+}
+
 static void NextPixelShader(HackerDevice *device, void *private_data)
 {
 	HuntNext<UINT64>("pixel shader", &G->mVisitedPixelShaders, &G->mSelectedPixelShader, &G->mSelectedPixelShaderPos);
@@ -1571,6 +1578,18 @@ static void PrevIndexBuffer(HackerDevice *device, void *private_data)
 	G->mSelectedIndexBuffer_VertexShader.clear();
 	LeaveCriticalSection(&G->mCriticalSection);
 }
+static void PrevTexture(HackerDevice* device, void* private_data)
+{
+	if (G->mSelectedVertexBuffer_Texture.size() == 0 || G->mSelectedTexturePos <= 0) {
+		EnterCriticalSectionPretty(&G->mCriticalSection);
+		G->mSelectedTexture = 0;
+		G->mSelectedTexturePos = -1;
+		LeaveCriticalSection(&G->mCriticalSection);
+	}
+	else {
+		HuntPrev<uint32_t>("texture", &G->mSelectedVertexBuffer_Texture, &G->mSelectedTexture, &G->mSelectedTexturePos);
+	}
+}
 static void PrevPixelShader(HackerDevice *device, void *private_data)
 {
 	HuntPrev<UINT64>("pixel shader", &G->mVisitedPixelShaders, &G->mSelectedPixelShader, &G->mSelectedPixelShaderPos);
@@ -1664,6 +1683,26 @@ static void MarkVertexBuffer(HackerDevice *device, void *private_data)
 		LogInfo("     visited pixel shader hash = %016I64x\n", *i);
 	for (std::set<UINT64>::iterator i = G->mSelectedVertexBuffer_VertexShader.begin(); i != G->mSelectedVertexBuffer_VertexShader.end(); ++i)
 		LogInfo("     visited vertex shader hash = %016I64x\n", *i);
+
+	if (G->DumpUsage)
+		DumpUsage(NULL);
+
+	LeaveCriticalSection(&G->mCriticalSection);
+}
+
+static void MarkTexture(HackerDevice* device, void* private_data)
+{
+	if (G->hunting != HUNTING_MODE_ENABLED)
+		return;
+
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	if (G->marking_actions & MarkingAction::CLIPBOARD)
+		HashToClipboard("texture", G->mSelectedTexture);
+
+	MarkingScreenShots(device, G->mSelectedTexture, "tex");
+
+	LogInfo(">>>> Texture marked: texture hash = %08x\n", G->mSelectedTexture);
 
 	if (G->DumpUsage)
 		DumpUsage(NULL);
@@ -1921,6 +1960,12 @@ static void DoneHunting(HackerDevice *device, void *private_data)
 	G->gSelectedVertexBufferSlotId = -1;
 	G->mSelectedIndexBuffer = -1;
 	G->mSelectedIndexBufferPos = -1;
+	G->mSelectedTexture = 0;        // new
+	G->mSelectedTexturePos = -1;       // new
+	if (G->mSelectedTextureSRV) {          // new
+		G->mSelectedTextureSRV->Release();
+		G->mSelectedTextureSRV = nullptr;
+	}
 
 	G->mSelectedPixelShader_VertexBuffer.clear();
 	G->mSelectedPixelShader_IndexBuffer.clear();
@@ -1931,6 +1976,7 @@ static void DoneHunting(HackerDevice *device, void *private_data)
 	G->mSelectedIndexBuffer_PixelShader.clear();
 	G->mSelectedVertexBuffer_VertexShader.clear();
 	G->mSelectedIndexBuffer_VertexShader.clear();
+	G->mSelectedVertexBuffer_Texture.clear();   // new
 
 	LeaveCriticalSection(&G->mCriticalSection);
 }
@@ -2010,6 +2056,10 @@ void ParseHuntingSection()
 	RegisterIniKeyBinding(L"Hunting", L"next_pixelshader", NextPixelShader, NULL, repeat, NULL);
 	RegisterIniKeyBinding(L"Hunting", L"previous_pixelshader", PrevPixelShader, NULL, repeat, NULL);
 	RegisterIniKeyBinding(L"Hunting", L"mark_pixelshader", MarkPixelShader, NULL, noRepeat, NULL);
+
+	RegisterIniKeyBinding(L"Hunting", L"next_texture", NextTexture, NULL, repeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"previous_texture", PrevTexture, NULL, repeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"mark_texture", MarkTexture, NULL, noRepeat, NULL);
 
 	RegisterIniKeyBinding(L"Hunting", L"next_vertexbuffer", NextVertexBuffer, NULL, repeat, NULL);
 	RegisterIniKeyBinding(L"Hunting", L"previous_vertexbuffer", PrevVertexBuffer, NULL, repeat, NULL);

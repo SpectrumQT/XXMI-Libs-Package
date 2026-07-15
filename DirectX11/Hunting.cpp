@@ -19,6 +19,7 @@
 #include "profiling.h"
 #include "FrameAnalysis.h"
 #include "ShaderRegex.h"
+#include "cursor.h"
 
 // bo3b: For this routine, we have a lot of warnings in x64, from converting a size_t result into the needed
 //  DWORD type for the Write calls.  These are writing 256 byte strings, so there is never a chance that it 
@@ -1436,6 +1437,36 @@ static void NextTexture(HackerDevice* device, void* private_data)
 	HuntNext<uint32_t>("texture", &G->mSelectedVertexBuffer_Texture, &G->mSelectedTexture, &G->mSelectedTexturePos);
 }
 
+static void TestPicking(HackerDevice* device, void* private_data)
+{
+	device->GetHackerContext()->TestPickingRoundTrip();
+}
+
+static void RequestPick(HackerDevice* device, void* private_data)
+{
+	if (G->hunting != HUNTING_MODE_ENABLED)
+		return;
+
+	CURSORINFO cursor_info = {};
+	cursor_info.cbSize = sizeof(CURSORINFO);
+	CursorUpscalingBypass_GetCursorInfo(&cursor_info);
+
+	POINT window_coords = cursor_info.ptScreenPos;
+	if (!G->hWnd) {
+		LogInfo("RequestPick: No hWnd, aborting pick\n");
+		return;
+	}
+	CursorUpscalingBypass_ScreenToClient(G->hWnd, &window_coords);
+
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+	G->mPickX = window_coords.x;
+	G->mPickY = window_coords.y;
+	G->mPickRequested = true;
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	LogInfo("Pick requested at window coords (%d, %d)\n", window_coords.x, window_coords.y);
+}
+
 static void NextPixelShader(HackerDevice *device, void *private_data)
 {
 	HuntNext<UINT64>("pixel shader", &G->mVisitedPixelShaders, &G->mSelectedPixelShader, &G->mSelectedPixelShaderPos);
@@ -2097,6 +2128,8 @@ void ParseHuntingSection()
 	RegisterIniKeyBinding(L"Hunting", L"mark_rendertarget", MarkRenderTarget, NULL, noRepeat, NULL);
 
 	RegisterIniKeyBinding(L"Hunting", L"done_hunting", DoneHunting, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"test_picking", TestPicking, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"pick_vertexbuffer", RequestPick, NULL, noRepeat, NULL);
 
 	RegisterIniKeyBinding(L"Hunting", L"reload_fixes", ReloadFixes, NULL, noRepeat, NULL);
 

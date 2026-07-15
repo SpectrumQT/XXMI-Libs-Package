@@ -45,9 +45,7 @@ class HackerSwapChain;
 class HackerDevice : public ID3D11Device1
 {
 private:
-	ID3D11Device1 *mOrigDevice1;
 	ID3D11Device1 *mRealOrigDevice1;
-	ID3D11DeviceContext1 *mOrigContext1;
 	IUnknown *mUnknown;
 
 	HackerContext *mHackerContext;
@@ -112,6 +110,8 @@ private:
 		wchar_t *shaderType);
 
 public:
+	ID3D11Device1* mOrigDevice1;
+	ID3D11DeviceContext1* mOrigContext1;
 	ID3D11ShaderResourceView *mZBufferResourceView;
 	ID3D11Texture1D *mIniTexture;
 	ID3D11ShaderResourceView *mIniResourceView;

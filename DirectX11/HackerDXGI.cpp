@@ -525,6 +525,85 @@ STDMETHODIMP HackerSwapChain::GetDevice(
 }
 
 
+static void StartPicking(HackerDevice* device, IDXGISwapChain1* swapchain)
+{
+	G->mPickActive = true;
+	G->mPickRequested = false;
+}
+
+static void FinishPicking(HackerDevice* device, IDXGISwapChain1* swapchain)
+{
+	if (!G->mPickingTexture || !G->mPickingStaging) {
+		G->mPickActive = false;
+		return;
+	}
+	device->mOrigContext1->CopyResource(G->mPickingStaging, G->mPickingTexture);
+
+	D3D11_TEXTURE2D_DESC pickDesc;
+	G->mPickingTexture->GetDesc(&pickDesc);
+
+	// Scale click coords (captured in window client space) into the picking
+	// texture's actual space, which may differ due to FSR/DLSS/dynamic res.
+	D3D11_TEXTURE2D_DESC bbDesc = {};
+	ID3D11Texture2D* backbuffer = NULL;
+	if (SUCCEEDED(swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&backbuffer))) {
+		backbuffer->GetDesc(&bbDesc);
+		backbuffer->Release();
+	}
+
+	UINT scaledX = (bbDesc.Width > 0) ? (UINT)((float)G->mPickX / bbDesc.Width * pickDesc.Width) : G->mPickX;
+	UINT scaledY = (bbDesc.Height > 0) ? (UINT)((float)G->mPickY / bbDesc.Height * pickDesc.Height) : G->mPickY;
+	if (scaledX >= pickDesc.Width) scaledX = pickDesc.Width - 1;
+	if (scaledY >= pickDesc.Height) scaledY = pickDesc.Height - 1;
+
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	if (SUCCEEDED(device->mOrigContext1->Map(G->mPickingStaging, 0, D3D11_MAP_READ, 0, &mapped))) {
+		/*UINT32* row = (UINT32*)((BYTE*)mapped.pData + scaledY * mapped.RowPitch);
+		UINT32 picked_hash = row[scaledX];*/
+		const int RADIUS = 5;   // samples a (2*RADIUS+1)^2 area, tune as needed
+		std::map<UINT32, int> counts;
+		for (int dy = -RADIUS; dy <= RADIUS; dy++) {
+			int y = (int)scaledY + dy;
+			if (y < 0 || y >= (int)pickDesc.Height) continue;
+			UINT32* row = (UINT32*)((BYTE*)mapped.pData + y * mapped.RowPitch);
+			for (int dx = -RADIUS; dx <= RADIUS; dx++) {
+				int x = (int)scaledX + dx;
+				if (x < 0 || x >= (int)pickDesc.Width) continue;
+				UINT32 h = row[x];
+				if (h != 0)
+					counts[h]++;
+			}
+		}
+
+		UINT32 picked_hash = 0;
+		int best_count = 0;
+		for (auto& kv : counts) {
+			if (kv.second > best_count) {
+				best_count = kv.second;
+				picked_hash = kv.first;
+			}
+		}
+
+		if (picked_hash != 0) {
+			G->mSelectedVertexBuffer = picked_hash;
+			G->mSelectedVertexBufferPos = -1;
+			LogOverlay(LOG_NOTICE, "Picked vertex buffer: 0x%08x\n", picked_hash);
+		}
+		else {
+			LogOverlay(LOG_NOTICE, "Pick missed - no geometry at cursor\n");
+		}
+		device->mOrigContext1->Unmap(G->mPickingStaging, 0);
+	}
+
+	if (G->mPickingRTV) { G->mPickingRTV->Release(); G->mPickingRTV = NULL; }
+	if (G->mPickingTexture) { G->mPickingTexture->Release(); G->mPickingTexture = NULL; }
+	if (G->mPickingStaging) { G->mPickingStaging->Release(); G->mPickingStaging = NULL; }
+	if (G->mPickingDSV) { G->mPickingDSV->Release(); G->mPickingDSV = NULL; }
+	G->mPickingLastDepthResource = NULL;
+
+	G->mPickActive = false;
+}
+
 // -----------------------------------------------------------------------------
 /** IDXGISwapChain **/
 
@@ -572,6 +651,13 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 		// Every presented frame, we want to take some CPU time to run our actions,
 		// which enables hunting, and snapshots, and aiming overrides and other inputs
 		RunFrameActions();
+
+		if (G->mPickActive) {
+			FinishPicking(mHackerDevice, mOrigSwapChain1);
+		}
+		else if (G->mPickRequested) {
+			StartPicking(mHackerDevice, mOrigSwapChain1);
+		}
 
 		if (profiling)
 			Profiling::end(&profiling_state, &Profiling::present_overhead);

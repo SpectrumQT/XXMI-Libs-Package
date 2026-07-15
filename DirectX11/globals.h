@@ -551,6 +551,17 @@ struct Globals
 	std::set<uint32_t> mSelectedPixelShader_IndexBuffer;	// std::set so that index buffers used with a shader will be sorted in log when marked
 	std::set<uint32_t> mSelectedPixelShader_VertexBuffer;	// std::set so that index buffers used with a shader will be sorted in log when marked
 	ID3D11PixelShader* mPinkingShader;						// Special pixels shader to mark a selection with hot pink.
+	ID3D11PixelShader* mPickingShader;
+	ID3D11Buffer* mPickingCB;
+	bool mPickRequested = false;
+	bool mPickActive = false;
+	int mPickX = 0, mPickY = 0;
+	ID3D11Texture2D* mPickingTexture = nullptr;
+	ID3D11RenderTargetView* mPickingRTV = nullptr;
+	ID3D11Texture2D* mPickingStaging = nullptr;
+	ID3D11Resource* mPickingLastDepthResource = nullptr;   // cache key
+	ID3D11DepthStencilView* mPickingDSV = nullptr;          // cached read-only DSV
+	ID3D11DepthStencilState* mPickingDepthState = nullptr;
 
 	ShaderMap mShaders;										// All shaders ever registered with CreateXXXShader
 	ShaderReloadMap mReloadedShaders;						// Shaders that were reloaded live from ShaderFixes
@@ -655,6 +666,8 @@ struct Globals
 		mSelectedHullShader(-1),
 		mSelectedHullShaderPos(-1),
 		mPinkingShader(0),
+		mPickingShader(0),
+		mPickingCB(0),
 
 		hunting(HUNTING_MODE_DISABLED),
 		overlay_buffer_hash_lifetime(-1),

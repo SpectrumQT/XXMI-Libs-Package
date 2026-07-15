@@ -224,6 +224,8 @@ protected:
 	uint32_t mCurrentVertexBuffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
 
 public:
+	void TestPickingRoundTrip();
+	void DuplicateDrawForPicking(uint32_t vb0_hash, DrawCallInfo* call_info);
 	HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pContext1);
 
 	void SetHackerDevice(HackerDevice *pDevice);

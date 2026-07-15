@@ -347,6 +347,46 @@ void HackerDevice::CreatePinkHuntingResources()
 				LogInfo("  Failed to create pinking pixel shader: %d\n", hr);
 			blob->Release();
 		}
+
+		// Picking shader: outputs the currently-set hash as a raw uint,
+// written into an R32_UINT render target for ID-buffer picking.
+		char* picking_hlsl =
+			"cbuffer PickingCB : register(b0)"
+			"{"
+			"    uint vb_hash;"
+			"    uint3 padding;"
+			"}"
+			"uint pshader() : SV_Target0"
+			"{"
+			"    return vb_hash;"
+			"}";
+		ID3D10Blob* picking_blob = NULL;
+		hr = D3DCompile(picking_hlsl, strlen(picking_hlsl), "Picking", NULL, NULL, "pshader", "ps_4_0", 0, 0, &picking_blob, NULL);
+		LogInfo("  Created picking pixel shader: %d\n", hr);
+		if (SUCCEEDED(hr)) {
+			hr = mOrigDevice1->CreatePixelShader((DWORD*)picking_blob->GetBufferPointer(), picking_blob->GetBufferSize(), NULL, &G->mPickingShader);
+			CleanupShaderMaps(G->mPickingShader);
+			if (FAILED(hr))
+				LogInfo("  Failed to create picking pixel shader: %d\n", hr);
+			picking_blob->Release();
+		}
+
+		D3D11_BUFFER_DESC cbDesc = {};
+		cbDesc.ByteWidth = 16;   // uint + padding, must be 16-byte aligned
+		cbDesc.Usage = D3D11_USAGE_DYNAMIC;
+		cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+		cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		hr = mOrigDevice1->CreateBuffer(&cbDesc, NULL, &G->mPickingCB);
+		if (FAILED(hr))
+			LogInfo("  Failed to create picking constant buffer: %d\n", hr);
+
+		D3D11_DEPTH_STENCIL_DESC dsDesc = {};
+		dsDesc.DepthEnable = TRUE;
+		dsDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;  // read depth, never write it
+		dsDesc.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL;
+		hr = mOrigDevice1->CreateDepthStencilState(&dsDesc, &G->mPickingDepthState);
+		if (FAILED(hr))
+			LogInfo("  Failed to create picking depth-stencil state: %d\n", hr);
 	}
 }
 

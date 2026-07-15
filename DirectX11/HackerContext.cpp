@@ -443,6 +443,118 @@ ID3D11PixelShader* HackerContext::SwitchPSShader(ID3D11PixelShader *shader)
 	return pPixelShader;
 }
 
+void HackerContext::TestPickingRoundTrip()
+{
+	HRESULT hr;
+	const UINT TEST_SIZE = 64;
+	const UINT32 FAKE_HASH = 0xDEADBEEF;
+	const UINT TEST_X = 32, TEST_Y = 32;
+
+	// --- Compile a minimal fullscreen-triangle vertex shader (test-only, no VB needed) ---
+	char* vs_hlsl =
+		"void vshader(uint id : SV_VertexID, out float4 pos : SV_Position)"
+		"{"
+		"    float2 uv = float2((id << 1) & 2, id & 2);"
+		"    pos = float4(uv * 2.0f - 1.0f, 0, 1);"
+		"}";
+	ID3D10Blob* vs_blob = NULL;
+	hr = D3DCompile(vs_hlsl, strlen(vs_hlsl), "PickingTestVS", NULL, NULL, "vshader", "vs_4_0", 0, 0, &vs_blob, NULL);
+	if (FAILED(hr)) { LogInfo("  TestPickingRoundTrip: VS compile failed: %x\n", hr); return; }
+	ID3D11VertexShader* test_vs = NULL;
+	hr = mHackerDevice->mOrigDevice1->CreateVertexShader(vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), NULL, &test_vs);
+	vs_blob->Release();
+	if (FAILED(hr)) { LogInfo("  TestPickingRoundTrip: VS create failed: %x\n", hr); return; }
+
+	// --- Offscreen R32_UINT render target ---
+	D3D11_TEXTURE2D_DESC rtDesc = {};
+	rtDesc.Width = TEST_SIZE;
+	rtDesc.Height = TEST_SIZE;
+	rtDesc.MipLevels = 1;
+	rtDesc.ArraySize = 1;
+	rtDesc.Format = DXGI_FORMAT_R32_UINT;
+	rtDesc.SampleDesc.Count = 1;
+	rtDesc.Usage = D3D11_USAGE_DEFAULT;
+	rtDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+	ID3D11Texture2D* pick_tex = NULL;
+	hr = mHackerDevice->mOrigDevice1->CreateTexture2D(&rtDesc, NULL, &pick_tex);
+	if (FAILED(hr)) { LogInfo("  TestPickingRoundTrip: RT tex create failed: %x\n", hr); test_vs->Release(); return; }
+
+	ID3D11RenderTargetView* pick_rtv = NULL;
+	hr = mHackerDevice->mOrigDevice1->CreateRenderTargetView(pick_tex, NULL, &pick_rtv);
+	if (FAILED(hr)) { LogInfo("  TestPickingRoundTrip: RTV create failed: %x\n", hr); pick_tex->Release(); test_vs->Release(); return; }
+
+	// --- Staging texture for CPU readback ---
+	D3D11_TEXTURE2D_DESC stagingDesc = rtDesc;
+	stagingDesc.Usage = D3D11_USAGE_STAGING;
+	stagingDesc.BindFlags = 0;
+	stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+	ID3D11Texture2D* staging_tex = NULL;
+	hr = mHackerDevice->mOrigDevice1->CreateTexture2D(&stagingDesc, NULL, &staging_tex);
+	if (FAILED(hr)) { LogInfo("  TestPickingRoundTrip: staging tex create failed: %x\n", hr); pick_rtv->Release(); pick_tex->Release(); test_vs->Release(); return; }
+
+	// --- Save current pipeline state we're about to clobber ---
+	ID3D11RenderTargetView* old_rtv = NULL;
+	ID3D11DepthStencilView* old_dsv = NULL;
+	mOrigContext1->OMGetRenderTargets(1, &old_rtv, &old_dsv);
+	D3D11_VIEWPORT old_vp;
+	UINT vp_count = 1;
+	mOrigContext1->RSGetViewports(&vp_count, &old_vp);
+	ID3D11VertexShader* old_vs = NULL;
+	mOrigContext1->VSGetShader(&old_vs, NULL, NULL);
+	ID3D11PixelShader* old_ps = NULL;
+	mOrigContext1->PSGetShader(&old_ps, NULL, NULL);
+	D3D11_PRIMITIVE_TOPOLOGY old_topo;
+	mOrigContext1->IAGetPrimitiveTopology(&old_topo);
+
+	// --- Update picking CB with the fake hash ---
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	hr = mOrigContext1->Map(G->mPickingCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+	if (SUCCEEDED(hr)) {
+		memcpy(mapped.pData, &FAKE_HASH, sizeof(FAKE_HASH));
+		mOrigContext1->Unmap(G->mPickingCB, 0);
+	}
+
+	// --- Render the fullscreen triangle with the picking shader ---
+	D3D11_VIEWPORT vp = { 0, 0, (float)TEST_SIZE, (float)TEST_SIZE, 0, 1 };
+	mOrigContext1->RSSetViewports(1, &vp);
+	mOrigContext1->OMSetRenderTargets(1, &pick_rtv, NULL);
+	mOrigContext1->VSSetShader(test_vs, NULL, 0);
+	mOrigContext1->PSSetShader(G->mPickingShader, NULL, 0);
+	mOrigContext1->PSSetConstantBuffers(0, 1, &G->mPickingCB);
+	mOrigContext1->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	mOrigContext1->IASetInputLayout(NULL);
+	mOrigContext1->Draw(3, 0);
+
+	// --- Copy to staging and read back ---
+	mOrigContext1->CopyResource(staging_tex, pick_tex);
+	hr = mOrigContext1->Map(staging_tex, 0, D3D11_MAP_READ, 0, &mapped);
+	if (SUCCEEDED(hr)) {
+		UINT32* row = (UINT32*)((BYTE*)mapped.pData + TEST_Y * mapped.RowPitch);
+		UINT32 readback = row[TEST_X];
+		LogOverlay((readback == FAKE_HASH) ? LOG_NOTICE : LOG_DIRE,
+			"TestPickingRoundTrip: wrote 0x%08x, read back 0x%08x -> %s\n",
+			FAKE_HASH, readback, (readback == FAKE_HASH) ? "PASS" : "FAIL");
+		mOrigContext1->Unmap(staging_tex, 0);
+	}
+
+	// --- Restore state ---
+	mOrigContext1->OMSetRenderTargets(1, &old_rtv, old_dsv);
+	mOrigContext1->RSSetViewports(1, &old_vp);
+	mOrigContext1->VSSetShader(old_vs, NULL, 0);
+	mOrigContext1->PSSetShader(old_ps, NULL, 0);
+	mOrigContext1->IASetPrimitiveTopology(old_topo);
+	if (old_rtv) old_rtv->Release();
+	if (old_dsv) old_dsv->Release();
+	if (old_vs) old_vs->Release();
+	if (old_ps) old_ps->Release();
+
+	// --- Cleanup ---
+	staging_tex->Release();
+	pick_rtv->Release();
+	pick_tex->Release();
+	test_vs->Release();
+}
+
 #define ENABLE_LEGACY_FILTERS 1
 void HackerContext::ProcessShaderOverride(ShaderOverride *shaderOverride, bool isPixelShader, DrawContext *data)
 {
@@ -766,6 +878,96 @@ void HackerContext::DeferredShaderReplacementBeforeDispatch()
 		(mCurrentComputeShaderHandle, mCurrentComputeShader, L"cs");
 }
 
+void HackerContext::DuplicateDrawForPicking(uint32_t vb0_hash, DrawCallInfo* call_info)
+{
+	if (!G->mPickingShader || !G->mPickingRTV)
+		return;
+
+	if (!G->mPickingDSV) {
+		static int skipped = 0;
+		skipped++;
+		return;
+	}
+
+	ID3D11BlendState* blendState = NULL;
+	FLOAT blendFactor[4];
+	UINT sampleMask;
+	mOrigContext1->OMGetBlendState(&blendState, blendFactor, &sampleMask);
+	bool blend_enabled = false;
+	if (blendState) {
+		D3D11_BLEND_DESC blendDesc;
+		blendState->GetDesc(&blendDesc);
+		blend_enabled = blendDesc.RenderTarget[0].BlendEnable;
+		blendState->Release();
+	}
+	if (blend_enabled)
+		return;   // skip transparent/additive VFX draws — not meaningful picking targets
+
+	static int proceeded = 0;
+	proceeded++;
+
+	switch (call_info->type) {
+	case DrawCall::Draw:
+	case DrawCall::DrawIndexed:
+	case DrawCall::DrawInstanced:
+	case DrawCall::DrawIndexedInstanced:
+		break;
+	default:
+		return;   // indirect/auto/dispatch not supported for picking
+	}
+
+	// Save everything we're about to clobber
+	ID3D11RenderTargetView* old_rtv = NULL;
+	ID3D11DepthStencilView* old_dsv = NULL;
+	mOrigContext1->OMGetRenderTargets(1, &old_rtv, &old_dsv);
+	ID3D11PixelShader* old_ps = NULL;
+	mOrigContext1->PSGetShader(&old_ps, NULL, NULL);
+	ID3D11DepthStencilState* old_dss = NULL;
+	UINT old_stencil_ref = 0;
+	mOrigContext1->OMGetDepthStencilState(&old_dss, &old_stencil_ref);
+	ID3D11Buffer* old_cb0 = NULL;
+	mOrigContext1->PSGetConstantBuffers(0, 1, &old_cb0);
+
+	// Write this draw's VB0 hash into the picking CB
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	if (SUCCEEDED(mOrigContext1->Map(G->mPickingCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+		memcpy(mapped.pData, &vb0_hash, sizeof(vb0_hash));
+		mOrigContext1->Unmap(G->mPickingCB, 0);
+	}
+
+	// Swap to the picking pass: our RT, real depth (read-only), our PS+CB
+	mOrigContext1->OMSetRenderTargets(1, &G->mPickingRTV, G->mPickingDSV);
+	mOrigContext1->PSSetShader(G->mPickingShader, NULL, 0);
+	mOrigContext1->PSSetConstantBuffers(0, 1, &G->mPickingCB);
+	mOrigContext1->OMSetDepthStencilState(G->mPickingDepthState, 0);
+
+	// Re-issue with the same VB/IB/VS/topology already bound on the real context
+	switch (call_info->type) {
+	case DrawCall::Draw:
+		mOrigContext1->Draw(call_info->VertexCount, call_info->FirstVertex);
+		break;
+	case DrawCall::DrawIndexed:
+		mOrigContext1->DrawIndexed(call_info->IndexCount, call_info->FirstIndex, call_info->FirstVertex);
+		break;
+	case DrawCall::DrawInstanced:
+		mOrigContext1->DrawInstanced(call_info->VertexCount, call_info->InstanceCount, call_info->FirstVertex, call_info->FirstInstance);
+		break;
+	case DrawCall::DrawIndexedInstanced:
+		mOrigContext1->DrawIndexedInstanced(call_info->IndexCount, call_info->InstanceCount, call_info->FirstIndex, call_info->FirstVertex, call_info->FirstInstance);
+		break;
+	}
+
+	// Restore the real pipeline state exactly as it was
+	mOrigContext1->OMSetRenderTargets(1, &old_rtv, old_dsv);
+	mOrigContext1->PSSetShader(old_ps, NULL, 0);
+	mOrigContext1->OMSetDepthStencilState(old_dss, old_stencil_ref);
+	mOrigContext1->PSSetConstantBuffers(0, 1, &old_cb0);
+	if (old_rtv) old_rtv->Release();
+	if (old_dsv) old_dsv->Release();
+	if (old_ps) old_ps->Release();
+	if (old_dss) old_dss->Release();
+	if (old_cb0) old_cb0->Release();
+}
 
 void HackerContext::BeforeDraw(DrawContext &data)
 {
@@ -802,7 +1004,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 				}
 			}
 			// Update Vertex Buffers hashes.
-			if (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != UINT32_MAX || G->mSelectedVertexBufferPos == INT_MAX) {
+			if (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != UINT32_MAX || G->mSelectedVertexBufferPos == INT_MAX || G->mPickActive) {
 				UINT start_pos = 0, end_pos = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
 				if (G->gSelectedVertexBufferSlotId >= 0) {
 					start_pos = G->gSelectedVertexBufferSlotId;
@@ -825,9 +1027,76 @@ void HackerContext::BeforeDraw(DrawContext &data)
 			}
 		}
 
+		// new — duplicate this draw into the picking buffer if a pick is in progress
+		if (G->mPickActive) {
+			if (mCurrentDepthTarget && mCurrentDepthTarget != G->mPickingLastDepthResource) {
+				if (G->mPickingDSV) { G->mPickingDSV->Release(); G->mPickingDSV = NULL; }
+				if (mCurrentDepthTarget) {
+					ID3D11Texture2D* depthTex = NULL;
+					HRESULT hr_qi = mCurrentDepthTarget->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&depthTex);
+					if (SUCCEEDED(hr_qi) && depthTex) {
+						D3D11_TEXTURE2D_DESC texDesc;
+						depthTex->GetDesc(&texDesc);
+
+						// new — lazily create the picking RT sized to match this depth target,
+						// since the scene may render at an internal resolution different from
+						// the backbuffer (FSR/DLSS/dynamic res)
+						D3D11_TEXTURE2D_DESC currentPickDesc = {};
+						if (G->mPickingTexture)
+							G->mPickingTexture->GetDesc(&currentPickDesc);
+
+						if (!G->mPickingTexture || (texDesc.Width * texDesc.Height > currentPickDesc.Width * currentPickDesc.Height)) {
+							if (G->mPickingRTV) { G->mPickingRTV->Release(); G->mPickingRTV = NULL; }
+							if (G->mPickingTexture) { G->mPickingTexture->Release(); G->mPickingTexture = NULL; }
+							if (G->mPickingStaging) { G->mPickingStaging->Release(); G->mPickingStaging = NULL; }
+							D3D11_TEXTURE2D_DESC rtDesc = {};
+							rtDesc.Width = texDesc.Width;
+							rtDesc.Height = texDesc.Height;
+							rtDesc.MipLevels = 1;
+							rtDesc.ArraySize = 1;
+							rtDesc.Format = DXGI_FORMAT_R32_UINT;
+							rtDesc.SampleDesc.Count = 1;
+							rtDesc.Usage = D3D11_USAGE_DEFAULT;
+							rtDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+							if (SUCCEEDED(mHackerDevice->mOrigDevice1->CreateTexture2D(&rtDesc, NULL, &G->mPickingTexture))) {
+								mHackerDevice->mOrigDevice1->CreateRenderTargetView(G->mPickingTexture, NULL, &G->mPickingRTV);
+								D3D11_TEXTURE2D_DESC stagingDesc = rtDesc;
+								stagingDesc.Usage = D3D11_USAGE_STAGING;
+								stagingDesc.BindFlags = 0;
+								stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+								mHackerDevice->mOrigDevice1->CreateTexture2D(&stagingDesc, NULL, &G->mPickingStaging);
+								UINT clear[4] = { 0,0,0,0 };
+								mOrigContext1->ClearRenderTargetView(G->mPickingRTV, (float*)clear);
+							}
+						}
+
+						D3D11_TEXTURE2D_DESC pickDesc;
+						G->mPickingTexture->GetDesc(&pickDesc);
+
+						if (texDesc.Width == pickDesc.Width && texDesc.Height == pickDesc.Height) {
+							D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+							dsvDesc.ViewDimension = (texDesc.SampleDesc.Count > 1) ? D3D11_DSV_DIMENSION_TEXTURE2DMS : D3D11_DSV_DIMENSION_TEXTURE2D;
+							dsvDesc.Format = (texDesc.Format == DXGI_FORMAT_R24G8_TYPELESS) ? DXGI_FORMAT_D24_UNORM_S8_UINT
+								: (texDesc.Format == DXGI_FORMAT_R32_TYPELESS) ? DXGI_FORMAT_D32_FLOAT
+								: (texDesc.Format == DXGI_FORMAT_R32G8X24_TYPELESS) ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT
+								: texDesc.Format;
+
+							mHackerDevice->mOrigDevice1->CreateDepthStencilView(mCurrentDepthTarget, &dsvDesc, &G->mPickingDSV);
+						}
+						// else: dimension mismatch — leave G->mPickingDSV NULL; DuplicateDrawForPicking
+						// already skips draws with no valid DSV, so this depth target is safely ignored.
+
+						depthTex->Release();
+					}
+				}
+				G->mPickingLastDepthResource = mCurrentDepthTarget;
+			}
+			DuplicateDrawForPicking(mCurrentVertexBuffers[0], &data.call_info);
+		}
+
 		UINT selectedVertexBufferPos = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
 		UINT selectedRenderTargetPos;
-		UINT selectedTexturePos = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; // new
+		UINT selectedTexturePos = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
 		UINT i;
 
 		// In some cases stat collection can have a significant
@@ -3195,12 +3464,26 @@ STDMETHODIMP_(void) HackerContext::OMSetRenderTargets(THIS_
 	/* [annotation] */
 	__in_opt ID3D11DepthStencilView *pDepthStencilView)
 {
+	if (G->mPickRequested || G->mPickActive) {
+	}
+
 	Profiling::State profiling_state;
 
 	if (G->hunting == HUNTING_MODE_ENABLED) {
 		EnterCriticalSectionPretty(&G->mCriticalSection);
 			mCurrentRenderTargets.clear();
 			mCurrentDepthTarget = NULL;
+
+			// new — set unconditionally, not just when DumpUsage is on
+			if (pDepthStencilView) {
+				ID3D11Resource* resource = NULL;
+				pDepthStencilView->GetResource(&resource);
+				if (resource) {
+					resource->Release();
+					mCurrentDepthTarget = resource;
+				}
+			}
+
 			mCurrentPSNumUAVs = 0;
 		LeaveCriticalSection(&G->mCriticalSection);
 
@@ -3242,6 +3525,9 @@ STDMETHODIMP_(void) HackerContext::OMSetRenderTargetsAndUnorderedAccessViews(THI
 	/* [annotation] */
 	__in_ecount_opt(NumUAVs)  const UINT *pUAVInitialCounts)
 {
+	if (G->mPickRequested || G->mPickActive) {
+	}
+
 	Profiling::State profiling_state;
 
 	if (G->hunting == HUNTING_MODE_ENABLED) {
@@ -3250,6 +3536,17 @@ STDMETHODIMP_(void) HackerContext::OMSetRenderTargetsAndUnorderedAccessViews(THI
 		if (NumRTVs != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) {
 			mCurrentRenderTargets.clear();
 			mCurrentDepthTarget = NULL;
+
+			// new — set unconditionally, not just when DumpUsage is on
+			if (pDepthStencilView) {
+				ID3D11Resource* resource = NULL;
+				pDepthStencilView->GetResource(&resource);
+				if (resource) {
+					resource->Release();
+					mCurrentDepthTarget = resource;
+				}
+			}
+
 			if (G->DumpUsage) {
 				if (Profiling::mode == Profiling::Mode::SUMMARY)
 					Profiling::start(&profiling_state);

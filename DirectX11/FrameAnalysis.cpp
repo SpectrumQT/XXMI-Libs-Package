@@ -75,6 +75,9 @@ void FrameAnalysisContext::vFrameAnalysisLog(char *fmt, va_list ap)
 	// to log calls for deferred contexts here as well.
 
 	if (!frame_analysis_log) {
+		if (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != UINT32_MAX)
+			return;   // skip log.txt for VB-scoped dumps
+
 		// Use the original context to check the type, otherwise we
 		// will recursively call ourselves:
 		if (GetPassThroughOrigContext1()->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
@@ -128,6 +131,9 @@ void FrameAnalysisContext::vFrameAnalysisLogW(wchar_t* fmt, va_list ap)
 	// to log calls for deferred contexts here as well.
 
 	if (!frame_analysis_log) {
+		if (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != UINT32_MAX)
+			return;
+
 		// Use the original context to check the type, otherwise we
 		// will recursively call ourselves:
 		if (GetPassThroughOrigContext1()->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
@@ -525,6 +531,8 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 	// Needs to be called at some point before SaveXXXTextureToFile:
 	EnsureCOM();
 
+	bool vb_scoped_dump = (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != UINT32_MAX);
+
 	if ((analyse_options & FrameAnalysisOptions::FMT_2D_JPS) ||
 	    (analyse_options & FrameAnalysisOptions::FMT_2D_AUTO)) {
 		// save a JPS file. This will be missing extra channels (e.g.
@@ -541,7 +549,8 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 		hr = S_OK;
 		if (GetFileAttributes(save_filename.c_str()) == INVALID_FILE_ATTRIBUTES)
 			hr = DirectX::SaveWICTextureToFile(GetDumpingContext(), staging, GUID_ContainerFormatJpeg, save_filename.c_str());
-		link_deduplicated_files(filename.c_str(), save_filename.c_str());
+		if (!vb_scoped_dump)
+			link_deduplicated_files(filename.c_str(), save_filename.c_str());
 	}
 
 
@@ -554,7 +563,8 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 		hr = S_OK;
 		if (GetFileAttributes(save_filename.c_str()) == INVALID_FILE_ATTRIBUTES)
 			hr = DirectX::SaveDDSTextureToFile(GetDumpingContext(), staging, save_filename.c_str());
-		link_deduplicated_files(filename.c_str(), save_filename.c_str());
+		if (!vb_scoped_dump)
+			link_deduplicated_files(filename.c_str(), save_filename.c_str());
 	}
 
 	if (FAILED(hr))
@@ -567,7 +577,8 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 
 		if (GetFileAttributes(save_filename.c_str()) == INVALID_FILE_ATTRIBUTES)
 			DumpDesc(orig_desc, save_filename.c_str());
-		link_deduplicated_files(filename.c_str(), save_filename.c_str());
+		if (!vb_scoped_dump)
+			link_deduplicated_files(filename.c_str(), save_filename.c_str());
 	}
 }
 
@@ -1922,12 +1933,16 @@ static BOOL CreateDeferredFADirectory(LPCWSTR path)
 
 void FrameAnalysisContext::get_deduped_dir(wchar_t *path, size_t size)
 {
-	if (analyse_options & FrameAnalysisOptions::SHARE_DEDUPED) {
+	if (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != UINT32_MAX) {
+		wcscpy_s(path, size, G->ANALYSIS_PATH);
+	}
+	else if (analyse_options & FrameAnalysisOptions::SHARE_DEDUPED) {
 		if (!GetModuleFileName(migoto_handle, path, (DWORD)size))
 			return;
 		wcsrchr(path, L'\\')[1] = 0;
 		wcscat_s(path, size, L"FrameAnalysisDeduped");
-	} else {
+	}
+	else {
 		_snwprintf_s(path, size, size, L"%ls\\deduped", G->ANALYSIS_PATH);
 	}
 

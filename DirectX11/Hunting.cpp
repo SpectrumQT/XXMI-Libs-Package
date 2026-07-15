@@ -1243,23 +1243,37 @@ static void AnalyseFrame(HackerDevice *device, void *private_data)
 	if (G->hunting != HUNTING_MODE_ENABLED)
 		return;
 
-	time(&ltime);
-	_localtime64_s(&tm, &ltime);
-	wcsftime(subdir, MAX_PATH, L"FrameAnalysis-%Y-%m-%d-%H%M%S", &tm);
+	bool vb_scoped_dump = (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != UINT32_MAX);
 
 	if (!GetModuleFileName(migoto_handle, path, MAX_PATH))
 		return;
 	wcsrchr(path, L'\\')[1] = 0;
-	wcscat_s(path, MAX_PATH, subdir);
 
-	LogInfoW(L"Frame analysis directory: %s\n", path);
+	if (vb_scoped_dump) {
+		wcscat_s(path, MAX_PATH, L"VB_Dump\\");
+		CreateDirectoryEnsuringAccess(path);   // ensure VB_Dump\ itself exists; ignore result, it's a parent dir
+		swprintf_s(subdir, MAX_PATH, L"%08x", G->mSelectedVertexBuffer);
+		wcscat_s(path, MAX_PATH, subdir);
 
-	// Bail if the analysis directory already exists or can't be created.
-	// This currently limits us to one / second, but that's probably
-	// enough. We can always increase the granuality if needed.
-	if (!CreateDirectoryEnsuringAccess(path)) {
-		LogInfoW(L"Error creating frame analysis directory: %i\n", GetLastError());
-		return;
+		LogInfoW(L"Frame analysis directory: %s\n", path);
+
+		if (!CreateDirectoryEnsuringAccess(path) && GetLastError() != ERROR_ALREADY_EXISTS) {
+			LogInfoW(L"Error creating frame analysis directory: %i\n", GetLastError());
+			return;
+		}
+	}
+	else {
+		time(&ltime);
+		_localtime64_s(&tm, &ltime);
+		wcsftime(subdir, MAX_PATH, L"FrameAnalysis-%Y-%m-%d-%H%M%S", &tm);
+		wcscat_s(path, MAX_PATH, subdir);
+
+		LogInfoW(L"Frame analysis directory: %s\n", path);
+
+		if (!CreateDirectoryEnsuringAccess(path)) {
+			LogInfoW(L"Error creating frame analysis directory: %i\n", GetLastError());
+			return;
+		}
 	}
 
 	wcscpy(G->ANALYSIS_PATH, path);

@@ -149,6 +149,18 @@ typedef std::unordered_map<std::wstring, class CommandListVariable> CommandListV
 extern CommandListVariables command_list_globals;
 extern std::vector<CommandListVariable*> persistent_variables;
 
+struct VariableEntry
+{
+    std::wstring name;
+    std::wstring var_namespace;
+
+    CommandListVariable* variable;
+};
+
+extern std::vector<VariableEntry> variableList;
+extern std::map<std::wstring, std::vector<VariableEntry*>> variable_groups;
+extern std::vector<std::wstring> namespace_list;
+
 // The scope object is used to declare local variables in a command list. The
 // multiple levels are to isolate variables declared inside if blocks from
 // being accessed in a parent or sibling scope, while allowing variables

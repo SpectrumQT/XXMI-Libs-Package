@@ -30,6 +30,9 @@ std::unordered_set<CommandList*> command_lists_profiling;
 std::unordered_set<CommandListCommand*> command_lists_cmd_profiling;
 std::vector<std::shared_ptr<CommandList>> dynamically_allocated_command_lists;
 
+std::vector<VariableEntry> variableList;
+std::map<std::wstring, std::vector<VariableEntry*>> variable_groups;
+std::vector<std::wstring> namespace_list;
 
 // Adds consistent "3DMigoto" prefix to frame analysis log with appropriate
 // level of indentation for the current recursion level. Using a

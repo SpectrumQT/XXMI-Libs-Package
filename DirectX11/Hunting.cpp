@@ -24,6 +24,8 @@
 //  DWORD type for the Write calls.  These are writing 256 byte strings, so there is never a chance that it 
 //  will lose data, so rather than do anything heroic here, I'm just doing type casts on the strlen function.
 
+Profiling::VariableColumn* selected_column;
+
 DWORD castStrLen(const char* string)
 {
 	return (DWORD)strlen(string);
@@ -1296,6 +1298,9 @@ static void AnalysePerf(HackerDevice *device, void *private_data)
 
 	if (Profiling::mode == Profiling::Mode::INVALID)
 		Profiling::mode = Profiling::Mode::NONE;
+	
+	if (Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES)
+		selected_column = &Profiling::variable_columns[Profiling::active_column];
 
 	Profiling::text.clear();
 	Profiling::clear();
@@ -1310,6 +1315,81 @@ static void FreezePerf(HackerDevice *device, void *private_data)
 
 	if (Profiling::freeze)
 		LogInfoW(L"%s", Profiling::text.c_str());
+}
+
+static void CycleNamespaceColumn(HackerDevice* device, void* private_data)
+{
+	if (Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES) {
+		Profiling::active_column++;
+
+		if (Profiling::active_column > 5)
+			Profiling::active_column = 0;
+
+		selected_column = &Profiling::variable_columns[Profiling::active_column];
+
+		Profiling::text.clear();
+		Profiling::clear();
+	}
+}
+
+static void NextNamespace(HackerDevice* device, void* private_data)
+{
+	if (Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES) {
+		selected_column->namespace_index++;
+
+		if (selected_column->namespace_index >= namespace_list.size())
+			selected_column->namespace_index = -1;
+
+		Profiling::text.clear();
+		Profiling::clear();
+	}
+}
+
+static void PreviousNamespace(HackerDevice* device, void* private_data)
+{
+	if (Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES) {
+		selected_column->namespace_index--;
+
+		if (selected_column->namespace_index < -1)
+			selected_column->namespace_index = namespace_list.size()-1;
+
+		Profiling::text.clear();
+		Profiling::clear();
+	}
+}
+
+static void NextVar(HackerDevice* device, void* private_data)
+{
+	if (Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES) {
+
+		if (variable_groups[namespace_list[selected_column->namespace_index]].size() < Profiling::visible_rows || selected_column->namespace_index == -1)
+			return;
+
+		selected_column->scroll_offset++;
+
+		if (selected_column->scroll_offset > (variable_groups[namespace_list[selected_column->namespace_index]].size() - Profiling::visible_rows))
+			selected_column->scroll_offset = 0;
+
+		Profiling::text.clear();
+		Profiling::clear();
+	}
+}
+
+static void PreviousVar(HackerDevice* device, void* private_data)
+{
+	if (Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES) {
+
+		if (variable_groups[namespace_list[selected_column->namespace_index]].size() < Profiling::visible_rows || selected_column->namespace_index == -1)
+			return;
+
+		selected_column->scroll_offset--;
+
+		if (selected_column->scroll_offset < 0)
+			selected_column->scroll_offset = variable_groups[namespace_list[selected_column->namespace_index]].size() - Profiling::visible_rows;
+
+		Profiling::text.clear();
+		Profiling::clear();
+	}
 }
 
 static void DisableDeferred(HackerDevice *device, void *private_data)
@@ -1977,6 +2057,13 @@ void ParseHuntingSection()
 	// a user to send us a screenshot of the profiling info:
 	RegisterIniKeyBinding(L"Hunting", L"monitor_performance", AnalysePerf, NULL, noRepeat, NULL);
 	RegisterIniKeyBinding(L"Hunting", L"freeze_performance_monitor", FreezePerf, NULL, noRepeat, NULL);
+
+	RegisterIniKeyBinding(L"Hunting", L"cycle_namespace_column", CycleNamespaceColumn, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"next_namespace", NextNamespace, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"previous_namespace", PreviousNamespace, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"next_var", NextVar, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"previous_var", PreviousVar, NULL, noRepeat, NULL);
+
 	Profiling::interval = (INT64)(GetIniFloat(L"Hunting", L"monitor_performance_interval", 1.0f, NULL) * 1000000);
 
 	// Don't register hunting keys when hard disabled. In this case the

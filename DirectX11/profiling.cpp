@@ -47,6 +47,12 @@ namespace Profiling {
 	unsigned skipped_draw_calls;
 	unsigned max_executions_per_frame_exceeded;
 	unsigned iniparams_updates;
+
+	std::vector<VariableColumn> variable_columns(6);
+	int active_column = 0;
+
+	const int column_width = 40;
+	const int visible_rows = 61;
 }
 
 static LARGE_INTEGER profiling_start_time;
@@ -118,6 +124,181 @@ static void update_txt_cto_warning()
 {
 	Profiling::text += L" (post [TextureOverride] commands):\n" + Profiling::cto_warning;
 }
+
+static std::wstring TrimNamespace(const std::wstring& name, int max_length)
+{
+	if (name.size() <= max_length)
+		return name;
+
+
+	std::wstring result = name;
+
+
+	while (result.size() > max_length)
+	{
+		size_t pos = result.find(L'\\');
+
+		if (pos == std::wstring::npos)
+			break;
+
+		result.erase(0, pos + 1);
+	}
+
+	if (result.size() > max_length)
+	{
+		result = result.substr(0, max_length - 3);
+		result += L"...";
+	}
+
+
+	return result;
+}
+
+static void AddColumn(std::wstring& output, std::wstring text, int width)
+{
+	output += text;
+
+	while (text.size() < width)
+	{
+		output += L" ";
+		text += L" ";
+	}
+}
+
+
+static std::wstring GetColumnHeader(int index)
+{
+	auto& column = Profiling::variable_columns[index];
+
+	std::wstring name = L"Select";
+
+	if (column.namespace_index >= 0 &&
+		column.namespace_index < namespace_list.size())
+	{
+		name = namespace_list[column.namespace_index];
+	}
+
+	if (index == Profiling::active_column)
+	{
+		return L"<" + name + L">";
+	}
+
+	return name;
+}
+
+
+static void DrawVariables()
+{
+	Profiling::text += L"\n\n";
+
+	// ============================
+	// Namespace Counters
+	// ============================
+
+	for (int c = 0; c < Profiling::variable_columns.size(); c++)
+	{
+		std::wstring counter;
+
+		if (c == Profiling::active_column)
+		{
+			auto& column = Profiling::variable_columns[c];
+
+			if (column.namespace_index >= 0)
+			{
+				counter =
+					std::to_wstring(column.namespace_index + 1) +
+					L"/" +
+					std::to_wstring(namespace_list.size());
+			}
+			else
+			{
+				counter = L"0/" + std::to_wstring(namespace_list.size());
+			}
+		}
+
+		AddColumn(
+			Profiling::text,
+			counter,
+			Profiling::column_width
+		);
+	}
+
+	Profiling::text += L"\n";
+
+
+	// ============================
+	// Namespace Headers
+	// ============================
+
+	for (int c = 0; c < Profiling::variable_columns.size(); c++)
+	{
+		std::wstring header =
+			TrimNamespace(
+				GetColumnHeader(c),
+				Profiling::column_width
+			);
+
+		AddColumn(
+			Profiling::text,
+			header,
+			Profiling::column_width
+		);
+	}
+
+	Profiling::text += L"\n\n";
+
+
+	// ============================
+	// Variables
+	// ============================
+
+	for (int row = 0; row < Profiling::visible_rows; row++)
+	{
+		for (int c = 0; c < Profiling::variable_columns.size(); c++)
+		{
+			auto& column = Profiling::variable_columns[c];
+
+			std::wstring text;
+
+
+			if (column.namespace_index >= 0 &&
+				column.namespace_index < namespace_list.size())
+			{
+				auto& vars =
+					variable_groups[
+						namespace_list[column.namespace_index]
+					];
+
+
+				int index = row + column.scroll_offset;
+
+
+				if (index < vars.size())
+				{
+					auto* var = vars[index];
+
+
+					text += L"$";
+					text += var->name;
+					text += L" = ";
+					text += std::to_wstring(
+						var->variable->fval
+					);
+				}
+			}
+
+
+			AddColumn(
+				Profiling::text,
+				text,
+				Profiling::column_width
+			);
+		}
+
+		Profiling::text += L"\n";
+	}
+}
+
 
 static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER freq, unsigned frames)
 {
@@ -409,7 +590,7 @@ void Profiling::update_txt()
 		return;
 
 	collection_duration.QuadPart = (end_time.QuadPart - profiling_start_time.QuadPart) * 1000000 / freq.QuadPart;
-	if (collection_duration.QuadPart < interval && !Profiling::text.empty())
+	if (collection_duration.QuadPart < ((Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES) ? 0.1 : interval) && !Profiling::text.empty())
 		return;
 
 	if (frames && collection_duration.QuadPart) {
@@ -429,6 +610,9 @@ void Profiling::update_txt()
 				break;
 			case Profiling::Mode::CTO_WARNING:
 				update_txt_cto_warning();
+				break;
+			case Profiling::Mode::COMMAND_LIST_VARIABLES:
+				DrawVariables();
 				break;
 		}
 	}

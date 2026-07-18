@@ -4986,5 +4986,42 @@ void ReloadConfig(HackerDevice *device)
 	auto stop = std::chrono::high_resolution_clock::now();
 	std::chrono::duration<float> duration = stop - start;
 
+	variableList.clear();
+	variable_groups.clear();
+	namespace_list.clear();
+
+	for (auto& var : command_list_globals)
+	{
+		VariableEntry entry;
+
+		const std::wstring& key = var.first;
+
+		size_t lastSlash = key.find_last_of(L'\\');
+
+		std::wstring ns = key.substr(2, lastSlash - 2);
+
+		if (ns.compare(0, 5, L"mods\\") == 0)
+		{
+			ns.erase(0, 5);
+		}
+
+		entry.var_namespace = ns;
+
+		entry.name = key.substr(lastSlash + 1);
+		entry.variable = &var.second;
+
+		variableList.push_back(entry);
+	}
+
+	for (auto& var : variableList)
+	{
+		variable_groups[var.var_namespace].push_back(&var);
+	}
+
+	for (auto& group : variable_groups)
+	{
+		namespace_list.push_back(group.first);
+	}
+
 	LogOverlayW(LOG_INFO, L"> Reloaded config in %.3fs\n", duration.count());
 }

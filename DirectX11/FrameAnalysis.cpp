@@ -217,21 +217,13 @@ void FrameAnalysisContext::FrameAnalysisLogShaderHash(ID3D11Shader *shader)
 	fprintf(frame_analysis_log, "\n");
 }
 
-void FrameAnalysisContext::FrameAnalysisLogResourceHash(ID3D11Resource *resource)
+void FrameAnalysisContext::FrameAnalysisLogResourceHashInline(ID3D11Resource *resource)
 {
 	uint32_t hash, orig_hash;
 	struct ResourceHashInfo *info;
 
-	// Always complete the line in the debug log:
-	LogDebug("\n");
-
-	if (!G->analyse_frame || !frame_analysis_log)
+	if (!G->analyse_frame || !frame_analysis_log || !resource)
 		return;
-
-	if (!resource) {
-		fprintf(frame_analysis_log, "\n");
-		return;
-	}
 
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 	EnterCriticalSectionPretty(&G->mResourcesLock);
@@ -261,6 +253,17 @@ void FrameAnalysisContext::FrameAnalysisLogResourceHash(ID3D11Resource *resource
 
 	LeaveCriticalSection(&G->mResourcesLock);
 	LeaveCriticalSection(&G->mCriticalSection);
+}
+
+void FrameAnalysisContext::FrameAnalysisLogResourceHash(ID3D11Resource* resource)
+{
+	// Always complete the line in the debug log:
+	LogDebug("\n");
+
+	if (!G->analyse_frame || !frame_analysis_log)
+		return;
+
+	FrameAnalysisLogResourceHashInline(resource);
 
 	fprintf(frame_analysis_log, "\n");
 }
@@ -455,6 +458,33 @@ void FrameAnalysisContext::FrameAnalysisLogData(void *buf, UINT size)
 	fprintf(frame_analysis_log, "\n");
 }
 
+void FrameAnalysisContext::FrameAnalysisLogConstantBuffer(int slot, char* slot_name, ID3D11Resource* resource, UINT first_constant, UINT num_constants)
+{
+	if (!resource || !G->analyse_frame || !frame_analysis_log)
+		return;
+
+	FrameAnalysisLogSlot(frame_analysis_log, slot, slot_name);
+	fprintf(frame_analysis_log, " resource=0x%p", resource);
+
+	FrameAnalysisLogResourceHashInline(resource);
+
+	fprintf(frame_analysis_log, " first_constant=%u num_constants=%u", first_constant, num_constants);
+
+	fprintf(frame_analysis_log, "\n");
+	LogDebug("\n");
+}
+
+void FrameAnalysisContext::FrameAnalysisLogConstantBufferArray(UINT start, UINT len, ID3D11Resource* const* ppResources, const UINT* pFirstConstant, const UINT* pNumConstants)
+{
+	UINT i;
+
+	if (!ppResources || !G->analyse_frame || !frame_analysis_log)
+		return;
+
+	for (i = 0; i < len; i++)
+		FrameAnalysisLogConstantBuffer(start + i, NULL, ppResources[i], pFirstConstant ? pFirstConstant[i] : 0, pNumConstants ? pNumConstants[i] : 0);
+}
+
 ID3D11DeviceContext* FrameAnalysisContext::GetDumpingContext()
 {
 	if (GetPassThroughOrigContext1()->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
@@ -477,7 +507,7 @@ ID3D11DeviceContext* FrameAnalysisContext::GetDumpingContext()
 void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 		wstring filename, D3D11_TEXTURE2D_DESC *orig_desc, DXGI_FORMAT format)
 {
-	HRESULT hr = S_OK, dont_care;
+	HRESULT hr = S_OK;
 	wchar_t dedupe_filename[MAX_PATH];
 	wstring save_filename;
 	wchar_t *wic_ext = L".jpg";
@@ -493,7 +523,7 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 	}
 
 	// Needs to be called at some point before SaveXXXTextureToFile:
-	dont_care = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+	EnsureCOM();
 
 	if ((analyse_options & FrameAnalysisOptions::FMT_2D_JPS) ||
 	    (analyse_options & FrameAnalysisOptions::FMT_2D_AUTO)) {
@@ -539,8 +569,6 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 			DumpDesc(orig_desc, save_filename.c_str());
 		link_deduplicated_files(filename.c_str(), save_filename.c_str());
 	}
-
-	CoUninitialize();
 }
 
 void FrameAnalysisContext::Dump2DResource(ID3D11Texture2D *resource, wchar_t
@@ -824,19 +852,18 @@ static const char* TopologyStr(D3D11_PRIMITIVE_TOPOLOGY topology)
 
 void FrameAnalysisContext::dedupe_buf_filename_vb_txt(const wchar_t *bin_filename,
 		wchar_t *txt_filename, size_t size, int idx, UINT stride,
-		UINT offset, UINT first, UINT count, ID3DBlob *layout,
+		UINT offset, UINT first, UINT count, HackerInputLayout *layout,
 		D3D11_PRIMITIVE_TOPOLOGY topology, DrawCallInfo *call_info)
 {
 	wchar_t *pos;
 	size_t rem;
-	uint32_t layout_hash;
 
 	copy_until_extension(txt_filename, bin_filename, MAX_PATH, &pos, &rem);
 
 	StringCchPrintfExW(pos, rem, &pos, &rem, NULL, L"-vb%i", idx);
 
 	if (layout) {
-		layout_hash = crc32c_hw(0, layout->GetBufferPointer(), layout->GetBufferSize());
+		uint32_t layout_hash = layout->GetLayoutHash();
 		StringCchPrintfExW(pos, rem, &pos, &rem, NULL, L"-layout=%08x", layout_hash);
 	}
 
@@ -865,7 +892,7 @@ void FrameAnalysisContext::dedupe_buf_filename_vb_txt(const wchar_t *bin_filenam
 		FALogErr(L"Failed to create vertex buffer filename\n");
 }
 
-static void dump_ia_layout(FILE *fd, D3D11_INPUT_ELEMENT_DESC *layout_desc, size_t layout_elements, int slot, bool *per_vert, bool *per_inst)
+static void dump_ia_layout(FILE *fd, const D3D11_INPUT_ELEMENT_DESC *layout_desc, size_t layout_elements, int slot, bool *per_vert, bool *per_inst)
 {
 	UINT i;
 
@@ -1227,7 +1254,7 @@ static int fprint_dxgi_format(FILE *fd, DXGI_FORMAT format, uint8_t *buf)
 
 
 static void dump_vb_elem(FILE *fd, uint8_t *buf,
-		D3D11_INPUT_ELEMENT_DESC *layout_desc, size_t layout_elements,
+		const D3D11_INPUT_ELEMENT_DESC *layout_desc, size_t layout_elements,
 		int slot, UINT vb_idx, UINT elem, UINT stride)
 {
 	UINT offset = 0, alignment, size;
@@ -1265,7 +1292,7 @@ static void dump_vb_elem(FILE *fd, uint8_t *buf,
 }
 
 static void dump_vb_known_layout(FILE *fd, D3D11_MAPPED_SUBRESOURCE *map,
-		D3D11_INPUT_ELEMENT_DESC *layout_desc, size_t layout_elements,
+		const D3D11_INPUT_ELEMENT_DESC *layout_desc, size_t layout_elements,
 		UINT size, int slot, UINT offset, UINT first, UINT count, UINT stride)
 {
 	UINT vertex, elem, start, end;
@@ -1289,7 +1316,7 @@ static void dump_vb_known_layout(FILE *fd, D3D11_MAPPED_SUBRESOURCE *map,
 }
 
 static void dump_vb_instance_data(FILE *fd, D3D11_MAPPED_SUBRESOURCE *map,
-		D3D11_INPUT_ELEMENT_DESC *layout_desc, size_t layout_elements,
+		const D3D11_INPUT_ELEMENT_DESC *layout_desc, size_t layout_elements,
 		UINT size, int slot, UINT offset, UINT first, UINT count, UINT stride)
 {
 	UINT instance, idx, elem, start, end;
@@ -1323,12 +1350,12 @@ static void dump_vb_instance_data(FILE *fd, D3D11_MAPPED_SUBRESOURCE *map,
  * other info like the semantic).
  */
 void FrameAnalysisContext::DumpVBTxt(wchar_t *filename, D3D11_MAPPED_SUBRESOURCE *map,
-		UINT size, int slot, UINT stride, UINT offset, UINT first, UINT count, ID3DBlob *layout,
+		UINT size, int slot, UINT stride, UINT offset, UINT first, UINT count, HackerInputLayout *layout,
 		D3D11_PRIMITIVE_TOPOLOGY topology, DrawCallInfo *call_info)
 {
 	FILE *fd = NULL;
 	errno_t err;
-	D3D11_INPUT_ELEMENT_DESC *layout_desc = NULL;
+	const D3D11_INPUT_ELEMENT_DESC *layout_desc = NULL;
 	size_t layout_elements;
 	bool per_vert = false, per_inst = false;
 
@@ -1352,8 +1379,8 @@ void FrameAnalysisContext::DumpVBTxt(wchar_t *filename, D3D11_MAPPED_SUBRESOURCE
 	if (topology != D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED)
 		fprintf(fd, "topology: %s\n", TopologyStr(topology));
 	if (layout) {
-		layout_desc = (D3D11_INPUT_ELEMENT_DESC*)layout->GetBufferPointer();
-		layout_elements = layout->GetBufferSize() / sizeof(D3D11_INPUT_ELEMENT_DESC);
+		layout_desc = layout->GetElements();
+		layout_elements = layout->GetElementCount();
 		dump_ia_layout(fd, layout_desc, layout_elements, slot, &per_vert, &per_inst);
 	}
 	if (!stride) {
@@ -1534,7 +1561,7 @@ bool FrameAnalysisContext::DeferDump2DResource(ID3D11Texture2D *staging,
 bool FrameAnalysisContext::DeferDumpBuffer(ID3D11Buffer *staging,
 		D3D11_BUFFER_DESC *orig_desc, wchar_t *filename,
 		FrameAnalysisOptions buf_type_mask, int idx, DXGI_FORMAT ib_fmt,
-		UINT stride, UINT offset, UINT first, UINT count, ID3DBlob *layout,
+		UINT stride, UINT offset, UINT first, UINT count, HackerInputLayout *layout,
 		D3D11_PRIMITIVE_TOPOLOGY topology, DrawCallInfo *call_info,
 		ID3D11Buffer *staged_ib_for_vb, UINT ib_off_for_vb)
 {
@@ -1691,7 +1718,7 @@ void FrameAnalysisContext::determine_vb_count(UINT *count, ID3D11Buffer *staged_
 
 void FrameAnalysisContext::DumpBufferImmediateCtx(ID3D11Buffer *staging, D3D11_BUFFER_DESC *orig_desc,
 		wstring filename, FrameAnalysisOptions buf_type_mask, int idx,
-		DXGI_FORMAT ib_fmt, UINT stride, UINT offset, UINT first, UINT count, ID3DBlob *layout,
+		DXGI_FORMAT ib_fmt, UINT stride, UINT offset, UINT first, UINT count, HackerInputLayout *layout,
 		D3D11_PRIMITIVE_TOPOLOGY topology, DrawCallInfo *call_info,
 		ID3D11Buffer *staged_ib_for_vb, UINT ib_off_for_vb)
 {
@@ -1788,7 +1815,7 @@ out_unmap:
 
 void FrameAnalysisContext::DumpBuffer(ID3D11Buffer *buffer, wchar_t *filename,
 		FrameAnalysisOptions buf_type_mask, int idx, DXGI_FORMAT ib_fmt,
-		UINT stride, UINT offset, UINT first, UINT count, ID3DBlob *layout,
+		UINT stride, UINT offset, UINT first, UINT count, HackerInputLayout *layout,
 		D3D11_PRIMITIVE_TOPOLOGY topology, DrawCallInfo *call_info,
 		ID3D11Buffer **staged_ib_ret, ID3D11Buffer *staged_ib_for_vb, UINT ib_off_for_vb)
 {
@@ -1907,7 +1934,7 @@ void FrameAnalysisContext::get_deduped_dir(wchar_t *path, size_t size)
 }
 
 HRESULT FrameAnalysisContext::FrameAnalysisFilename(wchar_t *filename, size_t size, bool compute,
-		wchar_t *reg, char shader_type, int idx, ID3D11Resource *handle)
+		wchar_t *reg, char shader_type, int idx, ID3D11Resource *handle, uint32_t override_hash)
 {
 	struct ResourceHashInfo *info;
 	uint32_t hash, orig_hash;
@@ -1948,8 +1975,19 @@ HRESULT FrameAnalysisContext::FrameAnalysisFilename(wchar_t *filename, size_t si
 
 	EnterCriticalSectionPretty(&G->mResourcesLock);
 	try {
-		hash = G->mResources.at(handle).hash;
-		orig_hash = G->mResources.at(handle).orig_hash;
+		// If override_hash is provided (e.g. region hash for VB/IB,
+		// use it as the display hash so the dumped filename
+		// matches exactly what the hunting overlay shows and what must be
+		// placed in the ini [TextureOverride] hash. Fall back to the
+		// resource's stored base hash when no override is given.
+		if (override_hash) {
+			hash = override_hash;
+			orig_hash = G->mResources.at(handle).orig_hash;
+		}
+		else {
+			hash = G->mResources.at(handle).hash;
+			orig_hash = G->mResources.at(handle).orig_hash;
+		}
 	} catch (std::out_of_range) {
 		hash = orig_hash = 0;
 	}
@@ -2235,13 +2273,12 @@ static bool create_shortcut(const wchar_t *filename, const wchar_t *dedupe_filen
 {
 	IShellLink *psl;
 	IPersistFile *ppf;
-	HRESULT hr, dont_care;
 	wchar_t lnk_path[MAX_PATH];
 
-	dont_care = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+	EnsureCOM();
 
 	// https://msdn.microsoft.com/en-us/library/aa969393.aspx#Shellink_Creating_Shortcut
-	hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLink, (LPVOID*)&psl);
+	HRESULT hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLink, (LPVOID*)&psl);
 	if (SUCCEEDED(hr)) {
 		psl->SetPath(dedupe_filename);
 		hr = psl->QueryInterface(IID_IPersistFile, (LPVOID*)&ppf);
@@ -2252,8 +2289,6 @@ static bool create_shortcut(const wchar_t *filename, const wchar_t *dedupe_filen
 		}
 		psl->Release();
 	}
-
-	CoUninitialize();
 
 	return SUCCEEDED(hr);
 }
@@ -2432,21 +2467,19 @@ void FrameAnalysisContext::DumpMesh(DrawCallInfo *call_info)
 		staged_ib->Release();
 }
 
-static bool vb_slot_in_layout(int slot, ID3DBlob *layout)
+static bool vb_slot_in_layout(int slot, const HackerInputLayout* layout)
 {
-	D3D11_INPUT_ELEMENT_DESC *layout_desc = NULL;
-	size_t layout_elements;
-	UINT i;
-
 	if (!layout)
 		return true;
 
-	layout_desc = (D3D11_INPUT_ELEMENT_DESC*)layout->GetBufferPointer();
-	layout_elements = layout->GetBufferSize() / sizeof(D3D11_INPUT_ELEMENT_DESC);
+	const D3D11_INPUT_ELEMENT_DESC* elements = layout->GetElements();
+	UINT count = layout->GetElementCount();
 
-	for (i = 0; i < layout_elements; i++)
-		if (layout_desc[i].InputSlot == slot)
+	for (UINT i = 0; i < count; ++i)
+	{
+		if (elements[i].InputSlot == slot)
 			return true;
+	}
 
 	return false;
 }
@@ -2460,8 +2493,7 @@ void FrameAnalysisContext::DumpVBs(DrawCallInfo *call_info, ID3D11Buffer *staged
 	wchar_t filename[MAX_PATH];
 	HRESULT hr;
 	UINT i, first = 0, count = 0;
-	ID3D11InputLayout *layout = NULL;
-	ID3DBlob *layout_desc = NULL;
+	HackerInputLayout* layout = nullptr;
 
 	if (call_info) {
 		first = call_info->FirstVertex;
@@ -2470,33 +2502,34 @@ void FrameAnalysisContext::DumpVBs(DrawCallInfo *call_info, ID3D11Buffer *staged
 
 	// The format of each vertex buffer cannot be obtained from this call.
 	// Rather, it is available in the input layout assigned to the
-	// pipeline, and there is no API to get the layout description, so we
-	// store it in a blob attached to the layout when it was created that
-	// we retrieve here.
+	// pipeline, and there is no API to get the layout description, so
+	// HackerInputLayout caches the original descriptors when the layout is created.
+	IAGetInputLayout(reinterpret_cast<ID3D11InputLayout**>(&layout));
 
 	GetPassThroughOrigContext1()->IAGetVertexBuffers(0, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, buffers, strides, offsets);
-	GetPassThroughOrigContext1()->IAGetInputLayout(&layout);
 	GetPassThroughOrigContext1()->IAGetPrimitiveTopology(&topology);
-	if (layout) {
-		UINT size = sizeof(ID3DBlob*);
-		layout->GetPrivateData(InputLayoutDescGuid, &size, &layout_desc);
-		layout->Release();
-	}
 
 	for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
 		if (!buffers[i])
 			continue;
 
 		// Skip this vertex buffer if it is not used in the IA layout:
-		if (!vb_slot_in_layout(i, layout_desc))
+		if (!vb_slot_in_layout(i, layout))
 			goto continue_release;
 
-		hr = FrameAnalysisFilename(filename, MAX_PATH, false, L"vb", NULL, i, buffers[i]);
+		uint32_t region_hash = 0;
+		if (G->track_region_hashes && strides[i]) {
+			UINT region_offset = GetVertexBufferRegionOffset(strides[i], call_info, offsets[i]);
+			UINT region_size = GetVertexBufferRegionSize(strides[i], call_info);
+			region_hash = GetRegionHash(GetPassThroughOrigContext1(), buffers[i], region_offset, region_size);
+		}
+
+		hr = FrameAnalysisFilename(filename, MAX_PATH, false, L"vb", NULL, i, buffers[i], region_hash);
 		if (SUCCEEDED(hr)) {
 			DumpBuffer(buffers[i], filename,
 				FrameAnalysisOptions::DUMP_VB, i,
 				ib_fmt, strides[i], offsets[i],
-				first, count, layout_desc, topology,
+				first, count, layout, topology,
 				call_info, NULL, staged_ib, ib_off);
 		}
 
@@ -2504,11 +2537,8 @@ continue_release:
 		buffers[i]->Release();
 	}
 
-	// Although the documentation fails to mention it, GetPrivateData()
-	// does bump the refcount if SetPrivateDataInterface() was used, so we
-	// need to balance it here:
-	if (layout_desc)
-		layout_desc->Release();
+	if (layout)
+		layout->Release();
 }
 
 void FrameAnalysisContext::DumpIB(DrawCallInfo *call_info, ID3D11Buffer **staged_ib, DXGI_FORMAT *format, UINT *offset)
@@ -2529,7 +2559,14 @@ void FrameAnalysisContext::DumpIB(DrawCallInfo *call_info, ID3D11Buffer **staged
 		return;
 	GetPassThroughOrigContext1()->IAGetPrimitiveTopology(&topology);
 
-	hr = FrameAnalysisFilename(filename, MAX_PATH, false, L"ib", NULL, -1, buffer);
+	uint32_t region_hash = 0;
+	if (G->track_region_hashes) {
+		UINT region_offset = GetIndexBufferRegionOffset(*format, call_info, *offset);
+		UINT region_size = GetIndexBufferRegionSize(*format, call_info);
+		region_hash = GetRegionHash(GetPassThroughOrigContext1(), buffer, region_offset, region_size);
+	}
+
+	hr = FrameAnalysisFilename(filename, MAX_PATH, false, L"ib", NULL, -1, buffer, region_hash);
 	if (SUCCEEDED(hr)) {
 		DumpBuffer(buffer, filename,
 				FrameAnalysisOptions::DUMP_IB, -1,
@@ -4780,7 +4817,7 @@ void STDMETHODCALLTYPE FrameAnalysisContext::VSSetConstantBuffers1(
 {
 	FrameAnalysisLog("VSSetConstantBuffers1(StartSlot:%u, NumBuffers:%u, ppConstantBuffers:0x%p, pFirstConstant:0x%p, pNumConstants:0x%p)\n",
 			StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
-	FrameAnalysisLogResourceArray(StartSlot, NumBuffers, (ID3D11Resource *const *)ppConstantBuffers);
+	FrameAnalysisLogConstantBufferArray(StartSlot, NumBuffers, (ID3D11Resource *const *)ppConstantBuffers, pFirstConstant, pNumConstants);
 
 	HackerContext::VSSetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
 }
@@ -4799,7 +4836,7 @@ void STDMETHODCALLTYPE FrameAnalysisContext::HSSetConstantBuffers1(
 {
 	FrameAnalysisLog("HSSetConstantBuffers1(StartSlot:%u, NumBuffers:%u, ppConstantBuffers:0x%p, pFirstConstant:0x%p, pNumConstants:0x%p)\n",
 			StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
-	FrameAnalysisLogResourceArray(StartSlot, NumBuffers, (ID3D11Resource *const *)ppConstantBuffers);
+	FrameAnalysisLogConstantBufferArray(StartSlot, NumBuffers, (ID3D11Resource* const*)ppConstantBuffers, pFirstConstant, pNumConstants);
 
 	HackerContext::HSSetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
 }
@@ -4818,7 +4855,7 @@ void STDMETHODCALLTYPE FrameAnalysisContext::DSSetConstantBuffers1(
 {
 	FrameAnalysisLog("DSSetConstantBuffers1(StartSlot:%u, NumBuffers:%u, ppConstantBuffers:0x%p, pFirstConstant:0x%p, pNumConstants:0x%p)\n",
 			StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
-	FrameAnalysisLogResourceArray(StartSlot, NumBuffers, (ID3D11Resource *const *)ppConstantBuffers);
+	FrameAnalysisLogConstantBufferArray(StartSlot, NumBuffers, (ID3D11Resource* const*)ppConstantBuffers, pFirstConstant, pNumConstants);
 
 	HackerContext::DSSetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
 }
@@ -4837,7 +4874,7 @@ void STDMETHODCALLTYPE FrameAnalysisContext::GSSetConstantBuffers1(
 {
 	FrameAnalysisLog("GSSetConstantBuffers1(StartSlot:%u, NumBuffers:%u, ppConstantBuffers:0x%p, pFirstConstant:0x%p, pNumConstants:0x%p)\n",
 			StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
-	FrameAnalysisLogResourceArray(StartSlot, NumBuffers, (ID3D11Resource *const *)ppConstantBuffers);
+	FrameAnalysisLogConstantBufferArray(StartSlot, NumBuffers, (ID3D11Resource* const*)ppConstantBuffers, pFirstConstant, pNumConstants);
 
 	HackerContext::GSSetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
 }
@@ -4856,7 +4893,7 @@ void STDMETHODCALLTYPE FrameAnalysisContext::PSSetConstantBuffers1(
 {
 	FrameAnalysisLog("PSSetConstantBuffers1(StartSlot:%u, NumBuffers:%u, ppConstantBuffers:0x%p, pFirstConstant:0x%p, pNumConstants:0x%p)\n",
 			StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
-	FrameAnalysisLogResourceArray(StartSlot, NumBuffers, (ID3D11Resource *const *)ppConstantBuffers);
+	FrameAnalysisLogConstantBufferArray(StartSlot, NumBuffers, (ID3D11Resource* const*)ppConstantBuffers, pFirstConstant, pNumConstants);
 
 	HackerContext::PSSetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
 }
@@ -4875,7 +4912,7 @@ void STDMETHODCALLTYPE FrameAnalysisContext::CSSetConstantBuffers1(
 {
 	FrameAnalysisLog("CSSetConstantBuffers1(StartSlot:%u, NumBuffers:%u, ppConstantBuffers:0x%p, pFirstConstant:0x%p, pNumConstants:0x%p)\n",
 			StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
-	FrameAnalysisLogResourceArray(StartSlot, NumBuffers, (ID3D11Resource *const *)ppConstantBuffers);
+	FrameAnalysisLogConstantBufferArray(StartSlot, NumBuffers, (ID3D11Resource* const*)ppConstantBuffers, pFirstConstant, pNumConstants);
 
 	HackerContext::CSSetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
 }

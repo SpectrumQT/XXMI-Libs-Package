@@ -274,10 +274,6 @@ void DumpUsage(wchar_t *dir)
 
 // Make a snapshot of the backbuffer, with the current shader disabled, as a good piece
 // of documentation.  The name will include the hash code, making a direct shader reference.
-//
-// CoInitialize must be called for WIC to work.  We can call it multiple times, it will
-// return the S_FALSE if it's already inited.
-
 template <typename HashType>
 static void SimpleScreenShot(HackerDevice *pDevice, HashType hash, char *shaderType)
 {
@@ -291,19 +287,18 @@ static void SimpleScreenShot(HackerDevice *pDevice, HashType hash, char *shaderT
 		return;
 	}
 
-	HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-	if (FAILED(hr))
-		LogInfo("*** Overlay call CoInitializeEx failed: %d\n", hr);
+	// CoInitialize must be called for WIC to work.  We can call it multiple times, it will
+	// return the S_FALSE if it's already inited.
+	if (!EnsureCOM())
+		LogInfo("*** Overlay call CoInitializeEx failed\n");
 
-	hr = mHackerSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&backBuffer);
+	HRESULT hr = mHackerSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&backBuffer);
 	if (SUCCEEDED(hr))
 	{
 		swprintf_s(fullName, MAX_PATH, L"%ls\\%0*llx-%S.jpg", G->SHADER_PATH, hash_len, (UINT64)hash, shaderType);
 		hr = DirectX::SaveWICTextureToFile(pDevice->GetPassThroughOrigContext1(), backBuffer, GUID_ContainerFormatJpeg, fullName);
 		backBuffer->Release();
 	}
-
-	CoUninitialize();
 
 	LogInfoW(L"  SimpleScreenShot on Mark: %s, result: %d\n", fullName, hr);
 }
@@ -1348,7 +1343,7 @@ static void NextMarkingMode(HackerDevice *device, void *private_data)
 
 template <typename ItemType>
 static void HuntNext(char *type, std::set<ItemType> *visited,
-		ItemType *selected, int *selectedPos)
+	ItemType *selected, int *selectedPos)
 {
 	if (G->hunting != HUNTING_MODE_ENABLED)
 		return;
@@ -1373,12 +1368,21 @@ static void HuntNext(char *type, std::set<ItemType> *visited,
 				*selected = *visited->begin();
 			}
 			LogInfo("> traversing to next %s #%d. Number of %ss in frame: %d\n",
-					type, *selectedPos, type, size);
+				type, *selectedPos, type, size);
+		} else if (G->overlay_buffer_hash_lifetime >= 0 && *selected && (strcmp(type, "vertex buffer") == 0 || strcmp(type, "index buffer") == 0)) {
+			auto it = visited->lower_bound(*selected);
+			if (it == visited->end()) {
+				it = visited->begin();
+				*selectedPos = 0;
+			} else {
+				*selectedPos = std::distance(visited->begin(), it);
+			}
+			*selected = *it;
 		} else {
 			*selectedPos = 0;
 			*selected = *visited->begin();
 			LogInfo("> starting at %s #%d. Number of %ss in frame: %d\n",
-					type, *selectedPos, type, size);
+				type, *selectedPos, type, size);
 		}
 	}
 out:
@@ -1392,6 +1396,7 @@ static void NextVertexBuffer(HackerDevice *device, void *private_data)
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 	G->mSelectedVertexBuffer_PixelShader.clear();
 	G->mSelectedVertexBuffer_VertexShader.clear();
+	G->gVisitedVertexBufferSlotIds.clear();
 	LeaveCriticalSection(&G->mCriticalSection);
 }
 static void NextIndexBuffer(HackerDevice *device, void *private_data)
@@ -1401,6 +1406,27 @@ static void NextIndexBuffer(HackerDevice *device, void *private_data)
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 	G->mSelectedIndexBuffer_PixelShader.clear();
 	G->mSelectedIndexBuffer_VertexShader.clear();
+	LeaveCriticalSection(&G->mCriticalSection);
+}
+static void NextVertexBufferSlot(HackerDevice* device, void* private_data)
+{
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	int32_t& id = G->gSelectedVertexBufferSlotId;
+	uint32_t count = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
+
+	if (id < 0)
+		id = 0;
+	else if ((uint32_t)id >= count - 1)
+		id = -1;
+	else
+		id++;
+
+	G->mVisitedVertexBuffers.clear();
+	G->gVisitedVertexBufferSlotIds.clear();
+	G->mSelectedVertexBufferPos = -1;
+	G->gResetSelectedVertexBufferSlotId = true;
+
 	LeaveCriticalSection(&G->mCriticalSection);
 }
 static void NextPixelShader(HackerDevice *device, void *private_data)
@@ -1471,6 +1497,16 @@ static void HuntPrev(char *type, std::set<ItemType> *visited,
 			}
 			LogInfo("> traversing to previous %s shader #%d. Number of %s shaders in frame: %d\n",
 					type, *selectedPos, type, size);
+		} else if (G->overlay_buffer_hash_lifetime >= 0 && *selected && (strcmp(type, "vertex buffer") == 0 || strcmp(type, "index buffer") == 0)) {
+			auto it = visited->lower_bound(*selected);
+			if (it == visited->begin()) {
+				it = std::prev(visited->end());
+				*selectedPos = size - 1;
+			} else {
+				--it;
+				*selectedPos = std::distance(visited->begin(), it);
+			}
+			*selected = *it;
 		} else {
 			*selectedPos = size - 1;
 			*selected = *std::prev(end);
@@ -1484,17 +1520,52 @@ out:
 
 static void PrevVertexBuffer(HackerDevice *device, void *private_data)
 {
-	HuntPrev<uint32_t>("vertex buffer", &G->mVisitedVertexBuffers, &G->mSelectedVertexBuffer, &G->mSelectedVertexBufferPos);
-
+	if (G->mVisitedVertexBuffers.size() == 0 || G->mSelectedVertexBufferPos <= 0) {
+		EnterCriticalSectionPretty(&G->mCriticalSection);
+		G->mSelectedVertexBuffer = UINT32_MAX;
+		G->mSelectedVertexBufferPos = INT_MAX;
+		LeaveCriticalSection(&G->mCriticalSection);
+	}
+	else {
+		HuntPrev<uint32_t>("vertex buffer", &G->mVisitedVertexBuffers, &G->mSelectedVertexBuffer, &G->mSelectedVertexBufferPos);
+	}
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 	G->mSelectedVertexBuffer_PixelShader.clear();
 	G->mSelectedVertexBuffer_VertexShader.clear();
+	G->gVisitedVertexBufferSlotIds.clear();
+	LeaveCriticalSection(&G->mCriticalSection);
+}
+static void PrevVertexBufferSlot(HackerDevice* device, void* private_data)
+{
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	int32_t& id = G->gSelectedVertexBufferSlotId;
+	uint32_t count = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
+
+	if (id < 0)
+		id = count - 1;
+	else if (id == 0)
+		id = -1;
+	else
+		id--;
+
+	G->mVisitedVertexBuffers.clear();
+	G->gVisitedVertexBufferSlotIds.clear();
+	G->mSelectedVertexBufferPos = -1;
+	G->gResetSelectedVertexBufferSlotId = true;
+
 	LeaveCriticalSection(&G->mCriticalSection);
 }
 static void PrevIndexBuffer(HackerDevice *device, void *private_data)
 {
-	HuntPrev<uint32_t>("index buffer", &G->mVisitedIndexBuffers, &G->mSelectedIndexBuffer, &G->mSelectedIndexBufferPos);
-
+	if (G->mVisitedIndexBuffers.size() == 0 || G->mSelectedIndexBufferPos <= 0) {
+		EnterCriticalSectionPretty(&G->mCriticalSection);
+		G->mSelectedIndexBuffer = UINT32_MAX;
+		G->mSelectedIndexBufferPos = INT_MAX;
+		LeaveCriticalSection(&G->mCriticalSection);
+	} else {
+		HuntPrev<uint32_t>("index buffer", &G->mVisitedIndexBuffers, &G->mSelectedIndexBuffer, &G->mSelectedIndexBufferPos);
+	}
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 	G->mSelectedIndexBuffer_PixelShader.clear();
 	G->mSelectedIndexBuffer_VertexShader.clear();
@@ -1847,6 +1918,7 @@ static void DoneHunting(HackerDevice *device, void *private_data)
 	G->mSelectedRenderTarget = ((ID3D11Resource *)-1);
 	G->mSelectedVertexBuffer = -1;
 	G->mSelectedVertexBufferPos = -1;
+	G->gSelectedVertexBufferSlotId = -1;
 	G->mSelectedIndexBuffer = -1;
 	G->mSelectedIndexBufferPos = -1;
 
@@ -1882,6 +1954,14 @@ void ParseHuntingSection()
 
 	LogInfo("[Hunting]\n");
 	G->hunting = GetIniInt(L"Hunting", L"hunting", 0, NULL);
+
+	// Number of frames a IB/VB buffer hash can remain in the overlay tracking
+	// cache without being encountered again before it is purged.
+	// If >= 0, stale hashes are removed by PurgeStaleVisitedBufferHashes() once per
+	// frame at the start of HackerSwapChain::Present().
+	G->overlay_buffer_hash_lifetime = GetIniInt(L"Hunting", L"overlay_buffer_hash_lifetime", -1, NULL);
+	if (G->track_region_hashes && G->overlay_buffer_hash_lifetime < 0)
+		G->overlay_buffer_hash_lifetime = 0;
 
 	// reload_config is registered even if not hunting - this allows us to
 	// turn on hunting in the ini dynamically without having to relaunch
@@ -1934,6 +2014,9 @@ void ParseHuntingSection()
 	RegisterIniKeyBinding(L"Hunting", L"next_vertexbuffer", NextVertexBuffer, NULL, repeat, NULL);
 	RegisterIniKeyBinding(L"Hunting", L"previous_vertexbuffer", PrevVertexBuffer, NULL, repeat, NULL);
 	RegisterIniKeyBinding(L"Hunting", L"mark_vertexbuffer", MarkVertexBuffer, NULL, noRepeat, NULL);
+
+	RegisterIniKeyBinding(L"Hunting", L"next_vertexbuffer_slot", NextVertexBufferSlot, NULL, repeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"previous_vertexbuffer_slot", PrevVertexBufferSlot, NULL, repeat, NULL);
 
 	RegisterIniKeyBinding(L"Hunting", L"next_indexbuffer", NextIndexBuffer, NULL, repeat, NULL);
 	RegisterIniKeyBinding(L"Hunting", L"previous_indexbuffer", PrevIndexBuffer, NULL, repeat, NULL);
@@ -1991,4 +2074,66 @@ void ParseHuntingSection()
 	}
 
 	G->verbose_overlay = GetIniBool(L"Hunting", L"verbose_overlay", false, NULL);
+}
+
+void RegisterVisitedIndexBufferNoLock(uint32_t hash)
+{
+	if (!hash || hash == UINT32_MAX)
+		return;
+	G->mVisitedIndexBuffers.insert(hash);
+	if (G->overlay_buffer_hash_lifetime >= 0)
+		G->mVisitedIndexBuffersLastSeenFrame[hash] = G->frame_no;
+}
+
+void RegisterVisitedIndexBuffer(uint32_t hash)
+{
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+	RegisterVisitedIndexBufferNoLock(hash);
+	LeaveCriticalSection(&G->mCriticalSection);
+}
+
+void RegisterVisitedVertexBufferNoLock(uint32_t hash, uint32_t slot_id)
+{
+	if (!hash || hash == UINT32_MAX)
+		return;
+	if (G->gSelectedVertexBufferSlotId != -1 && slot_id != G->gSelectedVertexBufferSlotId) {
+		return;
+	}
+	G->mVisitedVertexBuffers.insert(hash);
+	if (G->overlay_buffer_hash_lifetime >= 0)
+		G->mVisitedVertexBuffersLastSeenFrame[hash] = G->frame_no;
+}
+
+void RegisterVisitedVertexBuffer(uint32_t hash, uint32_t slot_id)
+{
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+	RegisterVisitedVertexBufferNoLock(hash, slot_id);
+	LeaveCriticalSection(&G->mCriticalSection);
+}
+
+static void PurgeStaleBuffers(std::set<uint32_t>* hashes, std::unordered_map<uint32_t, unsigned>* lastSeenFrames, uint32_t* selectedHash, int* selectedPos)
+{
+
+	for (auto it = lastSeenFrames->begin(); it != lastSeenFrames->end(); )
+	{
+		uint32_t hash = it->first;
+		unsigned last_frame = it->second;
+
+		bool stale = (G->frame_no - last_frame) > (unsigned)G->overlay_buffer_hash_lifetime;
+
+		if (stale) {
+			hashes->erase(hash);
+			it = lastSeenFrames->erase(it);
+		} else {
+			++it;
+		}
+	}
+}
+
+void PurgeStaleVisitedBufferHashes(HackerDevice* device)
+{
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+	PurgeStaleBuffers(&G->mVisitedVertexBuffers, &G->mVisitedVertexBuffersLastSeenFrame, &G->mSelectedVertexBuffer, &G->mSelectedVertexBufferPos);
+	PurgeStaleBuffers(&G->mVisitedIndexBuffers, &G->mVisitedIndexBuffersLastSeenFrame, &G->mSelectedIndexBuffer, &G->mSelectedIndexBufferPos);
+	LeaveCriticalSection(&G->mCriticalSection);
 }

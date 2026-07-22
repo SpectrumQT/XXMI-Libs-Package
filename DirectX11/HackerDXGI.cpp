@@ -347,9 +347,10 @@ STDMETHODIMP HackerSwapChain::QueryInterface(THIS_
 
 	if (riid == __uuidof(IDXGISwapChain2))
 	{
-		LogInfo("***  returns E_NOINTERFACE as error for IDXGISwapChain2.\n");
-		*ppvObject = NULL;
-		return E_NOINTERFACE;
+		// Return interface without wrapper to support Endfield's pipeline.
+		LogInfo("  return IDXGISwapChain2 interface (%p) without wrapper.\n", ppvObject);
+		LogInfo("  returns result = %x for %p\n", hr, ppvObject);
+		return hr;
 	}
 	if (riid == __uuidof(IDXGISwapChain3))
 	{
@@ -543,6 +544,30 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 		profiling = Profiling::mode == Profiling::Mode::SUMMARY;
 		if (profiling)
 			Profiling::start(&profiling_state);
+
+		if (G->hunting == HUNTING_MODE_ENABLED) {
+			if (G->overlay_buffer_hash_lifetime >= 0)
+				PurgeStaleVisitedBufferHashes(mHackerDevice);
+			if (G->mSelectedIndexBufferPos == INT_MAX) {
+				G->mSelectedIndexBufferPos = G->mVisitedIndexBuffers.size() - 1;
+				G->mSelectedIndexBuffer = *std::prev(G->mVisitedIndexBuffers.end());
+			}
+			if (G->mSelectedVertexBufferPos == INT_MAX) {
+				G->mSelectedVertexBufferPos = G->mVisitedVertexBuffers.size() - 1;
+				G->mSelectedVertexBuffer = *std::prev(G->mVisitedVertexBuffers.end());
+			}
+			if (G->gResetSelectedVertexBufferSlotId) {
+				if (!G->mVisitedVertexBuffers.empty()) {
+					G->mSelectedVertexBuffer = *G->mVisitedVertexBuffers.begin();
+					G->mSelectedVertexBufferPos = 0;
+					G->gResetSelectedVertexBufferSlotId = false;
+				}
+			}
+		}
+
+		if (G->track_region_hashes) {
+			ClearRegionHashesGlobalCache();
+		}
 
 		// Every presented frame, we want to take some CPU time to run our actions,
 		// which enables hunting, and snapshots, and aiming overrides and other inputs

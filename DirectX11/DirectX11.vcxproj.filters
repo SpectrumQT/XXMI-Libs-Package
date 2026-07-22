@@ -29,6 +29,7 @@
     <ClCompile Include="lock.cpp" />
     <ClCompile Include="cursor.cpp" />
     <ClCompile Include="Override.cpp" />
+    <ClCompile Include="HackerInputLayout.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="d3d11Wrapper.def" />
@@ -62,6 +63,7 @@
     <ClInclude Include="lock.h" />
     <ClInclude Include="cursor.h" />
     <ClInclude Include="Override.h" />
+    <ClInclude Include="HackerInputLayout.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="DirectX11.rc" />

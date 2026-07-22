@@ -10,7 +10,7 @@
 // Hierarchy:
 //  HackerContext <- ID3D11DeviceContext1 <- ID3D11DeviceContext <- ID3D11DeviceChild <- IUnknown
 
-#include "HackerContext.h"
+#include "Hunting.h"
 
 //#include "HookedContext.h"
 
@@ -72,6 +72,8 @@ HackerContext::HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pCon
 
 	memset(mCurrentVertexBuffers, 0, sizeof(mCurrentVertexBuffers));
 	mCurrentIndexBuffer = 0;
+	memset(mCurrentVertexBuffersBindings, 0, sizeof(mCurrentVertexBuffersBindings));
+	memset(&mCurrentIndexBufferBinding, 0, sizeof(mCurrentIndexBufferBinding));
 	mCurrentVertexShader = 0;
 	mCurrentVertexShaderHandle = NULL;
 	mCurrentPixelShader = 0;
@@ -87,6 +89,9 @@ HackerContext::HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pCon
 	mCurrentDepthTarget = NULL;
 	mCurrentPSUAVStartSlot = 0;
 	mCurrentPSNumUAVs = 0;
+	mCurrentInputLayout = nullptr;
+	mOriginalInputLayout = nullptr;
+	mOverrideInputLayout = nullptr;
 }
 
 
@@ -556,6 +561,45 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 	case ShaderRegexCache::NO_CACHE:
 		LogInfo("Performing deferred shader analysis on %S %016I64x...\n", shader_type, hash);
 
+		// Detect shader model
+		auto it = G->mShaderModelCache.find(hash);
+		if (it != G->mShaderModelCache.end()) {
+			orig_info->shaderModel = it->second.shaderModel;
+			LogInfo("%S %016I64x shader model %s is loaded from cache.\n", shader_type, hash, orig_info->shaderModel.c_str());
+		} else {
+			if (orig_info->shaderModel == "bin") {
+				// Get shader model from bytecode.
+				if (!get_shader_model_from_bytecode(orig_info->byteCode->GetBufferPointer(), orig_info->byteCode->GetBufferSize(), &orig_info->shaderModel)) {
+					LogInfo("%S %016I64x shader model detection from bytecode failed.\n", shader_type, hash);
+					goto out_drop;
+				}
+				// Store shader modeli in cache.
+				G->mShaderModelCache.emplace(hash, ShaderModelCacheEntry{ orig_info->shaderModel });
+				LogInfo("%S %016I64x shader model %s detected from bytecode.\n", shader_type, hash, orig_info->shaderModel.c_str());
+			}
+		}
+
+		bool decompilation_required = false;
+
+		// Process ShaderRegex sections that don't require bytecode decompilation.
+		link_shader_regex_groups_without_patterns(shader_type, &orig_info->shaderModel, hash, &decompilation_required);
+
+		// Skip disassemble entirely if there are no matching ShaderRegex with Patterns found.
+		if (!decompilation_required) {
+			LogInfo("%S %016I64x disassembly skipped: no matching ShaderRegex with Patterns found for %s.\n", shader_type, hash, orig_info->shaderModel.c_str());
+			goto out_drop;
+		}
+
+		// Disassemble shader bytecode.
+		asm_text = BinaryToAsmText(
+			orig_info->byteCode->GetBufferPointer(),
+			orig_info->byteCode->GetBufferSize(),
+			G->patch_cb_offsets,
+			G->disassemble_undecipherable_custom_data);
+
+		if (asm_text.empty())
+			goto out_drop;
+
 		asm_text = BinaryToAsmText(orig_info->byteCode->GetBufferPointer(),
 				orig_info->byteCode->GetBufferSize(),
 				G->patch_cb_offsets,
@@ -563,6 +607,7 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 		if (asm_text.empty())
 			goto out_drop;
 
+		// Apply patches from ShaderRegex with Patterns (and Templates).
 		try {
 			patch_regex = apply_shader_regex_groups(&asm_text, shader_type, &orig_info->shaderModel, hash, &tagline);
 		} catch (...) {
@@ -711,6 +756,40 @@ void HackerContext::DeferredShaderReplacementBeforeDispatch()
 		(mCurrentComputeShaderHandle, mCurrentComputeShader, L"cs");
 }
 
+void HackerContext::DeferInputLayoutOverride(HackerInputLayout* pInputLayout)
+{
+	LogDebug("HackerContext::DeferInputLayoutOverride(%s@%p) called pInputLayout=%p\n", type_name(this), this, pInputLayout);
+
+	if (mOverrideInputLayout != nullptr)
+		mOverrideInputLayout->Release();
+
+	mOverrideInputLayout = pInputLayout;
+}
+
+void HackerContext::OverrideInputLayout()
+{
+	if (mOverrideInputLayout == nullptr || mOverrideInputLayout == mCurrentInputLayout)
+		return;
+
+	LogDebug("HackerContext::OverrideInputLayout(%s@%p) called mOverrideInputLayout=%p\n", type_name(this), this, mOverrideInputLayout);
+
+	if (mOriginalInputLayout == nullptr)
+		mOriginalInputLayout = mCurrentInputLayout;
+
+	IASetInputLayout(mOverrideInputLayout);
+}
+
+void HackerContext::RestoreInputLayout()
+{
+	LogDebug("HackerContext::RestoreInputLayout(%s@%p) called mOriginalInputLayout=%p\n", type_name(this), this, mOriginalInputLayout);
+
+	mOverrideInputLayout->Release();
+
+	IASetInputLayout(mOriginalInputLayout);
+
+	mOverrideInputLayout = nullptr;
+	mOriginalInputLayout = nullptr;
+}
 
 void HackerContext::BeforeDraw(DrawContext &data)
 {
@@ -719,10 +798,58 @@ void HackerContext::BeforeDraw(DrawContext &data)
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::start(&profiling_state);
 
+	// Register index buffer if it wasn't explicitly set in current indexed draw call.
+	// Required for CheckTextureOverride to work for indexed draw calls that are re-using previously set IB.
+	if (G->track_implicit_index_buffers)
+	{
+		IndexBufferBinding& b = mCurrentIndexBufferBinding;
+		if (!b.is_explicit && b.buffer && data.call_info.IndexCount) {
+			mOrigContext1->IASetIndexBuffer(b.buffer, b.format, b.offset);
+		}
+		b.is_explicit = false;
+	}
+
 	// If we are not hunting shaders, we should skip all of this shader management for a performance bump.
 	if (G->hunting == HUNTING_MODE_ENABLED)
 	{
-		UINT selectedVertexBufferPos;
+		// Register currently set index and vertex buffers for browsing in Shader Hunting Mode overlay.
+		if (G->track_region_hashes) 
+		{
+			// Register Index Buffer hash.
+			if (G->mSelectedIndexBuffer != 0 && G->mSelectedIndexBuffer != UINT32_MAX || G->mSelectedIndexBufferPos == INT_MAX) {
+				IndexBufferBinding& b = mCurrentIndexBufferBinding;
+				if (b.buffer && b.offset) {
+					UINT region_offset = GetIndexBufferRegionOffset(b.format, &data.call_info, b.offset);
+					UINT region_size = GetIndexBufferRegionSize(b.format, &data.call_info);
+					mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, region_offset, region_size);
+					RegisterVisitedIndexBuffer(mCurrentIndexBuffer);
+				}
+			}
+			// Update Vertex Buffers hashes.
+			if (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != UINT32_MAX || G->mSelectedVertexBufferPos == INT_MAX) {
+				UINT start_pos = 0, end_pos = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
+				if (G->gSelectedVertexBufferSlotId >= 0) {
+					start_pos = G->gSelectedVertexBufferSlotId;
+					end_pos = G->gSelectedVertexBufferSlotId + 1;
+				}
+				for (UINT i = start_pos; i < end_pos; i++) {
+					VertexBufferBinding& b = mCurrentVertexBuffersBindings[i];
+					if (b.buffer && b.stride) {
+						UINT region_offset = GetVertexBufferRegionOffset(b.stride, &data.call_info, b.offset);
+						UINT region_size = GetVertexBufferRegionSize(b.stride, &data.call_info);
+						mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, region_offset, region_size);
+					}
+				}
+				// Register Vertex Buffers hashes under the same lock.
+				EnterCriticalSectionPretty(&G->mCriticalSection);
+				for (UINT i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
+					RegisterVisitedVertexBufferNoLock(mCurrentVertexBuffers[i], i);
+				}
+				LeaveCriticalSection(&G->mCriticalSection);
+			}
+		}
+
+		UINT selectedVertexBufferPos = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
 		UINT selectedRenderTargetPos;
 		UINT i;
 
@@ -735,9 +862,16 @@ void HackerContext::BeforeDraw(DrawContext &data)
 		EnterCriticalSectionPretty(&G->mCriticalSection);
 		{
 			// Selection
-			for (selectedVertexBufferPos = 0; selectedVertexBufferPos < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++selectedVertexBufferPos) {
-				if (mCurrentVertexBuffers[selectedVertexBufferPos] == G->mSelectedVertexBuffer)
-					break;
+			if (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != UINT32_MAX) {
+				for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++i) {
+					if (mCurrentVertexBuffers[i] == G->mSelectedVertexBuffer) {
+						G->gVisitedVertexBufferSlotIds.insert(i);
+						if (G->gSelectedVertexBufferSlotId == -1 || i == G->gSelectedVertexBufferSlotId) {
+							G->gSelectedVertexBufferDrawInfo = data.call_info;
+							selectedVertexBufferPos = i;
+						}
+					}
+				}
 			}
 			for (selectedRenderTargetPos = 0; selectedRenderTargetPos < mCurrentRenderTargets.size(); ++selectedRenderTargetPos) {
 				if (mCurrentRenderTargets[selectedRenderTargetPos] == G->mSelectedRenderTarget)
@@ -763,16 +897,25 @@ void HackerContext::BeforeDraw(DrawContext &data)
 				}
 				G->mSelectedRenderTargetSnapshotList.insert(mCurrentRenderTargets.begin(), mCurrentRenderTargets.end());
 				// Snapshot info.
-				for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
-					if (mCurrentVertexBuffers[i] == G->mSelectedVertexBuffer) {
-						G->mSelectedVertexBuffer_VertexShader.insert(mCurrentVertexShader);
-						G->mSelectedVertexBuffer_PixelShader.insert(mCurrentPixelShader);
+				if (G->mSelectedVertexBuffer != 0 && G->mSelectedVertexBuffer != UINT32_MAX) {
+					UINT start_pos = 0, end_pos = D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
+					if (G->gSelectedVertexBufferSlotId >= 0) {
+						start_pos = G->gSelectedVertexBufferSlotId;
+						end_pos = G->gSelectedVertexBufferSlotId + 1;
+					}
+					for (i = start_pos; i < end_pos; i++) {
+						if (mCurrentVertexBuffers[i] == G->mSelectedVertexBuffer) {
+							G->mSelectedVertexBuffer_VertexShader.insert(mCurrentVertexShader);
+							G->mSelectedVertexBuffer_PixelShader.insert(mCurrentPixelShader);
+						}
 					}
 				}
-				if (mCurrentIndexBuffer == G->mSelectedIndexBuffer)
-				{
-					G->mSelectedIndexBuffer_VertexShader.insert(mCurrentVertexShader);
-					G->mSelectedIndexBuffer_PixelShader.insert(mCurrentPixelShader);
+				if (G->mSelectedIndexBuffer != 0 && G->mSelectedIndexBuffer != UINT32_MAX) {
+					if (mCurrentIndexBuffer == G->mSelectedIndexBuffer) {
+						G->gSelectedIndexBufferDrawInfo = data.call_info;
+						G->mSelectedIndexBuffer_VertexShader.insert(mCurrentVertexShader);
+						G->mSelectedIndexBuffer_PixelShader.insert(mCurrentPixelShader);
+					}
 				}
 				if (mCurrentVertexShader == G->mSelectedVertexShader) {
 					for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
@@ -855,6 +998,8 @@ void HackerContext::BeforeDraw(DrawContext &data)
 			data.post_commands[4] = &i->second.post_command_list;
 			ProcessShaderOverride(&i->second, true, &data);
 		}
+
+		OverrideInputLayout();
 	}
 
 out_profile:
@@ -892,6 +1037,11 @@ void HackerContext::AfterDraw(DrawContext &data)
 		data.oldPixelShader->Release();
 		if (ret)
 			ret->Release();
+	}
+
+	if (mOriginalInputLayout != nullptr) {
+		RestoreInputLayout();
+		mOriginalInputLayout = nullptr;
 	}
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
@@ -1113,6 +1263,20 @@ bool HackerContext::MapDenyCPURead(
 	return i->second.begin()->deny_cpu_read;
 }
 
+// Checks resource for being an index or vertex buffer.
+bool HackerContext::MapTrackRegionHashes(ID3D11Resource* pResource, D3D11_MAP MapType, D3D11_RESOURCE_DIMENSION* dim)
+{
+	if (MapType == D3D11_MAP_READ || *dim != D3D11_RESOURCE_DIMENSION_BUFFER)
+		return false;
+	ID3D11Buffer* buf = (ID3D11Buffer*)pResource;
+	D3D11_BUFFER_DESC buf_desc;
+	buf->GetDesc(&buf_desc);
+	if (buf_desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER)) {
+		return true;
+	}
+	return false;
+}
+
 void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 		UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
 		D3D11_MAPPED_SUBRESOURCE *pMappedResource)
@@ -1168,6 +1332,15 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 			break;
 	}
 
+	pResource->GetType(&dim);
+
+	// Divert IB or VB buffer for use in region hashes system cache.
+	// Data will be copied during TrackAndDivertUnmap from allocated replacement.
+	if (G->track_region_hashes) {
+		if (!divert)
+			divert = MapTrackRegionHashes(pResource, MapType, &dim);
+	}
+
 	if (!track && !divert)
 		goto out_profile;
 
@@ -1178,27 +1351,30 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 	if (!divertable || !divert)
 		goto out_profile;
 
-	pResource->GetType(&dim);
 	switch (dim) {
 		case D3D11_RESOURCE_DIMENSION_BUFFER:
 			buf = (ID3D11Buffer*)pResource;
 			buf->GetDesc(&buf_desc);
 			map_info->size = buf_desc.ByteWidth;
+			map_info->bind_flags = buf_desc.BindFlags;
 			break;
 		case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
 			tex1d = (ID3D11Texture1D*)pResource;
 			tex1d->GetDesc(&tex1d_desc);
 			map_info->size = dxgi_format_size(tex1d_desc.Format) * tex1d_desc.Width;
+			map_info->bind_flags = tex1d_desc.BindFlags;
 			break;
 		case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
 			tex2d = (ID3D11Texture2D*)pResource;
 			tex2d->GetDesc(&tex2d_desc);
 			map_info->size = pMappedResource->RowPitch * tex2d_desc.Height;
+			map_info->bind_flags = tex2d_desc.BindFlags;
 			break;
 		case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
 			tex3d = (ID3D11Texture3D*)pResource;
 			tex3d->GetDesc(&tex3d_desc);
 			map_info->size = pMappedResource->DepthPitch * tex3d_desc.Depth;
+			map_info->bind_flags = tex3d_desc.BindFlags;
 			break;
 		default:
 			goto out_profile;
@@ -1212,8 +1388,6 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 
 	if (read && !deny)
 		memcpy(replace, pMappedResource->pData, map_info->size);
-	else
-		memset(replace, 0, map_info->size);
 
 	map_info->orig_pData = pMappedResource->pData;
 	map_info->map.pData = replace;
@@ -1222,6 +1396,31 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 out_profile:
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::end(&profiling_state, &Profiling::map_overhead);
+}
+
+void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, void* data, size_t size, bool* deallocate_diverted_memory)
+{
+	if (!data || !size)
+		return;
+
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	ResourceHandleInfo* info = GetResourceHandleInfo(pResource);
+
+	if (!info) {
+		LeaveCriticalSection(&G->mCriticalSection);
+		return;
+	}
+
+	//LogInfo("UpdateResourceDataCacheFromMap size=%d, pResource=%p\n", size, pResource);
+	info->SetDataCache(data, size);
+
+	if (deallocate_diverted_memory)
+		*deallocate_diverted_memory = false;
+
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	//LogInfo("Unmap CacheBufferData size=%d, hash=%08lx, data_hash=%08lx, pResource=0x%p\n", size, info->hash, info->cached_data_hash, pResource);
 }
 
 void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresource)
@@ -1241,6 +1440,11 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 		goto out_profile;
 	map_info = &i->second;
 
+	bool deallocate_diverted_memory = true;
+
+	if (G->track_region_hashes && map_info->bind_flags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER))
+		UpdateResourceDataCacheFromMap(pResource, map_info->map.pData, map_info->size, &deallocate_diverted_memory);
+
 	if (G->track_texture_updates == 1 && Subresource == 0 && map_info->mapped_writable)
 		UpdateResourceHashFromCPU(pResource, map_info->map.pData, map_info->map.RowPitch, map_info->map.DepthPitch);
 
@@ -1249,7 +1453,9 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 		if (map_info->mapped_writable)
 			memcpy(map_info->orig_pData, map_info->map.pData, map_info->size);
 
-		free(map_info->map.pData);
+		if (deallocate_diverted_memory) {
+			free(map_info->map.pData);
+		}
 	}
 
 	mMappedResources.erase(i);
@@ -1305,7 +1511,17 @@ STDMETHODIMP_(void) HackerContext::IASetInputLayout(THIS_
 	/* [annotation] */
 	__in_opt ID3D11InputLayout *pInputLayout)
 {
-	 mOrigContext1->IASetInputLayout(pInputLayout);
+	LogDebug("HackerContext::IASetInputLayout(%s@%p) called pInputLayout=%p\n", type_name(this), this, pInputLayout);
+
+	if (mCurrentInputLayout)
+		mCurrentInputLayout->Release();
+
+	mCurrentInputLayout = pInputLayout ? static_cast<HackerInputLayout*>(pInputLayout) : nullptr;
+
+	if (mCurrentInputLayout)
+		mCurrentInputLayout->AddRef();
+
+	mOrigContext1->IASetInputLayout(mCurrentInputLayout ? mCurrentInputLayout->GetOrigInputLayout() : nullptr);
 }
 
 STDMETHODIMP_(void) HackerContext::IASetVertexBuffers(THIS_
@@ -1322,16 +1538,33 @@ STDMETHODIMP_(void) HackerContext::IASetVertexBuffers(THIS_
 {
 	 mOrigContext1->IASetVertexBuffers(StartSlot, NumBuffers, ppVertexBuffers, pStrides, pOffsets);
 
+	 // Register hashes of vertex buffers for browsing in Shader Hunting Mode.
 	 if (G->hunting == HUNTING_MODE_ENABLED) {
-		EnterCriticalSectionPretty(&G->mCriticalSection);
-		for (UINT i = StartSlot; (i < StartSlot + NumBuffers) && (i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT); i++) {
-			if (ppVertexBuffers && ppVertexBuffers[i]) {
-				mCurrentVertexBuffers[i] = GetResourceHash(ppVertexBuffers[i]);
-				G->mVisitedVertexBuffers.insert(mCurrentVertexBuffers[i]);
-			} else
-				mCurrentVertexBuffers[i] = 0;
-		}
-		LeaveCriticalSection(&G->mCriticalSection);
+		 EnterCriticalSectionPretty(&G->mCriticalSection);
+		 for (UINT i = StartSlot; (i < StartSlot + NumBuffers) && (i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT); i++) {
+			 UINT idx = i - StartSlot;
+			 if (ppVertexBuffers && ppVertexBuffers[idx]) {
+				 mCurrentVertexBuffers[i] = GetResourceHash(ppVertexBuffers[idx]);
+				 // When hunting, save this hash as a visited vertex buffer to cycle through.
+				 RegisterVisitedVertexBufferNoLock(mCurrentVertexBuffers[i], i);
+			 } else {
+				 mCurrentVertexBuffers[i] = 0;
+			 }
+		 }
+		 LeaveCriticalSection(&G->mCriticalSection);
+	 }
+
+	 // Store raw binding for current vertex buffers. Usage:
+	 // 1. For vertex buffer region hashes support in Shader Hunting Mode (to calculate region hash in BeforeDraw, with its draw context).
+	 if (G->track_region_hashes) {
+		 for (UINT i = StartSlot; (i < StartSlot + NumBuffers) && (i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT); i++) {
+			UINT idx = i - StartSlot;
+			if (ppVertexBuffers && ppVertexBuffers[idx]) {
+				mCurrentVertexBuffersBindings[i].buffer = ppVertexBuffers[idx];
+				mCurrentVertexBuffersBindings[i].offset = pOffsets ? pOffsets[idx] : 0;
+				mCurrentVertexBuffersBindings[i].stride = pStrides ? pStrides[idx] : 0;
+			}
+		 }
 	 }
 }
 
@@ -1630,6 +1863,63 @@ bool HackerContext::ExpandRegionCopy(ID3D11Resource *pDstResource, UINT DstX,
 	return true;
 }
 
+// Replicate current region copy on cached data for region hash tracking system.
+// Useful when game constructs semi-static buffer out of multiple resources that are set via Map().
+void CopySubresourceRegionCache(ID3D11Resource* pSrcResource, ID3D11Resource* pDstResource, UINT DstX, const D3D11_BOX* pSrcBox)
+{
+	D3D11_RESOURCE_DIMENSION dim;
+	pDstResource->GetType(&dim);
+	if (dim != D3D11_RESOURCE_DIMENSION_BUFFER)
+		return;
+
+	UINT src_offset = 0;
+	UINT region_size = 0;
+
+	// Calculate src data copy range.
+	if (pSrcBox) {
+		// Use range from D3D11_BOX.
+		src_offset = pSrcBox->left;
+		region_size = pSrcBox->right - pSrcBox->left;
+	}
+
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	ResourceHandleInfo* src_info = GetResourceHandleInfo(pSrcResource);
+	ResourceHandleInfo* dst_info = GetResourceHandleInfo(pDstResource);
+
+	if (!src_info || !dst_info) {
+		LeaveCriticalSection(&G->mCriticalSection);
+		return;
+	}
+
+	if (!src_info->cached_data_size || src_offset + region_size > src_info->cached_data_size) {
+		// Copy is happening from uncached data -> reset dst cache and leave it to slow fallback path.
+		dst_info->ClearDataCache();
+		LeaveCriticalSection(&G->mCriticalSection);
+		return;
+	}
+
+	// If range is not specified, we must copy the entire src buffer.
+	if (!region_size)
+		region_size = src_info->cached_data_size;
+
+	// Initialize new cache of dst size.
+	if (!dst_info->cached_data_size) {
+		D3D11_BUFFER_DESC dst_desc;
+		((ID3D11Buffer*)pDstResource)->GetDesc(&dst_desc);
+		dst_info->InitializeDataCache(dst_desc.ByteWidth);
+	}
+
+	dst_info->SetDataCacheRegion(src_info->GetCachedData() + src_offset, region_size, DstX);
+
+	//dst_info->cached_data_hash = crc32c_hw(0, dst_info->cached_data, dst_desc.ByteWidth);
+
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	//LogInfo("CopySubresourceRegion CacheBufferData region_size=%d, src_offset=%d, dst_offset=%d, src_hash=%08lx, src_data_hash=%08lx, dst_hash=%08lx, dst_data_hash=%08lx, srcResource=0x%p, dstResource=0x%p\n",
+	//	region_size, src_offset, DstX, src_info->hash, src_info->cached_data_hash, dst_info->hash, dst_info->cached_data_hash, pSrcResource, pDstResource);
+}
+
 STDMETHODIMP_(void) HackerContext::CopySubresourceRegion(THIS_
 	/* [annotation] */
 	__in  ID3D11Resource *pDstResource,
@@ -1669,6 +1959,9 @@ STDMETHODIMP_(void) HackerContext::CopySubresourceRegion(THIS_
 	// enable as an option in the future if there is a proven need.
 	if (G->track_texture_updates == 1 && DstSubresource == 0 && DstX == 0 && DstY == 0 && DstZ == 0 && pSrcBox == NULL)
 		PropagateResourceHash(pDstResource, pSrcResource);
+
+	if (G->track_region_hashes)
+		CopySubresourceRegionCache(pSrcResource, pDstResource, DstX, pSrcBox);
 }
 
 STDMETHODIMP_(void) HackerContext::CopyResource(THIS_
@@ -1679,6 +1972,10 @@ STDMETHODIMP_(void) HackerContext::CopyResource(THIS_
 {
 	if (G->hunting && G->track_texture_updates != 2) { // Any hunting mode - want to catch hash contamination even while soft disabled
 		MarkResourceHashContaminated(pDstResource, 0, pSrcResource, 0, 'C', 0, 0, 0, NULL);
+	}
+
+	if (G->track_region_hashes) {
+		ClearResourceRegionHashCache(pDstResource);
 	}
 
 	TextureOverrideMatches matches;
@@ -1738,6 +2035,10 @@ STDMETHODIMP_(void) HackerContext::UpdateSubresource(THIS_
 {
 	if (G->hunting && G->track_texture_updates != 2) { // Any hunting mode - want to catch hash contamination even while soft disabled
 		MarkResourceHashContaminated(pDstResource, DstSubresource, NULL, 0, 'U', 0, 0, 0, NULL);
+	}
+
+	if (G->track_region_hashes) {
+		ClearResourceRegionHashCache(pDstResource);
 	}
 
 	 mOrigContext1->UpdateSubresource(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch,
@@ -2186,7 +2487,13 @@ STDMETHODIMP_(void) HackerContext::IAGetInputLayout(THIS_
 	/* [annotation] */
 	__out  ID3D11InputLayout **ppInputLayout)
 {
-	 mOrigContext1->IAGetInputLayout(ppInputLayout);
+	if (!ppInputLayout)
+		return;
+
+	*ppInputLayout = mCurrentInputLayout;
+
+	if (mCurrentInputLayout)
+		mCurrentInputLayout->AddRef();
 }
 
 STDMETHODIMP_(void) HackerContext::IAGetVertexBuffers(THIS_
@@ -2810,17 +3117,25 @@ STDMETHODIMP_(void) HackerContext::IASetIndexBuffer(THIS_
 {
 	mOrigContext1->IASetIndexBuffer(pIndexBuffer, Format, Offset);
 
-	// This is only used for index buffer hunting nowadays since the
-	// command list checks the hash on demand only when it is needed
-	mCurrentIndexBuffer = 0;
-	if (pIndexBuffer && G->hunting == HUNTING_MODE_ENABLED) {
-		mCurrentIndexBuffer = GetResourceHash(pIndexBuffer);
-		if (mCurrentIndexBuffer) {
-			// When hunting, save this as a visited index buffer to cycle through.
-			EnterCriticalSectionPretty(&G->mCriticalSection);
-			G->mVisitedIndexBuffers.insert(mCurrentIndexBuffer);
-			LeaveCriticalSection(&G->mCriticalSection);
+	// Register hash of index buffer for browsing in Shader Hunting Mode.
+	if (G->hunting == HUNTING_MODE_ENABLED) {
+		if (pIndexBuffer) {
+			mCurrentIndexBuffer = GetResourceHash(pIndexBuffer);
+			// When hunting, save this hash as a visited index buffer to cycle through.
+			RegisterVisitedIndexBuffer(mCurrentIndexBuffer);
+		} else {
+			mCurrentIndexBuffer = 0;
 		}
+	}
+
+	// Store raw binding for current index buffer. Usage:
+	// 1. For index buffer region hashes support in Shader Hunting Mode (to calculate region hash in BeforeDraw, with its draw context).
+	// 2. For implicit index buffer tracking (to call IASetIndexBuffer in BeforeDraw of next draws without IB explicitly set).
+	if (G->track_region_hashes || G->track_implicit_index_buffers) {
+		mCurrentIndexBufferBinding.buffer = pIndexBuffer;
+		mCurrentIndexBufferBinding.format = Format;
+		mCurrentIndexBufferBinding.offset = Offset;
+		mCurrentIndexBufferBinding.is_explicit = true;
 	}
 }
 
@@ -3045,6 +3360,9 @@ void STDMETHODCALLTYPE HackerContext::CopySubresourceRegion1(
 	/* [annotation] */
 	_In_  UINT CopyFlags)
 {
+	if (G->track_region_hashes) {
+		ClearResourceRegionHashCache(pDstResource);
+	}
 	mOrigContext1->CopySubresourceRegion1(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox, CopyFlags);
 }
 
@@ -3064,6 +3382,10 @@ void STDMETHODCALLTYPE HackerContext::UpdateSubresource1(
 	/* [annotation] */
 	_In_  UINT CopyFlags)
 {
+	if (G->track_region_hashes) {
+		ClearResourceRegionHashCache(pDstResource);
+	}
+
 	mOrigContext1->UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
 
 	// TODO: Track resource hash updates
@@ -3074,6 +3396,9 @@ void STDMETHODCALLTYPE HackerContext::DiscardResource(
 	/* [annotation] */
 	_In_  ID3D11Resource *pResource)
 {
+	if (G->track_region_hashes) {
+		ClearResourceRegionHashCache(pResource);
+	}
 	mOrigContext1->DiscardResource(pResource);
 }
 

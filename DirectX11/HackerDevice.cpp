@@ -350,6 +350,54 @@ void HackerDevice::CreatePinkHuntingResources()
 	}
 }
 
+HackerInputLayout* HackerDevice::FindCachedInputLayout(uint64_t hash)
+{
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	auto it = mInputLayoutCache.find(hash);
+
+	if (it == mInputLayoutCache.end()) {
+		LeaveCriticalSection(&G->mCriticalSection);
+		return nullptr;
+	}
+
+	HackerInputLayout* layout = it->second;
+	layout->AddRef();
+
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	return layout;
+}
+
+void HackerDevice::CacheInputLayout(uint64_t hash, HackerInputLayout* layout)
+{
+	if (!layout)
+		return;
+
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	auto result = mInputLayoutCache.emplace(hash, layout);
+
+	if (result.second)
+		layout->AddRef();
+
+	LeaveCriticalSection(&G->mCriticalSection);
+}
+
+void HackerDevice::ClearInputLayoutCache()
+{
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	for (auto& entry : mInputLayoutCache)
+	{
+		if (entry.second)
+			entry.second->Release();
+	}
+
+	mInputLayoutCache.clear();
+
+	LeaveCriticalSection(&G->mCriticalSection);
+}
 
 // With the addition of full DXGI support, this init sequence is too dangerous
 // to do at object creation time.  The NV CreateHandleFromIUnknown calls back
@@ -1441,6 +1489,8 @@ STDMETHODIMP_(ULONG) HackerDevice::Release(THIS)
 			LogInfo("HackerDevice::Release counter=%d, this=%p\n", ulRef, this);
 		LogInfo("  deleting self\n");
 
+		ClearInputLayoutCache();
+
 		unregister_hacker_device(this);
 
 		if (mIniResourceView)
@@ -1636,28 +1686,36 @@ STDMETHODIMP HackerDevice::CreateInputLayout(THIS_
 	/* [annotation] */
 	__out_opt  ID3D11InputLayout **ppInputLayout)
 {
-	HRESULT ret;
-	ID3DBlob *blob;
+	LogDebug("HackerDevice::CreateInputLayout(%s@%p) called shaderSignature=%p signatureSize=%zu\n", type_name(this), this, pShaderBytecodeWithInputSignature, BytecodeLength);
 
-	ret = mOrigDevice1->CreateInputLayout(pInputElementDescs, NumElements, pShaderBytecodeWithInputSignature,
-		BytecodeLength, ppInputLayout);
+	if (!ppInputLayout)
+		return E_INVALIDARG;
 
-	if (G->hunting && SUCCEEDED(ret) && ppInputLayout && *ppInputLayout) {
-		// When dumping vertex buffers to text file in frame analysis
-		// we want to use the input layout to decode the buffer, but
-		// DirectX provides no API to query this. So, we store a copy
-		// of the input layout in a blob inside the private data of the
-		// input layout object. The private data is slow to access, so
-		// we should not use this in a hot path, but for frame analysis
-		// it doesn't matter. We use a blob to manage releasing the
-		// backing memory, since the anonymous void* version of this
-		// API does not appear to free the private data on release.
+	*ppInputLayout = nullptr;
 
-		if (SUCCEEDED(D3DCreateBlob(sizeof(D3D11_INPUT_ELEMENT_DESC) * NumElements, &blob))) {
-			memcpy(blob->GetBufferPointer(), pInputElementDescs, blob->GetBufferSize());
-			(*ppInputLayout)->SetPrivateDataInterface(InputLayoutDescGuid, blob);
-			blob->Release();
-		}
+	uint64_t hash = CalculateInputLayoutHash(pInputElementDescs, NumElements, pShaderBytecodeWithInputSignature, BytecodeLength);
+
+	HackerInputLayout* cached = FindCachedInputLayout(hash);
+
+	if (cached)
+	{
+		*ppInputLayout = cached;
+		LogDebug("  Cached layout handle = %p, hash = %016llx\n", cached, hash);
+		return S_OK;
+	}
+
+	ID3D11InputLayout* orig = nullptr;
+
+	HRESULT ret = mOrigDevice1->CreateInputLayout(pInputElementDescs, NumElements, pShaderBytecodeWithInputSignature, BytecodeLength, &orig);
+
+	if (SUCCEEDED(ret)) {
+		HackerInputLayout* layout = new HackerInputLayout(orig, pInputElementDescs, NumElements, pShaderBytecodeWithInputSignature, BytecodeLength, hash);
+		CacheInputLayout(hash, layout);
+		*ppInputLayout = layout;
+		LogDebug("  New layout handle = %p, hash = %016llx\n", layout, hash);
+	}
+	else {
+		LogDebug("  failed result = %x for %p\n", ret, orig);
 	}
 
 	return ret;

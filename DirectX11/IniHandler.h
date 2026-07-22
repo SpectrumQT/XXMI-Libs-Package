@@ -51,3 +51,5 @@ T2 GetIniEnumClass(const wchar_t *section, const wchar_t *key, T2 def, bool *fou
 bool get_namespaced_section_name_lower(const wstring *section, const wstring *ini_namespace, wstring *ret);
 bool get_section_namespace(const wchar_t *section, wstring *ret);
 wstring get_namespaced_var_name_lower(const wstring var, const wstring *ini_namespace);
+
+CommandListVariable* RegisterGlobalVariable(wstring& name, float* fval, VariableFlags flags);

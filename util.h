@@ -896,23 +896,33 @@ static HRESULT CreateTextFile(wchar_t *fullPath, string *asmText, bool overwrite
 static HRESULT CreateAsmTextFile(wchar_t* fileDirectory, UINT64 hash, const wchar_t* shaderType, 
 	const void *pShaderBytecode, size_t bytecodeLength, bool patch_cb_offsets)
 {
-	string asmText = BinaryToAsmText(pShaderBytecode, bytecodeLength, patch_cb_offsets);
-	if (asmText.empty())
-	{
-		return E_OUTOFMEMORY;
+	// TODO: Poorly added try catch. Must replace for a more robust solution in line with the rest of the codebase
+	// Specifically added to avoid crashes when the following error displays in the log:
+	// error exporting original shader: invalid string position
+	try {
+		string asmText = BinaryToAsmText(pShaderBytecode, bytecodeLength, patch_cb_offsets);
+		if (asmText.empty())
+		{
+			return E_OUTOFMEMORY;
+		}
+
+		wchar_t fullPath[MAX_PATH];
+		swprintf_s(fullPath, MAX_PATH, L"%ls\\%016llx-%ls.txt", fileDirectory, hash, shaderType);
+
+		HRESULT hr = CreateTextFile(fullPath, &asmText, false);
+
+		if (SUCCEEDED(hr))
+			LogInfoW(L"    storing disassembly to %s\n", fullPath);
+		else
+			LogInfoW(L"    error: %x, storing disassembly to %s\n", hr, fullPath);
+
+		return hr;
 	}
-
-	wchar_t fullPath[MAX_PATH];
-	swprintf_s(fullPath, MAX_PATH, L"%ls\\%016llx-%ls.txt", fileDirectory, hash, shaderType);
-
-	HRESULT hr = CreateTextFile(fullPath, &asmText, false);
-
-	if (SUCCEEDED(hr))
-		LogInfoW(L"    storing disassembly to %s\n", fullPath);
-	else
-		LogInfoW(L"    error: %x, storing disassembly to %s\n", hr, fullPath);
-
-	return hr;
+	catch (const std::exception& e)
+	{
+		LogInfoW(L"    CreateAsmTextFile exception: %hs\n", e.what());
+		return E_FAIL;
+	}
 }
 
 // Specific variant to name files, so we know they are HLSL text.

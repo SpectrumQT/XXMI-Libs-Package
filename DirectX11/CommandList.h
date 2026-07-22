@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <array>
 #include <unordered_map>
 #include <unordered_set>
 #include <forward_list>
@@ -10,6 +11,7 @@
 
 #include "DrawCallInfo.h"
 #include "ResourceHash.h"
+#include "HackerInputLayout.h"
 
 // Used to prevent typos leading to infinite recursion (or at least overflowing
 // the real stack) due to a section running itself or a circular reference. 64
@@ -24,6 +26,23 @@ class HackerDevice;
 class HackerContext;
 enum class FrameAnalysisOptions;
 class ResourceCopyTarget;
+
+struct InputLayoutElementOverride {
+	struct Match {
+		std::string semantic_name;                // empty = wildcard
+		UINT semantic_index = UINT32_MAX;         // UINT32_MAX = wildcard
+		UINT input_slot = UINT32_MAX;             // UINT32_MAX = wildcard
+		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN; // UNKNOWN = wildcard
+		UINT format_byte_size = UINT32_MAX;       // UINT32_MAX = wildcard
+		UINT aligned_byte_offset = UINT32_MAX;    // UINT32_MAX = wildcard
+	} match;
+	struct Replace {
+		std::string semantic_name;                // empty = don't change
+		UINT semantic_index = UINT32_MAX;         // UINT32_MAX = don't change
+		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN; // DXGI_FORMAT_UNKNOWN = don't change
+		UINT aligned_byte_offset = UINT32_MAX;   // UINT32_MAX = don't change
+	} replace;
+};
 
 class CommandListState {
 public:
@@ -49,6 +68,7 @@ public:
 	ResourceCopyTarget *this_target;
 	ID3D11Resource **resource;
 	ID3D11View *view;
+	std::vector<InputLayoutElementOverride*> input_layout_overrides;
 
 	// TODO: Cursor info and resources would be better off being cached
 	// somewhere that is updated at most once per frame rather than once
@@ -115,6 +135,12 @@ public:
 	CommandListVariable(wstring name, float fval, VariableFlags flags) :
 		name(name), fval(fval), flags(flags)
 	{}
+
+	void CopyStateFrom(const CommandListVariable& src)
+	{
+		fval = src.fval;
+		flags = src.flags;
+	}
 };
 
 typedef std::unordered_map<std::wstring, class CommandListVariable> CommandListVariables;
@@ -472,12 +498,15 @@ public:
 	void emplace(uint32_t hash, ID3D11Resource *resource, ID3D11Device *device);
 };
 
+class CustomResourcePool;
+
 class CustomResource
 {
 public:
 	wstring name;
 
 	ID3D11Resource *resource;
+	std::unique_ptr<ResourceHandleInfo> handle_info;
 	ResourcePool resource_pool;
 	ID3D11Device *device;
 	ID3D11View *view;
@@ -491,9 +520,14 @@ public:
 	UINT buf_size;
 	DXGI_FORMAT format;
 
+	UINT source_stride;
+
 	int max_copies_per_frame;
 	unsigned frame_no;
 	int copies_this_frame;
+
+	CustomResourcePool* pool;
+	int pool_index;
 
 	wstring filename;
 	bool substantiated;
@@ -523,12 +557,18 @@ public:
 	CustomResource();
 	~CustomResource();
 
+	bool AddFlags(D3D11_BIND_FLAG extra_bind_flags, D3D11_RESOURCE_MISC_FLAG extra_misc_flags, bool recursive = true);
+	void InitializeHandleInfo(void* data, size_t data_size);
+	void SetHandleInfo(ID3D11Resource* source, size_t offset, size_t data_size);
+	ResourceHandleInfo* GetHandleInfo();
 	void Substantiate(ID3D11Device *mOrigDevice, D3D11_BIND_FLAG bind_flags, D3D11_RESOURCE_MISC_FLAG misc_flags);
 	void OverrideBufferDesc(D3D11_BUFFER_DESC *desc);
 	void OverrideTexDesc(D3D11_TEXTURE1D_DESC *desc);
 	void OverrideTexDesc(D3D11_TEXTURE2D_DESC *desc);
 	void OverrideTexDesc(D3D11_TEXTURE3D_DESC *desc);
 	void OverrideOutOfBandInfo(DXGI_FORMAT *format, UINT *stride);
+	void ResetRuntimeState();
+	void CopyMetadataFrom(const CustomResource& src);
 	void expire(ID3D11Device *mOrigDevice1, ID3D11DeviceContext *mOrigContext1);
 
 private:
@@ -543,49 +583,286 @@ private:
 typedef std::unordered_map<std::wstring, class CustomResource> CustomResources;
 extern CustomResources customResources;
 
+enum class PoolIndexType : uint8_t {
+	INVALID          = 0b00000000,
+
+	// Direct Index Types
+	RING             = 0b00000001,
+	STATIC           = 0b00000010,
+
+	// Index Table Based Types
+	FIFO             = 0b00000100,
+	SPATIAL          = 0b00001000,
+
+	INDEX_TABLE_MASK = 0b00001100,
+};
+SENSIBLE_ENUM(PoolIndexType);
+
+static EnumName_t<const wchar_t*, PoolIndexType> PoolIndexTypeNames[] = {
+	{L"ring",    PoolIndexType::RING},
+	{L"fifo",    PoolIndexType::FIFO},
+	{L"static",  PoolIndexType::STATIC},
+	{L"spatial", PoolIndexType::SPATIAL},
+	{NULL, PoolIndexType::INVALID} // End of list marker
+};
+
+struct PoolElement
+{
+	enum class Type
+	{
+		None,
+		Resource,
+		Variable,
+		Mixed,
+	};
+
+	Type type = Type::None;
+	CustomResource* resource = nullptr;      // Lifetime managed by global resource registry `customResources`.
+	CommandListVariable* variable = nullptr; // Lifetime managed by global variable registry `command_list_globals`.
+};
+
+struct PoolSlot
+{
+	uint32_t key = UINT32_MAX;
+	unsigned last_update_frame = UINT32_MAX;
+};
+
+class CustomResourcePool
+{
+public:
+	wstring name;
+
+	PoolIndexType index_type = PoolIndexType::RING;
+	bool lazy_initialization = true;
+	bool element_type_switch_reset = true;
+	unsigned keep_alive_frames = UINT32_MAX;
+	bool reset_expired_elements = false;
+	uint32_t spatial_radius = 0;
+
+	CustomResource* resource_template = nullptr;
+	std::unique_ptr<CommandListVariable> variable_template;
+
+	void Initialize(size_t pool_size);
+	bool PropagateFlags(D3D11_BIND_FLAG bind_flags, D3D11_RESOURCE_MISC_FLAG misc_flags);
+
+	size_t GetElementIndex(float id, bool use_ring_index, bool is_assignment);
+	CustomResource* GetResource(float id, bool template_lookup, bool use_ring_index, bool is_assignment);
+	CommandListVariable* GetVariable(float id, bool template_lookup, bool use_ring_index, bool is_assignment);
+	size_t GetPoolSize() const;
+
+	void SetSourcePool(CustomResourcePool* source);
+	const CustomResourcePool* ResolvePool() const;
+	void CopyMetadataFrom(const CustomResourcePool& other);
+
+	void ResetElements();
+	void ResetPool(bool reset_elements = true);
+
+private:
+	void InitializeResource(size_t pool_index);
+	void InitializeVariable(size_t pool_index);
+
+	void AssignSlot(size_t slot, uint32_t key, bool is_assignment);
+	void SwitchElementType(PoolElement& element, PoolElement::Type new_type);
+
+	void ResetResource(CustomResource* custom_resource);
+	void ResetVariable(CommandListVariable* variable);
+	void ResetElement(size_t pool_index);
+
+	void PostponeExpiration(PoolSlot& pool_slot, bool is_assignment);
+	void ExpireElements();
+
+	CustomResourcePool* source_pool = nullptr;
+
+	size_t pool_size = 0;
+
+	std::vector<PoolElement> elements;
+
+	std::unique_ptr <FlatHashMap<uint32_t, size_t>> index_map; // O(1) lookup of key -> pool_index
+	std::vector<PoolSlot> index_table; // O(1) lookup of pool_index -> key currently occupying slot
+
+	size_t last_replacement_index = 0; // Ring pointer for FIFO eviction
+	unsigned last_expiration_run = UINT32_MAX;
+};
+
+typedef std::unordered_map<std::wstring, CustomResourcePool> CustomResourcePools;
+extern CustomResourcePools customResourcePools;
+
 // Forward declaration since TextureOverride also contains a command list
 struct TextureOverride;
 
-enum class ResourceCopyTargetType {
-	INVALID,
-	EMPTY,
-	CONSTANT_BUFFER,
-	SHADER_RESOURCE,
-	// TODO: SAMPLER, // Not really a resource, but might still be useful
-	VERTEX_BUFFER,
-	INDEX_BUFFER,
-	STREAM_OUTPUT,
-	RENDER_TARGET,
-	DEPTH_STENCIL_TARGET,
-	UNORDERED_ACCESS_VIEW,
-	CUSTOM_RESOURCE,
-	INI_PARAMS,
-	CURSOR_MASK,
-	CURSOR_COLOR,
-	THIS_RESOURCE, // For constant buffer analysis & render/depth target clearing
-	SWAP_CHAIN, // Meaning depends on whether or not upscaling has run yet this frame
-	REAL_SWAP_CHAIN, // need this for upscaling used with "r_bb"
-	FAKE_SWAP_CHAIN, // need this for upscaling used with "f_bb"
-	CPU, // For staging resources to the CPU
+enum class ResourceCopyTargetType : uint32_t {
+	INVALID                = 0b00000000000000000000000000000000, // 0x00000000
+
+	// D3D resources
+	EMPTY                  = 0b00000000000000000000000000000001, // 0x00000001
+	CONSTANT_BUFFER        = 0b00000000000000000000000000000010, // 0x00000002
+	SHADER_RESOURCE        = 0b00000000000000000000000000000100, // 0x00000004
+	// SAMPLER             = 0b00000000000000000000000000001000, // 0x00000008
+	VERTEX_BUFFER          = 0b00000000000000000000000000010000, // 0x00000010
+	INDEX_BUFFER           = 0b00000000000000000000000000100000, // 0x00000020
+	STREAM_OUTPUT          = 0b00000000000000000000000001000000, // 0x00000040
+	RENDER_TARGET          = 0b00000000000000000000000010000000, // 0x00000080
+	DEPTH_STENCIL_TARGET   = 0b00000000000000000000000100000000, // 0x00000100
+	UNORDERED_ACCESS_VIEW  = 0b00000000000000000000001000000000, // 0x00000200
+	CUSTOM_RESOURCE        = 0b00000000000000000000010000000000, // 0x00000400
+
+	D3D_RESOURCE_MASK      = 0b00000000000000000000011111111110, // 0x000007FE
+
+	// Swap chains
+	SWAP_CHAIN             = 0b00000000000000000000100000000000, // 0x00000800 - Meaning depends on whether or not upscaling has run yet this frame
+	REAL_SWAP_CHAIN        = 0b00000000000000000001000000000000, // 0x00001000 - need this for upscaling used with "r_bb"
+	FAKE_SWAP_CHAIN        = 0b00000000000000000010000000000000, // 0x00002000 - need this for upscaling used with "f_bb"
+	
+	SWAP_CHAIN_MASK        = 0b00000000000000000011100000000000, // 0x00003800
+
+	// Special resources / pseudo-resources
+	INI_PARAMS             = 0b00000000000000000100000000000000, // 0x00004000
+	CURSOR_MASK            = 0b00000000000000001000000000000000, // 0x00008000
+	CURSOR_COLOR           = 0b00000000000000010000000000000000, // 0x00010000
+	THIS_RESOURCE          = 0b00000000000000100000000000000000, // 0x00020000
+	POOL                   = 0b00000000000001000000000000000000, // 0x00040000
+	CPU                    = 0b00000000000010000000000000000000, // 0x00080000
+	VARIABLE               = 0b00000000000100000000000000000000, // 0x00100000
+
+	SPECIAL_RESOURCE_MASK  = 0b00000000000111111100000000000000, // 0x001FC000
+
+};
+SENSIBLE_ENUM(ResourceCopyTargetType);
+static EnumName_t<const wchar_t*, ResourceCopyTargetType> ResourceCopyTargetTypeNames[] = {
+	{L"Empty", ResourceCopyTargetType::EMPTY},
+	{L"ConstantBuffer", ResourceCopyTargetType::CONSTANT_BUFFER},
+	{L"ShaderResource", ResourceCopyTargetType::SHADER_RESOURCE},
+	{L"VertexBuffer", ResourceCopyTargetType::VERTEX_BUFFER},
+	{L"IndexBuffer", ResourceCopyTargetType::INDEX_BUFFER},
+	{L"StreamOutput", ResourceCopyTargetType::STREAM_OUTPUT},
+	{L"RenderTarget", ResourceCopyTargetType::RENDER_TARGET},
+	{L"DepthStencilTarget", ResourceCopyTargetType::DEPTH_STENCIL_TARGET},
+	{L"UnorderedAccessView", ResourceCopyTargetType::UNORDERED_ACCESS_VIEW},
+	{L"CustomResource", ResourceCopyTargetType::CUSTOM_RESOURCE},
+	{L"IniParams", ResourceCopyTargetType::INI_PARAMS},
+	{L"CursorMask", ResourceCopyTargetType::CURSOR_MASK},
+	{L"CursorColor", ResourceCopyTargetType::CURSOR_COLOR},
+	{L"ThisResource", ResourceCopyTargetType::THIS_RESOURCE},
+	{L"Pool", ResourceCopyTargetType::POOL},
+	{L"SwapChain", ResourceCopyTargetType::SWAP_CHAIN},
+	{L"RealSwapChain", ResourceCopyTargetType::REAL_SWAP_CHAIN},
+	{L"FakeSwapChain", ResourceCopyTargetType::FAKE_SWAP_CHAIN},
+	{L"CPU", ResourceCopyTargetType::CPU},
+
+	{NULL, ResourceCopyTargetType::INVALID} // End of list marker
+};
+
+enum class ResourceCopyTargetEvaluationMode : uint16_t {
+	INVALID                = 0b0000000000000000, // 0x0000
+	// RESOURCE
+	RESOURCE               = 0b0000000000000001, // 0x0001
+	RESOURCE_IDENTITY      = 0b0000000000000010, // 0x0002
+	RESOURCE_STRIDE        = 0b0000000000000100, // 0x0004
+	RESOURCE_SOURCE_STRIDE = 0b0000000000001000, // 0x0008
+	RESOURCE_SIZE          = 0b0000000000010000, // 0x0010
+	RESOURCE_OFFSET        = 0b0000000000100000, // 0x0020
+	RESOURCE_REGION_HASH   = 0b0000000001000000, // 0x0040
+	RESOURCE_SPATIAL_HASH  = 0b0000000010000000, // 0x0080
+	//                       0b0000000100000000, // 0x0100
+
+	RESOURCE_MASK          = 0b0000000111111111,
+
+	// POOL
+	POOL_IDENTITY          = 0b0000001000000000, // 0x0200
+	POOL_SIZE              = 0b0000010000000000, // 0x0400
+	POOL_INDEX             = 0b0000100000000000, // 0x0800
+	POOL_FULL_RANGE        = 0b0001000000000000, // 0x1000
+	
+	POOL_MASK              = 0b0001111000000000,
+
+	// VARIABLE
+	VARIABLE               = 0b0010000000000000, // 0x2000
+
+	// LAYOUT
+	LAYOUT_ELEMENT_FORMAT  = 0b0100000000000000, // 0x4000
+	LAYOUT_ELEMENT_OFFSET  = 0b1000000000000000, // 0x8000
+	
+	LAYOUT_MASK            = 0b1100000000000000
+};
+SENSIBLE_ENUM(ResourceCopyTargetEvaluationMode);
+static EnumName_t<const wchar_t*, ResourceCopyTargetEvaluationMode> ResourceCopyTargetEvaluationModeNames[] = {
+	{L"Resource", ResourceCopyTargetEvaluationMode::RESOURCE},
+	{L"ResourceIdentity", ResourceCopyTargetEvaluationMode::RESOURCE_IDENTITY},
+	{L"ResourceStride", ResourceCopyTargetEvaluationMode::RESOURCE_STRIDE},
+	{L"ResourceSourceStride", ResourceCopyTargetEvaluationMode::RESOURCE_SOURCE_STRIDE},
+	{L"ResourceSize", ResourceCopyTargetEvaluationMode::RESOURCE_SIZE},
+	{L"ResourceOffset", ResourceCopyTargetEvaluationMode::RESOURCE_OFFSET},
+	{L"ResourceRegionHash", ResourceCopyTargetEvaluationMode::RESOURCE_REGION_HASH},
+	{L"ResourceSpatialHash", ResourceCopyTargetEvaluationMode::RESOURCE_SPATIAL_HASH},
+
+	{L"PoolIdentity", ResourceCopyTargetEvaluationMode::POOL_IDENTITY},
+	{L"PoolSize", ResourceCopyTargetEvaluationMode::POOL_SIZE},
+	{L"PoolIndex", ResourceCopyTargetEvaluationMode::POOL_INDEX},
+	{L"PoolFullRange", ResourceCopyTargetEvaluationMode::POOL_FULL_RANGE},
+
+	{L"Variable", ResourceCopyTargetEvaluationMode::VARIABLE},
+
+	{L"LayoutElementFormat", ResourceCopyTargetEvaluationMode::LAYOUT_ELEMENT_FORMAT},
+	{L"LayoutElementOffset", ResourceCopyTargetEvaluationMode::LAYOUT_ELEMENT_OFFSET},
+
+	{NULL, ResourceCopyTargetEvaluationMode::INVALID} // End of list marker
+};
+
+class CommandListExpression;
+
+struct MemberArg
+{
+	enum class Type {
+		None = 0,
+		Float,
+		Signed,
+		Unsigned,
+		String,
+	};
+
+	Type type = Type::None;
+
+	unique_ptr<CommandListExpression> expression;
+
+	std::wstring constant_string;
+
+	bool ParseAs(Type parse_type, const wstring* ini_namespace, CommandListScope* scope);
+
+	float GetValue(CommandListState* state);
+	const std::wstring& GetString() const;
+};
+
+enum class IniParserResult : uint8_t {
+	TOKEN_NOT_FOUND = 0,
+	TOKEN_FOUND = 1,
+	SYNTAX_ERROR = 2,
 };
 
 class ResourceCopyTarget {
+	static constexpr size_t MAX_MEMBER_ARGS_COUNT = 4;
 public:
-	ResourceCopyTargetType type;
-	wchar_t shader_type;
-	unsigned slot;
-	CustomResource *custom_resource;
-	bool forbid_view_cache;
+	ResourceCopyTargetType type = ResourceCopyTargetType::INVALID;
+	ResourceCopyTargetEvaluationMode evaluation_mode = ResourceCopyTargetEvaluationMode::RESOURCE;
+	wchar_t shader_type = L'\0';
+	unsigned slot = 0;
 
-	ResourceCopyTarget() :
-		type(ResourceCopyTargetType::INVALID),
-		shader_type(L'\0'),
-		slot(0),
-		custom_resource(NULL),
-		forbid_view_cache(false)
-	{}
+	CustomResourcePool* custom_resource_pool = nullptr;
+	std::unique_ptr<CommandListExpression> pool_dynamic_index_expression = nullptr;
 
-	bool ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace);
+	std::array<MemberArg, MAX_MEMBER_ARGS_COUNT> member_args{};
+
+	bool forbid_view_cache = false;
+
+	bool ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope);
+
+	void SetCustomResource(CustomResource* resource);
+
+	template<typename StaticT, typename Getter>
+	StaticT* GetPoolObject(StaticT* static_object, CommandListState* state, bool is_assignment, Getter getter);
+
+	CustomResource* GetCustomResource(CommandListState* state, bool is_assignment = false);
+	CommandListVariable* GetPoolVariable(CommandListState* state, bool is_assignment = false);
+
 	ID3D11Resource *GetResource(CommandListState *state,
 			ID3D11View **view,
 			UINT *stride,
@@ -600,11 +877,34 @@ public:
 			UINT offset,
 			DXGI_FORMAT format,
 			UINT buf_size);
+
 	void FindTextureOverrides(
 			CommandListState *state,
 			bool *resource_found,
 			TextureOverrideMatches *matches);
+
+	float GetResourceId(CommandListState* state);
+	float GetPoolId();
+	float GetResourceStride(CommandListState* state);
+	float GetResourceSize(CommandListState* state);
+	float GetResourceOffset(CommandListState* state);
+	float GetResourceRegionHash(CommandListState* state);
+	float GetResourceSpatialHash(CommandListState* state);
+
 	D3D11_BIND_FLAG BindFlags(CommandListState *state, D3D11_RESOURCE_MISC_FLAG *misc_flags=NULL);
+
+private:
+	IniParserResult ParseTargetPrefix(const wchar_t*& target, size_t& length);
+	IniParserResult GetNextArgument(const wchar_t*& arg_start, const wchar_t* args_end, std::wstring& text);
+	bool ParseMemberArgument(const std::wstring& text, const std::wstring* ini_namespace, CommandListScope* scope, MemberArg& arg);
+	IniParserResult ParseTargetMemberArguments(const wchar_t*& target, size_t& length, const wstring* ini_namespace, CommandListScope* scope, size_t& num_args);
+	IniParserResult ParseTargetMember(const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope);
+	IniParserResult ParseTargetPipelineSlot(const wchar_t*& target, size_t length, bool is_source);
+	IniParserResult ParseTargetCustomResource(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope);
+	IniParserResult ParseTargetPool(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope, bool is_source);
+
+	CustomResource* static_custom_resource = nullptr;  // Read access should go via GetCustomResource
+	CommandListVariable* static_pool_variable = nullptr;
 };
 
 enum class ResourceCopyOptions {
@@ -671,6 +971,31 @@ public:
 
 	ResourceCopyOperation();
 	~ResourceCopyOperation();
+
+	void CopyResourceToResource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size);
+	void CopyResourceToPool(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size);
+
+	void run(CommandListState*) override;
+};
+
+class PoolCopyOperation : public CommandListCommand {
+public:
+	ResourceCopyTarget src;
+	ResourceCopyTarget dst;
+	ResourceCopyOptions options;
+
+	void CopyPoolToPool(CommandListState* state);
+
+	void run(CommandListState*) override;
+};
+
+class LayoutElementOperation : public CommandListCommand {
+public:
+	ResourceCopyTarget dst;
+	InputLayoutElementOverride override;
+
+	LayoutElementOperation() {};
+	~LayoutElementOperation() {};
 
 	void run(CommandListState*) override;
 };
@@ -994,6 +1319,17 @@ public:
 	void run(CommandListState*) override;
 };
 
+class PoolVariableOperation : public AssignmentCommand {
+public:
+	ResourceCopyTarget dst;
+
+	void SetVariableValue(CommandListState* state, CommandListVariable* dst, float value);
+	void SetAllPoolVariables(CommandListState* state, float value);
+
+	bool optimise(HackerDevice* device) override;
+	void run(CommandListState*) override;
+};
+
 class IfCommand : public CommandListCommand {
 public:
 	CommandListExpression expression;
@@ -1216,7 +1552,7 @@ bool ParseCommandListVariableAssignment(const wchar_t *section,
 		const wchar_t *key, wstring *val, const wstring *raw_line,
 		CommandList *command_list, CommandList *pre_command_list, CommandList *post_command_list,
 		const wstring *ini_namespace);
-bool ParseCommandListResourceCopyDirective(const wchar_t *section,
+bool ParseCommandListResourceCopyTargetDirective(const wchar_t *section,
 		const wchar_t *key, wstring *val, CommandList *command_list,
 		const wstring *ini_namespace);
 bool ParseCommandListFlowControl(const wchar_t *section, const wstring *line,

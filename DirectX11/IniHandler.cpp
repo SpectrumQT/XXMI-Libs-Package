@@ -20,6 +20,7 @@
 
 #include "vector"
 #include <locale>
+#include <cmath>
 
 #define INI_FILENAME L"d3dx.ini"
 
@@ -851,6 +852,21 @@ void GetIniSection(IniSectionVector **key_vals, const wchar_t *section)
 	return _GetIniSection(&ini_sections, key_vals, section);
 }
 
+const std::wstring& GetIniSectionNamespace(const wchar_t* section)
+{
+	auto it = ini_sections.find(section);
+
+	if (it != ini_sections.end() && !it->second.ini_namespace.empty())
+		return it->second.ini_namespace;
+
+	return G->gDefaultNamespace;
+}
+
+const std::wstring& GetIniNamespace(const wchar_t* section, const wstring* override)
+{
+	return override ? *override : GetIniSectionNamespace(section);
+}
+
 // This emulates the behaviour of the old GetPrivateProfileString API to
 // facilitate switching to our own ini parser. Later we might consider changing
 // the return values (e.g. return found/not found instead of string length),
@@ -976,6 +992,7 @@ int GetIniStringAndLog(const wchar_t *section, const wchar_t *key,
 
 	return rc;
 }
+
 static bool GetIniStringAndLog(const wchar_t *section, const wchar_t *key,
 		const wchar_t *def, std::string *ret)
 {
@@ -987,144 +1004,256 @@ static bool GetIniStringAndLog(const wchar_t *section, const wchar_t *key,
 	return rc;
 }
 
-static float GetIniConstant(const wchar_t* section, const wchar_t* val, bool* found)
+const wstring* GetIniWstring(const wchar_t* section, const wchar_t* key)
 {
-	if (!val || val[0] != L'$') {
-		if (found)
-			*found = false;
-		return 0;
-	}
+	auto section_it = ini_sections.find(section);
+	if (section_it == ini_sections.end())
+		return nullptr;
 
-	wstring var_name(val);
-	wstring ini_namespace = ini_sections[section].ini_namespace;
+	auto value_it = section_it->second.kv_map.find(key);
+	if (value_it == section_it->second.kv_map.end())
+		return nullptr;
 
-	CommandListVariables::iterator var = command_list_globals.find(get_namespaced_var_name_lower(var_name, &ini_namespace));
-
-	if (var == command_list_globals.end()) {
-		IniWarningW(L"Constant variable %ls is not defined!\n - [%ls] @ [%ls]\n", val, section, ini_namespace.c_str());
-		if (found)
-			*found = false;
-		return 0;
-	}
-
-	if (found)
-		*found = true;
-
-	return var->second.fval;
+	return &value_it->second;
 }
 
-float GetIniFloat(const wchar_t *section, const wchar_t *key, float def, bool *found)
+inline std::wstring NormalizeString(const std::wstring& value)
 {
-	wchar_t val[32];
-	float ret = def;
-
-	if (found)
-		*found = false;
-
-	if (GetIniString(section, key, 0, val, 32)) {
-		bool constant_found = false;
-
-		ret = GetIniConstant(section, val, &constant_found);
-
-		if (constant_found) {
-			if (found)
-				*found = true;
-			LogInfo("  %S=%f\n", key, ret);
-			return ret;
-		}
-
-		int len;
-		if (swscanf_s(val, L"%f%n", &ret, &len) != 1 || len != wcslen(val)) {
-			wstring ini_namespace = ini_sections[section].ini_namespace;
-			if (ini_namespace.empty()) {
-				ini_namespace = L"d3dx.ini";
-			}
-			IniWarningW(L"Floating point parse error: %ls=%ls\n - [%ls] @ [%ls]\n", key, val, section, ini_namespace.c_str());
-			ret = def;
-		} else {
-			if (found)
-				*found = true;
-			LogInfo("  %S=%f\n", key, ret);
-		}
-	}
-
-	return ret;
+	std::wstring normalized = value;
+	std::transform(normalized.begin(), normalized.end(), normalized.begin(), towlower);
+	return normalized;
 }
 
-int GetIniInt(const wchar_t *section, const wchar_t *key, int def, bool *found, bool warn)
+template<typename T, typename Converter>
+bool ParseIniExpression(
+	const wstring* ini_namespace_override,
+	const wchar_t* section,
+	const wchar_t* key,
+	const wstring& value,
+	T& out,
+	bool warn,
+	Converter&& convert,
+	bool normalize = true)
 {
-	wchar_t val[32];
-	int ret = def;
+	const wstring& ini_namespace = GetIniNamespace(section, ini_namespace_override);
 
-	if (found)
-		*found = false;
+	// Expression parsing is case-insensitive.
+	const wstring& expression_text = normalize ? NormalizeString(value) : value;
 
-	// Not using GetPrivateProfileInt as it doesn't tell us if the key existed
-	if (GetIniString(section, key, 0, val, 32)) {
-		bool constant_found = false;
+	CommandListExpression expression;
 
-		ret = (int)GetIniConstant(section, val, &constant_found);
-
-		if (constant_found) {
-			if (found)
-				*found = true;
-			LogInfo("  %S=%d\n", key, ret);
-			return ret;
+	if (!expression.parse(&expression_text, &ini_namespace, nullptr))
+	{
+		if (warn)
+		{
+			IniWarningW(
+				L"Unable to parse %ls expression for \"%ls\": \"%ls\"\n"
+				L" - [%ls] @ [%ls]\n",
+				IniValueTypeName<T>::value, key, value.c_str(),
+				section, ini_namespace.c_str());
 		}
-
-		int len;
-		if (swscanf_s(val, L"%d%n", &ret, &len) != 1 || len != wcslen(val)) {
-			if (warn) {
-				wstring ini_namespace = ini_sections[section].ini_namespace;
-				if (ini_namespace.empty()) {
-					ini_namespace = L"d3dx.ini";
-				}
-				IniWarningW(L"Integer parse error: %ls=%ls\n - [%ls] @ [%ls]\n", key, val, section, ini_namespace.c_str());
-			}
-			ret = def;
-		} else {
-			if (found)
-				*found = true;
-			LogInfo("  %S=%d\n", key, ret);
-		}
+		return false;
 	}
 
-	return ret;
+	float expression_value;
+
+	if (!expression.static_evaluate(&expression_value, nullptr, true))
+	{
+		if (warn)
+		{
+			IniWarningW(
+				L"%ls expression for \"%ls\" cannot be statically evaluated: \"%ls\"\n"
+				L" - [%ls] @ [%ls]\n",
+				IniValueTypeName<T>::value, key, value.c_str(),
+				section, ini_namespace.c_str());
+		}
+		return false;
+	}
+
+	if (!convert(expression_value, out))
+	{
+		if (warn)
+		{
+			IniWarningW(
+				L"Expression result \"%f\" for \"%ls\" %ls conversion is invalid: \"%ls\"\n"
+				L" - [%ls] @ [%ls]\n",
+				expression_value, key, IniValueTypeName<T>::value, value.c_str(),
+				section, ini_namespace.c_str());
+		}
+		return false;
+	}
+
+	return true;
 }
 
-bool GetIniBool(const wchar_t *section, const wchar_t *key, bool def, bool *found, bool warn)
+inline void SetFound(bool* found, bool value) noexcept
 {
-	wchar_t val[32];
-	bool ret = def;
-
 	if (found)
-		*found = false;
+		*found = value;
+}
 
-	if (GetIniString(section, key, 0, val, 32)) {
-		if (!_wcsicmp(val, L"1") || !_wcsicmp(val, L"true") || !_wcsicmp(val, L"yes") || !_wcsicmp(val, L"on")) {
-			LogInfo("  %S=1\n", key);
-			if (found)
-				*found = true;
-			return true;
-		}
-		if (!_wcsicmp(val, L"0") || !_wcsicmp(val, L"false") || !_wcsicmp(val, L"no") || !_wcsicmp(val, L"off")) {
-			LogInfo("  %S=0\n", key);
-			if (found)
-				*found = true;
-			return false;
-		}
+template<typename T, typename Parser, typename Logger>
+T GetIniValue(
+	const wchar_t* section,
+	const wchar_t* key,
+	T def,
+	bool* found,
+	bool warn,
+	Parser&& parser,
+	Logger&& logger)
+{
+	SetFound(found, false);
 
-		if (warn) {
-			wstring ini_namespace = ini_sections[section].ini_namespace;
-			if (ini_namespace.empty()) {
-				ini_namespace = L"d3dx.ini";
-			}
-			IniWarningW(L"Boolean parse error: %ls=%ls\n - [%ls] @ [%ls]\n", key, val, section, ini_namespace.c_str());
-			ret = def;
+	const wstring* val = GetIniWstring(section, key);
+	if (!val)
+		return def;
+
+	if (val->empty())
+	{
+		if (warn)
+		{
+			IniWarningW(
+				L"Unable to parse %ls value for \"%ls\" from empty string\n"
+				L" - [%ls] @ [%ls]\n",
+				IniValueTypeName<T>::value, key,
+				section, GetIniSectionNamespace(section).c_str());
 		}
+		return def;
 	}
 
-	return ret;
+	T result{};
+	if (!parser(section, key, *val, result, warn, nullptr))
+		return def;
+
+	SetFound(found, true);
+
+	logger(key, result);
+
+	return result;
+}
+
+inline bool ConvertExpressionToFloat(float expr, float& out) noexcept
+{
+	// Preserve the evaluated IEEE-754 value, including NaN and ±infinity.
+	out = expr;
+	return true;
+}
+
+bool ParseFloatValue(const wchar_t* section, const wchar_t* key, const wstring& val, float& out, bool warn = true, const wstring* ini_namespace_override = nullptr)
+{
+	wchar_t* end = nullptr;
+	errno = 0;
+	out = std::wcstof(val.c_str(), &end); // TODO: C++17: use std::from_chars.
+	
+	if (*end == L'\0')
+	{
+		if (errno == ERANGE)
+		{
+			// Treat floating-point overflow as ±infinity.
+			out = std::signbit(out) ? -std::numeric_limits<float>::infinity() : std::numeric_limits<float>::infinity();
+		}
+		return true;
+	}
+
+	return ParseIniExpression(ini_namespace_override, section, key, val, out, warn, ConvertExpressionToFloat);
+}
+
+inline void LogIniFloat(const wchar_t* key, float value)
+{
+	LogInfoW(L"  %ls=%f\n", key, value);
+}
+
+float GetIniFloat(const wchar_t* section, const wchar_t* key, float def, bool* found)
+{
+	return GetIniValue(section, key, def, found, true, ParseFloatValue, LogIniFloat);
+}
+
+inline bool ConvertExpressionToInt(float expr, int& out) noexcept
+{
+	// Saturate infinities and out-of-range values. Map NaN to zero.
+	if (std::isnan(expr))
+		out = 0;
+	else if (expr <= static_cast<float>(INT_MIN))
+		out = INT_MIN;
+	else if (expr >= static_cast<float>(INT_MAX))
+		out = INT_MAX;
+	else
+		out = static_cast<int>(expr);
+
+	return true;
+}
+
+bool ParseIntValue(const wchar_t* section, const wchar_t* key, const wstring& val, int& out, bool warn = false, const wstring* ini_namespace_override = nullptr)
+{
+	wchar_t* end = nullptr;
+	errno = 0;
+	long long n = std::wcstoll(val.c_str(), &end, 10); // TODO: C++17: use std::from_chars
+	
+	if (*end == L'\0') {
+		if (errno == ERANGE)
+		{
+			// Saturate integer literal overflow.
+			out = (n < 0) ? INT_MIN : INT_MAX;
+		}
+		else
+		{
+			if (n < INT_MIN)
+				out = INT_MIN;
+			else if (n > INT_MAX)
+				out = INT_MAX;
+			else
+				out = static_cast<int>(n);
+		}
+		return true;
+	}
+
+	return ParseIniExpression(ini_namespace_override, section, key, val, out, warn, ConvertExpressionToInt);
+}
+
+inline void LogIniInt(const wchar_t* key, int value)
+{
+	LogInfoW(L"  %ls=%d\n", key, value);
+}
+
+int GetIniInt(const wchar_t* section, const wchar_t* key, int def, bool* found, bool warn)
+{
+	return GetIniValue<int>(section, key, def, found, warn, ParseIntValue, LogIniInt);
+}
+
+inline bool ConvertExpressionToBool(float expr, bool& out) noexcept
+{
+	// NaN is false; all other non-zero values (including ±infinity) are true.
+	out = !std::isnan(expr) && expr != 0.0f;
+	return true;
+}
+
+bool ParseBoolValue(const wchar_t* section, const wchar_t* key, const wstring& val, bool& out, bool warn = false, const wstring* ini_namespace_override = nullptr)
+{
+	wstring normalized = NormalizeString(val);
+
+	if (normalized == L"1" || normalized == L"true" || normalized == L"yes" || normalized == L"on")
+	{
+		out = true;
+		return true;
+	}
+
+	if (normalized == L"0" || normalized == L"false" || normalized == L"no" || normalized == L"off")
+	{
+		out = false;
+		return true;
+	}
+
+	return ParseIniExpression(ini_namespace_override, section, key, normalized, out, warn, ConvertExpressionToBool, false);
+}
+
+inline void LogIniBool(const wchar_t* key, bool value)
+{
+	LogInfoW(L"  %ls=%d\n", key, value ? 1 : 0);
+}
+
+bool GetIniBool(const wchar_t* section, const wchar_t* key, bool def, bool* found, bool warn)
+{
+	return GetIniValue<bool>(section, key, def, found, warn, ParseBoolValue, LogIniBool);
 }
 
 static UINT64 GetIniHash(const wchar_t *section, const wchar_t *key, UINT64 def, bool *found)
@@ -2253,12 +2382,10 @@ static void ParseConstantsSection()
 		// Initialisation is optional and deferred until the command list is run.
 		// If the initialiser is present and simple.
 		float fval = 0.0f;
-		int len;
-		if (!val->empty()) {
-			if (swscanf_s(val->c_str(), L"%f%n", &fval, &len) != 1 || len != val->length()) {
-				IniWarningW(L"Floating point parse error: %ls=%ls\n - [Constants] @ [%ls]\n", key->c_str(), val->c_str(), ini_namespace->c_str());
+		if (!val->empty())
+		{
+			if (!ParseFloatValue(L"Constants", key->c_str(), *val, fval, true, ini_namespace))
 				continue;
-			}
 		}
 
 		if (!RegisterGlobalVariable(name, &fval, flags)) {

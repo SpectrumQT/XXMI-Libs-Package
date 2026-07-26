@@ -35,6 +35,30 @@ struct IniLine {
 // functionality and dependencies between different features form:
 typedef std::vector<IniLine> IniSectionVector;
 
+template<typename T>
+struct IniValueTypeName
+{
+	static constexpr const wchar_t* value = L"value";
+};
+
+template<>
+struct IniValueTypeName<float>
+{
+	static constexpr const wchar_t* value = L"floating-point";
+};
+
+template<>
+struct IniValueTypeName<int>
+{
+	static constexpr const wchar_t* value = L"integer";
+};
+
+template<>
+struct IniValueTypeName<bool>
+{
+	static constexpr const wchar_t* value = L"boolean";
+};
+
 void GetIniSection(IniSectionVector **key_vals, const wchar_t *section);
 int GetIniInt(const wchar_t *section, const wchar_t *key, int def, bool *found, bool warn=true);
 bool GetIniBool(const wchar_t *section, const wchar_t *key, bool def, bool *found, bool warn=true);

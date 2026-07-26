@@ -410,6 +410,7 @@ struct Globals
 	float gSettingsSaveTime;
 	DWORD ticks_at_launch;
 	std::wstring additionalForegroundWindowTitle;
+	const std::wstring gDefaultNamespace = L"d3dx.ini";
 
 	wchar_t SHADER_PATH[MAX_PATH];
 	wchar_t SHADER_CACHE_PATH[MAX_PATH];

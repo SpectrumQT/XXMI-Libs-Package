@@ -3479,22 +3479,180 @@ public:
 	{}
 };
 
-static size_t FindIdentifierTokenEnd(const std::wstring& str)
+enum class OptionalChars : uint8_t
 {
+	NONE   = 0b0000,
+	HYPHEN = 0b0001,
+	PERIOD = 0b0010,
+	ALL    = 0b1111,
+};
+SENSIBLE_ENUM(OptionalChars);
+
+static inline bool is_identifier_char(wchar_t c, OptionalChars identifier_flags)
+{
+	if ((c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9') || c == L'_')
+		return true;
+
+	if ((identifier_flags & OptionalChars::HYPHEN) && c == L'-')
+		return true;
+
+	if ((identifier_flags & OptionalChars::PERIOD) && c == L'.')
+		return true;
+
+	return false;
+}
+
+static size_t FindIdentifierTokenEnd(const std::wstring& str, const size_t start = 0, OptionalChars identifier_flags = OptionalChars::NONE)
+{
+	for (size_t i = start; i < str.size(); ++i)
+	{
+		wchar_t c = str[i];
+
+		// Test for valid identifier char.
+		if (!is_identifier_char(c, identifier_flags))
+			return i;
+	}
+
+	return str.size();
+}
+
+enum class NamespaceState : uint8_t
+{
+	Waiting,            // No namespace prefix encountered yet.
+	ParsingParent,      // Inside the first namespace segment (between the first and second '\').
+	ParsingChild,       // Inside nested namespace path segments after the parent segment.
+	ParsingIdentifier,  // Final segment; validation is delegated to the caller.
+};
+
+class NamespaceScanner
+{
+public:
+	bool Consume(wchar_t c, const std::wstring& str, size_t pos)
+    {
+		switch (state_)
+		{
+		case NamespaceState::Waiting:
+			if (c == L'\\')
+			{
+				state_ = NamespaceState::ParsingParent;
+				return true;
+			}
+			return false;
+
+		case NamespaceState::ParsingParent:
+			if (c == L'\\')
+			{
+				state_ = NamespaceState::ParsingChild;
+				return true;
+			}
+
+			// The parent namespace segment may contain arbitrary characters.
+			return true;
+
+		case NamespaceState::ParsingChild:
+			// Allow path-like namespaces (e.g. \path\to\mod.ini\var_name).
+			if (c != L'\\')
+			{
+				// Nested namespace path segments allow identifier characters plus periods.
+				// Hyphens are excluded because they may be interpreted as the minus operator.
+				return is_identifier_char(c, OptionalChars(OptionalChars::PERIOD));
+			}
+
+			// A separator may either start another namespace segment or precede the final identifier segment.
+			// Perform only a broad boundary check here; the caller performs the final syntax validation.
+			if (IsFinalSegmentCandidate(str, pos + 1))
+			{
+				state_ = NamespaceState::ParsingIdentifier;
+				return true;
+			}
+
+			// Another nested path segment follows.
+			return true;
+
+		case NamespaceState::ParsingIdentifier:
+			// The remaining characters belong to the final identifier and are validated by the caller's identifier scanner.
+			return false;
+		}
+
+		return false;
+	}
+
+private:
+	static bool IsFinalSegmentCandidate(const std::wstring& str, size_t start)
+	{
+		if (start >= str.size())
+			return false;
+
+		for (size_t i = start; i < str.size(); ++i)
+		{
+			wchar_t c = str[i];
+
+			if (c == L'\\')
+				return false;
+
+			// Broad token-boundary check only. Actual syntax validation is performed later by the dedicated parser.
+			if (!is_identifier_char(c, OptionalChars::ALL))
+				return false;
+		}
+
+		return true;
+	}
+
+private:
+	NamespaceState state_ = NamespaceState::Waiting;
+};
+
+static size_t FindVariableTokenEnd(const std::wstring& str, size_t start = 0)
+{
+	// Scans a variable token and returns the end position after performing minimal syntax validation:
+	// 1. Ensures identifier characters match `[a-z_0-9]+`.
+	// 2. Ensures an optional namespace is properly closed while allowing arbitrary characters in the parent namespace segment.
+	NamespaceScanner namespace_scanner;
+
+	for (size_t i = start; i < str.size(); ++i)
+	{
+		wchar_t c = str[i];
+
+		// Consume an optional leading namespace (e.g. "\namespace\" or "\path\like\namespace\").
+		if (namespace_scanner.Consume(c, str, i))
+			continue;
+
+		// The remaining characters must be valid identifier characters.
+		if (!is_identifier_char(c, OptionalChars::NONE))
+			return i;
+	}
+
+	return str.size();
+}
+
+static size_t FindResourceCopyTargetTokenEnd(const std::wstring& str, size_t start = 0)
+{
+	// Scans a resource copy target token and returns the end position after performing minimal syntax validation:
+	// 1. Ensures identifier characters match `[a-z_-.0-9]+`.
+	// 2. Ensures an optional namespace is properly closed, while allowing arbitrary characters in the namespace name.
+	// 3. Ensures optional bracket expressions are properly balanced while allowing arbitrary characters inside them.
+	// 4. Recognizes the optional member access operator (`->`) as part of the token.
+	// 
+	// Note: Token prefixes ('@', '#', '$') are handled by the caller, so scanning begins after the prefix (`start = 1`).
+	// 
+	// Example inputs:
+	//   ResourceFoo
+	//   ResourceFoo->Size
+	//   ResourceFoo->HashRegion($offset, $size)
+	//   PoolFoo[$id]
+	//   PoolFoo[$id]->ElementFormat(BLENDINDICES, 0)
 	std::vector<wchar_t> brackets;
 
-	auto isIdentifierChar = [](wchar_t c)
-	{
-		return wcschr(L"@#abcdefghijklmnopqrstuvwxyz_-0123456789$.>", c) != nullptr;
-	};
+	NamespaceScanner namespace_scanner;
 
-	for (size_t i = 0; i < str.size(); ++i)
+	for (size_t i = start; i < str.size(); ++i)
 	{
 		wchar_t c = str[i];
 
 		if (!brackets.empty())
 		{
-			// Inside brackets: accept everything except manage nesting.
+			// Inside (...) or [...], accept all characters while tracking
+			// nested bracket pairs so the expression is skipped as a whole.
 			if (c == L'(')
 				brackets.push_back(L')');
 			else if (c == L'[')
@@ -3505,20 +3663,36 @@ static size_t FindIdentifierTokenEnd(const std::wstring& str)
 			continue;
 		}
 
-		// Outside brackets
+		// Outside of bracketed expressions.
+
+		// Consume an optional leading namespace (e.g. "\namespace\" or "\path\like\namespace\").
+		if (namespace_scanner.Consume(c, str, i))
+			continue;
+
+		// Start of a bracketed expression.
 		if (c == L'(')
 		{
 			brackets.push_back(L')');
 			continue;
 		}
-
 		if (c == L'[')
 		{
 			brackets.push_back(L']');
 			continue;
 		}
 
-		if (!isIdentifierChar(c))
+		// Allow the member access operator ("->") as part of the token.
+		if (c == L'-')
+		{
+			if (i + 1 < str.size() && str[i + 1] == L'>')
+			{
+				++i; // Consume '>'.
+				continue;
+			}
+		}
+
+		// The remaining characters must be valid identifier characters.
+		if (!is_identifier_char(c, OptionalChars(OptionalChars::HYPHEN | OptionalChars::PERIOD)))
 			return i;
 	}
 
@@ -3528,151 +3702,222 @@ static size_t FindIdentifierTokenEnd(const std::wstring& str)
 	return str.size();
 }
 
-static void tokenise(const wstring *expression, CommandListSyntaxTree *tree, const wstring *ini_namespace, CommandListScope *scope)
+inline bool ParseFloatToken(const wstring& input, float& out, size_t& length)
 {
-	wstring remain = *expression;
+	// Binary literal.
+	if (input.size() >= 3 && input[0] == L'0' && input[1] == L'b')
+	{
+		out = static_cast<float>(value);
+		length += 2; // Include the "0b" prefix.
+		return true;
+	}
+
+	wchar_t* end = nullptr;
+
+	errno = 0;
+	out = std::wcstof(input.c_str(), &end);
+
+	if (end == input.c_str())
+		return false;
+
+	length = static_cast<std::size_t>(end - input.c_str());
+
+	if (errno == ERANGE)
+	{
+		out = std::signbit(out)
+			? -std::numeric_limits<float>::infinity()
+			: std::numeric_limits<float>::infinity();
+	}
+
+	return true;
+}
+
+static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, const wstring* ini_namespace, CommandListScope* scope)
+{
+	const wstring& expr = *expression;
+
 	ResourceCopyTarget texture_filter_target;
 	shared_ptr<CommandListOperand> operand;
 	wstring token;
+	wstring remain;
 	size_t pos = 0;
-	size_t start_pos = 0;
-	size_t end_pos = 0;
-	int ipos = 0;
 	size_t friendly_pos = 0;
-	float fval;
-	int ret;
 	int i;
 	bool last_was_operand = false;
 
-	LogDebug("    Tokenising \"%S\"\n", expression->c_str());
+	LogDebug("    Tokenising \"%S\"\n", expr.c_str());
 
-	while (true) {
-next_token:
+	// TODO: C++20 refactor.
+	// This rewrite stays close to the old (mostly missing) architecture to simplify transition.
+	// Proper refactor should implement Lexer and CommandParser classes and use `std::wstring_view` once it's available.
+	while (true)
+	{
 		// Skip whitespace:
-		pos = remain.find_first_not_of(L" \t", pos);
+		pos = expr.find_first_not_of(L" \t", pos);
 		if (pos == wstring::npos)
 			return;
-		remain = remain.substr(pos);
-		friendly_pos += pos;
+
+		friendly_pos = pos;
+
+		remain = expr.substr(pos);
+
+		bool matched = false;
 
 		// Operators:
-		for (i = 0; i < ARRAYSIZE(operator_tokens); i++) {
-			if (!remain.compare(0, wcslen(operator_tokens[i]), operator_tokens[i])) {
-				pos = wcslen(operator_tokens[i]);
-				tree->tokens.emplace_back(make_shared<CommandListOperatorToken>(friendly_pos, remain.substr(0, pos)));
-				LogDebug("      Operator: \"%S\"\n", tree->tokens.back()->token.c_str());
+		for (i = 0; i < ARRAYSIZE(operator_tokens); i++)
+		{
+			size_t len = wcslen(operator_tokens[i]);
+
+			if (remain.compare(0, len, operator_tokens[i]) == 0)
+			{
+				LogDebug("      Operator: \"%S\"\n", remain.substr(0, len).c_str());
+
+				tree->tokens.emplace_back(make_shared<CommandListOperatorToken>(friendly_pos, remain.substr(0, len)));
+
+				pos += len;
 				last_was_operand = false;
-				goto next_token; // continue would continue wrong loop
+				matched = true;
+				break;
 			}
 		}
 
-		// Texture Filtering / Resource Slots:
-		// - Many of these slots include a hyphen character, which
-		//   conflicts with the subtraction/negation operators,
-		//   potentially making something like "x = ps-t0" ambiguous as
-		//   to whether it is referring to pixel shader texture slot 0,
-		//   or subtracting "t0" from "ps", but in practice this should
-		//   be generally be fine since we don't have anything called
-		//   "ps", "t0" or similar, and if we did simply adding
-		//   whitespace around the subtraction would disambiguate it.
-		// - The characters we check for here preclude some arbitrary
-		//   custom Resource names, including namespaced resources, but
-		//   that's ok since this is only for texture filtering, which
-		//   doesn't work if custom resources are checked. If we need
-		//   to match these for some other reason, we could add \ and .
-		//   to this list, which will cover most namespaced resources.
-		pos = FindIdentifierTokenEnd(remain);
-		if (pos) {
-			token = remain.substr(0, pos);
-			ret = texture_filter_target.ParseTarget(token.c_str(), true, ini_namespace, scope);
-			if (ret) {
-				operand = make_shared<CommandListOperand>(friendly_pos, token);
-				if (operand->parse(&token, ini_namespace, scope)) {
-					tree->tokens.emplace_back(std::move(operand));
-					LogDebug("      Resource Slot: \"%S\"\n", tree->tokens.back()->token.c_str());
-					if (last_was_operand)
-						throw CommandListSyntaxError(L"Unexpected identifier", friendly_pos);
-					last_was_operand = true;
-					continue;
-				} else {
-					LogOverlay(LOG_DIRE, "BUG: Token parsed as resource slot, but not as operand: \"%S\"\n", token.c_str());
-					throw CommandListSyntaxError(L"BUG", friendly_pos);
+		if (matched)
+			continue;
+
+		operand = make_shared<CommandListOperand>(friendly_pos, token);
+
+		// Numeric Literal
+		if (std::isdigit(remain[0]))
+		{
+			// - Supported inputs: DECIMAL 0.0001, HEX 0x0001, BIN 0b0001.
+			// - Must tokenise subtraction operation first.
+			// - Static optimisation will merge unary negation.
+			// - Special literals (inf, nan, etc) are being parsed last.
+			size_t len = remain.size();
+
+			if (operand->parse_float(&remain, ini_namespace, scope, len))
+			{
+				token = remain.substr(0, len);
+				LogDebug("      Float: \"%S\"\n", token.c_str());
+				pos += len;
+				goto import_operand;
+			}
+
+			throw CommandListSyntaxError(L"Float not recognized: " + remain, friendly_pos);
+		}
+
+		bool has_variable_prefix = remain[0] == L'$';
+
+		// Variable
+		if (has_variable_prefix)
+		{
+			size_t len = FindVariableTokenEnd(remain, 1);
+
+			// Skip handling variable pool (e.g. `$PoolFoo[0]`).
+			if (len && len < remain.size() && remain[len] == L'[')
+				len = 0;
+
+			if (len)
+			{
+				token = remain.substr(0, len);
+
+				if (operand->parse_variable( &token, ini_namespace, scope))
+				{
+					LogDebug("      Variable: \"%S\"\n", token.c_str());
+					pos += len;
+					goto import_operand;
+				}
+
+				throw CommandListSyntaxError(L"Variable not recognized: " + remain, friendly_pos);
+			}
+		}
+
+		bool has_prefix = has_variable_prefix || remain[0] == L'@' || remain[0] == L'#';
+
+		// ResourceCopyTarget
+		{
+			size_t len = FindResourceCopyTargetTokenEnd(remain, has_prefix ? 1 : 0);
+
+			if (len)
+			{
+				token = remain.substr(0, len);
+
+				if (operand->parse_target( &token, ini_namespace, scope))
+				{
+					LogDebugW(L"      ResourceCopyTarget: \"%ls\"\n", token.c_str());
+					pos += len;
+					goto import_operand;
 				}
 			}
 		}
 
-		// Identifiers:
-		// - Parse this before floats to make sure that the special
-		//   cases "inf" and "nan" are identifiers by themselves, not
-		//   the start of some other identifier. Only applies to
-		//   vs2015+ as older toolchains lack parsing for these.
-		// - Identifiers cannot start with a number
-		// - Variable identifiers start with a $, and these may be
-		//   namespaced, so we allow backslash and . as well
-		//   TODO: Be more specific with namespaces to allow exactly
-		//   the set of actual namespaces. Would allow for namespaces
-		//   to have spaces or other unusual characters while freeing
-		//   up . \ and $ for potential use as operators in the future.
-		if (remain[0] < '0' || remain[0] > '9') {
-			// To support UTF-8 namespaces, we'll have to match a string with any characters between two `\`
-			// So we must match the first token from `$\utf8name\var`, `Resource\utf8name\Test = null` or even `$var && $\utf8name\test` 
-			//
-			// Match token substring before namespace (i.e. `$` or `Resource`) or entire token without namespace (i.e. `$var`)
-			pos = remain.find_first_not_of(L"abcdefghijklmnopqrstuvwxyz_0123456789$.");
+		// Other Tokens
+		if (!has_prefix)
+		{
+			size_t len = FindIdentifierTokenEnd(remain, 0, OptionalChars::HYPHEN);
 
-			// Check if next char after match is namespace opening backslash
-			if (remain[pos] == L'\\') {
-				// Find tokens separation char to prevent namespace search overflow to next namespaced token
-				end_pos = remain.find_first_of(L"=&|+-/*><%!^~", pos + 1);
-				// Find namespace closing backslash aka first backlash starting from the end of string
-				start_pos = remain.rfind(L'\\', end_pos) + 1;
-				// Find the token boundary aka match remaining name (i.e. `var` or `Test`)
-				pos = remain.find_first_not_of(L"abcdefghijklmnopqrstuvwxyz_0123456789.", start_pos);
-			}
+			if (len)
+			{
+				LogDebug("      Parsing Tokens: remain=%S\n", remain.c_str());
 
-			if (pos) {
-				token = remain.substr(0, pos);
-				operand = make_shared<CommandListOperand>(friendly_pos, token);
-				if (operand->parse(&token, ini_namespace, scope)) {
-					tree->tokens.emplace_back(std::move(operand));
-					LogDebug("      Identifier: \"%S\"\n", tree->tokens.back()->token.c_str());
-					if (last_was_operand)
-						throw CommandListSyntaxError(L"Unexpected identifier", friendly_pos);
-					last_was_operand = true;
-					continue;
+				token = remain.substr(0, len);
+
+				if (operand->parse_ini_param(&token, ini_namespace, scope))
+				{
+					LogDebug("      IniParam: \"%S\"\n", token.c_str());
+					pos += len;
+					goto import_operand;
 				}
-				throw CommandListSyntaxError(L"Unrecognised identifier: " + token, friendly_pos);
+
+				else if (operand->parse_ini_keywords(&token, ini_namespace, scope))
+				{
+					LogDebug("      IniKeyword: \"%S\"\n", token.c_str());
+					pos += len;
+					goto import_operand;
+				}
+
+				else if (operand->parse_shader(&token, ini_namespace, scope))
+				{
+					LogDebug("      Shader: \"%S\"\n", token.c_str());
+					pos += len;
+					goto import_operand;
+				}
+
+				else if (operand->parse_scissor(&token, ini_namespace, scope))
+				{
+					LogDebug("      Scissor: \"%S\"\n", token.c_str());
+					pos += len;
+					goto import_operand;
+				}
 			}
 		}
 
-		// Floats:
-		// - Must tokenise subtraction operation first
-		//   - Static optimisation will merge unary negation
-		// - Identifier match will catch "nan" and "inf" special cases
-		//   if the toolchain supports them
-		ret = swscanf_s(remain.c_str(), L"%f%n", &fval, &ipos);
-		if (ret != 0 && ret != EOF) {
-			// VS2013 Issue: size_t z/I modifiers do not work with %n
-			// We could make pos an int and cast it everywhere it is used
-			// as a size_t, but this way highlights the toolchain issue.
-			pos = ipos;
+		// Special Float:
+		{
+			size_t len = remain.size();
 
-			token = remain.substr(0, ipos);
-			operand = make_shared<CommandListOperand>(friendly_pos, token);
-			if (operand->parse(&token, ini_namespace, scope)) {
-				tree->tokens.emplace_back(std::move(operand));
-				LogDebug("      Float: \"%S\"\n", tree->tokens.back()->token.c_str());
-				if (last_was_operand)
-					throw CommandListSyntaxError(L"Unexpected identifier", friendly_pos);
-				last_was_operand = true;
-				continue;
-			} else {
-				LogOverlay(LOG_DIRE, "BUG: Token parsed as float, but not as operand: \"%S\"\n", token.c_str());
-				throw CommandListSyntaxError(L"BUG", friendly_pos);
+			if (operand->parse_float(&remain, ini_namespace, scope, len))
+			{
+				token = remain.substr(0, len);
+				LogDebug("      Float: \"%S\"\n", token.c_str());
+				pos += len;
+				goto import_operand;
 			}
 		}
 
-		throw CommandListSyntaxError(L"Parse error", friendly_pos);
+		// Operand parsing failed.
+		throw CommandListSyntaxError(L"Unrecognised identifier: " + token, friendly_pos);
+
+import_operand:
+
+		tree->tokens.emplace_back(std::move(operand));
+
+		if (last_was_operand)
+		{
+			throw CommandListSyntaxError(L"Unexpected identifier", friendly_pos);
+		}
+
+		last_was_operand = true;
 	}
 }
 
@@ -4364,42 +4609,53 @@ bool parse_command_list_var_name(const wstring &name, const wstring *ini_namespa
 	return true;
 }
 
-bool CommandListOperand::parse(const wstring *operand, const wstring *ini_namespace, CommandListScope *scope)
+bool CommandListOperand::parse_float(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope, size_t& out_length)
 {
-	CommandListVariable *var = NULL;
-	int ret, len1;
-
-	// Try parsing value as a float
-	ret = swscanf_s(operand->c_str(), L"%f%n", &val, &len1);
-	if (ret != 0 && ret != EOF && len1 == operand->length()) {
+	if (ParseFloatToken(*operand, val, out_length))
+	{
 		type = ParamOverrideType::VALUE;
 		return operand_allowed_in_context(type, scope);
 	}
+	return false;
+}
 
-	// Try parsing operand as an ini param:
+bool CommandListOperand::parse_ini_param(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
+{
 	if (ParseIniParamName(operand->c_str(), &param_idx, &param_component)) {
 		type = ParamOverrideType::INI_PARAM;
 		// Reserve space in IniParams for this variable:
 		G->iniParamsReserved = max(G->iniParamsReserved, param_idx + 1);
 		return operand_allowed_in_context(type, scope);
 	}
+	return false;
+}
 
-	// Try parsing operand as a variable:
+bool CommandListOperand::parse_variable(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
+{
+	CommandListVariable* var = nullptr;
+
 	if (find_local_variable(*operand, scope, &var) ||
-	    parse_command_list_var_name(*operand, ini_namespace, &var)) {
+		parse_command_list_var_name(*operand, ini_namespace, &var)) {
 		type = ParamOverrideType::VARIABLE;
 		var_ftarget = &var->fval;
 		return operand_allowed_in_context(type, scope);
 	}
+	return false;
+}
 
-	// Try parsing value as a resource target for texture filtering
+bool CommandListOperand::parse_target(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
+{
+	int ret;
 	ret = texture_filter_target.ParseTarget(operand->c_str(), true, ini_namespace, scope);
 	if (ret) {
 		type = ParamOverrideType::TEXTURE;
 		return operand_allowed_in_context(type, scope);
 	}
+	return false;
+}
 
-	// Try parsing value as a shader target for partner filtering
+bool CommandListOperand::parse_shader(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
+{
 	// WARNING: This test is especially susceptible to an uninitialised
 	//          %n fooling it into thinking it has parsed the entire string
 	//          if the stack garbage happens to contain operand->length().
@@ -4410,20 +4666,22 @@ bool CommandListOperand::parse(const wstring *operand, const wstring *ini_namesp
 	//          any character this can trigger easily. Seems to only occur
 	//          on vs2013, though I'm not positive if vs2017 zeroes out
 	//          len1 or dumb luck gave different values in the stack.
-	len1 = 0;
-	ret = swscanf_s(operand->c_str(), L"%lcs%n", &shader_filter_target, 1, &len1);
+	int len1 = 0;
+	int ret = swscanf_s(operand->c_str(), L"%lcs%n", &shader_filter_target, 1, &len1);
 	if (ret == 1 && len1 == operand->length()) {
-		switch(shader_filter_target) {
+		switch (shader_filter_target) {
 		case L'v': case L'h': case L'd': case L'g': case L'p': case L'c':
 			type = ParamOverrideType::SHADER;
 			return operand_allowed_in_context(type, scope);
 		}
 	}
+	return false;
+}
 
-	// Try parsing value as a scissor rectangle. scissor_<side> also
-	// appears in the keywords list for uses of the default rectangle 0.
-	len1 = 0;
-	ret = swscanf_s(operand->c_str(), L"scissor%u_%n", &scissor, &len1);
+bool CommandListOperand::parse_scissor(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
+{
+	int len1 = 0;
+	int ret = swscanf_s(operand->c_str(), L"scissor%u_%n", &scissor, &len1);
 	if (ret == 1 && scissor < D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE) {
 		if (!wcscmp(operand->c_str() + len1, L"left"))
 			type = ParamOverrideType::SCISSOR_LEFT;
@@ -4437,13 +4695,15 @@ bool CommandListOperand::parse(const wstring *operand, const wstring *ini_namesp
 			return false;
 		return operand_allowed_in_context(type, scope);
 	}
+	return false;
+}
 
-	// Check special keywords
-	type = lookup_enum_val<const wchar_t *, ParamOverrideType>
+bool CommandListOperand::parse_ini_keywords(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
+{
+	type = lookup_enum_val<const wchar_t*, ParamOverrideType>
 		(ParamOverrideTypeNames, operand->c_str(), ParamOverrideType::INVALID);
 	if (type != ParamOverrideType::INVALID)
 		return operand_allowed_in_context(type, scope);
-
 	return false;
 }
 

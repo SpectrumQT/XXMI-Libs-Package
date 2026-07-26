@@ -1272,7 +1272,14 @@ public:
 		scissor(0)
 	{}
 
-	bool parse(const wstring *operand, const wstring *ini_namespace, CommandListScope *scope);
+	bool parse_float(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope, size_t& out_length);
+	bool parse_ini_param(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
+	bool parse_variable(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
+	bool parse_target(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
+	bool parse_shader(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
+	bool parse_scissor(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
+	bool parse_ini_keywords(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
+
 	float evaluate(CommandListState *state, HackerDevice *device=NULL) override;
 	bool static_evaluate(float *ret, HackerDevice *device=NULL, bool evaluate_variables=false) override;
 	bool optimise(HackerDevice *device, std::shared_ptr<CommandListEvaluatable> *replacement) override;

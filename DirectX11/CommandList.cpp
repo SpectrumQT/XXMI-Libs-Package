@@ -3255,6 +3255,8 @@ float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device
 			return (float)G->mResolutionInfo.height;
 		case ParamOverrideType::TIME:
 			return (float)G->gTime;
+		case ParamOverrideType::FRAME_NUMBER:
+			return (float)G->frame_no;
 		case ParamOverrideType::HUNTING:
 			return (float)G->hunting;
 		case ParamOverrideType::FRAME_ANALYSIS:
@@ -4560,6 +4562,7 @@ static bool operand_allowed_in_context(ParamOverrideType type, CommandListScope 
 		case ParamOverrideType::RES_WIDTH:
 		case ParamOverrideType::RES_HEIGHT:
 		case ParamOverrideType::TIME:
+		case ParamOverrideType::FRAME_NUMBER:
 		case ParamOverrideType::HUNTING:
 		case ParamOverrideType::EFFECTIVE_DPI:
 		case ParamOverrideType::SLI:

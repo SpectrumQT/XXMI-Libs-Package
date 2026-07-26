@@ -1196,6 +1196,7 @@ enum class ParamOverrideType {
 	SLI,
 	STEREO_ACTIVE,
 	STEREO_AVAILABLE,
+	FRAME_NUMBER,
 };
 static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] = {
 	{L"rt_width", ParamOverrideType::RT_WIDTH},
@@ -1235,6 +1236,7 @@ static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] =
 	{L"sli", ParamOverrideType::SLI},
 	{L"stereo_active", ParamOverrideType::STEREO_ACTIVE},
 	{L"stereo_available", ParamOverrideType::STEREO_AVAILABLE},
+	{L"frame_number", ParamOverrideType::FRAME_NUMBER},
 	{NULL, ParamOverrideType::INVALID} // End of list marker
 };
 class CommandListOperand :

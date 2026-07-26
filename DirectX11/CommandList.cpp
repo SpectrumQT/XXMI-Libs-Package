@@ -3473,6 +3473,38 @@ bool CommandListOperand::optimise(HackerDevice *device, std::shared_ptr<CommandL
 
 #pragma region Tokenization
 
+static const wchar_t *function_tokens[] = {
+	L"countbits",
+
+	L"sin",
+	L"cos",
+	L"tan",
+	L"asin",
+	L"acos",
+	L"atan",
+
+	L"abs",
+	L"sign",
+	L"ceil",
+	L"floor",
+	L"trunc",
+	L"round",
+	L"frac",
+
+	L"sqrt",
+	L"rsqrt",
+
+	L"exp",
+	L"exp2",
+	L"log",
+	L"log2",
+
+	L"saturate",
+
+	L"random",
+	L"noise"
+};
+
 static const wchar_t *operator_tokens[] = {
 	// Three character tokens first:
 	L"===", L"!==",
@@ -3802,6 +3834,27 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 		if (matched)
 			continue;
 
+		// Functions:
+		for (i = 0; i < ARRAYSIZE(function_tokens); i++)
+		{
+			size_t len = wcslen(function_tokens[i]);
+
+			if (remain.size() > len && remain.compare(0, len, function_tokens[i]) == 0 && remain[len] == L'(')
+			{
+				LogDebug("      Function: \"%S\"\n", function_tokens[i]);
+				
+				tree->tokens.emplace_back(make_shared<CommandListOperatorToken>(friendly_pos, remain.substr(0, len)));
+
+				pos += len;
+				last_was_operand = false;
+				matched = true;
+				break;
+			}
+		}
+
+		if (matched)
+			continue;
+
 		operand = make_shared<CommandListOperand>(friendly_pos, token);
 
 		// Numeric Literal
@@ -3996,6 +4049,36 @@ DEFINE_OPERATOR(bitwise_not_operator,   "~",  (~(int32_t)rhs));
 DEFINE_OPERATOR(unary_plus_operator,    "+",  (+rhs));
 DEFINE_OPERATOR(unary_negate_operator,  "-",  (-rhs));
 
+// Functions
+DEFINE_OPERATOR(countbits_operator,     "countbits", popcount((uint32_t)rhs));
+
+DEFINE_OPERATOR(sin_operator,           "sin",       sin(rhs));
+DEFINE_OPERATOR(cos_operator,           "cos",       cos(rhs));
+DEFINE_OPERATOR(tan_operator,           "tan",       tan(rhs));
+DEFINE_OPERATOR(asin_operator,          "asin",      asin(rhs));
+DEFINE_OPERATOR(acos_operator,          "acos",      acos(rhs));
+DEFINE_OPERATOR(atan_operator,          "atan",      atan(rhs));
+
+DEFINE_OPERATOR(abs_operator,           "abs",       abs(rhs));
+DEFINE_OPERATOR(sign_operator,          "sign",      (rhs > 0) - (rhs < 0));
+DEFINE_OPERATOR(ceil_operator,          "ceil",      ceil(rhs));
+DEFINE_OPERATOR(floor_operator,         "floor",     floor(rhs));
+DEFINE_OPERATOR(trunc_operator,         "trunc",     trunc(rhs));
+DEFINE_OPERATOR(round_operator,         "round",     round(rhs));
+DEFINE_OPERATOR(frac_operator,          "frac",      rhs - floor(rhs));
+
+DEFINE_OPERATOR(sqrt_operator,          "sqrt",      sqrt(rhs));
+DEFINE_OPERATOR(rsqrt_operator,         "rsqrt",     1.0 / sqrt(rhs));
+
+DEFINE_OPERATOR(exp_operator,           "exp",       exp(rhs));
+DEFINE_OPERATOR(exp2_operator,          "exp2",      exp2(rhs));
+DEFINE_OPERATOR(log_operator,           "log",       log(rhs));
+DEFINE_OPERATOR(log2_operator,          "log2",      log2(rhs));
+
+DEFINE_OPERATOR(saturate_operator,      "saturate",  max(0.0, min(rhs, 1.0)));
+
+DEFINE_OPERATOR(random_operator,        "random",    random(rhs));
+
 // High level of precedence, right-associative. Lower than unary operators, so
 // that 4**-2 works for square root
 DEFINE_OPERATOR(exponent_operator,      "**", (pow(lhs, rhs)));
@@ -4042,6 +4125,35 @@ static CommandListOperatorFactoryBase *unary_operators[] = {
 	&bitwise_not_operator,
 	&unary_negate_operator,
 	&unary_plus_operator,
+
+	&countbits_operator,
+
+	&sin_operator,
+	&cos_operator,
+	&tan_operator,
+	&asin_operator,
+	&acos_operator,
+	&atan_operator,
+
+	&abs_operator,
+	&sign_operator,
+	&ceil_operator,
+	&floor_operator,
+	&trunc_operator,
+	&round_operator,
+	&frac_operator,
+
+	&sqrt_operator,
+	&rsqrt_operator,
+
+	&exp_operator,
+	&exp2_operator,
+	&log_operator,
+	&log2_operator,
+
+	&saturate_operator,
+
+	&random_operator,
 };
 static CommandListOperatorFactoryBase *exponent_operators[] = {
 	&exponent_operator,

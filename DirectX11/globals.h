@@ -406,6 +406,7 @@ struct Globals
 	bool gLogInput;
 	bool gShowWarnings;
 	bool dump_all_profiles;
+	unsigned gSystemTickCount;
 	float gTime;
 	float gSettingsSaveTime;
 	DWORD ticks_at_launch;
@@ -730,6 +731,7 @@ struct Globals
 		gFallbackScreenWidth(0),
 		gFallbackScreenHeight(0),
 		dump_all_profiles(false),
+		gSystemTickCount(0),
 		gTime(0)
 	{
 		int i;

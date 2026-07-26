@@ -4779,8 +4779,17 @@ bool ParseCommandListVariableAssignment(const wchar_t *section,
 	}
 
 	if (!find_local_variable(name, pre_command_list->scope, &var) &&
-	    !parse_command_list_var_name(name, ini_namespace, &var))
+		!parse_command_list_var_name(name, ini_namespace, &var))
 		return false;
+
+	if (var->flags & VariableFlags::LOCKED) {
+		LogOverlayW(LOG_WARNING,
+			L"Unable to assign value \"%ls\" to <locked> variable \"%ls\"\n"
+			L" - [%ls] @ [%ls]\n",
+			val->c_str(), name.c_str(),
+			section, ini_namespace->c_str());
+		return false;
+	}
 
 	command = new VariableAssignment();
 	command->var = var;

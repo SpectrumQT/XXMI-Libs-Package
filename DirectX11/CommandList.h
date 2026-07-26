@@ -115,14 +115,16 @@ enum class VariableFlags {
 	NONE            = 0,
 	GLOBAL          = 0x00000001,
 	PERSIST         = 0x00000002,
+	LOCKED          = 0x00000004,
 	INVALID         = (signed)0xffffffff,
 };
 SENSIBLE_ENUM(VariableFlags);
 static EnumName_t<const wchar_t *, VariableFlags> VariableFlagNames[] = {
-	{L"global", VariableFlags::GLOBAL},
+	{L"global",  VariableFlags::GLOBAL},
 	{L"persist", VariableFlags::PERSIST},
+	{L"locked",  VariableFlags::LOCKED},
 
-	{NULL, VariableFlags::INVALID} // End of list marker
+	{NULL,       VariableFlags::INVALID} // End of list marker
 };
 
 class CommandListVariable {

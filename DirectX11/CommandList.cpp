@@ -3420,6 +3420,18 @@ bool CommandListOperand::static_evaluate(float *ret, HackerDevice *device, bool 
 				return true;
 			}
 			return false;
+		case ParamOverrideType::TIME:
+			if (evaluate_variables) {
+				*ret = (float)G->gTime;
+				return true;
+			}
+			return false;
+		case ParamOverrideType::FRAME_NUMBER:
+			if (evaluate_variables) {
+				*ret = (float)G->frame_no;
+				return true;
+			}
+			return false;
 		case ParamOverrideType::HUNTING:
 		case ParamOverrideType::FRAME_ANALYSIS:
 			if (G->hunting == HUNTING_MODE_DISABLED) {

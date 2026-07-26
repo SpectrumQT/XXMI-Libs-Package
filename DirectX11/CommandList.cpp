@@ -6667,6 +6667,7 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 
 	static constexpr MemberInfo members[] = {
 		{ L"->size",           6, ResourceCopyTargetEvaluationMode::RESOURCE_SIZE },
+		{ L"->index",          7, ResourceCopyTargetEvaluationMode::POOL_INDEX },
 		{ L"->offset",         8, ResourceCopyTargetEvaluationMode::RESOURCE_OFFSET },
 		{ L"->stride",         8, ResourceCopyTargetEvaluationMode::RESOURCE_STRIDE },
 		{ L"->hashregion",    12, ResourceCopyTargetEvaluationMode::RESOURCE_REGION_HASH, {{
@@ -6785,13 +6786,14 @@ IniParserResult ResourceCopyTarget::ParseTargetPool(const wchar_t*& target, size
 	}
 	else if (evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE_IDENTITY)
 	{
-		// Treat @PoolName as POOL_IDENTITY instead of RESOURCE_IDENTITY (no index provided)
+		// Treat @PoolName as POOL_IDENTITY
 		evaluation_mode = ResourceCopyTargetEvaluationMode::POOL_IDENTITY;
 		pool_id = wstring(target);
 	}
-	else if (evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_INDEX)
+	else if (evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_INDEX
+			|| evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE_SIZE)
 	{
-		// Treat #PoolName as POOL_SIZE instead of POOL_INDEX (no index provided)
+		// Treat #PoolName and PoolName->Size as POOL_SIZE
 		evaluation_mode = ResourceCopyTargetEvaluationMode::POOL_SIZE;
 		pool_id = wstring(target);
 	}

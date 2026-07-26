@@ -7085,6 +7085,7 @@ static CommandListCommand* parse_pool_copy_operation(
 			LogOverlayW(LOG_WARNING, L"Cannot copy `%ls` to `%ls` (deep `copy` is not supported)\n - [% ls] @[% ls]\n", src.custom_resource_pool->name, dst.custom_resource_pool->name, section, ini_namespace->c_str());
 			return nullptr;
 		}
+		src.custom_resource_pool->PropagateFlags(dst.custom_resource_pool->resource_template->bind_flags, dst.custom_resource_pool->resource_template->misc_flags);
 		break;
 
 	case ResourceCopyTargetType::EMPTY:

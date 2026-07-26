@@ -3406,12 +3406,18 @@ float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device
 	return 0;
 }
 
-bool CommandListOperand::static_evaluate(float *ret, HackerDevice *device)
+bool CommandListOperand::static_evaluate(float *ret, HackerDevice *device, bool evaluate_variables)
 {
 	switch (type) {
 		case ParamOverrideType::VALUE:
 			*ret = val;
 			return true;
+		case ParamOverrideType::VARIABLE:
+			if (evaluate_variables) {
+				*ret = *var_ftarget;
+				return true;
+			}
+			return false;
 		case ParamOverrideType::HUNTING:
 		case ParamOverrideType::FRAME_ANALYSIS:
 			if (G->hunting == HUNTING_MODE_DISABLED) {
@@ -4051,9 +4057,9 @@ float CommandListExpression::evaluate(CommandListState *state, HackerDevice *dev
 	return evaluatable->evaluate(state, device);
 }
 
-bool CommandListExpression::static_evaluate(float *ret, HackerDevice *device)
+bool CommandListExpression::static_evaluate(float *ret, HackerDevice *device, bool evaluate_variables)
 {
-	return evaluatable->static_evaluate(ret, device);
+	return evaluatable->static_evaluate(ret, device, evaluate_variables);
 }
 
 bool CommandListExpression::optimise(HackerDevice *device)
@@ -4183,14 +4189,14 @@ float CommandListOperator::evaluate(CommandListState *state, HackerDevice *devic
 	return evaluate(std::numeric_limits<float>::quiet_NaN(), rhs->evaluate(state, device));
 }
 
-bool CommandListOperator::static_evaluate(float *ret, HackerDevice *device)
+bool CommandListOperator::static_evaluate(float *ret, HackerDevice *device, bool evaluate_variables)
 {
 	float lhs_static = std::numeric_limits<float>::quiet_NaN(), rhs_static;
 	bool is_static;
 
-	is_static = rhs->static_evaluate(&rhs_static, device);
+	is_static = rhs->static_evaluate(&rhs_static, device, evaluate_variables);
 	if (lhs) // Binary operator
-		is_static = lhs->static_evaluate(&lhs_static, device) && is_static;
+		is_static = lhs->static_evaluate(&lhs_static, device, evaluate_variables) && is_static;
 
 	if (is_static) {
 		if (ret)

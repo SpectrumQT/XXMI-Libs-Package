@@ -1024,6 +1024,35 @@ inline std::wstring NormalizeString(const std::wstring& value)
 	return normalized;
 }
 
+bool ParseBinaryLiterals(const wstring& input, size_t start, uint64_t& out, size_t& length)
+{
+	uint64_t value = 0;
+	length = 0;
+
+	for (; start < input.size(); ++start, ++length)
+	{
+		const wchar_t c = input[start];
+
+		if (c != L'0' && c != L'1')
+			break;
+
+		// uint64_t can hold at most 64 binary digits.
+		if (length >= 64)
+			return false;
+
+		value <<= 1;
+
+		if (c == L'1')
+			value |= 1;
+	}
+
+	if (length == 0)
+		return false;
+
+	out = value;
+	return true;
+}
+
 template<typename T, typename Converter>
 bool ParseIniExpression(
 	const wstring* ini_namespace_override,

@@ -3707,6 +3707,10 @@ inline bool ParseFloatToken(const wstring& input, float& out, size_t& length)
 	// Binary literal.
 	if (input.size() >= 3 && input[0] == L'0' && input[1] == L'b')
 	{
+		std::uint64_t value;
+		if (!ParseBinaryLiterals(input, 2, value, length))
+			return false;
+
 		out = static_cast<float>(value);
 		length += 2; // Include the "0b" prefix.
 		return true;

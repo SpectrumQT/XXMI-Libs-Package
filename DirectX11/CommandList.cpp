@@ -7066,20 +7066,6 @@ bool ResourceCopyTarget::ParseTarget(const wchar_t *target, bool is_source, cons
 
 #pragma region PoolCopyOperation
 
-static ResourceCopyOptions parse_copy_options(wstring* val, wchar_t*& src_ptr)
-{
-	// parse_enum_option_string replaces spaces with NULLs, so it can't
-	// operate on the buffer in the wstring directly. I could potentially
-	// change it to work without modifying the string, but for now it's
-	// easier to just make a copy of the string:
-	if (val->length() >= MAX_PATH)
-		return ResourceCopyOptions::INVALID;
-	wchar_t buf[MAX_PATH];
-	wcsncpy_s(buf, val->c_str(), MAX_PATH);
-
-	return parse_enum_option_string<wchar_t*, ResourceCopyOptions>(ResourceCopyOptionNames, buf, &src_ptr);
-}
-
 static CommandListCommand* parse_pool_copy_operation(
 	const wchar_t* section, ResourceCopyTarget& dst, ResourceCopyTarget& src, ResourceCopyOptions options, CommandList* command_list, const wstring* ini_namespace
 )
@@ -7424,6 +7410,20 @@ bool PoolVariableOperation::optimise(HackerDevice* device)
 
 #pragma endregion PoolVariableOperation
 
+static ResourceCopyOptions parse_resource_copy_target_options_string(const wchar_t* key, const std::wstring& val, const wchar_t*& src_ptr, const wchar_t* section, const std::wstring& ini_namespace)
+{
+	src_ptr = nullptr;
+
+	ResourceCopyOptions options = parse_enum_option_string_terminated(
+		ResourceCopyOptionNames, const_cast<wchar_t*>(val.c_str()), const_cast<wchar_t**>(&src_ptr), L"[(");
+
+	if (options & ResourceCopyOptions::UNKNOWN) {
+		LogOverlayW(LOG_WARNING, L"Resource copy source contains invalid options: \"%ls = %ls\"\n - [%ls] @ [%ls]\n", 
+			key, val.c_str(), section, ini_namespace.c_str());
+	}
+
+	return options;
+}
 
 bool ParseCommandListResourceCopyTargetDirective(
 	const wchar_t *section, const wchar_t *key, wstring *val, CommandList *command_list, const wstring *ini_namespace
@@ -7452,10 +7452,10 @@ bool ParseCommandListResourceCopyTargetDirective(
 	}
 	else
 	{
-		ResourceCopyTarget src = ResourceCopyTarget();
+		const wchar_t* src_ptr = nullptr;
+		ResourceCopyOptions options = parse_resource_copy_target_options_string(key, *val, src_ptr, section, *ini_namespace);
 
-		wchar_t* src_ptr = nullptr;
-		ResourceCopyOptions options = parse_copy_options(val, src_ptr);
+		ResourceCopyTarget src = ResourceCopyTarget();
 
 		if (!src_ptr || !src.ParseTarget(src_ptr, true, ini_namespace, command_list->scope))
 			src.type = ResourceCopyTargetType::INVALID;

@@ -910,19 +910,23 @@ private:
 };
 
 enum class ResourceCopyOptions {
-	INVALID         = 0,
-	COPY            = 0x00000001,
-	REFERENCE       = 0x00000002,
-	UNLESS_NULL     = 0x00000004,
-	RESOLVE_MSAA    = 0x00000008,
-	MONO            = 0x00000020,
-	COPY_DESC       = 0x00000080,
-	SET_VIEWPORT    = 0x00000100,
-	NO_VIEW_CACHE   = 0x00000200,
-	RAW_VIEW        = 0x00000400,
+	INVALID         = 0b0000000000000000,
 
-	COPY_MASK       = 0x000000c9, // Anything that implies a copy
-	COPY_TYPE_MASK  = 0x000000cb, // Anything that implies a copy or a reference
+	COPY            = 0b0000000000000001,
+	RESOLVE_MSAA    = 0b0000000000001000,
+	COPY_DESC       = 0b0000000010000000,
+	REFERENCE       = 0b0000000000000010,
+	
+	COPY_MASK       = 0b0000000011001001, // Anything that implies a copy
+	COPY_TYPE_MASK  = 0b0000000011001011, // Anything that implies a copy or a reference
+
+	UNLESS_NULL     = 0b0000000000000100,
+	MONO            = 0b0000000000100000,
+	SET_VIEWPORT    = 0b0000000100000000,
+	NO_VIEW_CACHE   = 0b0000001000000000,
+	RAW_VIEW        = 0b0000010000000000,
+	
+	UNKNOWN         = 0b1000000000000000, // Parsing encountered unknown options
 };
 SENSIBLE_ENUM(ResourceCopyOptions);
 static EnumName_t<wchar_t *, ResourceCopyOptions> ResourceCopyOptionNames[] = {

@@ -7039,10 +7039,6 @@ bool ResourceCopyTarget::ParseTarget(const wchar_t *target, bool is_source, cons
 	if (ret == IniParserResult::SYNTAX_ERROR)
 		return false;
 
-	// Reject whitespace: ParseTarget() expects a single token.
-	if (contains_whitespace(target, length))
-		return false;
-
 	// Parse the remainder as a custom resource (e.g. `ResourceFoo`).
 	ret = ParseTargetCustomResource(target, length, ini_namespace, scope);
 	//LogInfo("ParseTarget: %d at ParseTargetCustomResource\n", ret);

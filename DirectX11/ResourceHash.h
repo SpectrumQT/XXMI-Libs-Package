@@ -27,7 +27,7 @@
 // - Average O(1) lookup and insert
 // - High performance at moderate load factors(<= ~0.5 recommended)
 // - Rehashing is O(n) but infrequent if capacity is preallocated
-// - No support for deletion(can be extended with tombstones if needed)
+// - Supports backward-shift deletion
 //
 // Thread safety :
 // - Not thread-safe.
@@ -157,6 +157,81 @@ public:
 
 			idx = (idx + 1) & mask;
 		}
+	}
+
+	// Erases a key using backward-shift deletion.
+	//
+	// Behavior:
+	// - Removes the key if found
+	// - Shifts subsequent entries backward to preserve probe chains
+	//
+	// Performance:
+	// - Average O(1)
+	// - Worst case O(cluster length)
+	inline bool erase(const K& key)
+	{
+		size_t idx = hasher(key) & mask;
+
+		// Find the entry
+		while (true)
+		{
+			Entry& e = table[idx];
+
+			if (e.generation != current_generation)
+				return false;
+
+			if (e.key == key)
+				break;
+
+			idx = (idx + 1) & mask;
+		}
+
+		// Remove and compact the cluster
+		size_t hole = idx;
+		size_t next = (hole + 1) & mask;
+
+		while (true)
+		{
+			Entry& e = table[next];
+
+			// End of cluster
+			if (e.generation != current_generation)
+			{
+				table[hole].generation = 0;
+				break;
+			}
+
+			// Determine the natural bucket of this entry
+			size_t ideal = hasher(e.key) & mask;
+
+			// Check if this entry can be moved into the hole.
+			//
+			// If its probe sequence crosses the hole, moving it back
+			// keeps lookup correctness.
+			bool should_move;
+
+			if (hole <= next)
+			{
+				// Normal non-wrapping case
+				should_move = (ideal <= hole) || (ideal > next);
+			}
+			else
+			{
+				// Wrapped cluster
+				should_move = (ideal <= hole) && (ideal > next);
+			}
+
+			if (should_move)
+			{
+				table[hole] = std::move(e);
+				hole = next;
+			}
+
+			next = (next + 1) & mask;
+		}
+
+		--count;
+		return true;
 	}
 
 	// Clears the hash map.
@@ -513,11 +588,22 @@ UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info);
 UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info);
 
 float BitCastToFloat(uint32_t bits);
+uint32_t BitCastToUint(float bits);
 uint64_t HashPointer(const void* p);
 uint32_t HashUnsigned32(uint32_t u);
 float EncodeFloat30(const uint32_t hash);
 
+struct GridPos
+{
+	uint32_t x;
+	uint32_t y;
+	uint32_t z;
+};
+GridPos UnpackCellCoords(uint32_t packed);
+uint32_t SpatialDistanceChebyshev(const GridPos& a, const GridPos& b);
+
 uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size, CustomResource* custom_resource = nullptr);
+uint32_t GetSpatialHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset_x, UINT offset_y, UINT offset_z, float cell_size = 0.125f, CustomResource* custom_resource = nullptr);
 
 void MarkResourceHashContaminated(ID3D11Resource *dest, UINT DstSubresource,
 		ID3D11Resource *src, UINT srcSubresource, char type,

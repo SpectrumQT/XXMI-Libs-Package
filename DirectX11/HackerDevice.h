@@ -52,6 +52,7 @@ private:
 
 	HackerContext *mHackerContext;
 	HackerSwapChain *mHackerSwapChain;
+	std::unordered_map<uint64_t, HackerInputLayout*> mInputLayoutCache;
 
 	// Utility routines
 	char *_ReplaceShaderFromShaderFixes(UINT64 hash, const wchar_t *shaderType, const void *pShaderBytecode,
@@ -110,6 +111,10 @@ private:
 		/* [annotation] */
 		__out_opt  ID3D11Shader **ppShader,
 		wchar_t *shaderType);
+
+	HackerInputLayout* FindCachedInputLayout(uint64_t hash);
+	void CacheInputLayout(uint64_t hash, HackerInputLayout* layout);
+	void ClearInputLayoutCache();
 
 public:
 	ID3D11ShaderResourceView *mZBufferResourceView;

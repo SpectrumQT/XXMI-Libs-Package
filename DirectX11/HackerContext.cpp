@@ -90,6 +90,8 @@ HackerContext::HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pCon
 	mCurrentPSUAVStartSlot = 0;
 	mCurrentPSNumUAVs = 0;
 	mCurrentInputLayout = nullptr;
+	mOriginalInputLayout = nullptr;
+	mOverrideInputLayout = nullptr;
 }
 
 
@@ -754,6 +756,40 @@ void HackerContext::DeferredShaderReplacementBeforeDispatch()
 		(mCurrentComputeShaderHandle, mCurrentComputeShader, L"cs");
 }
 
+void HackerContext::DeferInputLayoutOverride(HackerInputLayout* pInputLayout)
+{
+	LogDebug("HackerContext::DeferInputLayoutOverride(%s@%p) called pInputLayout=%p\n", type_name(this), this, pInputLayout);
+
+	if (mOverrideInputLayout != nullptr)
+		mOverrideInputLayout->Release();
+
+	mOverrideInputLayout = pInputLayout;
+}
+
+void HackerContext::OverrideInputLayout()
+{
+	if (mOverrideInputLayout == nullptr || mOverrideInputLayout == mCurrentInputLayout)
+		return;
+
+	LogDebug("HackerContext::OverrideInputLayout(%s@%p) called mOverrideInputLayout=%p\n", type_name(this), this, mOverrideInputLayout);
+
+	if (mOriginalInputLayout == nullptr)
+		mOriginalInputLayout = mCurrentInputLayout;
+
+	IASetInputLayout(mOverrideInputLayout);
+}
+
+void HackerContext::RestoreInputLayout()
+{
+	LogDebug("HackerContext::RestoreInputLayout(%s@%p) called mOriginalInputLayout=%p\n", type_name(this), this, mOriginalInputLayout);
+
+	mOverrideInputLayout->Release();
+
+	IASetInputLayout(mOriginalInputLayout);
+
+	mOverrideInputLayout = nullptr;
+	mOriginalInputLayout = nullptr;
+}
 
 void HackerContext::BeforeDraw(DrawContext &data)
 {
@@ -962,6 +998,8 @@ void HackerContext::BeforeDraw(DrawContext &data)
 			data.post_commands[4] = &i->second.post_command_list;
 			ProcessShaderOverride(&i->second, true, &data);
 		}
+
+		OverrideInputLayout();
 	}
 
 out_profile:
@@ -999,6 +1037,11 @@ void HackerContext::AfterDraw(DrawContext &data)
 		data.oldPixelShader->Release();
 		if (ret)
 			ret->Release();
+	}
+
+	if (mOriginalInputLayout != nullptr) {
+		RestoreInputLayout();
+		mOriginalInputLayout = nullptr;
 	}
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
@@ -1468,6 +1511,8 @@ STDMETHODIMP_(void) HackerContext::IASetInputLayout(THIS_
 	/* [annotation] */
 	__in_opt ID3D11InputLayout *pInputLayout)
 {
+	LogDebug("HackerContext::IASetInputLayout(%s@%p) called pInputLayout=%p\n", type_name(this), this, pInputLayout);
+
 	if (mCurrentInputLayout)
 		mCurrentInputLayout->Release();
 

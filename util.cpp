@@ -733,3 +733,44 @@ void install_crash_handler(int level)
 			old_handler, old_mode);
 }
 #endif
+
+uint32_t popcount(uint32_t x)
+{
+	uint32_t count = 0;
+	while (x) {
+		x &= (x - 1); // Clears the lowest set bit.
+		count++;
+	}
+	return count;
+}
+
+static uint32_t random_call_counter = 0;
+
+static uint32_t hash32(uint32_t x)
+{
+	x ^= x >> 16;
+	x *= 0x7feb352d;
+	x ^= x >> 15;
+	x *= 0x846ca68b;
+	x ^= x >> 16;
+	return x;
+}
+
+float random(float max)
+{
+	if (max == 0.0f)
+		return 0.0f;
+
+	float sign = max < 0.0f ? -1.0f : 1.0f;
+	max = fabs(max);
+
+	uint32_t seed = G->frame_no;
+	seed += 0x9e3779b9 * random_call_counter++;
+	seed ^= G->gSystemTickCount;
+
+	uint32_t value = hash32(seed);
+
+	float normalized = (value & 0x00ffffff) / 16777216.0f;
+
+	return normalized * max * sign;
+}

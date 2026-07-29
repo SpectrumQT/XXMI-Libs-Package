@@ -2231,6 +2231,13 @@ float BitCastToFloat(uint32_t bits)
 	return value;
 }
 
+uint32_t BitCastToUint(float bits)
+{
+	uint32_t value;
+	memcpy(&value, &bits, sizeof(value));
+	return value;
+}
+
 float EncodeFloat30(const uint32_t hash)
 {
 	// IEEE-754 float layout:
@@ -2284,3 +2291,139 @@ uint32_t HashUnsigned32(uint32_t u)
 	return u;
 }
 
+// Quantizes XYZ coords to grid cells.
+inline int32_t WorldToCell(float v, float cell_size)
+{
+	return (int32_t)std::floor(v / cell_size);
+}
+
+// Wraps coordinate around, forcing it to stay within 1024x1024x1024 cells grid. 
+inline uint32_t WrapCellCoord(int32_t c)
+{
+	return (uint32_t)c & 1023;
+}
+
+// Converts world position to cell position and packs it to UINT32.
+uint32_t PackCellCoords(float x, float y, float z, float cell_size)
+{
+    return (WrapCellCoord(WorldToCell(x, cell_size)) << 20) | // 10 bit X (2 ^ 10 = 1024)
+		   (WrapCellCoord(WorldToCell(y, cell_size)) << 10) | // 10 bit Y (2 ^ 10 = 1024)
+		    WrapCellCoord(WorldToCell(z, cell_size));		  // 10 bit Z (2 ^ 10 = 1024)
+}
+
+// Unpacks packed cell position back into 0-1023 range uints for distance calculations.
+GridPos UnpackCellCoords(uint32_t packed)
+{
+	return {
+		(packed >> 20) & 1023,
+		(packed >> 10) & 1023,
+		 packed & 1023
+	};
+}
+
+inline uint32_t AxisDistance(uint32_t a, uint32_t b)
+{
+	uint32_t d = (a > b) ? (a - b) : (b - a);
+
+	// Wrap around the torus
+	return min(d, 1024 - d);
+}
+
+// Chebyshev distance is used to measure movement in grid cells.
+// Allows diagonal movement to have the same weight as movement along axis.
+// 0 0 => 0 1 => distance == 1
+// 1 0    0 0
+uint32_t SpatialDistanceChebyshev(const GridPos& a, const GridPos& b)
+{
+	uint32_t dx = AxisDistance(a.x, b.x);
+	uint32_t dy = AxisDistance(a.y, b.y);
+	uint32_t dz = AxisDistance(a.z, b.z);
+
+	return max(dx, max(dy, dz));
+}
+
+// Returns a spatial hash of world position (essentially its quantized 30-bit representation).
+// When `custom_resource` is supplied, it's used instead of a `buffer` as input.
+uint32_t GetSpatialHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset_x, UINT offset_y, UINT offset_z, float cell_size, CustomResource* custom_resource)
+{
+	if (!context || !buffer) {
+		return 0;
+	}
+
+	// Use zero size to share the cache with region hashes, which are always non-zero.
+	uint32_t size = 0;
+
+	// Lookup offset in fast L3 cache without any locking involved.
+	//RegionHashKeyL3 level_3_cache_key{ (uint64_t)buffer, offset_x, size };
+	//if (uint32_t* h = region_hashes_global_cache.find_ptr(level_3_cache_key))
+	//{
+	//	//LogInfo("GetSpatialHash: From L3 cache: hash=%08lx, pResource=0x%p, cache_size=%d \n", *h, buffer, region_hashes_global_cache.size());
+	//	return *h;
+	//}
+
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	// Acquire HandleInfo. For dozens of thousands of handles in unordered_map, usually it's more expensive than L3 cache lookup. 
+	ResourceHandleInfo* handle_info = (custom_resource == nullptr) ? GetResourceHandleInfo(buffer) : custom_resource->GetHandleInfo();
+	if (!handle_info) {
+		LeaveCriticalSection(&G->mCriticalSection);
+		return 0;
+	}
+
+	uint32_t hash;
+
+	// Lookup offset in L2 cache. This one is slower and requires `handle_info` lookup.
+	RegionHashKeyL2 level_2_cache_key{ (uint64_t)offset_x, size };
+	hash = handle_info->GetCachedRegionHash(level_2_cache_key);
+	if (hash) {
+		//region_hashes_global_cache.insert(level_3_cache_key, hash);
+		LeaveCriticalSection(&G->mCriticalSection);
+		//LogInfo("GetSpatialHash: From L2 cache: hash=%08lx, full_hash=%08lx, pResource=0x%p, cache_size=%d \n", hash, handle_info->hash, buffer, handle_info->region_hashes_cache->GetSize());
+		return hash;
+	}
+
+	// Check if cached buffer snapshot exists in RAM
+	if (!handle_info->cached_data_size) {
+		LeaveCriticalSection(&G->mCriticalSection);
+		if (custom_resource == nullptr) {
+			// Stall GPU to fetch buffer data from VRAM.
+			if (!CacheBufferData(context, buffer, handle_info)) {
+				return 0;
+			}
+		}
+		else {
+			// Region hashing of custom resources is allowed only for lightweight "views" to cached pipeline data (ref or full copies).
+			// Avoid stalling GPU for custom resources if data is not available.
+			return 0;
+		}
+		EnterCriticalSectionPretty(&G->mCriticalSection);
+	}
+
+	// Calculate the minimal buffer size required to fit requested X Y Z offsets.
+	UINT min_buffer_size = max(offset_x, offset_y, offset_z) * 4 + 4;
+
+	// Ensure upper bound does not exceed buffer size.
+	if (min_buffer_size >= handle_info->cached_data_size) {
+		LeaveCriticalSection(&G->mCriticalSection);
+		return 0;
+	}
+
+	// Make pointer for given offset in L1 cache (raw data).
+	const uint8_t* ptr = handle_info->GetCachedData();
+
+	const float* data = reinterpret_cast<const float*>(ptr);
+
+	// Compute spatial hash for the 3D coordinates.
+	hash = PackCellCoords(data[offset_x], data[offset_y], data[offset_z], cell_size);
+
+	// Store computed region hash in the L2 cache (local per ResourceHandleInfo).
+	handle_info->CacheRegionHash(level_2_cache_key, hash);
+	// Store computed region hash in the L3 cache (global per-frame).
+	//region_hashes_global_cache.insert(level_3_cache_key, hash);
+
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	//LogInfo("GetSpatialHash: New hash: frame=%d, hash=%08lx, x=%.3f, y=%.3f, z=%.3f, full_hash=%08lx, pResource=0x%p, cache_size=%d\n", G->frame_no, hash, data[offset_x], data[offset_y], data[offset_z], handle_info->hash, buffer, handle_info->region_hashes_cache->GetSize());
+
+	return hash;
+}

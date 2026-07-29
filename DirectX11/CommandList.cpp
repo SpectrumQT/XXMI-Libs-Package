@@ -5265,7 +5265,7 @@ DirectX::WIC_LOADER_FLAGS CustomResource::GetWICFlags(wstring filename){
 		wicflags = DirectX::WIC_LOADER_FLAGS::WIC_LOADER_IGNORE_SRGB;
 	}else{
 		FILE *f = _wfopen(filename.c_str(),L"rb");
-		if(f != NULL){
+		if(f != nullptr){
 			unsigned char signature[8];
 			fread(signature, 1, 8, f);
 			if(memcmp(signature,"\x89PNG\r\n\x1a\n",8) == 0){ // File is png

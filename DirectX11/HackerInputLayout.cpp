@@ -1,8 +1,45 @@
+#include <algorithm>
+
 #include "util.h"
 
 #include "HackerInputLayout.h"
 
-HackerInputLayout::HackerInputLayout(ID3D11InputLayout* orig, const D3D11_INPUT_ELEMENT_DESC* pElements, UINT numElements) : mOrigLayout(orig)
+uint64_t CalculateInputLayoutHash(const D3D11_INPUT_ELEMENT_DESC* pElements, UINT numElements, const void* shaderSignature, SIZE_T signatureSize)
+{
+	uint32_t layoutHash = crc32c_hw(0, &numElements, sizeof(numElements));
+
+	for (UINT i = 0; i < numElements; ++i)
+	{
+		const D3D11_INPUT_ELEMENT_DESC& element = pElements[i];
+
+		if (element.SemanticName)
+		{
+			// Normalize semantic name the same way HackerInputLayout does (case-insensitive comparison)
+			for (const char* p = element.SemanticName; *p; ++p)
+			{
+				char c = static_cast<char>(std::toupper(static_cast<unsigned char>(*p)));
+				layoutHash = crc32c_hw(layoutHash, &c, sizeof(c));
+			}
+		}
+
+		layoutHash = crc32c_hw(layoutHash, &element.SemanticIndex, sizeof(element.SemanticIndex));
+		layoutHash = crc32c_hw(layoutHash, &element.Format, sizeof(element.Format));
+		layoutHash = crc32c_hw(layoutHash, &element.InputSlot, sizeof(element.InputSlot));
+		layoutHash = crc32c_hw(layoutHash, &element.AlignedByteOffset, sizeof(element.AlignedByteOffset));
+		layoutHash = crc32c_hw(layoutHash, &element.InputSlotClass, sizeof(element.InputSlotClass));
+		layoutHash = crc32c_hw(layoutHash, &element.InstanceDataStepRate, sizeof(element.InstanceDataStepRate));
+	}
+
+	uint32_t signatureHash = 0;
+	if (shaderSignature && signatureSize)
+		signatureHash = crc32c_hw(0, shaderSignature, signatureSize);
+
+	return (static_cast<uint64_t>(signatureHash) << 32) | static_cast<uint64_t>(layoutHash);
+}
+
+HackerInputLayout::HackerInputLayout(
+	ID3D11InputLayout* orig, const D3D11_INPUT_ELEMENT_DESC* pElements, UINT numElements, const void* shaderSignature, SIZE_T signatureSize, uint64_t hash
+) : mOrigLayout(orig)
 {
 	mElements.resize(numElements);
 	mSemanticNames.resize(numElements);
@@ -14,6 +51,7 @@ HackerInputLayout::HackerInputLayout(ID3D11InputLayout* orig, const D3D11_INPUT_
 		if (pElements[i].SemanticName)
 		{
 			mSemanticNames[i] = pElements[i].SemanticName;
+			std::transform(mSemanticNames[i].begin(), mSemanticNames[i].end(), mSemanticNames[i].begin(), ::toupper);
 			mElements[i].SemanticName = mSemanticNames[i].c_str();
 		}
 		else
@@ -22,7 +60,10 @@ HackerInputLayout::HackerInputLayout(ID3D11InputLayout* orig, const D3D11_INPUT_
 		}
 	}
 
-	mLayoutHash = CalculateLayoutHash();
+	mShaderSignature.resize(signatureSize);
+	memcpy(mShaderSignature.data(), shaderSignature, signatureSize);
+
+	mLayoutHash = hash ? hash : CalculateInputLayoutHash(pElements, numElements, shaderSignature, signatureSize);
 }
 
 HackerInputLayout::~HackerInputLayout()
@@ -32,6 +73,16 @@ HackerInputLayout::~HackerInputLayout()
 ID3D11InputLayout* HackerInputLayout::GetOrigInputLayout() const
 {
 	return mOrigLayout;
+}
+
+const void* HackerInputLayout::GetShaderSignature() const
+{
+	return mShaderSignature.empty() ? nullptr : mShaderSignature.data();
+}
+
+SIZE_T HackerInputLayout::GetShaderSignatureSize() const
+{
+	return static_cast<SIZE_T>(mShaderSignature.size());
 }
 
 UINT HackerInputLayout::GetElementCount() const
@@ -44,47 +95,38 @@ const D3D11_INPUT_ELEMENT_DESC* HackerInputLayout::GetElements() const
 	return mElements.data();
 }
 
-uint32_t HackerInputLayout::GetLayoutHash() const
+uint64_t HackerInputLayout::GetLayoutHash() const
 {
 	return mLayoutHash;
-}
-
-uint32_t HackerInputLayout::CalculateLayoutHash() const
-{
-	uint32_t hash = 0;
-
-	for (size_t i = 0; i < mElements.size(); ++i)
-	{
-		const D3D11_INPUT_ELEMENT_DESC& element = mElements[i];
-
-		// Do not hash element.SemanticName pointer.
-		if (element.SemanticName)
-			hash = crc32c_hw(hash, element.SemanticName, strlen(element.SemanticName));
-
-		hash = crc32c_hw(hash, &element.SemanticIndex, sizeof(element.SemanticIndex));
-		hash = crc32c_hw(hash, &element.Format, sizeof(element.Format));
-		hash = crc32c_hw(hash, &element.InputSlot, sizeof(element.InputSlot));
-		hash = crc32c_hw(hash, &element.AlignedByteOffset, sizeof(element.AlignedByteOffset));
-		hash = crc32c_hw(hash, &element.InputSlotClass, sizeof(element.InputSlotClass));
-		hash = crc32c_hw(hash, &element.InstanceDataStepRate, sizeof(element.InstanceDataStepRate));
-	}
-
-	return hash;
 }
 
 #pragma region IUnknown
 HRESULT STDMETHODCALLTYPE HackerInputLayout::QueryInterface(REFIID riid, void** ppvObject)
 {
-	if (riid == __uuidof(ID3D11InputLayout) ||
-		riid == __uuidof(ID3D11DeviceChild) ||
-		riid == __uuidof(IUnknown))
+	if (!ppvObject)
+		return E_POINTER;
+
+	*ppvObject = nullptr;
+
+	if (riid == __uuidof(IUnknown))
 	{
-		*ppvObject = this;
-		AddRef();
-		return S_OK;
+		*ppvObject = static_cast<IUnknown*>(static_cast<ID3D11InputLayout*>(this));
+	}
+	else if (riid == __uuidof(ID3D11DeviceChild))
+	{
+		*ppvObject = static_cast<ID3D11DeviceChild*>(this);
+	}
+	else if (riid == __uuidof(ID3D11InputLayout))
+	{
+		*ppvObject = static_cast<ID3D11InputLayout*>(this);
+	}
+	else
+	{
+		return E_NOINTERFACE;
 	}
 
-	return mOrigLayout->QueryInterface(riid, ppvObject);
+	AddRef();
+	return S_OK;
 }
 
 ULONG STDMETHODCALLTYPE HackerInputLayout::AddRef()
@@ -98,7 +140,8 @@ ULONG STDMETHODCALLTYPE HackerInputLayout::Release()
 
 	if (ref == 0)
 	{
-		mOrigLayout->Release();
+		if (mOrigLayout)
+			mOrigLayout->Release();
 		delete this;
 	}
 

@@ -6,17 +6,22 @@
 #include <string>
 #include <vector>
 
+uint64_t CalculateInputLayoutHash(const D3D11_INPUT_ELEMENT_DESC* pElements, UINT numElements, const void* shaderSignature, SIZE_T signatureSize);
+
 class HackerInputLayout final : public ID3D11InputLayout
 {
 public:
-	HackerInputLayout(ID3D11InputLayout* orig, const D3D11_INPUT_ELEMENT_DESC* pElements, UINT numElements);
+	HackerInputLayout(ID3D11InputLayout* orig, const D3D11_INPUT_ELEMENT_DESC* pElements, UINT numElements, const void* shaderSignature, SIZE_T signatureSize, uint64_t hash = 0);
 	~HackerInputLayout();
 
 	ID3D11InputLayout* GetOrigInputLayout() const;
 
+	const void* GetShaderSignature() const;
+	SIZE_T GetShaderSignatureSize() const;
+
 	UINT GetElementCount() const;
 	const D3D11_INPUT_ELEMENT_DESC* GetElements() const;
-	uint32_t GetLayoutHash() const;
+	uint64_t GetLayoutHash() const;
 
 #pragma region IUnknown
 	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override;
@@ -32,12 +37,10 @@ public:
 #pragma endregion
 
 private:
-	uint32_t CalculateLayoutHash() const;
-
-private:
 	std::atomic<ULONG> mRefCount = 1;
 	ID3D11InputLayout* mOrigLayout = nullptr;
-	uint32_t mLayoutHash = 0;
+	std::vector<uint8_t> mShaderSignature;
+	uint64_t mLayoutHash = 0;
 
 	std::vector<D3D11_INPUT_ELEMENT_DESC> mElements;
 	std::vector<std::string> mSemanticNames;

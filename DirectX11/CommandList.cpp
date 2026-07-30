@@ -3747,6 +3747,420 @@ inline bool ParseFloatToken(const wstring& input, float& out, size_t& length)
 #pragma endregion CommandLexer
 
 
+#pragma region CommandArgumentReader
+
+bool CommandArgumentReader::PeekToken(wstring* token, PeekMode mode)
+{
+	if (!m_has_peek_token || m_peek_mode != mode)
+	{
+		// Cache the last peeked token so PeekToken() can be called repeatedly
+		// without rescanning the input until ConsumeToken() advances the parser.
+		m_peek_start_pos = m_pos;
+		m_peek_mode = mode;
+
+		if (!GetTokenInternal(m_pos, &m_peek_token, &m_peek_end_pos, mode))
+		{
+			m_peek_start_pos = 0;
+			m_peek_end_pos = 0;
+			return false;
+		}
+
+		m_has_peek_token = true;
+	}
+
+	*token = m_peek_token;
+	return true;
+}
+
+bool CommandArgumentReader::ConsumeToken()
+{
+	if (!m_has_peek_token)
+	{
+		if (!GetTokenInternal(m_pos, &m_peek_token, &m_peek_end_pos))
+			return false;
+	}
+
+	m_pos = m_peek_end_pos;
+
+	m_has_peek_token = false;
+	m_peek_token.clear();
+	m_peek_start_pos = 0;
+	m_peek_end_pos = 0;
+
+	return true;
+}
+
+bool CommandArgumentReader::GetToken(wstring* token, PeekMode mode)
+{
+	if (!PeekToken(token, mode))
+		return false;
+
+	ConsumeToken();
+
+	LogDebugW(L"  Token: '%ls'\n", token->c_str());
+
+	return true;
+}
+
+template <typename T>
+bool CommandArgumentReader::GetEnum(const EnumName_t<const wchar_t*, T>* names, T invalid, T* out)
+{
+	wstring token;
+
+	if (!PeekToken(&token))
+		return false;
+
+	bool found;
+
+	*out = lookup_enum_val(const_cast<EnumName_t<const wchar_t*, T>*>(names), token.c_str(), invalid, &found);
+
+	if (!found)
+	{
+		SetError(L"Unknown option `" + token + L"`", m_peek_start_pos);
+		return false;
+	}
+
+	ConsumeToken();
+
+	LogDebugW(L"  Enum: '%ls'\n", token.c_str());
+
+	return true;
+}
+
+bool CommandArgumentReader::GetVariable(CommandListVariable*& out)
+{
+	wstring token;
+
+	if (!PeekToken(&token))
+		return false;
+
+	if (token[0] != L'$')
+	{
+		SetError(L"Expected variable, got: " + token, m_peek_start_pos);
+		return false;
+	}
+
+	if (FindVariableTokenEnd(token, 1) != token.size())
+	{
+		SetError(L"Invalid variable: " + token, m_peek_start_pos);
+		return false;
+	}
+
+	if (!find_local_variable(token, m_scope, &out) &&
+		!parse_command_list_var_name(token, m_ini_namespace, &out))
+	{
+		SetError(L"Unknown variable: " + token, m_peek_start_pos);
+		return false;
+	}
+
+	ConsumeToken();
+
+	LogDebugW(L"  Variable: '%ls'\n", token.c_str());
+
+	return true;
+}
+
+bool CommandArgumentReader::GetTarget(ResourceCopyTarget* out, bool is_source)
+{
+	wstring token;
+
+	if (!PeekToken(&token))
+		return false;
+
+	bool has_prefix = token[0] == L'$' || token[0] == L'@' || token[0] == L'#';
+
+	if (FindResourceCopyTargetTokenEnd(token, has_prefix ? 1 : 0) != token.size())
+	{
+		SetError(L"Invalid target: " + token, m_peek_start_pos);
+		return false;
+	}
+
+	if (!out->ParseTarget(token.c_str(), is_source, m_ini_namespace, m_scope))
+	{
+		SetError(L"Unknown target: " + token, m_peek_start_pos);
+		return false;
+	}
+
+	ConsumeToken();
+
+	LogDebugW(L"  ResourceCopyTarget: '%ls'\n", token.c_str());
+
+	return true;
+}
+
+bool CommandArgumentReader::GetFloat(float* out)
+{
+	wstring token;
+
+	if (!PeekToken(&token))
+		return false;
+
+	size_t len;
+
+	if (!ParseFloatToken(token, *out, len) || len != token.size())
+	{
+		SetError(L"Invalid float: " + token, m_peek_start_pos);
+		return false;
+	}
+
+	ConsumeToken();
+
+	LogDebugW(L"  Float: '%ls'\n", token.c_str());
+
+	return true;
+}
+
+bool CommandArgumentReader::GetExpression(unique_ptr<CommandListExpression>* out)
+{
+	wstring token;
+
+	if (!PeekToken(&token, PeekMode::Argument))
+		return false;
+
+	auto expression = make_unique<CommandListExpression>();
+
+	if (!expression->parse(&token, m_ini_namespace, m_scope))
+		return false;
+
+	ConsumeToken();
+
+	*out = std::move(expression);
+
+	LogDebugW(L"  Expression: '%ls'\n", token.c_str());
+
+	return true;
+}
+
+bool CommandArgumentReader::ConsumeSeparator(SeparatorMode separator_mode)
+{
+	// Consumes the separator expected between arguments.
+	// The parser does not infer separator style; callers specify whether
+	// arguments are whitespace- or comma-separated.
+	switch (separator_mode)
+	{
+	case SeparatorMode::Comma:
+	{
+		size_t pos = m_pos;
+
+		SkipWhitespace();
+
+		if (m_pos >= m_input.size() || m_input[m_pos] != L',')
+		{
+			SetError(L"Expected ',' between arguments", pos);
+			return false;
+		}
+
+		m_pos++;
+
+		SkipWhitespace();
+
+		return true;
+	}
+
+	case SeparatorMode::Space:
+	{
+		size_t start = m_pos;
+
+		SkipWhitespace();
+
+		if (m_pos == start)
+		{
+			SetError(L"Expected whitespace between arguments", start);
+			return false;
+		}
+
+		return true;
+	}
+	}
+
+	SetError(L"Internal parser error", m_pos);
+	return false;
+}
+
+bool CommandArgumentReader::Finished()
+{
+	size_t pos = m_pos;
+
+	while (pos < m_input.size())
+	{
+		wchar_t c = m_input[pos];
+
+		if (c != L' ' && c != L'\t' && c != L'\r' && c != L'\n')
+		{
+			SetError(L"Unexpected trailing input", pos);
+			return false;
+		}
+
+		pos++;
+	}
+
+	return true;
+}
+
+bool CommandArgumentReader::Fail() const
+{
+	const wchar_t* error = m_error.empty() ? L"Unknown syntax error" : m_error.c_str();
+
+	wstring prefix = L"Syntax Error in `" + wstring(m_command) + L"` command: `";
+
+	LogOverlayW(LOG_WARNING_MONOSPACE,
+		L"%ls%ls`\n"
+		L"%*s^ %ls\n"
+		L"  [%ls] @ [%ls]\n",
+		prefix.c_str(), m_input.c_str(),
+		(int)(min(prefix.size() + m_error_pos, prefix.size() + m_input.size())), L"", error,
+		m_section, m_ini_namespace->c_str());
+
+	return false;
+}
+
+void CommandArgumentReader::SetError(const wstring& error, size_t pos)
+{
+	// Preserve the first syntax error encountered, since subsequent
+	// parsing failures are typically a consequence of the original one.
+	if (!m_error.empty())
+		return;
+
+	m_error = error;
+	m_error_pos = pos;
+}
+
+void CommandArgumentReader::SkipWhitespace()
+{
+	while (m_pos < m_input.size())
+	{
+		wchar_t c = m_input[m_pos];
+
+		if (c != L' ' && c != L'\t' && c != L'\r' && c != L'\n')
+			break;
+
+		m_pos++;
+	}
+}
+
+bool CommandArgumentReader::GetTokenInternal(size_t pos, wstring* token, size_t* token_trimmed_end_pos, PeekMode mode)
+{
+	// Scan until the next argument delimiter while respecting:
+	//
+	//   - quoted strings
+	//   - escaped characters (namespaces)
+	//   - nested [] blocks
+	//   - nested () blocks
+	//
+	// Delimiters only terminate a token when not inside any nested structure.
+
+	// token_trimmed_end_pos receives the position immediately after the
+	// token, excluding trailing whitespace but before any separator.
+
+	while (pos < m_input.size() && iswspace(m_input[pos]))
+		pos++;
+
+	size_t start = pos;
+
+	int square_depth = 0;
+	int paren_depth = 0;
+	bool escaped = false;
+	bool quoted = false;
+
+	while (pos < m_input.size())
+	{
+		wchar_t c = m_input[pos];
+
+		if (escaped)
+		{
+			escaped = false;
+			pos++;
+			continue;
+		}
+
+		if (c == L'\\')
+		{
+			escaped = true;
+			pos++;
+			continue;
+		}
+
+		if (c == L'"')
+		{
+			quoted = !quoted;
+			pos++;
+			continue;
+		}
+
+		if (!quoted)
+		{
+			switch (c)
+			{
+			case L'[':
+				square_depth++;
+				break;
+
+			case L']':
+				if (square_depth > 0)
+					square_depth--;
+				break;
+
+			case L'(':
+				paren_depth++;
+				break;
+
+			case L')':
+				if (paren_depth > 0)
+					paren_depth--;
+				break;
+
+			default:
+				if (square_depth == 0 && paren_depth == 0)
+				{
+					// Exit the scan while sharing the validation and trimming logic below.
+					if (mode == PeekMode::Token && (c == L',' || iswspace(c)))
+						goto end;
+
+					if (mode == PeekMode::Argument && c == L',')
+						goto end;
+				}
+			}
+		}
+
+		pos++;
+	}
+
+end:
+
+	if (quoted)
+	{
+		SetError(L"Unterminated string literal", pos);
+		return false;
+	}
+
+	if (square_depth || paren_depth)
+	{
+		SetError(L"Unbalanced brackets", pos);
+		return false;
+	}
+
+	size_t end = pos;
+
+	while (end > start && iswspace(m_input[end - 1]))
+		end--;
+
+	if (end == start)
+	{
+		SetError(L"Expected argument", start);
+		return false;
+	}
+
+	*token = m_input.substr(start, end - start);
+
+	if (token_trimmed_end_pos)
+		*token_trimmed_end_pos = end;
+
+	return true;
+}
+
+#pragma endregion CommandArgumentReader
+
+
 static const wchar_t *function_tokens[] = {
 	L"countbits",
 

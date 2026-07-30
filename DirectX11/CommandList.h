@@ -1578,3 +1578,74 @@ std::shared_ptr<RunLinkedCommandList>
 void optimise_command_lists(HackerDevice *device);
 bool parse_command_list_var_name(const wstring &name, const wstring *ini_namespace, CommandListVariable **target);
 bool valid_variable_name(const wstring &name);
+
+enum class SeparatorMode
+{
+	Comma,
+	Space,
+};
+
+class CommandArgumentReader
+{
+public:
+	enum class PeekMode
+	{
+		// Stops at whitespace or commas. Used for individual tokens such as identifiers, variables, enums and numeric values.
+		Token,
+		// Stops only at commas, allowing embedded whitespace. Used for parsing expressions that may contain spaces.
+		Argument,
+	};
+
+	CommandArgumentReader(const wchar_t* command, const wstring& input, const wchar_t* section, const wstring* ini_namespace, CommandListScope* scope) :
+		m_command(command),
+		m_input(input),
+		m_pos(0),
+		m_section(section),
+		m_ini_namespace(ini_namespace),
+		m_scope(scope)
+	{
+		LogDebugW(L"Parsing `%ls` arguments: \"%ls\"\n", m_command, m_input.c_str());
+	}
+
+	bool PeekToken(wstring* token, PeekMode mode = PeekMode::Token);
+	bool ConsumeToken();
+	bool GetToken(wstring* token, PeekMode mode = PeekMode::Token);
+
+	template<typename T>
+	bool GetEnum(const EnumName_t<const wchar_t*, T>* names, T invalid, T* out);
+	bool GetVariable(CommandListVariable*& out);
+	bool GetTarget(ResourceCopyTarget* out, bool is_source);
+	bool GetFloat(float* out);
+	bool GetExpression(unique_ptr<CommandListExpression>* out);
+
+	bool ConsumeSeparator(SeparatorMode separator_mode);
+	bool Finished();
+
+	const wstring& Error() const { return m_error; }
+	size_t ErrorPosition() const { return m_error_pos; }
+	bool Fail() const;
+
+private:
+	const wchar_t* m_section;
+	const wstring* m_ini_namespace;
+	CommandListScope* m_scope;
+	const wchar_t* m_command;
+
+	const wstring& m_input;
+	size_t m_pos;
+
+	wstring m_peek_token;
+	size_t m_peek_start_pos = 0;
+	size_t m_peek_end_pos = 0;
+	bool m_has_peek_token = false;
+	PeekMode m_peek_mode = PeekMode::Token;
+
+	wstring m_error;
+	size_t m_error_pos = 0;
+
+	void SetError(const wstring& error, size_t pos);
+	void SkipWhitespace();
+
+	// token_end_pos points to the first character after the token, before any separators or whitespace.
+	bool GetTokenInternal(size_t pos, wstring* token, size_t* token_trimmed_end_pos = nullptr, PeekMode mode = PeekMode::Token);
+};

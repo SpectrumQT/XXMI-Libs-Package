@@ -9409,7 +9409,7 @@ float ResourceCopyTarget::GetResourceSpatialHash(CommandListState* state)
 				break;
 
 			case ResourceCopyTargetType::CONSTANT_BUFFER:
-				region_offset = offset;
+				region_offset = offset / 4;
 				break;
 			}
 

@@ -1475,14 +1475,15 @@ static int GetIniBoolIntOrEnum(const wchar_t *section, const wchar_t *key, int d
 	int ret;
 	bool tmp_found;
 
-	ret = GetIniBoolOrInt(section, key, def, &tmp_found);
+	ret = GetIniEnum(section, key, def, &tmp_found, prefix, names, names_len, first);
+
 	if (tmp_found && ret >= 0 && ret < names_len) {
 		if (found)
 			*found = tmp_found;
 		return ret;
 	}
 
-	return GetIniEnum(section, key, def, found, prefix, names, names_len, first);
+	return GetIniBoolOrInt(section, key, def, found);
 }
 
 static void GetUserConfigPath(const wchar_t *migoto_path)
@@ -2102,10 +2103,11 @@ static CustomResourcePool* ParseResourcePoolSection(const wchar_t* section_name)
 	pool->lazy_initialization = GetIniBool(section_name, L"pool_lazy_initialization", true, NULL);
 	pool->element_type_switch_reset = GetIniBool(section_name, L"pool_element_type_switch_reset", true, NULL);
 	
-	int keep_alive_frames = GetIniInt(section_name, L"pool_keep_alive_frames", -1, NULL);
-	if (keep_alive_frames >= 0)
-		pool->keep_alive_frames = (unsigned)keep_alive_frames;
-	pool->reset_expired_elements = GetIniBool(section_name, L"pool_reset_expired_elements", true, NULL);
+	int expiration_timeout_frames = GetIniInt(section_name, L"pool_expiration_timeout_frames", -1, NULL);
+	if (expiration_timeout_frames >= 0)
+		pool->expiration_timeout_frames = (unsigned)expiration_timeout_frames;
+	pool->reset_expired_elements = GetIniBool(section_name, L"pool_expiration_reset_elements", true, NULL);
+	pool->read_refreshes_expiration = GetIniBool(section_name, L"pool_expiration_refresh_on_read", false, NULL);
 	
 	int spatial_radius = GetIniInt(section_name, L"pool_spatial_radius", 1, NULL);
 	if (spatial_radius < 1) {

@@ -6782,14 +6782,33 @@ size_t CustomResourcePool::GetPoolSize() const
 	return ResolvePool()->pool_size;
 }
 
-void CustomResourcePool::SetSourcePool(CustomResourcePool* src)
+bool CustomResourcePool::SetSourcePool(CustomResourcePool* src)
 {
-	source_pool = src;
+	if (src == source_pool)
+		return true;
+
+	if (!src)
+	{
+		source_pool = nullptr;
+		return true;
+	}
+
+	CustomResourcePool* root = src->ResolvePool();
+
+	// Prevent self-reference.
+	if (root == this) {
+		LogOverlayW(LOG_NOTICE, L"Ignoring cyclic pool reference `%ls` <=> `%ls`\n",
+			name.c_str(), src->name.c_str());
+		return false;
+	}
+
+	source_pool = root;
+	return true;
 }
 
-const CustomResourcePool* CustomResourcePool::ResolvePool() const
+CustomResourcePool* CustomResourcePool::ResolvePool()
 {
-	return source_pool ? source_pool : this;
+	return source_pool ? source_pool->ResolvePool() : this;
 }
 
 void CustomResourcePool::CopyMetadataFrom(const CustomResourcePool& src)
@@ -7603,6 +7622,8 @@ static CommandListCommand* parse_pool_copy_operation(
 
 void PoolCopyOperation::CopyPoolToPool(CommandListState* state)
 {
+	if (failed)
+		return;
 	if (options & ResourceCopyOptions::COPY_MASK)
 	{
 		if (options & ResourceCopyOptions::COPY_DESC) {
@@ -7612,11 +7633,14 @@ void PoolCopyOperation::CopyPoolToPool(CommandListState* state)
 		else {
 			//COMMAND_LIST_LOG(state, "  performing deep pool copy\n");
 			LogOverlayW(LOG_NOTICE, L"Failed to copy `%ls` to `%ls` (deep copy not supported)\n", src.custom_resource_pool->name.c_str(), dst.custom_resource_pool->name.c_str());
+			failed = true;
 		}
 	}
 	else {
 		COMMAND_LIST_LOG(state, "  copying pool by reference\n");
-		dst.custom_resource_pool->SetSourcePool(src.custom_resource_pool);
+		if (!dst.custom_resource_pool->SetSourcePool(src.custom_resource_pool)) {
+			failed = true;
+		}
 	}
 }
 

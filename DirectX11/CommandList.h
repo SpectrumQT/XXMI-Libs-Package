@@ -659,10 +659,10 @@ public:
 	size_t GetElementIndex(float id, bool use_ring_index, bool is_assignment);
 	CustomResource* GetResource(float id, bool template_lookup, bool use_ring_index, bool is_assignment);
 	CommandListVariable* GetVariable(float id, bool template_lookup, bool use_ring_index, bool is_assignment);
-	size_t GetPoolSize() const;
+	size_t GetPoolSize();
 
-	void SetSourcePool(CustomResourcePool* source);
-	const CustomResourcePool* ResolvePool() const;
+	bool SetSourcePool(CustomResourcePool* source);
+	CustomResourcePool* ResolvePool();
 	void CopyMetadataFrom(const CustomResourcePool& other);
 
 	void ResetElements();
@@ -1014,6 +1014,9 @@ public:
 	void CopyPoolToPool(CommandListState* state);
 
 	void run(CommandListState*) override;
+
+private:
+	bool failed = false;
 };
 
 class LayoutElementOperation : public CommandListCommand {

@@ -8348,8 +8348,9 @@ StaticT* ResourceCopyTarget::GetPoolObject(StaticT* static_object, CommandListSt
 	// ResourceCopyTarget without both static object and `pool_dynamic_index_expression` must be a pool.
 	if (!pool_dynamic_index_expression) {
 		if (type != ResourceCopyTargetType::POOL)
-			LogOverlayW(LOG_DIRE, L"BUG: GetPoolObject called for non-pool ResourceCopyTarget (type=%ls, mode=%ls) without static pool object or dynamic pool index, falling back to plugging pool object template\n",
-				lookup_enum_name(ResourceCopyTargetTypeNames, type), lookup_enum_name(ResourceCopyTargetEvaluationModeNames, evaluation_mode));
+			return nullptr;
+			//LogOverlayW(LOG_DIRE, L"BUG: GetPoolObject called for non-pool ResourceCopyTarget (type=%ls, mode=%ls) without static pool object or dynamic pool index, falling back to plugging pool object template\n",
+			//	lookup_enum_name(ResourceCopyTargetTypeNames, type), lookup_enum_name(ResourceCopyTargetEvaluationModeNames, evaluation_mode));
 		// Request a pool object template via pool proxy chain.
 		return getter(FLT_MAX, true, is_assignment);
 	}

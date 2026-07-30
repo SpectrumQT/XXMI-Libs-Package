@@ -6995,7 +6995,7 @@ void CustomResourcePool::ResetElement(size_t pool_index)
 
 void CustomResourcePool::PostponeExpiration(PoolSlot& pool_slot, bool is_assignment)
 {
-	if (!is_assignment)
+	if (!is_assignment && !read_refreshes_expiration)
 		return;
 
 	pool_slot.last_update_frame = G->frame_no;

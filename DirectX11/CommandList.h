@@ -648,6 +648,7 @@ public:
 	bool element_type_switch_reset = true;
 	unsigned expiration_timeout_frames = UINT32_MAX;
 	bool reset_expired_elements = false;
+	bool read_refreshes_expiration = false;
 	uint32_t spatial_radius = 0;
 
 	CustomResource* resource_template = nullptr;

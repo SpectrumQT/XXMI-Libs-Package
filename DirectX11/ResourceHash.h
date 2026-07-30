@@ -62,11 +62,11 @@ public:
 	// Constructs the hash map with an initial capacity.
 	// - Capacity should ideally be a power of two for optimal performance
 	// - Larger initial capacity reduces need for rehashing
-	FlatHashMap(size_t capacity = 1024)
+	FlatHashMap(size_t initial_capacity = 1024)
 	{
-		capacity = NextPow2(capacity);
-		table.resize(capacity);
-		mask = capacity - 1;
+		initial_capacity = NextPow2(initial_capacity);
+		table.resize(initial_capacity);
+		mask = initial_capacity - 1;
 		count = 0;
 		current_generation = 1; // 0 reserved as "empty"
 	}
@@ -267,6 +267,17 @@ public:
 	size_t capacity() const
 	{
 		return table.size();
+	}
+
+	// Iterates over active entries.
+	template<typename F>
+	void for_each(F&& fn)
+	{
+		for (auto& e : table)
+		{
+			if (e.generation == current_generation)
+				fn(e.key, e.value);
+		}
 	}
 
 private:
@@ -536,6 +547,7 @@ struct ResourceHashInfo
 
 typedef std::unordered_map<uint32_t, struct ResourceHashInfo> ResourceInfoMap;
 
+class HackerContext;
 class CustomResource;
 
 // This is a COM object that can be attached to a resource via
@@ -580,7 +592,7 @@ uint32_t CalcTexture3DDataHash(const D3D11_TEXTURE3D_DESC *pDesc, const D3D11_SU
 ResourceHandleInfo* GetResourceHandleInfo(ID3D11Resource *resource);
 uint32_t GetOrigResourceHash(ID3D11Resource *resource);
 uint32_t GetResourceHash(ID3D11Resource *resource);
-static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, ResourceHandleInfo* info);
+static bool CacheBufferData(HackerContext* context, ID3D11Buffer* buffer, ResourceHandleInfo* info);
 void ClearResourceRegionHashCache(ID3D11Resource* resource);
 UINT GetVertexBufferRegionOffset(UINT stride, DrawCallInfo* call_info, UINT byte_offset);
 UINT GetIndexBufferRegionOffset(DXGI_FORMAT format, DrawCallInfo* call_info, UINT byte_offset);
@@ -602,8 +614,8 @@ struct GridPos
 GridPos UnpackCellCoords(uint32_t packed);
 uint32_t SpatialDistanceChebyshev(const GridPos& a, const GridPos& b);
 
-uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size, CustomResource* custom_resource = nullptr);
-uint32_t GetSpatialHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset_x, UINT offset_y, UINT offset_z, float cell_size = 0.125f, CustomResource* custom_resource = nullptr);
+uint32_t GetRegionHash(HackerContext* context, ID3D11Buffer* buffer, UINT offset, UINT size, CustomResource* custom_resource = nullptr);
+uint32_t GetSpatialHash(HackerContext* context, ID3D11Buffer* buffer, UINT offset_x, UINT offset_y, UINT offset_z, float cell_size = 0.125f, CustomResource* custom_resource = nullptr);
 
 void MarkResourceHashContaminated(ID3D11Resource *dest, UINT DstSubresource,
 		ID3D11Resource *src, UINT srcSubresource, char type,

@@ -2035,59 +2035,66 @@ void ClearResourceRegionHashCache(ID3D11Resource* resource)
 // Creates a CPU-readable snapshot of the buffer contents and stores it
 // in handle_info->cached_data. The snapshot is taken through a staging
 // resource so the GPU buffer can be safely read by the CPU.
-static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, ResourceHandleInfo* handle_info)
+static bool CacheBufferData(HackerContext* context, ID3D11Buffer* buffer, ResourceHandleInfo* handle_info)
 {
 	// WARNING: Everything below may cause GPU/CPU sync and stall.
 	// This is the slow path and should be rare.
 
-	ID3D11Device* dev = NULL;
-	context->GetDevice(&dev);
-	if (!dev)
-		return false;
+	ID3D11DeviceContext* mOrigContext1 = context->GetPassThroughOrigContext1();
 
-	// Query the buffer description so we know its size and properties.
+	// Query the buffer size.
 	D3D11_BUFFER_DESC desc;
 	buffer->GetDesc(&desc);
 
-	// Create a staging buffer with CPU read access.
-	// This allows copying GPU memory into a CPU-readable resource.
-	D3D11_BUFFER_DESC stagingDesc = desc;
-	stagingDesc.Usage = D3D11_USAGE_STAGING;
-	stagingDesc.BindFlags = 0;
-	stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-	stagingDesc.MiscFlags = 0;
+	// Acquire a cached staging buffer. Buffers are pooled by size and reused
+	// across calls to avoid repeated CreateBuffer() overhead.
+	ID3D11Buffer* staging = context->GetReadbackBuffer(desc.ByteWidth);
 
-	ID3D11Buffer* staging = NULL;
-	LockResourceCreationMode();
-	HRESULT hr = dev->CreateBuffer(&stagingDesc, NULL, &staging);
-	UnlockResourceCreationMode();
-	if (FAILED(hr)) {
-		dev->Release();
+	if (!staging) {
+		LogInfo("CacheBufferData: Failed to acquire staging buffer\n");
+		return false;
+	}
+
+	// Allocate a CPU-owned copy. The mapped staging memory becomes invalid
+	// after Unmap(), so the contents must be copied before releasing it.
+	void* copy = malloc(desc.ByteWidth);
+	if (!copy) {
+		LogInfo("CacheBufferData: Out of memory\n");
 		return false;
 	}
 
 	// Copy the original GPU buffer contents into the staging buffer.
-	context->CopyResource(staging, buffer);
+	// Copy only the valid region. Staged destination buffer can be larger than source.
+	D3D11_BOX box = {};
+	box.left = 0;
+	box.right = desc.ByteWidth;
+	box.top = 0;
+	box.bottom = 1;
+	box.front = 0;
+	box.back = 1;
 
+	mOrigContext1->CopySubresourceRegion(staging, 0, 0, 0, 0, buffer, 0, &box);
+
+	// Map the staging buffer for CPU readback.
 	D3D11_MAPPED_SUBRESOURCE mapped;
+	HRESULT hr = context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
 
-	// Map the staging buffer so the CPU can read its contents.
-	hr = context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
 	if (FAILED(hr)) {
-		staging->Release();
-		dev->Release();
+		LogInfo("CacheBufferData: Map(D3D11_MAP_READ) failed (hr=0x%08X)\n", hr);
+		free(copy);
 		return false;
 	}
+
+	// Preserve the contents before unmapping the staging resource.
+	memcpy(copy, mapped.pData, desc.ByteWidth);
+
+	context->Unmap(staging, 0);
 
 	// Store a CPU copy of the entire buffer so region hashes can be
 	// computed without re-mapping the resource multiple times.
 	EnterCriticalSectionPretty(&G->mCriticalSection);
-	handle_info->SetDataCache(mapped.pData, desc.ByteWidth);
+	handle_info->SetDataCache(copy, desc.ByteWidth);
 	LeaveCriticalSection(&G->mCriticalSection);
-
-	context->Unmap(staging, 0);
-	staging->Release();
-	dev->Release();
 
 	//handle_info->cached_data_hash = crc32c_hw(0, handle_info->cached_data, handle_info->cached_data_size);
 	//LogInfo("Fallback CacheBufferData size=%d, hash=%08lx, data_hash=%08lx, pResource=0x%p\n", desc.ByteWidth, handle_info->hash, handle_info->cached_data_hash, buffer);
@@ -2143,7 +2150,7 @@ void ClearRegionHashesGlobalCache()
 // Returns a CRC32 hash for a specific region of the buffer.
 // The hash is cached per offset to avoid recomputing it for repeated draw calls.
 // When `custom_resource` is supplied, it's used instead of a `buffer` as input.
-uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size, CustomResource* custom_resource)
+uint32_t GetRegionHash(HackerContext* context, ID3D11Buffer* buffer, UINT offset, UINT size, CustomResource* custom_resource)
 {
 	if (!context || !buffer || !size) {
 		return 0;
@@ -2344,7 +2351,7 @@ uint32_t SpatialDistanceChebyshev(const GridPos& a, const GridPos& b)
 
 // Returns a spatial hash of world position (essentially its quantized 30-bit representation).
 // When `custom_resource` is supplied, it's used instead of a `buffer` as input.
-uint32_t GetSpatialHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset_x, UINT offset_y, UINT offset_z, float cell_size, CustomResource* custom_resource)
+uint32_t GetSpatialHash(HackerContext* context, ID3D11Buffer* buffer, UINT offset_x, UINT offset_y, UINT offset_z, float cell_size, CustomResource* custom_resource)
 {
 	if (!context || !buffer) {
 		return 0;

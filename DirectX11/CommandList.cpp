@@ -3473,46 +3473,8 @@ bool CommandListOperand::optimise(HackerDevice *device, std::shared_ptr<CommandL
 
 #pragma region Tokenization
 
-static const wchar_t *function_tokens[] = {
-	L"countbits",
 
-	L"sin",
-	L"cos",
-	L"tan",
-	L"asin",
-	L"acos",
-	L"atan",
-
-	L"abs",
-	L"sign",
-	L"ceil",
-	L"floor",
-	L"trunc",
-	L"round",
-	L"frac",
-
-	L"sqrt",
-	L"rsqrt",
-
-	L"exp",
-	L"exp2",
-	L"log",
-	L"log2",
-
-	L"saturate",
-
-	L"random",
-	L"noise"
-};
-
-static const wchar_t *operator_tokens[] = {
-	// Three character tokens first:
-	L"===", L"!==",
-	// Two character tokens next:
-	L"<<", L">>", L"==", L"!=", L"//", L"<=", L">=", L"&&", L"||", L"**",
-	// Single character tokens last:
-	L"(", L")", L"!", L"~", L"&", L"|", L"^", L"*", L"/", L"%", L"+", L"-", L"<", L">",
-};
+#pragma region CommandLexer
 
 class CommandListSyntaxError: public exception
 {
@@ -3782,6 +3744,50 @@ inline bool ParseFloatToken(const wstring& input, float& out, size_t& length)
 	return true;
 }
 
+#pragma endregion CommandLexer
+
+
+static const wchar_t *function_tokens[] = {
+	L"countbits",
+
+	L"sin",
+	L"cos",
+	L"tan",
+	L"asin",
+	L"acos",
+	L"atan",
+
+	L"abs",
+	L"sign",
+	L"ceil",
+	L"floor",
+	L"trunc",
+	L"round",
+	L"frac",
+
+	L"sqrt",
+	L"rsqrt",
+
+	L"exp",
+	L"exp2",
+	L"log",
+	L"log2",
+
+	L"saturate",
+
+	L"random",
+	L"noise"
+};
+
+static const wchar_t *operator_tokens[] = {
+	// Three character tokens first:
+	L"===", L"!==",
+	// Two character tokens next:
+	L"<<", L">>", L"==", L"!=", L"//", L"<=", L">=", L"&&", L"||", L"**",
+	// Single character tokens last:
+	L"(", L")", L"!", L"~", L"&", L"|", L"^", L"*", L"/", L"%", L"+", L"-", L"<", L">",
+};
+
 static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, const wstring* ini_namespace, CommandListScope* scope)
 {
 	const wstring& expr = *expression;
@@ -3929,8 +3935,6 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 
 			if (len)
 			{
-				LogDebug("      Parsing Tokens: remain=%S\n", remain.c_str());
-
 				token = remain.substr(0, len);
 
 				if (operand->parse_ini_param(&token, ini_namespace, scope))
@@ -4306,6 +4310,7 @@ static void transform_operators_recursive(CommandListWalkable *tree,
 }
 
 #pragma endregion OperatorTokenization
+
 
 #pragma endregion Tokenization
 
@@ -6006,7 +6011,7 @@ void CustomResourcePool::Initialize(size_t pool_size)
 	if (elements.size() < pool_size)
 		elements.resize(pool_size);
 
-	if (index_type & PoolIndexType::INDEX_TABLE_MASK || keep_alive_frames != UINT32_MAX)
+	if (index_type & PoolIndexType::INDEX_TABLE_MASK || expiration_timeout_frames != UINT32_MAX)
 		index_table.resize(pool_size);
 
 	if (index_type & PoolIndexType::INDEX_TABLE_MASK)
@@ -6061,7 +6066,7 @@ size_t CustomResourcePool::GetElementIndex(float id, bool use_ring_index, bool i
 		//   ResourcePoolFoo[3] returns ResourceA pool_index (0)
 		pool_index = ((int)id % pool_size + pool_size) % pool_size;
 
-		if (keep_alive_frames != UINT32_MAX)
+		if (expiration_timeout_frames != UINT32_MAX)
 			PostponeExpiration(index_table[pool_index], is_assignment);
 
 		return pool_index;
@@ -6086,7 +6091,7 @@ size_t CustomResourcePool::GetElementIndex(float id, bool use_ring_index, bool i
 		{
 			// Return existing UID -> slot mapping
 
-			if (keep_alive_frames != UINT32_MAX)
+			if (expiration_timeout_frames != UINT32_MAX)
 				PostponeExpiration(index_table[pool_index], is_assignment);
 		}
 		else
@@ -6118,7 +6123,7 @@ size_t CustomResourcePool::GetElementIndex(float id, bool use_ring_index, bool i
 			// Fast path: exact spatial cell match.
 			// The object remains associated with its existing pool slot.
 
-			if (keep_alive_frames != UINT32_MAX)
+			if (expiration_timeout_frames != UINT32_MAX)
 				PostponeExpiration(index_table[pool_index], is_assignment);
 		}
 		else
@@ -6284,7 +6289,7 @@ void CustomResourcePool::CopyMetadataFrom(const CustomResourcePool& src)
 
 	spatial_radius = src.spatial_radius;
 
-	keep_alive_frames = src.keep_alive_frames;
+	expiration_timeout_frames = src.expiration_timeout_frames;
 	reset_expired_elements = src.reset_expired_elements;
 
 	// Initialize index state and resize resources vector.
@@ -6309,7 +6314,7 @@ void CustomResourcePool::ResetPool(bool reset_elements)
 	}
 
 	// Clear slot metadata.
-	if (index_type != PoolIndexType::RING || keep_alive_frames != UINT32_MAX) {
+	if (index_type != PoolIndexType::RING || expiration_timeout_frames != UINT32_MAX) {
 		for (PoolSlot& slot : index_table)
 		{
 			slot.key = UINT32_MAX;
@@ -6380,7 +6385,7 @@ void CustomResourcePool::AssignSlot(size_t slot, uint32_t key, bool is_assignmen
 		pool_slot.key = key;
 	}
 
-	if (keep_alive_frames != UINT32_MAX)
+	if (expiration_timeout_frames != UINT32_MAX)
 		PostponeExpiration(pool_slot, is_assignment);
 }
 
@@ -6454,7 +6459,7 @@ void CustomResourcePool::PostponeExpiration(PoolSlot& pool_slot, bool is_assignm
 
 void CustomResourcePool::ExpireElements()
 {
-	if (keep_alive_frames == UINT32_MAX)
+	if (expiration_timeout_frames == UINT32_MAX)
 		return;
 
 	if (last_expiration_run == G->frame_no)
@@ -6469,7 +6474,7 @@ void CustomResourcePool::ExpireElements()
 		if (pool_slot.last_update_frame == UINT32_MAX)
 			continue;
 
-		if (G->frame_no - pool_slot.last_update_frame > keep_alive_frames)
+		if (G->frame_no - pool_slot.last_update_frame > expiration_timeout_frames)
 		{
 			pool_slot.last_update_frame = UINT32_MAX;
 
@@ -10447,3 +10452,4 @@ void ResourceCopyOperation::run(CommandListState *state)
 }
 
 #pragma endregion ResourceCopyOperation
+

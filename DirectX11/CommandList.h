@@ -637,7 +637,7 @@ public:
 	PoolIndexType index_type = PoolIndexType::RING;
 	bool lazy_initialization = true;
 	bool element_type_switch_reset = true;
-	unsigned keep_alive_frames = UINT32_MAX;
+	unsigned expiration_timeout_frames = UINT32_MAX;
 	bool reset_expired_elements = false;
 	uint32_t spatial_radius = 0;
 

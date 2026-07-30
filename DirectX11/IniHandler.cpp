@@ -2089,10 +2089,10 @@ static CustomResourcePool* ParseResourcePoolSection(const wchar_t* section_name)
 	pool->lazy_initialization = GetIniBool(section_name, L"pool_lazy_initialization", true, NULL);
 	pool->element_type_switch_reset = GetIniBool(section_name, L"pool_element_type_switch_reset", true, NULL);
 	
-	int keep_alive_frames = GetIniInt(section_name, L"pool_keep_alive_frames", -1, NULL);
-	if (keep_alive_frames >= 0)
-		pool->keep_alive_frames = (unsigned)keep_alive_frames;
-	pool->reset_expired_elements = GetIniBool(section_name, L"pool_reset_expired_elements", true, NULL);
+	int expiration_timeout_frames = GetIniInt(section_name, L"pool_expiration_timeout_frames", -1, NULL);
+	if (expiration_timeout_frames >= 0)
+		pool->expiration_timeout_frames = (unsigned)expiration_timeout_frames;
+	pool->reset_expired_elements = GetIniBool(section_name, L"pool_expiration_reset_elements", true, NULL);
 	
 	int spatial_radius = GetIniInt(section_name, L"pool_spatial_radius", 1, NULL);
 	if (spatial_radius < 1) {

@@ -661,6 +661,7 @@ public:
 	CustomResource* GetResource(float id, bool template_lookup, bool use_ring_index, bool is_assignment);
 	CommandListVariable* GetVariable(float id, bool template_lookup, bool use_ring_index, bool is_assignment);
 	size_t GetPoolSize();
+	unsigned GetLastUpdateFrame(float id, bool use_ring_index);
 
 	bool SetSourcePool(CustomResourcePool* source);
 	CustomResourcePool* ResolvePool();
@@ -785,6 +786,7 @@ enum class ResourceCopyTargetEvaluationMode : uint32_t {
 	POOL_SIZE              = 0b00000000000000000000010000000000,
 	POOL_INDEX             = 0b00000000000000000000100000000000,
 	POOL_FULL_RANGE        = 0b00000000000000000001000000000000,
+	POOL_LAST_FRAME        = 0b00000000000000000010000000000000,
 
 	POOL_MASK              = 0b00000000000000000011111000000000,
 
@@ -916,6 +918,7 @@ public:
 	float GetResourceOffset(CommandListState* state);
 	float GetResourceRegionHash(CommandListState* state);
 	float GetResourceSpatialHash(CommandListState* state);
+	float GetPoolElementLastFrame(CommandListState* state);
 
 	D3D11_BIND_FLAG BindFlags(CommandListState *state, D3D11_RESOURCE_MISC_FLAG *misc_flags=NULL);
 

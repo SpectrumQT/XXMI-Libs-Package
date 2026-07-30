@@ -2843,6 +2843,9 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 				return -3.0f;
 		}
 
+		case ResourceCopyTargetEvaluationMode::POOL_LAST_FRAME:
+			return texture_filter_target.GetPoolElementLastFrame(state);
+
 		case ResourceCopyTargetEvaluationMode::POOL_IDENTITY:
 			return texture_filter_target.GetPoolId();
 
@@ -6777,7 +6780,19 @@ CommandListVariable* CustomResourcePool::GetVariable(float id, bool template_loo
 	return element.variable;
 }
 
-size_t CustomResourcePool::GetPoolSize() const
+unsigned CustomResourcePool::GetLastUpdateFrame(float id, bool use_ring_index)
+{
+	if (source_pool)
+		return source_pool->GetLastUpdateFrame(id, use_ring_index);
+
+	size_t pool_index = GetElementIndex(id, use_ring_index, false);
+
+	PoolSlot& slot = index_table[pool_index];
+
+	return slot.last_update_frame;
+}
+
+size_t CustomResourcePool::GetPoolSize()
 {
 	return ResolvePool()->pool_size;
 }
@@ -7188,6 +7203,7 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 			MemberArg::Type::Unsigned, // Byte Offset 
 			MemberArg::Type::Unsigned  // Byte Size 
 		}} },
+		{ L"->lastframe",   13, ResourceCopyTargetEvaluationMode::POOL_LAST_FRAME },
 		{ L"->spatialhash",   13, ResourceCopyTargetEvaluationMode::RESOURCE_SPATIAL_HASH, {{
 			MemberArg::Type::Unsigned, // X Byte Offset 
 			MemberArg::Type::Unsigned, // Y Byte Offset 
@@ -9433,6 +9449,18 @@ float ResourceCopyTarget::GetResourceSpatialHash(CommandListState* state)
 		view->Release();
 
 	return ret;
+}
+
+float ResourceCopyTarget::GetPoolElementLastFrame(CommandListState* state)
+{
+	if (!custom_resource_pool)
+		return 0.0f;
+
+	float id = member_args[0].GetValue(state);
+
+	CustomResourcePool* pool = custom_resource_pool->ResolvePool();
+
+	return (float)pool->GetLastUpdateFrame(id, false);
 }
 
 #pragma endregion ResourceCopyTarget

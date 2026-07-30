@@ -1131,60 +1131,31 @@ bool ParseStoreCommand(const wchar_t* section,
 	CommandList* pre_command_list, CommandList* post_command_list,
 	const wstring* ini_namespace)
 {
-	StoreCommand* operation = new StoreCommand();
-	CommandListVariable* var = NULL;
+	auto operation = std::make_unique<StoreCommand>();
 
-	size_t start = 0, end;
-	wstring sub;
-	wstring name;
+	CommandArgumentReader args(L"store", *val, section, ini_namespace, pre_command_list->scope);
 
-	wchar_t buf[MAX_PATH];
-	wchar_t* src_ptr = NULL;
+	if (!args.GetVariable(operation->var))
+		return args.Fail();
 
-	for (int i = 0; i < 3; i++) {
-		end = val->find(L',', start);
-		sub = val->substr(start, end - start);
-		if (i == 0) {
-			if (!find_local_variable(sub, pre_command_list->scope, &var) &&
-				!parse_command_list_var_name(sub, ini_namespace, &var)) {
-				goto bail;
-			}
+	if (!args.ConsumeSeparator(SeparatorMode::Comma))
+		return args.Fail();
 
-			operation->var = var;
-		}
-		if (i == 1) {
-			if (sub.length() >= MAX_PATH)
-				goto bail;
+	if (!args.GetTarget(&operation->src, true))
+		return args.Fail();
 
-			wcsncpy_s(buf, sub.c_str(), MAX_PATH);
-			operation->options = parse_enum_option_string<wchar_t*, ResourceCopyOptions>
-				(ResourceCopyOptionNames, buf, &src_ptr);
-			if (!src_ptr)
-				goto bail;
+	if (!args.ConsumeSeparator(SeparatorMode::Comma))
+		return args.Fail();
 
-			if (!operation->src.ParseTarget(src_ptr, true, ini_namespace, pre_command_list->scope))
-				goto bail;
+	if (!args.GetExpression(&operation->offset_expression))
+		return false; // Expression parser already emitted its own syntax error.
 
-		}
-		if (i == 2) {
-			try {
-				operation->loc = std::stoi(sub.c_str());
-			}
-			catch (...) {
-				goto bail;
-			}
-		}
-		if (end == wstring::npos)
-			break;
-		start = end + 1;
-	}
+	if (!args.Finished())
+		return args.Fail();
 
 	operation->ini_section = section;
-	return AddCommandToList(operation, explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
 
-bail:
-	delete operation;
-	return false;
+	return AddCommandToList(operation.release(), explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
 }
 
 bool ParseCommandListGeneralCommands(const wchar_t *section,
@@ -1637,38 +1608,57 @@ void StoreCommand::run(CommandListState* state)
 	HackerContext* mHackerContext = state->mHackerContext;
 	ID3D11DeviceContext* mOrigContext1 = state->mOrigContext1;
 
-	D3D11_BUFFER_DESC desc;
-	D3D11_MAPPED_SUBRESOURCE map;
-	HRESULT hr;
-	ID3D11Resource* src_resource = NULL;
-	ID3D11Buffer* staging = NULL;
-	ID3D11View* src_view = NULL;
-	UINT stride = 0;
-	UINT offset = 0;
-	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-	UINT buf_src_size = 0;
+	ID3D11View* src_view = nullptr;
+	ID3D11Resource* src_resource = src.GetResource(state, &src_view, nullptr, nullptr, nullptr, nullptr, nullptr);
 
-	src_resource = src.GetResource(state, &src_view, &stride, &offset, &format, &buf_src_size, NULL);
-
-	((ID3D11Buffer*)src_resource)->GetDesc(&desc);
-	desc.Usage = D3D11_USAGE_STAGING;
-	desc.BindFlags = 0;
-	desc.MiscFlags = 0;
-	desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-
-	LockResourceCreationMode();
-	hr = state->mHackerDevice->GetPassThroughOrigDevice1()->CreateBuffer(&desc, NULL, &staging);
-	UnlockResourceCreationMode();
-
-	if (!FAILED(hr)) {
-		mOrigContext1->CopyResource(staging, src_resource);
-		hr = mOrigContext1->Map(staging, 0, D3D11_MAP_READ, 0, &map);
-		if (!FAILED(hr)) {
-			var->fval = ((float*)map.pData)[loc];
-		}
-		mOrigContext1->Unmap(staging, 0);
-		staging->Release();
+	if (!src_resource)
+	{
+		LogInfo("StoreCommand: Failed to acquire source resource\n");
+		return;
 	}
+
+	// Acquire a cached staging buffer. Buffers are pooled by size and reused
+	// across calls to avoid repeated CreateBuffer() overhead.
+	ID3D11Buffer* staging = mHackerContext->GetReadbackBuffer(sizeof(float));
+
+	if (!staging)
+	{
+		LogInfo("StoreCommand: Failed to acquire readback buffer\n");
+		src_resource->Release();
+		return;
+	}
+
+	UINT offset = offset_expression->evaluate(state);
+
+	// Copy the requested float into the staging buffer for CPU readback.
+	D3D11_BOX box = {};
+	box.left = offset * sizeof(float);
+	box.right = box.left + sizeof(float);
+	box.top = 0;
+	box.bottom = 1;
+	box.front = 0;
+	box.back = 1;
+
+	mOrigContext1->CopySubresourceRegion(staging, 0, 0, 0, 0, src_resource, 0, &box);
+
+	// Map the staging buffer so the copied value can be read by the CPU.
+	D3D11_MAPPED_SUBRESOURCE map = {};
+
+	HRESULT hr = mOrigContext1->Map(staging, 0, D3D11_MAP_READ, 0, &map);
+
+	if (FAILED(hr))
+	{
+		LogInfo("StoreCommand: Map(D3D11_MAP_READ) failed (hr=0x%08X)\n", hr);
+		src_resource->Release();
+		return;
+	}
+
+	// Read the value before unmapping, as the mapped pointer becomes invalid once Unmap() is called.
+	var->fval = *reinterpret_cast<float*>(map.pData);
+
+	mOrigContext1->Unmap(staging, 0);
+
+	src_resource->Release();
 }
 
 void SkipCommand::run(CommandListState *state)

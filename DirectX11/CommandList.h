@@ -1450,16 +1450,11 @@ public:
 
 class StoreCommand : public CommandListCommand {
 public:
-	CommandListVariable* var;
 	ResourceCopyTarget src;
-	ResourceCopyOptions options;
-	int loc;
+	CommandListVariable* var = nullptr;
+	unique_ptr<CommandListExpression> offset_expression;
 
 	wstring ini_section;
-
-	StoreCommand() :
-		var(NULL)
-	{}
 
 	void run(CommandListState*) override;
 };

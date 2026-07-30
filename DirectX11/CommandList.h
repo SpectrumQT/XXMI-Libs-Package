@@ -18,7 +18,7 @@
 // should be more than generous - I don't want it to be too low and stifle
 // people's imagination, but I'd be very surprised if anyone ever has a
 // legitimate need to exceed this:
-#define MAX_COMMAND_LIST_RECURSION 64
+#define MAX_COMMAND_LIST_RECURSION 256
 
 // Forward declarations instead of #includes to resolve circular includes (we
 // include Hacker*.h, which includes Globals.h, which includes us):
@@ -184,12 +184,21 @@ public:
 	LARGE_INTEGER time_spent_exclusive;
 	unsigned executions;
 
+	bool runtime_populated = false;
+
 	void clear();
+
+	bool SetSourceCommandList(CommandList* source);
+	CommandList* ResolveCommandList();
+	bool CommandList::noop();
 
 	CommandList() :
 		post(false),
 		scope(NULL)
 	{}
+
+private:
+	CommandList* source_command_list = nullptr;
 };
 
 extern std::vector<CommandList*> registered_command_lists;
@@ -1539,6 +1548,18 @@ public:
 	{}
 
 	void run(CommandListState*) override;
+};
+
+class CopyCommandListCommand : public CommandListCommand
+{
+public:
+	ExplicitCommandListSection* dst;
+	ExplicitCommandListSection* src;
+
+	virtual void run(CommandListState* state) override;
+
+private:
+	bool failed = false;
 };
 
 void RunCommandList(HackerDevice *mHackerDevice,

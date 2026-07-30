@@ -128,6 +128,8 @@ static void _RunCommandList(CommandList *command_list, CommandListState *state, 
 {
 	CommandList::Commands::iterator i;
 	command_list_profiling_state profiling_state;
+
+	command_list = command_list->ResolveCommandList();
 	
 	if (state->recursion > MAX_COMMAND_LIST_RECURSION) {
 		LogOverlayW(LOG_WARNING, L"Command list recursion limit exceeded! Circular reference?\n - [%ls]\n", command_list->ini_section.c_str());
@@ -517,13 +519,13 @@ void optimise_command_lists(HackerDevice *device)
 		// inside these command lists
 		for (auto &tolkv : G->mTextureOverrideMap) {
 			for (TextureOverride &to : tolkv.second) {
-				ignore_cto_pre = ignore_cto_pre && to.command_list.commands.empty();
-				ignore_cto_post = ignore_cto_post && to.post_command_list.commands.empty();
+				ignore_cto_pre = ignore_cto_pre && to.command_list.noop();
+				ignore_cto_post = ignore_cto_post && to.post_command_list.noop();
 			}
 		}
 		for (auto &tof : G->mFuzzyTextureOverrides) {
-			ignore_cto_pre = ignore_cto_pre && tof->texture_override->command_list.commands.empty();
-			ignore_cto_post = ignore_cto_post && tof->texture_override->post_command_list.commands.empty();
+			ignore_cto_pre = ignore_cto_pre && tof->texture_override->command_list.noop();
+			ignore_cto_post = ignore_cto_post && tof->texture_override->post_command_list.noop();
 		}
 
 		// Go through each registered command list and remove any
@@ -869,6 +871,30 @@ bail:
 	return false;
 }
 
+static ExplicitCommandListSection* FindExplicitCommandListSection(const wchar_t* val, const wstring* ini_namespace)
+{
+	ExplicitCommandListSections::iterator it;
+
+	wstring namespaced_section;
+
+	// We need value in lower case so our keys will be consistent in the
+	// unordered_map. ParseCommandList will have already done this, but the
+	// Key/Preset parsing code will not have, and rather than require it to
+	// we do it here:
+	wstring section_id(val);
+	std::transform(section_id.begin(), section_id.end(), section_id.begin(), ::towlower);
+
+	it = explicitCommandListSections.end();
+	if (get_namespaced_section_name_lower(&section_id, ini_namespace, &namespaced_section))
+		it = explicitCommandListSections.find(namespaced_section);
+	if (it == explicitCommandListSections.end())
+		it = explicitCommandListSections.find(section_id);
+	if (it == explicitCommandListSections.end())
+		return nullptr;
+
+	return &it->second;
+}
+
 bool ParseRunExplicitCommandList(const wchar_t *section,
 		const wchar_t *key, wstring *val,
 		CommandList *explicit_command_list,
@@ -877,22 +903,10 @@ bool ParseRunExplicitCommandList(const wchar_t *section,
 		const wstring *ini_namespace)
 {
 	RunExplicitCommandList *operation = new RunExplicitCommandList();
-	ExplicitCommandListSections::iterator shader;
-	wstring namespaced_section;
 
-	// We need value in lower case so our keys will be consistent in the
-	// unordered_map. ParseCommandList will have already done this, but the
-	// Key/Preset parsing code will not have, and rather than require it to
-	// we do it here:
-	wstring section_id(val->c_str());
-	std::transform(section_id.begin(), section_id.end(), section_id.begin(), ::towlower);
+	operation->command_list_section = FindExplicitCommandListSection(val->c_str(), ini_namespace);
 
-	shader = explicitCommandListSections.end();
-	if (get_namespaced_section_name_lower(&section_id, ini_namespace, &namespaced_section))
-		shader = explicitCommandListSections.find(namespaced_section);
-	if (shader == explicitCommandListSections.end())
-		shader = explicitCommandListSections.find(section_id);
-	if (shader == explicitCommandListSections.end())
+	if (!operation->command_list_section)
 		goto bail;
 
 	// If the user indicated an explicit command list we will run the pre
@@ -901,11 +915,53 @@ bool ParseRunExplicitCommandList(const wchar_t *section,
 	if (explicit_command_list)
 		operation->run_pre_and_post_together = true;
 
-	operation->command_list_section = &shader->second;
-	// This function is nearly identical to ParseRunShader, but in case we
-	// later refactor these together note that here we do not specify a
-	// sensible command list, so it will be added to both pre and post
-	// command lists:
+	return AddCommandToList(operation, explicit_command_list, NULL, pre_command_list, post_command_list, section, key, val);
+
+bail:
+	delete operation;
+	return false;
+}
+
+bool ParseCopyCommandListCommand(const wchar_t* section,
+	const wchar_t* key, wstring* val,
+	CommandList* explicit_command_list,
+	CommandList* pre_command_list,
+	CommandList* post_command_list,
+	const wstring* ini_namespace)
+{
+	CopyCommandListCommand* operation = new CopyCommandListCommand();
+
+	if (!wcsncmp(val->c_str(), L"null", 4))
+	{
+		operation->src = nullptr;
+	}
+	else
+	{
+		const wchar_t* name_pos = nullptr;
+		ResourceCopyOptions options = parse_enum_option_string_prefix<const wchar_t*, ResourceCopyOptions>(ResourceCopyOptionNames, const_cast<wchar_t*>(val->c_str()), &name_pos);
+
+		if (options != ResourceCopyOptions::INVALID && options != ResourceCopyOptions::REFERENCE) {
+			LogOverlayW(LOG_WARNING, L"CommandList copy source contains invalid options: \"%ls = %ls\"\n - [%ls] @ [%ls]\n",
+				key, val->c_str(), section, ini_namespace->c_str());
+		}
+
+		if (!name_pos)
+			goto bail;
+
+		if (!wcsncmp(name_pos, L"commandlist", 11)) {
+			operation->src = FindExplicitCommandListSection(name_pos, ini_namespace);
+			if (!operation->src)
+				goto bail;
+		}
+	}
+
+	operation->dst = FindExplicitCommandListSection(key, ini_namespace);
+	if (!operation->dst)
+		goto bail;
+
+	operation->dst->command_list.runtime_populated = true;
+	operation->dst->post_command_list.runtime_populated = true;
+
 	return AddCommandToList(operation, explicit_command_list, NULL, pre_command_list, post_command_list, section, key, val);
 
 bail:
@@ -1215,6 +1271,9 @@ bool ParseCommandListGeneralCommands(const wchar_t *section,
 	if (!wcscmp(key, L"store")) {
 		return ParseStoreCommand(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 	}
+
+	if (!wcsncmp(key, L"commandlist", 11))
+		return ParseCopyCommandListCommand(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 
 	return ParseDrawCommand(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 }
@@ -1904,6 +1963,24 @@ void Draw3DMigotoOverlayCommand::run(CommandListState *state)
 	}
 }
 
+void CopyCommandListCommand::run(CommandListState* state)
+{
+	if (failed)
+		return;
+
+	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
+
+	if (!dst->command_list.SetSourceCommandList(src ? &src->command_list : nullptr)) {
+		failed = true;
+		return;
+	}
+
+	if (!dst->post_command_list.SetSourceCommandList(src ? &src->post_command_list : nullptr)) {
+		failed = true;
+		return;
+	}
+}
+
 #pragma endregion Commands
 
 
@@ -2568,7 +2645,7 @@ void RunCustomShaderCommand::run(CommandListState *state)
 
 bool RunCustomShaderCommand::noop(bool post, bool ignore_cto_pre, bool ignore_cto_post)
 {
-	return (custom_shader->command_list.commands.empty() && custom_shader->post_command_list.commands.empty());
+	return (custom_shader->command_list.noop() && custom_shader->post_command_list.noop());
 }
 
 #pragma endregion CustomShader
@@ -2598,11 +2675,12 @@ void RunExplicitCommandList::run(CommandListState *state)
 bool RunExplicitCommandList::noop(bool post, bool ignore_cto_pre, bool ignore_cto_post)
 {
 	if (run_pre_and_post_together)
-		return (command_list_section->command_list.commands.empty() && command_list_section->post_command_list.commands.empty());
+		return (command_list_section->command_list.noop() 
+			&& command_list_section->post_command_list.noop());
 
 	if (post)
-		return command_list_section->post_command_list.commands.empty();
-	return command_list_section->command_list.commands.empty();
+		return command_list_section->post_command_list.noop();
+	return command_list_section->command_list.noop();
 }
 
 std::shared_ptr<RunLinkedCommandList>
@@ -2622,7 +2700,7 @@ void RunLinkedCommandList::run(CommandListState *state)
 
 bool RunLinkedCommandList::noop(bool post, bool ignore_cto_pre, bool ignore_cto_post)
 {
-	return link->commands.empty();
+	return link->noop();
 }
 
 static void ProcessParamRTSize(CommandListState *state)
@@ -2833,6 +2911,45 @@ void CommandList::clear()
 {
 	commands.clear();
 	static_vars.clear();
+}
+
+bool CommandList::SetSourceCommandList(CommandList* src)
+{
+	if (src == source_command_list)
+		return true;
+
+	if (!src)
+	{
+		source_command_list = nullptr;
+		return true;
+	}
+
+	CommandList* root = src->ResolveCommandList();
+
+	// Prevent self-reference.
+	if (root == this) {
+		LogOverlayW(LOG_NOTICE, L"Ignoring cyclic command list reference `%ls` <=> `%ls`\n",
+			ini_section.c_str(), src->ini_section.c_str());
+		return false;
+	}
+
+	source_command_list = root;
+	return true;
+}
+
+CommandList* CommandList::ResolveCommandList()
+{
+	return source_command_list ? source_command_list->ResolveCommandList() : this;
+}
+
+bool CommandList::noop()
+{
+	CommandList* resolved = ResolveCommandList();
+
+	if (resolved->runtime_populated)
+		return false;
+
+	return resolved->commands.empty();
 }
 
 CommandListState::CommandListState() :
@@ -8164,8 +8281,8 @@ bool IfCommand::noop(bool post, bool ignore_cto_pre, bool ignore_cto_post)
 	}
 
 	if (post)
-		return true_commands_post->commands.empty() && false_commands_post->commands.empty();
-	return true_commands_pre->commands.empty() && false_commands_pre->commands.empty();
+		return true_commands_post->noop() && false_commands_post->noop();
+	return true_commands_pre->noop() && false_commands_pre->noop();
 }
 
 void CommandPlaceholder::run(CommandListState*)

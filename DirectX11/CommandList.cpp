@@ -7161,6 +7161,10 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 		{ L"->index",          7, ResourceCopyTargetEvaluationMode::POOL_INDEX },
 		{ L"->offset",         8, ResourceCopyTargetEvaluationMode::RESOURCE_OFFSET },
 		{ L"->stride",         8, ResourceCopyTargetEvaluationMode::RESOURCE_STRIDE },
+		{ L"->region",         8, ResourceCopyTargetEvaluationMode::RESOURCE_REGION, {{
+			MemberArg::Type::Unsigned, // Byte Offset 
+			MemberArg::Type::Unsigned  // Byte Size 
+		}} },
 		{ L"->hashregion",    12, ResourceCopyTargetEvaluationMode::RESOURCE_REGION_HASH, {{
 			MemberArg::Type::Unsigned, // Byte Offset 
 			MemberArg::Type::Unsigned  // Byte Size 
@@ -10861,6 +10865,11 @@ void ResourceCopyOperation::CopyResourceToResource(
 	} else {
 		COMMAND_LIST_LOG(state, "  copying by reference\n");
 		Profiling::resource_reference_copies++;
+		if (src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE_REGION)
+		{
+			offset = (UINT)src.member_args[0].GetValue(state);
+			buf_dst_size = (UINT)src.member_args[1].GetValue(state);
+		}
 		if (G->track_region_hashes && dst_custom_resource)
 			dst_custom_resource->SetHandleInfo(src_resource, offset, buf_src_size);
 		dst_resource = src_resource;
@@ -10890,10 +10899,16 @@ void ResourceCopyOperation::CopyResourceToResource(
 		*pp_cached_view = dst_view;
 	}
 
-	// SetResource now supports branching to SetConstantBuffers1 when offset and buf_dst_size are specified.
-	// For now we'll keep using SetConstantBuffers to expose the entire CB.
-	// TODO: Research for potential benefits of using shared temp resource for multiple CONSTANT_BUFFERs.
-	if (dst.type == ResourceCopyTargetType::CONSTANT_BUFFER) {
+	// SetResource supports branching to SetConstantBuffers1 when offset and buf_dst_size are specified.
+	// 
+	// For `ref` copy to DST ConstantBuffer with `->Region` specified for SRC, we should use SetConstantBuffers1.
+	//   `cs-cb0 = ref vs-cb0->Region($offset, $size)`
+	// 
+	// Here we ensure that SetConstantBuffers1 is never called for non-ref copies to CB.
+	if (dst.type == ResourceCopyTargetType::CONSTANT_BUFFER
+		&& src.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE_REGION
+		&& !(options & ResourceCopyOptions::COPY_MASK))
+	{
 		offset = 0;
 		buf_dst_size = 0;
 	}
@@ -10955,6 +10970,12 @@ void ResourceCopyOperation::run(CommandListState *state)
 	UINT buf_src_size = 0;
 
 	src_resource = src.GetResource(state, &src_view, &stride, &offset, &format, &buf_src_size, ((options & ResourceCopyOptions::REFERENCE) ? &dst : NULL));
+	
+	if (src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE_REGION)
+	{
+		offset = (UINT)src.member_args[0].GetValue(state);
+		buf_src_size = (UINT)src.member_args[1].GetValue(state);
+	}
 
 	switch (dst.type)
 	{

@@ -6935,30 +6935,6 @@ IniParserResult ResourceCopyTarget::ParseTargetPrefix(const wchar_t*& target, si
 	return IniParserResult::TOKEN_NOT_FOUND;
 }
 
-bool MemberArg::ParseAs(Type parse_type, const wstring* ini_namespace, CommandListScope* scope)
-{
-	if (constant_string.empty())
-		return false;
-
-	if (parse_type == Type::String) {
-		type = Type::String;
-		return true;
-	}
-
-	if (!expression)
-		expression = std::make_unique<CommandListExpression>();
-
-	if (!expression->parse(&constant_string, ini_namespace, scope))
-	{
-		expression.reset();
-		return false;
-	}
-
-	constant_string.clear();
-
-	return true;
-}
-
 float MemberArg::GetValue(CommandListState* state)
 {
 	if (expression)
@@ -6972,82 +6948,82 @@ const std::wstring& MemberArg::GetString() const
 	return constant_string;
 }
 
-bool ResourceCopyTarget::ParseMemberArgument(const std::wstring& text, const std::wstring* ini_namespace, CommandListScope* scope, MemberArg& arg)
-{
-	if (text.empty())
-		return false;
-
-	// Defer real parsing until target member function is known.
-	arg.constant_string = text;
-
-	return true;
-}
-
-IniParserResult ResourceCopyTarget::GetNextArgument(const wchar_t*& arg_start, const wchar_t* args_end, std::wstring& text)
-{
-	if (arg_start >= args_end)
-		return IniParserResult::TOKEN_NOT_FOUND;
-
-	const wchar_t* arg_end = wcschr(arg_start, L',');
-
-	// Ensure staying within `(arg_start ... args_end)` bounds
-	if (!arg_end || arg_end > args_end)
-		arg_end = args_end;
-
-	// Trim left
-	while (arg_start < arg_end && iswspace(*arg_start))
-		++arg_start;
-
-	const wchar_t* real_end = arg_end;
-
-	// Trim right
-	while (real_end > arg_start && iswspace(real_end[-1]))
-		--real_end;
-
-	text.assign(arg_start, real_end);
-
-	arg_start = (arg_end < args_end) ? arg_end + 1 : args_end;
-
-	return text.empty() ? IniParserResult::SYNTAX_ERROR : IniParserResult::TOKEN_FOUND;
-}
-
-IniParserResult ResourceCopyTarget::ParseTargetMemberArguments(
-	const wchar_t*& target, size_t& length, const std::wstring* ini_namespace, CommandListScope* scope, size_t& num_args
+bool ResourceCopyTarget::ParseMemberArguments(
+	const MemberInfo& member, const wchar_t* args_start, const wchar_t* args_end, const wstring* ini_namespace, CommandListScope* scope
 )
 {
-	if (length == 0 || target[length - 1] != L')' || !(evaluation_mode & ResourceCopyTargetEvaluationMode::RESOURCE_MASK)) {
-		return IniParserResult::TOKEN_NOT_FOUND;
-	}
+	size_t num_args = member.num_args();
 
-	const wchar_t* args_open_pos = wcsrchr(target, L'(');
+	// No "(...)" present.
+	if (!args_start)
+		return num_args == 0;
 
-	if (!args_open_pos || args_open_pos <= target)
-		return IniParserResult::SYNTAX_ERROR; // Invalid syntax (opening `(` not found or located after closing `)`)
+	wstring argument_text(args_start, args_end - args_start);
 
-	const wchar_t* args_end = target + length - 1;
+	CommandArgumentReader args(member.keyword, argument_text, L"", ini_namespace, scope);
 
-	// Remove "(...)" from target
-	length = args_open_pos - target;
-
-	const wchar_t* arg_start = args_open_pos + 1;
-
-	while (true)
+	for (size_t i = 0; i < num_args; i++)
 	{
-		std::wstring text;
+		switch (member.args[i])
+		{
+		case MemberArg::Type::String:
+		{
+			wstring value;
 
-		IniParserResult ret = GetNextArgument(arg_start, args_end, text);
+			if (!args.GetToken(&value, CommandArgumentReader::PeekMode::Argument))
+				return args.Fail();
 
-		if (ret == IniParserResult::SYNTAX_ERROR)
-			return IniParserResult::SYNTAX_ERROR;
-
-		if (ret == IniParserResult::TOKEN_NOT_FOUND)
+			member_args[i].constant_string = value;
+			member_args[i].type = MemberArg::Type::String;
 			break;
+		}
 
-		if (!ParseMemberArgument(text, ini_namespace, scope, member_args[num_args]))
-			return IniParserResult::SYNTAX_ERROR;
+		case MemberArg::Type::Unsigned:
+		case MemberArg::Type::Signed:
+		case MemberArg::Type::Float:
+		{
+			unique_ptr<CommandListExpression> expression;
 
-		++num_args;
+			if (!args.GetExpression(&expression))
+				return false;
+
+			member_args[i].expression = std::move(expression);
+			member_args[i].type = member.args[i];
+			break;
+		}
+
+		default:
+			return false;
+		}
+
+		if (i + 1 < num_args)
+		{
+			if (!args.ConsumeSeparator(SeparatorMode::Comma))
+				return args.Fail();
+		}
 	}
+
+	return args.Finished();
+}
+
+IniParserResult extract_arguments(const wchar_t* target, size_t& length, const wchar_t*& args_start, const wchar_t*& args_end)
+{
+	args_start = nullptr;
+	args_end = nullptr;
+
+	if (length == 0 || target[length - 1] != L')')
+		return IniParserResult::TOKEN_NOT_FOUND;
+
+	const wchar_t* open = wcsrchr(target, L'(');
+
+	if (!open || open <= target)
+		return IniParserResult::SYNTAX_ERROR;
+
+	// Remove "(...)" from target.
+	args_start = open + 1;
+	args_end = target + length - 1;
+
+	length = open - target;
 
 	return IniParserResult::TOKEN_FOUND;
 }
@@ -7068,21 +7044,6 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 	{
 		return IniParserResult::TOKEN_NOT_FOUND;
 	}
-
-	struct MemberInfo {
-		const wchar_t* keyword;
-		size_t len; // including "->"
-		ResourceCopyTargetEvaluationMode mode;
-		std::array<MemberArg::Type, MAX_MEMBER_ARGS_COUNT> args{};
-
-		size_t num_args() const
-		{
-			size_t n = 0;
-			while (n < args.size() && args[n] != MemberArg::Type::None)
-				++n;
-			return n;
-		}
-	};
 
 	static constexpr MemberInfo members[] = {
 		{ L"->size",           6, ResourceCopyTargetEvaluationMode::RESOURCE_SIZE },
@@ -7110,40 +7071,42 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 		}} },
 	};
 
-	// Consume arguments (adjust `length` accordingly). Ensure syntax error passthrough.
-	size_t num_args = 0;
-	if (ParseTargetMemberArguments(target, length, ini_namespace, scope, num_args) == IniParserResult::SYNTAX_ERROR)
+	// Consume (...) arguments contents (adjust `length` accordingly). Ensure syntax error passthrough.
+	const wchar_t* args_start = nullptr;
+	const wchar_t* args_end = nullptr;
+	IniParserResult args_result = extract_arguments(target, length, args_start, args_end);
+	if (args_result == IniParserResult::SYNTAX_ERROR)
 		return IniParserResult::SYNTAX_ERROR;
 
 	// Consume member keyword (adjust `target` and `length` accordingly).
-	for (const auto& member : members) {
+	for (const auto& member : members)
+	{
 		// Members are listed by ASC length. Exit loop if target is shorter than current member length plus "ib" length of 2.
 		if (length < member.len + 2)
 			break;
+
 		// Skip to next member if ">" pointer is not found at expected pos (avoids unneeded "wmemcmp" calls).
 		const wchar_t* member_pos = target + length - member.len;
 		if (member_pos[1] != L'>')
 			continue;
+
 		// Check if the trailing end matches the member substr, "->" included.
-		if (suffix_equals(target, length, member.keyword, member.len)) {
-			// Number of parsed argments must meet expectations.
-			// While we allow both ->Size and ->Size(), we don't want user to put something weird inbetween.
-			if (num_args != member.num_args())
-				return IniParserResult::SYNTAX_ERROR;
-			for (size_t i = 0; i < member.num_args(); ++i)
-			{
-				const MemberArg::Type& arg_type = member.args[i];
-				if (!member_args[i].ParseAs(arg_type, ini_namespace, scope))
-					return IniParserResult::SYNTAX_ERROR;
-			}
-			// Member found.
-			evaluation_mode = member.mode;
-			length -= member.len;
-			temp_target.assign(target, length);
-			target = temp_target.c_str();
-			//LogInfo("ParseTargetMember: TOKEN_FOUND keyword=%ls, target=%ls\n", member.keyword, target);
-			return IniParserResult::TOKEN_FOUND;
-		}
+		if (!suffix_equals(target, length, member.keyword, member.len))
+			continue;
+
+		if (!ParseMemberArguments(member, args_start, args_end, ini_namespace, scope))
+			return IniParserResult::SYNTAX_ERROR;
+
+		// Member found.
+		evaluation_mode = member.mode;
+
+		length -= member.len;
+
+		temp_target.assign(target, length);
+		target = temp_target.c_str();
+
+		//LogInfo("ParseTargetMember: TOKEN_FOUND keyword=%ls, target=%ls\n", member.keyword, target);
+		return IniParserResult::TOKEN_FOUND;
 	}
 
 	return IniParserResult::TOKEN_NOT_FOUND;

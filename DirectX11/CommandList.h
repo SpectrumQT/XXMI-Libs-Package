@@ -828,8 +828,6 @@ struct MemberArg
 
 	std::wstring constant_string;
 
-	bool ParseAs(Type parse_type, const wstring* ini_namespace, CommandListScope* scope);
-
 	float GetValue(CommandListState* state);
 	const std::wstring& GetString() const;
 };
@@ -843,6 +841,21 @@ enum class IniParserResult : uint8_t {
 class ResourceCopyTarget {
 	static constexpr size_t MAX_MEMBER_ARGS_COUNT = 4;
 public:
+	struct MemberInfo {
+		const wchar_t* keyword;
+		size_t len; // including "->"
+		ResourceCopyTargetEvaluationMode mode;
+		std::array<MemberArg::Type, MAX_MEMBER_ARGS_COUNT> args{};
+
+		size_t num_args() const
+		{
+			size_t n = 0;
+			while (n < args.size() && args[n] != MemberArg::Type::None)
+				++n;
+			return n;
+		}
+	};
+
 	ResourceCopyTargetType type = ResourceCopyTargetType::INVALID;
 	ResourceCopyTargetEvaluationMode evaluation_mode = ResourceCopyTargetEvaluationMode::RESOURCE;
 	wchar_t shader_type = L'\0';
@@ -897,9 +910,7 @@ public:
 
 private:
 	IniParserResult ParseTargetPrefix(const wchar_t*& target, size_t& length);
-	IniParserResult GetNextArgument(const wchar_t*& arg_start, const wchar_t* args_end, std::wstring& text);
-	bool ParseMemberArgument(const std::wstring& text, const std::wstring* ini_namespace, CommandListScope* scope, MemberArg& arg);
-	IniParserResult ParseTargetMemberArguments(const wchar_t*& target, size_t& length, const wstring* ini_namespace, CommandListScope* scope, size_t& num_args);
+	bool ParseMemberArguments(const MemberInfo& member, const wchar_t* args_start, const wchar_t* args_end, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetMember(const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetPipelineSlot(const wchar_t*& target, size_t length, bool is_source);
 	IniParserResult ParseTargetCustomResource(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope);

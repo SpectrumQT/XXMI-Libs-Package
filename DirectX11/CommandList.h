@@ -940,7 +940,7 @@ enum class ResourceCopyOptions {
 	UNKNOWN         = 0b1000000000000000, // Parsing encountered unknown options
 };
 SENSIBLE_ENUM(ResourceCopyOptions);
-static EnumName_t<wchar_t *, ResourceCopyOptions> ResourceCopyOptionNames[] = {
+static EnumName_t<const wchar_t *, ResourceCopyOptions> ResourceCopyOptionNames[] = {
 	{L"copy", ResourceCopyOptions::COPY},
 	{L"ref", ResourceCopyOptions::REFERENCE},
 	{L"reference", ResourceCopyOptions::REFERENCE},

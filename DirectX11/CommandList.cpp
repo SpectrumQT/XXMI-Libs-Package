@@ -7793,19 +7793,56 @@ bool PoolVariableOperation::optimise(HackerDevice* device)
 
 #pragma endregion PoolVariableOperation
 
-static ResourceCopyOptions parse_resource_copy_target_options_string(const wchar_t* key, const std::wstring& val, const wchar_t*& src_ptr, const wchar_t* section, const std::wstring& ini_namespace)
+static bool parse_resource_copy_target_source(
+	const wchar_t* section, const wstring& val, ResourceCopyTarget& src, ResourceCopyOptions& options,
+	CommandList* command_list, const wstring* ini_namespace, const wchar_t* key
+)
 {
-	src_ptr = nullptr;
+	wstring token;
+	ResourceCopyOptions option;
+	bool src_found = false;
+	size_t unknown_token_count = 0;
 
-	ResourceCopyOptions options = parse_enum_option_string_terminated(
-		ResourceCopyOptionNames, const_cast<wchar_t*>(val.c_str()), const_cast<wchar_t**>(&src_ptr), L"[(");
+	CommandArgumentReader args(L"resource_copy", val, section, ini_namespace, command_list->scope);
 
-	if (options & ResourceCopyOptions::UNKNOWN) {
-		LogOverlayW(LOG_WARNING, L"Resource copy source contains invalid options: \"%ls = %ls\"\n - [%ls] @ [%ls]\n", 
-			key, val.c_str(), section, ini_namespace.c_str());
+	while (args.PeekToken(&token))
+	{
+
+		if (args.GetEnum(ResourceCopyOptionNames, ResourceCopyOptions::INVALID, &option))
+		{
+			options |= option;
+			continue;
+		}
+
+		if (!src_found && args.GetTarget(&src, true))
+		{
+			src_found = true;
+			continue;
+		}
+
+		args.ConsumeToken();
+
+		if (!args.Finished())
+		{
+			if (!args.ConsumeSeparator(SeparatorMode::Space))
+				return args.Fail();
+		}
+
+		unknown_token_count++;
+
+		if (unknown_token_count > 1 && !args.Finished())
+		{
+			LogOverlayW(LOG_WARNING, L"WARNING: Unknown option: %ls\n", token.c_str());
+			options |= ResourceCopyOptions::UNKNOWN;
+		}
 	}
 
-	return options;
+	if (options & ResourceCopyOptions::UNKNOWN) {
+		LogOverlayW(LOG_WARNING, L"Resource copy source contains invalid options: \"%ls = %ls\"\n - [%ls] @ [%ls]\n",
+			key, val.c_str(), section, ini_namespace->c_str());
+	}
+
+	return src_found;
 }
 
 bool ParseCommandListResourceCopyTargetDirective(
@@ -7835,12 +7872,10 @@ bool ParseCommandListResourceCopyTargetDirective(
 	}
 	else
 	{
-		const wchar_t* src_ptr = nullptr;
-		ResourceCopyOptions options = parse_resource_copy_target_options_string(key, *val, src_ptr, section, *ini_namespace);
-
+		ResourceCopyOptions options = ResourceCopyOptions::INVALID;
 		ResourceCopyTarget src = ResourceCopyTarget();
 
-		if (!src_ptr || !src.ParseTarget(src_ptr, true, ini_namespace, command_list->scope))
+		if (!parse_resource_copy_target_source(section, *val, src, options, command_list, ini_namespace, key))
 			src.type = ResourceCopyTargetType::INVALID;
 
 		if (dst.type == ResourceCopyTargetType::POOL)

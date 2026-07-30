@@ -94,6 +94,14 @@ HackerContext::HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pCon
 	mOverrideInputLayout = nullptr;
 }
 
+HackerContext::~HackerContext()
+{
+	mReadbackBuffers.for_each([](UINT, ID3D11Buffer* buffer)
+	{
+		if (buffer)
+			buffer->Release();
+	});
+}
 
 // Save the corresponding HackerDevice, as we need to use it periodically to get
 // access to the StereoParams.
@@ -754,6 +762,64 @@ void HackerContext::DeferredShaderReplacementBeforeDispatch()
 		&ID3D11DeviceContext::CSSetShader,
 		&ID3D11Device::CreateComputeShader>
 		(mCurrentComputeShaderHandle, mCurrentComputeShader, L"cs");
+}
+
+static UINT NextPow2(UINT v)
+{
+	// TODO: C++20
+	// return v <= 1 ? 1 : std::bit_ceil(v);
+	if (v <= 1)
+		return 1;
+
+	--v;
+	v |= v >> 1;
+	v |= v >> 2;
+	v |= v >> 4;
+	v |= v >> 8;
+	v |= v >> 16;
+
+	return ++v;
+}
+
+ID3D11Buffer* HackerContext::GetReadbackBuffer(UINT size)
+{
+	// Round the requested size up to the next power of two so buffers
+	// can be reused across similarly sized requests instead of creating
+	// a unique staging buffer for every size.
+	UINT bucket = NextPow2(size);
+
+	// Reuse an existing staging buffer for this size bucket if available.
+	ID3D11Buffer** existing = mReadbackBuffers.find_ptr(bucket);
+
+	if (existing && *existing)
+		return *existing;
+
+	D3D11_BUFFER_DESC desc = {};
+	desc.ByteWidth = bucket;
+	desc.Usage = D3D11_USAGE_STAGING;
+	desc.BindFlags = 0;
+	desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+	desc.MiscFlags = 0;
+	desc.StructureByteStride = 0;
+
+	ID3D11Buffer* buffer = nullptr;
+
+	// Serialize resource creation with other device operations.
+	LockResourceCreationMode();
+	HRESULT hr = mOrigDevice1->CreateBuffer(&desc, nullptr, &buffer);
+	UnlockResourceCreationMode();
+
+	if (FAILED(hr))
+	{
+		LogInfo("GetReadbackBuffer: CreateBuffer(size=%u bucket=%u) failed hr=0x%08X\n", size, bucket, hr);
+		return nullptr;
+	}
+
+	LogDebug("GetReadbackBuffer: Created %u-byte readback buffer\n", bucket);
+
+	mReadbackBuffers.insert(bucket, buffer);
+
+	return buffer;
 }
 
 void HackerContext::DeferInputLayoutOverride(HackerInputLayout* pInputLayout)

@@ -143,6 +143,8 @@ private:
 	typedef std::unordered_map<ID3D11Resource*, MappedResourceInfo> MappedResources;
 	MappedResources mMappedResources;
 
+	FlatHashMap<UINT, ID3D11Buffer*> mReadbackBuffers = FlatHashMap<UINT, ID3D11Buffer*>(64);
+
 	// These private methods are utility routines for HackerContext.
 	void BeforeDraw(DrawContext &data);
 	void AfterDraw(DrawContext &data);
@@ -226,6 +228,7 @@ protected:
 
 public:
 	HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pContext1);
+	~HackerContext();
 
 	void SetHackerDevice(HackerDevice *pDevice);
 	HackerDevice* GetHackerDevice();
@@ -240,6 +243,8 @@ public:
 	virtual void FrameAnalysisTrigger(FrameAnalysisOptions new_options) {};
 	virtual void FrameAnalysisDump(ID3D11Resource *resource, FrameAnalysisOptions options,
 		const wchar_t *target, DXGI_FORMAT format, UINT stride, UINT offset) {};
+
+	ID3D11Buffer* GetReadbackBuffer(UINT size);
 
 	void DeferInputLayoutOverride(HackerInputLayout* pInputLayout);
 	void OverrideInputLayout();

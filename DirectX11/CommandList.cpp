@@ -8948,7 +8948,7 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 					Profiling::start(&profiling_state);
 
 				// Calculate region hash.
-				region_hash = GetRegionHash(state->mOrigContext1, (ID3D11Buffer*)resource, region_offset, region_size);
+				region_hash = GetRegionHash(state->mHackerContext, (ID3D11Buffer*)resource, region_offset, region_size);
 
 				if (Profiling::mode == Profiling::Mode::SUMMARY)
 					Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
@@ -9217,7 +9217,7 @@ float ResourceCopyTarget::GetResourceRegionHash(CommandListState* state)
 
 			UINT region_size = (UINT)member_args[1].GetValue(state);
 
-			uint32_t region_hash = GetRegionHash(state->mOrigContext1, buf, region_offset, region_size, GetCustomResource(state));
+			uint32_t region_hash = GetRegionHash(state->mHackerContext, buf, region_offset, region_size, GetCustomResource(state));
 
 			if (region_hash)
 				ret = EncodeFloat30(HashUnsigned32(region_hash));
@@ -9278,7 +9278,7 @@ float ResourceCopyTarget::GetResourceSpatialHash(CommandListState* state)
 			UINT offset_z = region_offset + (UINT)member_args[2].GetValue(state);
 			float cell_size = member_args[3].GetValue(state);
 
-			uint32_t spatial_hash = GetSpatialHash(state->mOrigContext1, buf, offset_x, offset_y, offset_z, cell_size, GetCustomResource(state));
+			uint32_t spatial_hash = GetSpatialHash(state->mHackerContext, buf, offset_x, offset_y, offset_z, cell_size, GetCustomResource(state));
 
 			if (spatial_hash)
 				ret = BitCastToFloat(spatial_hash);

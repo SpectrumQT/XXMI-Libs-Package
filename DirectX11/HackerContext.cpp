@@ -887,7 +887,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 				if (b.buffer && b.offset) {
 					UINT region_offset = GetIndexBufferRegionOffset(b.format, &data.call_info, b.offset);
 					UINT region_size = GetIndexBufferRegionSize(b.format, &data.call_info);
-					mCurrentIndexBuffer = GetRegionHash(mOrigContext1, b.buffer, region_offset, region_size);
+					mCurrentIndexBuffer = GetRegionHash(this, b.buffer, region_offset, region_size);
 					RegisterVisitedIndexBuffer(mCurrentIndexBuffer);
 				}
 			}
@@ -903,7 +903,7 @@ void HackerContext::BeforeDraw(DrawContext &data)
 					if (b.buffer && b.stride) {
 						UINT region_offset = GetVertexBufferRegionOffset(b.stride, &data.call_info, b.offset);
 						UINT region_size = GetVertexBufferRegionSize(b.stride, &data.call_info);
-						mCurrentVertexBuffers[i] = GetRegionHash(mOrigContext1, b.buffer, region_offset, region_size);
+						mCurrentVertexBuffers[i] = GetRegionHash(this, b.buffer, region_offset, region_size);
 					}
 				}
 				// Register Vertex Buffers hashes under the same lock.

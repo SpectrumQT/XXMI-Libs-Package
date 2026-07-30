@@ -62,11 +62,11 @@ public:
 	// Constructs the hash map with an initial capacity.
 	// - Capacity should ideally be a power of two for optimal performance
 	// - Larger initial capacity reduces need for rehashing
-	FlatHashMap(size_t capacity = 1024)
+	FlatHashMap(size_t initial_capacity = 1024)
 	{
-		capacity = NextPow2(capacity);
-		table.resize(capacity);
-		mask = capacity - 1;
+		initial_capacity = NextPow2(initial_capacity);
+		table.resize(initial_capacity);
+		mask = initial_capacity - 1;
 		count = 0;
 		current_generation = 1; // 0 reserved as "empty"
 	}
@@ -267,6 +267,17 @@ public:
 	size_t capacity() const
 	{
 		return table.size();
+	}
+
+	// Iterates over active entries.
+	template<typename F>
+	void for_each(F&& fn)
+	{
+		for (auto& e : table)
+		{
+			if (e.generation == current_generation)
+				fn(e.key, e.value);
+		}
 	}
 
 private:

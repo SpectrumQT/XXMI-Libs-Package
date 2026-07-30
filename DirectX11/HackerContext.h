@@ -143,6 +143,9 @@ private:
 	typedef std::unordered_map<ID3D11Resource*, MappedResourceInfo> MappedResources;
 	MappedResources mMappedResources;
 
+	unsigned draw_number;
+	unsigned dispatch_number;
+
 	FlatHashMap<UINT, ID3D11Buffer*> mReadbackBuffers = FlatHashMap<UINT, ID3D11Buffer*>(64);
 
 	// These private methods are utility routines for HackerContext.
@@ -243,6 +246,10 @@ public:
 	virtual void FrameAnalysisTrigger(FrameAnalysisOptions new_options) {};
 	virtual void FrameAnalysisDump(ID3D11Resource *resource, FrameAnalysisOptions options,
 		const wchar_t *target, DXGI_FORMAT format, UINT stride, UINT offset) {};
+
+	unsigned GetDrawNumber() const { return draw_number; };
+	unsigned GetDispatchNumber() const { return dispatch_number; };
+	void ResetCallCounters() { draw_number = 0; dispatch_number = 0; };
 
 	ID3D11Buffer* GetReadbackBuffer(UINT size);
 

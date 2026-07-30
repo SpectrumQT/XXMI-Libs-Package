@@ -859,6 +859,8 @@ void HackerContext::RestoreInputLayout()
 
 void HackerContext::BeforeDraw(DrawContext &data)
 {
+	draw_number++;
+
 	Profiling::State profiling_state;
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
@@ -1780,6 +1782,8 @@ STDMETHODIMP_(void) HackerContext::SOSetTargets(THIS_
 
 bool HackerContext::BeforeDispatch(DispatchContext *context)
 {
+	dispatch_number++;
+
 	if (G->hunting == HUNTING_MODE_ENABLED) {
 		if (G->DumpUsage)
 			RecordComputeShaderStats();

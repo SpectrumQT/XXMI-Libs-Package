@@ -277,6 +277,7 @@ void HackerSwapChain::RunFrameActions()
 	// moment, but let's do it last, because logically it makes sense to be
 	// incremented when we call the original present call:
 	G->frame_no++;
+	mHackerContext->ResetCallCounters();
 
 	// When not hunting most keybindings won't have been registered, but
 	// still skip the below logic that only applies while hunting.

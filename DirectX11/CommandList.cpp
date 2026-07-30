@@ -3509,6 +3509,10 @@ float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device
 		case ParamOverrideType::SCISSOR_BOTTOM:
 			UpdateScissorInfo(state);
 			return (float)state->scissor_rects[scissor].bottom;
+		case ParamOverrideType::DRAW_NUMBER:
+			return (float)state->mHackerContext->GetDrawNumber();
+		case ParamOverrideType::DISPATCH_NUMBER:
+			return (float)state->mHackerContext->GetDispatchNumber();
 	}
 
 	LogOverlay(LOG_DIRE, "BUG: Unhandled operand type %i\n", type);

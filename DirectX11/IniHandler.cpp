@@ -1475,14 +1475,15 @@ static int GetIniBoolIntOrEnum(const wchar_t *section, const wchar_t *key, int d
 	int ret;
 	bool tmp_found;
 
-	ret = GetIniBoolOrInt(section, key, def, &tmp_found);
+	ret = GetIniEnum(section, key, def, &tmp_found, prefix, names, names_len, first);
+
 	if (tmp_found && ret >= 0 && ret < names_len) {
 		if (found)
 			*found = tmp_found;
 		return ret;
 	}
 
-	return GetIniEnum(section, key, def, found, prefix, names, names_len, first);
+	return GetIniBoolOrInt(section, key, def, found);
 }
 
 static void GetUserConfigPath(const wchar_t *migoto_path)

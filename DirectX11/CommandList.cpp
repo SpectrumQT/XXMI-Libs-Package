@@ -4459,7 +4459,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 		// Other Tokens
 		if (!has_prefix)
 		{
-			size_t len = FindIdentifierTokenEnd(remain, 0, OptionalChars::HYPHEN);
+			size_t len = FindIdentifierTokenEnd(remain, 0, OptionalChars::NONE);
 
 			if (len)
 			{

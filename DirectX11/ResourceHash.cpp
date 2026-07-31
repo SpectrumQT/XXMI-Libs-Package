@@ -2298,58 +2298,84 @@ uint32_t HashUnsigned32(uint32_t u)
 	return u;
 }
 
+// Number of bits allocated to each axis.
+constexpr uint32_t X_BITS = 12; // Points to the right.
+constexpr uint32_t Y_BITS = 8;  // Points straight up.
+constexpr uint32_t Z_BITS = 12; // Points away from the camera (depth increases deeper into the screen).
+
+constexpr uint32_t X_MASK = (1u << X_BITS) - 1; // 4095
+constexpr uint32_t Y_MASK = (1u << Y_BITS) - 1; // 255
+constexpr uint32_t Z_MASK = (1u << Z_BITS) - 1; // 4095
+
+constexpr uint32_t X_SIZE = 1u << X_BITS; // 4096
+constexpr uint32_t Y_SIZE = 1u << Y_BITS; // 256
+constexpr uint32_t Z_SIZE = 1u << Z_BITS; // 4096
+
+constexpr uint32_t X_SHIFT = Y_BITS + Z_BITS;
+constexpr uint32_t Y_SHIFT = Z_BITS;
+constexpr uint32_t Z_SHIFT = 0;
+
 // Quantizes XYZ coords to grid cells.
 inline int32_t WorldToCell(float v, float cell_size)
 {
 	return (int32_t)std::floor(v / cell_size);
 }
 
-// Wraps coordinate around, forcing it to stay within 1024x1024x1024 cells grid. 
-inline uint32_t WrapCellCoord(int32_t c)
+// Wraps coordinate into the representable range for a given axis, forcing it to stay within 4096x256x4096 cells grid. 
+// Coordinates are stored modulo the axis size, effectively treating the grid as a torus along each dimension.
+inline uint32_t WrapCellCoord(int32_t c, uint32_t mask)
 {
-	return (uint32_t)c & 1023;
+    return static_cast<uint32_t>(c) & mask;
 }
 
-// Converts world position to cell position and packs it to UINT32.
+// Converts world position to grid cell coordinates and packs them into a 32-bit unsigned integer.
+// X and Z receive more bits because most scenes span a much larger horizontal area than vertical height.
+// Layout: [ X:12 bits ][ Y:8 bits ][ Z:12 bits ]
 uint32_t PackCellCoords(float x, float y, float z, float cell_size)
 {
-    return (WrapCellCoord(WorldToCell(x, cell_size)) << 20) | // 10 bit X (2 ^ 10 = 1024)
-		   (WrapCellCoord(WorldToCell(y, cell_size)) << 10) | // 10 bit Y (2 ^ 10 = 1024)
-		    WrapCellCoord(WorldToCell(z, cell_size));		  // 10 bit Z (2 ^ 10 = 1024)
+    return (WrapCellCoord(WorldToCell(x, cell_size), X_MASK) << X_SHIFT) |
+           (WrapCellCoord(WorldToCell(y, cell_size), Y_MASK) << Y_SHIFT) |
+            WrapCellCoord(WorldToCell(z, cell_size), Z_MASK);
 }
 
-// Unpacks packed cell position back into 0-1023 range uints for distance calculations.
+// Unpacks packed grid coordinates back into their wrapped integer ranges:
+//   X: 0..4095, Y: 0..255, Z: 0..4095
 GridPos UnpackCellCoords(uint32_t packed)
 {
 	return {
-		(packed >> 20) & 1023,
-		(packed >> 10) & 1023,
-		 packed & 1023
+		(packed >> (Y_BITS + Z_BITS)) & X_MASK,
+		(packed >> Z_BITS) & Y_MASK,
+		 packed & Z_MASK
 	};
 }
 
+// Computes the shortest wrapped distance between two coordinates along a single axis.
+template <uint32_t Size>
 inline uint32_t AxisDistance(uint32_t a, uint32_t b)
 {
 	uint32_t d = (a > b) ? (a - b) : (b - a);
 
-	// Wrap around the torus
-	return min(d, 1024 - d);
+	// Wrap around the torus.
+	uint32_t wrapped = Size - d;
+	return d < wrapped ? d : wrapped;
 }
 
-// Chebyshev distance is used to measure movement in grid cells.
-// Allows diagonal movement to have the same weight as movement along axis.
-// 0 0 => 0 1 => distance == 1
-// 1 0    0 0
+// Computes Chebyshev distance between two packed grid positions.
+// Diagonal movement has the same cost as axis-aligned movement:
+//   0 0      0 1
+//   1 0  ->  0 0
+//         ^- Chebyshev Distance == 1.
 uint32_t SpatialDistanceChebyshev(const GridPos& a, const GridPos& b)
 {
-	uint32_t dx = AxisDistance(a.x, b.x);
-	uint32_t dy = AxisDistance(a.y, b.y);
-	uint32_t dz = AxisDistance(a.z, b.z);
+	uint32_t dx = AxisDistance<X_SIZE>(a.x, b.x);
+	uint32_t dy = AxisDistance<Y_SIZE>(a.y, b.y);
+	uint32_t dz = AxisDistance<Z_SIZE>(a.z, b.z);
 
-	return max(dx, max(dy, dz));
+	return (std::max)(dx, (std::max)(dy, dz));
 }
 
-// Returns a spatial hash of world position (essentially its quantized 30-bit representation).
+// Returns the packed 4096x256x4096 cell grid coordinates corresponding to the world position.
+// The packed value can be compared directly for cell equality and stored in single 32-bit container.
 // When `custom_resource` is supplied, it's used instead of a `buffer` as input.
 uint32_t GetSpatialHash(HackerContext* context, ID3D11Buffer* buffer, UINT offset_x, UINT offset_y, UINT offset_z, float cell_size, CustomResource* custom_resource)
 {

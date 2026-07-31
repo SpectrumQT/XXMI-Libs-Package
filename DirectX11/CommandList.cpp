@@ -5409,16 +5409,35 @@ bool ParseCommandListVariableAssignment(const wchar_t *section,
 		CommandList *command_list, CommandList *pre_command_list, CommandList *post_command_list,
 		const wstring *ini_namespace)
 {
-	VariableAssignment *command = NULL;
-	CommandListVariable *var = NULL;
-	wstring name = key;
+	wstring line = key;
 
 	// Declaration without assignment?
-	if (name.empty() && raw_line)
-		name = *raw_line;
+	if (line.empty() && raw_line)
+		line = *raw_line;
 
-	if (!name.compare(0, 6, L"local ")) {
-		name = name.substr(name.find_first_not_of(L" \t", 6));
+	bool declare_local = !line.compare(0, 5, L"local");
+
+	if (!declare_local && line[0] != L'$')
+		return false;
+
+	CommandArgumentReader args(L"variable_assignment", line, section, ini_namespace, pre_command_list->scope);
+
+	wstring name;
+
+	if (!args.PeekToken(&name))
+		return args.Fail();
+
+	if (declare_local)
+	{
+		if (!args.ConsumeToken())
+			return args.Fail();
+
+		if (!args.ConsumeSeparator(SeparatorMode::Space))
+			return args.Fail();
+
+		if (!args.PeekToken(&name))
+			return args.Fail();
+
 		// Local variables are shared between pre and post command lists.
 		if (!declare_local_variable(section, name, pre_command_list, ini_namespace))
 			return false;
@@ -5428,28 +5447,26 @@ bool ParseCommandListVariableAssignment(const wchar_t *section,
 			return true;
 	}
 
-	if (!find_local_variable(name, pre_command_list->scope, &var) &&
-		!parse_command_list_var_name(name, ini_namespace, &var))
+	// Skip variable pool (e.g. `$PoolFoo[0]`).
+	if (name.back() == L']')
 		return false;
 
-	if (var->flags & VariableFlags::LOCKED) {
-		LogOverlayW(LOG_WARNING,
-			L"Unable to assign value \"%ls\" to <locked> variable \"%ls\"\n"
-			L" - [%ls] @ [%ls]\n",
-			val->c_str(), name.c_str(),
-			section, ini_namespace->c_str());
-		return false;
-	}
+	CommandListVariable* var = nullptr;
 
-	command = new VariableAssignment();
+	if (!args.GetVariable(var, false))
+		return args.Fail();
+
+	VariableAssignment* command = new VariableAssignment();
+
 	command->var = var;
 
 	if (!command->expression.parse(val, ini_namespace, command_list->scope))
 		goto bail;
 
-	command->ini_line = L"[" + wstring(section) + L"] " + wstring(key) + L" = " + *val;
+	command->ini_line = L"[" + wstring(section) + L"] " + line + L" = " + *val;
 	command_list->commands.push_back(std::shared_ptr<CommandListCommand>(command));
 	return true;
+
 bail:
 	delete command;
 	return false;

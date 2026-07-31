@@ -1191,7 +1191,7 @@ bool ParseStoreCommand(const wchar_t* section,
 
 	CommandArgumentReader args(L"store", *val, section, ini_namespace, pre_command_list->scope);
 
-	if (!args.GetVariable(operation->var))
+	if (!args.GetVariable(operation->var, false))
 		return args.Fail();
 
 	if (!args.ConsumeSeparator(SeparatorMode::Comma))
@@ -3941,7 +3941,7 @@ bool CommandArgumentReader::GetEnum(const EnumName_t<const wchar_t*, T>* names, 
 	return true;
 }
 
-bool CommandArgumentReader::GetVariable(CommandListVariable*& out)
+bool CommandArgumentReader::GetVariable(CommandListVariable*& out, bool is_source)
 {
 	wstring token;
 
@@ -3964,6 +3964,11 @@ bool CommandArgumentReader::GetVariable(CommandListVariable*& out)
 		!parse_command_list_var_name(token, m_ini_namespace, &out))
 	{
 		SetError(L"Unknown variable: " + token, m_peek_start_pos);
+		return false;
+	}
+
+	if (out->flags & VariableFlags::LOCKED) {
+		SetError(L"Unable to assign value to <locked> variable: " + token, m_peek_start_pos);
 		return false;
 	}
 

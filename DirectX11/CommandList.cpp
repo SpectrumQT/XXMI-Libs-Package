@@ -9089,7 +9089,7 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 
 	// For vertex and index buffers the game may pack multiple meshes into
 	// one buffer and bind them at different offsets. In that case the base
-	// resource hash alone is not enough ù we must use the same region data hash 
+	// resource hash alone is not enough ‚Äì we must use the same region data hash 
 	// that IASetVertexBuffers / IASetIndexBuffer computed and stored in 
 	// mCurrentVertexBuffers[] /mCurrentIndexBuffer, and that the hunting overlay displays.
 	// That way the hash the user copies from the overlay matches the one looked up

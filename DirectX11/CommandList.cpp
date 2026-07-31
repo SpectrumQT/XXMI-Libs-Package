@@ -3960,10 +3960,13 @@ bool CommandArgumentReader::GetVariable(CommandListVariable*& out, bool is_sourc
 		return false;
 	}
 
-	if (!find_local_variable(token, m_scope, &out) &&
+	if ((!(m_scope && find_local_variable(token, m_scope, &out))) &&
 		!parse_command_list_var_name(token, m_ini_namespace, &out))
 	{
-		SetError(L"Unknown variable: " + token, m_peek_start_pos);
+		SetError(!m_scope
+			? L"Unknown global variable: " + token
+			: L"Unknown variable: " + token,
+			m_peek_start_pos);
 		return false;
 	}
 

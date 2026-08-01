@@ -1652,7 +1652,7 @@ public:
 
 	template<typename T>
 	bool GetEnum(const EnumName_t<const wchar_t*, T>* names, T invalid, T* out);
-	bool GetVariable(CommandListVariable*& out);
+	bool GetVariable(CommandListVariable*& out, bool is_source);
 	bool GetTarget(ResourceCopyTarget* out, bool is_source);
 	bool GetFloat(float* out);
 	bool GetExpression(unique_ptr<CommandListExpression>* out);

@@ -45,8 +45,10 @@ void Override::ParseIniSection(LPCWSTR section)
 				mOverrideParams[OverrideParam(param_idx, param_component)] = val;
 			}
 		} else if (entry->first.c_str()[0] == L'$') {
-			if (!parse_command_list_var_name(entry->first.c_str(), &entry->ini_namespace, &var)) {
-				LogOverlayW(LOG_WARNING, L"Undeclared variable %ls\n - [%ls] @ [%ls]\n", entry->first.c_str(), section, entry->ini_namespace.c_str());
+			CommandArgumentReader args(L"preset", entry->first, section, &entry->ini_namespace, nullptr);
+			if (!args.GetVariable(var, false))
+			{
+				args.Fail();
 				continue;
 			}
 
@@ -261,8 +263,10 @@ void KeyOverrideCycle::ParseIniSection(LPCWSTR section)
 
 			GetIniString(section, entry->first.c_str(), 0, &param_bufs[OverrideParam(param_idx, param_component)].buf);
 		} else if (entry->first.c_str()[0] == L'$') {
-			if (!parse_command_list_var_name(entry->first.c_str(), &entry->ini_namespace, &var)) {
-				LogOverlayW(LOG_WARNING, L"Undeclared variable %ls\n - [%ls] @ [%ls]\n", entry->first.c_str(), section, entry->ini_namespace.c_str());
+			CommandArgumentReader args(L"key", entry->first, section, &entry->ini_namespace, nullptr);
+			if (!args.GetVariable(var, false))
+			{
+				args.Fail();
 				continue;
 			}
 

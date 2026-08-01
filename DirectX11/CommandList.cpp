@@ -5427,18 +5427,15 @@ bool ParseCommandListVariableAssignment(const wchar_t *section,
 
 	wstring name;
 
-	if (!args.PeekToken(&name))
-		return args.Fail();
-
 	if (declare_local)
 	{
-		if (!args.ConsumeToken())
+		if (!args.GetToken(&name))
 			return args.Fail();
 
 		if (!args.ConsumeSeparator(SeparatorMode::Space))
 			return args.Fail();
 
-		if (!args.PeekToken(&name))
+		if (!args.PeekToken(&name, CommandArgumentReader::PeekMode::Argument))
 			return args.Fail();
 
 		// Local variables are shared between pre and post command lists.
@@ -5449,6 +5446,11 @@ bool ParseCommandListVariableAssignment(const wchar_t *section,
 		if (val->empty())
 			return true;
 	}
+	else
+	{
+		if (!args.PeekToken(&name, CommandArgumentReader::PeekMode::Argument))
+			return args.Fail();
+	}
 
 	// Skip variable pool (e.g. `$PoolFoo[0]`).
 	if (name.back() == L']')
@@ -5456,7 +5458,7 @@ bool ParseCommandListVariableAssignment(const wchar_t *section,
 
 	CommandListVariable* var = nullptr;
 
-	if (!args.GetVariable(var, false))
+	if (!args.GetVariable(var, false, CommandArgumentReader::PeekMode::Argument))
 		return args.Fail();
 
 	VariableAssignment* command = new VariableAssignment();

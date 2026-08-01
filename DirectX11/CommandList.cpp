@@ -3941,11 +3941,11 @@ bool CommandArgumentReader::GetEnum(const EnumName_t<const wchar_t*, T>* names, 
 	return true;
 }
 
-bool CommandArgumentReader::GetVariable(CommandListVariable*& out, bool is_source)
+bool CommandArgumentReader::GetVariable(CommandListVariable*& out, bool is_source, PeekMode mode)
 {
 	wstring token;
 
-	if (!PeekToken(&token))
+	if (!PeekToken(&token, mode))
 		return false;
 
 	if (token[0] != L'$')
@@ -3954,7 +3954,7 @@ bool CommandArgumentReader::GetVariable(CommandListVariable*& out, bool is_sourc
 		return false;
 	}
 
-	if (FindVariableTokenEnd(token, 1) != token.size())
+	if (is_source && FindVariableTokenEnd(token, 1) != token.size())
 	{
 		SetError(L"Invalid variable: " + token, m_peek_start_pos);
 		return false;
@@ -3982,16 +3982,16 @@ bool CommandArgumentReader::GetVariable(CommandListVariable*& out, bool is_sourc
 	return true;
 }
 
-bool CommandArgumentReader::GetTarget(ResourceCopyTarget* out, bool is_source)
+bool CommandArgumentReader::GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode)
 {
 	wstring token;
 
-	if (!PeekToken(&token))
+	if (!PeekToken(&token, mode))
 		return false;
 
 	bool has_prefix = token[0] == L'$' || token[0] == L'@' || token[0] == L'#';
 
-	if (FindResourceCopyTargetTokenEnd(token, has_prefix ? 1 : 0) != token.size())
+	if (is_source && FindResourceCopyTargetTokenEnd(token, has_prefix ? 1 : 0) != token.size())
 	{
 		SetError(L"Invalid target: " + token, m_peek_start_pos);
 		return false;

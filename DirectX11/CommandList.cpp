@@ -9277,13 +9277,18 @@ float ResourceCopyTarget::GetResourceStride(CommandListState* state)
 	switch (type) {
 		case ResourceCopyTargetType::CUSTOM_RESOURCE: 
 		{
-			if (auto custom_resource = GetCustomResource(state)) {
-				if (custom_resource->override_stride != -1)
-					return (float)custom_resource->override_stride;
+			if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
+				CustomResource* custom_resource = GetCustomResource(state);
+				if (custom_resource) {
+					if (custom_resource->override_stride != -1)
+						return (float)custom_resource->override_stride;
 
-				if (custom_resource->override_format != (DXGI_FORMAT)-1 &&
-					custom_resource->override_format != DXGI_FORMAT_UNKNOWN)
-					return (float)dxgi_format_size(custom_resource->override_format);
+					if (custom_resource->override_format != (DXGI_FORMAT)-1 &&
+						custom_resource->override_format != DXGI_FORMAT_UNKNOWN)
+						return (float)dxgi_format_size(custom_resource->override_format);
+				} else {
+					return ResourcePropertyResult::RESOURCE_NOT_FOUND;
+				}
 			}
 		}
 		case ResourceCopyTargetType::CONSTANT_BUFFER:
@@ -9335,9 +9340,12 @@ float ResourceCopyTarget::GetResourceStride(CommandListState* state)
 float ResourceCopyTarget::GetResourceSize(CommandListState* state)
 {
 	if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
-		if (auto custom_resource = GetCustomResource(state)) {
+		CustomResource* custom_resource = GetCustomResource(state);
+		if (custom_resource) {
 			if (custom_resource->buf_size > 0)
 				return (float)custom_resource->buf_size;
+		} else {
+			return ResourcePropertyResult::RESOURCE_NOT_FOUND;
 		}
 	}
 

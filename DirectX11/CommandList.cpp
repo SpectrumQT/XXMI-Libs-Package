@@ -8699,6 +8699,9 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 		{
 			CustomResource* custom_resource = GetCustomResource(state);
 
+			if (!custom_resource)
+				return nullptr;
+
 			custom_resource->expire(mOrigDevice1, mOrigContext1);
 
 			if (dst)

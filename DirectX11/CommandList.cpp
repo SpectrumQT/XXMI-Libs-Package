@@ -5520,7 +5520,7 @@ bool ParseCommandListVariableAssignment(const wchar_t *section,
 	{
 		// Report only "locked" variable error for now to avoid `d3dx_user.ini` error spam.
 		// TODO: Refactor syntax parsing errors reporting.
-		if (var->flags & VariableFlags::LOCKED)
+		if (var && var->flags & VariableFlags::LOCKED)
 			return args.Fail();
 		else
 			return false;

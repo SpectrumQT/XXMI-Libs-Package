@@ -134,11 +134,19 @@ private:
 	ID3D11Resource *mCurrentDepthTarget;
 	UINT mCurrentPSUAVStartSlot;
 	UINT mCurrentPSNumUAVs;
+
 	HackerInputLayout* mCurrentInputLayout;
+	HackerInputLayout* mOriginalInputLayout;
+	HackerInputLayout* mOverrideInputLayout;
 
 	// Used for deny_cpu_read, track_texture_updates and constant buffer matching
 	typedef std::unordered_map<ID3D11Resource*, MappedResourceInfo> MappedResources;
 	MappedResources mMappedResources;
+
+	unsigned draw_number;
+	unsigned dispatch_number;
+
+	FlatHashMap<UINT, ID3D11Buffer*> mReadbackBuffers = FlatHashMap<UINT, ID3D11Buffer*>(64);
 
 	// These private methods are utility routines for HackerContext.
 	void BeforeDraw(DrawContext &data);
@@ -223,6 +231,7 @@ protected:
 
 public:
 	HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pContext1);
+	~HackerContext();
 
 	void SetHackerDevice(HackerDevice *pDevice);
 	HackerDevice* GetHackerDevice();
@@ -237,6 +246,16 @@ public:
 	virtual void FrameAnalysisTrigger(FrameAnalysisOptions new_options) {};
 	virtual void FrameAnalysisDump(ID3D11Resource *resource, FrameAnalysisOptions options,
 		const wchar_t *target, DXGI_FORMAT format, UINT stride, UINT offset) {};
+
+	unsigned GetDrawNumber() const { return draw_number; };
+	unsigned GetDispatchNumber() const { return dispatch_number; };
+	void ResetCallCounters() { draw_number = 0; dispatch_number = 0; };
+
+	ID3D11Buffer* GetReadbackBuffer(UINT size);
+
+	void DeferInputLayoutOverride(HackerInputLayout* pInputLayout);
+	void OverrideInputLayout();
+	void RestoreInputLayout();
 
 	// These are the shaders the game has set, which may be different from
 	// the ones we have bound to the pipeline:

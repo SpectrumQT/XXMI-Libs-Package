@@ -35,6 +35,30 @@ struct IniLine {
 // functionality and dependencies between different features form:
 typedef std::vector<IniLine> IniSectionVector;
 
+template<typename T>
+struct IniValueTypeName
+{
+	static constexpr const wchar_t* value = L"value";
+};
+
+template<>
+struct IniValueTypeName<float>
+{
+	static constexpr const wchar_t* value = L"floating-point";
+};
+
+template<>
+struct IniValueTypeName<int>
+{
+	static constexpr const wchar_t* value = L"integer";
+};
+
+template<>
+struct IniValueTypeName<bool>
+{
+	static constexpr const wchar_t* value = L"boolean";
+};
+
 void GetIniSection(IniSectionVector **key_vals, const wchar_t *section);
 int GetIniInt(const wchar_t *section, const wchar_t *key, int def, bool *found, bool warn=true);
 bool GetIniBool(const wchar_t *section, const wchar_t *key, bool def, bool *found, bool warn=true);
@@ -48,6 +72,10 @@ template <class T1, class T2>
 T2 GetIniEnumClass(const wchar_t *section, const wchar_t *key, T2 def, bool *found,
 		struct EnumName_t<T1, T2> *enum_names);
 
+bool ParseBinaryLiterals(const wstring& input, size_t start, uint64_t& out, size_t& length);
+
 bool get_namespaced_section_name_lower(const wstring *section, const wstring *ini_namespace, wstring *ret);
 bool get_section_namespace(const wchar_t *section, wstring *ret);
 wstring get_namespaced_var_name_lower(const wstring var, const wstring *ini_namespace);
+
+CommandListVariable* RegisterGlobalVariable(wstring& name, float* fval, VariableFlags flags);

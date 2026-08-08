@@ -27,7 +27,7 @@
 // - Average O(1) lookup and insert
 // - High performance at moderate load factors(<= ~0.5 recommended)
 // - Rehashing is O(n) but infrequent if capacity is preallocated
-// - No support for deletion(can be extended with tombstones if needed)
+// - Supports backward-shift deletion
 //
 // Thread safety :
 // - Not thread-safe.
@@ -62,11 +62,11 @@ public:
 	// Constructs the hash map with an initial capacity.
 	// - Capacity should ideally be a power of two for optimal performance
 	// - Larger initial capacity reduces need for rehashing
-	FlatHashMap(size_t capacity = 1024)
+	FlatHashMap(size_t initial_capacity = 1024)
 	{
-		capacity = NextPow2(capacity);
-		table.resize(capacity);
-		mask = capacity - 1;
+		initial_capacity = NextPow2(initial_capacity);
+		table.resize(initial_capacity);
+		mask = initial_capacity - 1;
 		count = 0;
 		current_generation = 1; // 0 reserved as "empty"
 	}
@@ -159,6 +159,81 @@ public:
 		}
 	}
 
+	// Erases a key using backward-shift deletion.
+	//
+	// Behavior:
+	// - Removes the key if found
+	// - Shifts subsequent entries backward to preserve probe chains
+	//
+	// Performance:
+	// - Average O(1)
+	// - Worst case O(cluster length)
+	inline bool erase(const K& key)
+	{
+		size_t idx = hasher(key) & mask;
+
+		// Find the entry
+		while (true)
+		{
+			Entry& e = table[idx];
+
+			if (e.generation != current_generation)
+				return false;
+
+			if (e.key == key)
+				break;
+
+			idx = (idx + 1) & mask;
+		}
+
+		// Remove and compact the cluster
+		size_t hole = idx;
+		size_t next = (hole + 1) & mask;
+
+		while (true)
+		{
+			Entry& e = table[next];
+
+			// End of cluster
+			if (e.generation != current_generation)
+			{
+				table[hole].generation = 0;
+				break;
+			}
+
+			// Determine the natural bucket of this entry
+			size_t ideal = hasher(e.key) & mask;
+
+			// Check if this entry can be moved into the hole.
+			//
+			// If its probe sequence crosses the hole, moving it back
+			// keeps lookup correctness.
+			bool should_move;
+
+			if (hole <= next)
+			{
+				// Normal non-wrapping case
+				should_move = (ideal <= hole) || (ideal > next);
+			}
+			else
+			{
+				// Wrapped cluster
+				should_move = (ideal <= hole) && (ideal > next);
+			}
+
+			if (should_move)
+			{
+				table[hole] = std::move(e);
+				hole = next;
+			}
+
+			next = (next + 1) & mask;
+		}
+
+		--count;
+		return true;
+	}
+
 	// Clears the hash map.
 	// Behavior:
 	// - Instead of touching memory, we just bump generation
@@ -192,6 +267,17 @@ public:
 	size_t capacity() const
 	{
 		return table.size();
+	}
+
+	// Iterates over active entries.
+	template<typename F>
+	void for_each(F&& fn)
+	{
+		for (auto& e : table)
+		{
+			if (e.generation == current_generation)
+				fn(e.key, e.value);
+		}
 	}
 
 private:
@@ -461,6 +547,7 @@ struct ResourceHashInfo
 
 typedef std::unordered_map<uint32_t, struct ResourceHashInfo> ResourceInfoMap;
 
+class HackerContext;
 class CustomResource;
 
 // This is a COM object that can be attached to a resource via
@@ -505,7 +592,7 @@ uint32_t CalcTexture3DDataHash(const D3D11_TEXTURE3D_DESC *pDesc, const D3D11_SU
 ResourceHandleInfo* GetResourceHandleInfo(ID3D11Resource *resource);
 uint32_t GetOrigResourceHash(ID3D11Resource *resource);
 uint32_t GetResourceHash(ID3D11Resource *resource);
-static bool CacheBufferData(ID3D11DeviceContext* context, ID3D11Buffer* buffer, ResourceHandleInfo* info);
+static bool CacheBufferData(HackerContext* context, ID3D11Buffer* buffer, ResourceHandleInfo* info);
 void ClearResourceRegionHashCache(ID3D11Resource* resource);
 UINT GetVertexBufferRegionOffset(UINT stride, DrawCallInfo* call_info, UINT byte_offset);
 UINT GetIndexBufferRegionOffset(DXGI_FORMAT format, DrawCallInfo* call_info, UINT byte_offset);
@@ -513,11 +600,22 @@ UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info);
 UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info);
 
 float BitCastToFloat(uint32_t bits);
+uint32_t BitCastToUint(float bits);
 uint64_t HashPointer(const void* p);
 uint32_t HashUnsigned32(uint32_t u);
 float EncodeFloat30(const uint32_t hash);
 
-uint32_t GetRegionHash(ID3D11DeviceContext* context, ID3D11Buffer* buffer, UINT offset, UINT size, CustomResource* custom_resource = nullptr);
+struct GridPos
+{
+	uint32_t x;
+	uint32_t y;
+	uint32_t z;
+};
+GridPos UnpackCellCoords(uint32_t packed);
+uint32_t SpatialDistanceChebyshev(const GridPos& a, const GridPos& b);
+
+uint32_t GetRegionHash(HackerContext* context, ID3D11Buffer* buffer, UINT offset, UINT size, CustomResource* custom_resource = nullptr);
+uint32_t GetSpatialHash(HackerContext* context, ID3D11Buffer* buffer, UINT offset_x, UINT offset_y, UINT offset_z, float cell_size = 0.125f, CustomResource* custom_resource = nullptr);
 
 void MarkResourceHashContaminated(ID3D11Resource *dest, UINT DstSubresource,
 		ID3D11Resource *src, UINT srcSubresource, char type,

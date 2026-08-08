@@ -1584,3 +1584,5 @@ extern IDXGISwapChain *last_fullscreen_swap_chain;
 #endif // MIGOTO_DX == 11
 void install_crash_handler(int level);
 float get_effective_dpi();
+uint32_t popcount(uint32_t x);
+float random(float max);

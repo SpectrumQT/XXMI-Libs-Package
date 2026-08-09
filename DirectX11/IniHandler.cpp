@@ -4509,7 +4509,7 @@ void LoadConfigFile()
 	// TODO: Enable this by default if wider testing goes well:
 	G->check_foreground_window = GetIniBool(L"System", L"check_foreground_window", false, NULL);
 
-	// Allows to change interval between persistent vars autosaving to d3dx_user.ini (any negative number to disables it)
+	// Allows to change interval between persistent vars autosaving to d3dx_user.ini (any negative number to disable it)
 	G->gSettingsAutoSaveInterval = GetIniInt(L"System", L"settings_auto_save_interval", 60, NULL);
 	if (G->gSettingsAutoSaveInterval < 0) {
 		G->gSettingsAutoSaveInterval = 2147483647;
@@ -4845,13 +4845,52 @@ void SavePersistentSettings()
 
 	if (!G->user_config_dirty)
 		return;
-	G->user_config_dirty = 0;
 
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 
 	// TODO: Ability to update existing file rather than overwriting:
 	//wfopen_ensuring_access(&f, G->user_config.c_str(), L"r+");
 	//if (!f)
+
+	std::unordered_map<std::wstring, float> saved_variables;
+
+	if (!G->gReloadConfigPending) {
+
+		// Read Existing Variables from File.
+		if (_wfopen_s(&f, G->user_config.c_str(), L"r") == 0 && f) {
+			wchar_t line[1024];
+
+			while (fgetws(line, _countof(line), f)) {
+				if (line[0] != L'$')
+					continue;
+
+				wchar_t* equals = wcschr(line, L'=');
+				if (!equals)
+					continue;
+
+				*equals = L'\0';
+
+				wchar_t* name_end = equals - 1;
+
+				while (name_end >= line &&
+					(*name_end == L' ' || *name_end == L'\t'))
+				{
+					name_end--;
+				}
+
+				*(name_end + 1) = L'\0';
+
+				float value;
+				if (swscanf_s(equals + 1, L"%f", &value) != 1)
+					continue;
+
+				saved_variables[line] = value;
+			}
+
+			fclose(f);
+		}
+	}
+
 	wfopen_ensuring_access(&f, G->user_config.c_str(), L"w");
 	if (!f) {
 		LogInfo("Unable to save settings in %S\n", G->user_config.c_str());
@@ -4869,8 +4908,25 @@ void SavePersistentSettings()
 	      ";\n"
 	      "[Constants]\n", f);
 
-	for (auto global : persistent_variables)
-		fprintf_s(f, "%ls = %.9g\n", global->name.c_str(), global->fval);
+
+	if (!G->gReloadConfigPending) {
+
+		for (auto global : persistent_variables) {
+			fprintf_s(f, "%ls = %.9g\n", global->name.c_str(), global->fval);
+			saved_variables.erase(global->name);
+		}
+
+		for (auto& entry : saved_variables)
+			fprintf_s(f, "%ls = %.9g\n", entry.first.c_str(), entry.second);
+	}
+	
+	else {
+		for (auto global : persistent_variables)
+			fprintf_s(f, "%ls = %.9g\n", global->name.c_str(), global->fval);
+
+		G->user_config_dirty = 0;
+	}
+
 
 	fclose(f);
 

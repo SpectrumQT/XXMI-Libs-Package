@@ -4505,6 +4505,10 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 		if (!has_prefix)
 		{
 			len = FindIdentifierTokenEnd(remain, 0, OptionalChars::NONE);
+			
+			// Do not match identifiers followed by `->` (e.g. `vb0->stride`).
+			if (len && len + 1 < remain.size() && remain[len] == '-' && remain[len + 1] == '>')
+				len = 0;
 
 			if (len)
 			{

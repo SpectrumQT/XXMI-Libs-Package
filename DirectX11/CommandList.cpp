@@ -6831,8 +6831,7 @@ size_t CustomResourcePool::GetElementIndex(float id, bool use_ring_index, bool i
 			// This keeps resources stable when objects move within the radius.
 			pool_index = nearest_slot;
 
-			if (expiration_timeout_frames != UINT32_MAX)
-				PostponeExpiration(index_table[pool_index], is_assignment);
+			AssignSlot(pool_index, spatial_hash, is_assignment);
 
 			return pool_index;
 		}

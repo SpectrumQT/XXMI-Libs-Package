@@ -1965,18 +1965,34 @@ void Draw3DMigotoOverlayCommand::run(CommandListState *state)
 
 void CopyCommandListCommand::run(CommandListState* state)
 {
-	if (failed)
-		return;
+	// Operation enters "failed" state when recursively resolved SRC root is DST.
+	// It allows to bail on cyclic reference to avoid runtime overhead from warnings spam.
+	if (failed_root) {
+		if (src && failed_root != src->command_list.ResolveCommandList())
+			failed_root = nullptr;  // Recover from "failed" state if SRC root changed.
+		else
+			return;
+	}
 
 	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
 
 	if (!dst->command_list.SetSourceCommandList(src ? &src->command_list : nullptr)) {
-		failed = true;
+		if (!src) {
+			assert(false); // Should never happen.
+			return;
+		}
+		// Cyclic reference encountered. Enter "failed" state.
+		failed_root = src->command_list.ResolveCommandList();
 		return;
 	}
 
 	if (!dst->post_command_list.SetSourceCommandList(src ? &src->post_command_list : nullptr)) {
-		failed = true;
+		if (!src) {
+			assert(false); // Should never happen.
+			return;
+		}
+		// Cyclic reference encountered. Enter "failed" state.
+		failed_root = src->command_list.ResolveCommandList();  // Both pre and post are synced.
 		return;
 	}
 }
@@ -7709,7 +7725,7 @@ static CommandListCommand* parse_pool_copy_operation(
 			options |= ResourceCopyOptions::REFERENCE;
 		else if (options & ResourceCopyOptions::COPY) {
 			// Cannot use `copy` for pool to pool, only `ref` and `copy_desc` are supported.
-			LogOverlayW(LOG_WARNING, L"Cannot copy `%ls` to `%ls` (deep `copy` is not supported)\n - [% ls] @[% ls]\n", src.custom_resource_pool->name, dst.custom_resource_pool->name, section, ini_namespace->c_str());
+			LogOverlayW(LOG_WARNING, L"Cannot copy `%ls` to `%ls` (deep `copy` is not supported)\n - [% ls] @[% ls]\n", src.custom_resource_pool->name.c_str(), dst.custom_resource_pool->name.c_str(), section, ini_namespace->c_str());
 			return nullptr;
 		}
 		src.custom_resource_pool->PropagateFlags(dst.custom_resource_pool->resource_template->bind_flags, dst.custom_resource_pool->resource_template->misc_flags);
@@ -7733,24 +7749,27 @@ static CommandListCommand* parse_pool_copy_operation(
 
 void PoolCopyOperation::CopyPoolToPool(CommandListState* state)
 {
-	if (failed)
-		return;
+	// Operation enters "failed" state when recursively resolved SRC root is DST.
+	// It allows to bail on cyclic reference to avoid runtime overhead from warnings spam.
+	if (failed_root) {
+		if (src.custom_resource_pool && failed_root != src.custom_resource_pool->ResolvePool())
+			failed_root = nullptr;  // Recover from "failed" state if SRC root changed.
+		else
+			return;
+	}
+
 	if (options & ResourceCopyOptions::COPY_MASK)
 	{
 		if (options & ResourceCopyOptions::COPY_DESC) {
 			COMMAND_LIST_LOG(state, "  copying pool metadata\n");
 			dst.custom_resource_pool->CopyMetadataFrom(*src.custom_resource_pool);
 		}
-		else {
-			//COMMAND_LIST_LOG(state, "  performing deep pool copy\n");
-			LogOverlayW(LOG_NOTICE, L"Failed to copy `%ls` to `%ls` (deep copy not supported)\n", src.custom_resource_pool->name.c_str(), dst.custom_resource_pool->name.c_str());
-			failed = true;
-		}
 	}
 	else {
 		COMMAND_LIST_LOG(state, "  copying pool by reference\n");
 		if (!dst.custom_resource_pool->SetSourcePool(src.custom_resource_pool)) {
-			failed = true;
+			// Cyclic reference encountered. Enter "failed" state.
+			failed_root = src.custom_resource_pool->ResolvePool();
 		}
 	}
 }

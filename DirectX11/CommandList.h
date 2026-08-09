@@ -1020,7 +1020,7 @@ public:
 	void run(CommandListState*) override;
 
 private:
-	bool failed = false;
+	CustomResourcePool* failed_root = nullptr;
 };
 
 class LayoutElementOperation : public CommandListCommand {
@@ -1572,7 +1572,7 @@ public:
 	virtual void run(CommandListState* state) override;
 
 private:
-	bool failed = false;
+	CommandList* failed_root = nullptr;
 };
 
 void RunCommandList(HackerDevice *mHackerDevice,

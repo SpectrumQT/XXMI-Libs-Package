@@ -3657,6 +3657,10 @@ static inline bool is_operator_char(wchar_t c)
 	case L'!':
 	case L'^':
 	case L'~':
+	case L'(':
+	case L')':
+	case L'[':
+	case L']':
 		return true;
 
 	default:

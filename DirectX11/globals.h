@@ -15,6 +15,7 @@
 #include "DecompileHLSL.h"
 
 #include "ResourceHash.h"
+#include "ShaderRegex.h"
 #include "CommandList.h"
 #include "profiling.h"
 #include "lock.h"
@@ -573,6 +574,8 @@ struct Globals
 	FuzzyTextureOverrides mFuzzyTextureOverrides;
 
 	std::unordered_map<UINT64, ShaderModelCacheEntry> mShaderModelCache;
+
+	std::unordered_map<UINT64, ShaderBindings> mShaderBindingsCache;
 
 	unordered_map<uint32_t, TextureOverrideFuzzyMatches> mTextureOverrideDrawIndexMap;  // Contains hash+TextureOverrides pairs indexed by match_index_count
 	unordered_map<uint32_t, TextureOverrideFuzzyMatches> mTextureOverrideDrawVertexMap; // Contains hash+TextureOverrides pairs indexed by match_vertex_count

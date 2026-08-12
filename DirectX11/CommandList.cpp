@@ -7195,32 +7195,6 @@ void CustomResourcePool::ExpireElements()
 #pragma endregion CustomResourcePool
 
 
-#pragma region ParseResourceCopyTarget
-
-IniParserResult ResourceCopyTarget::ParseTargetPrefix(const wchar_t*& target, size_t& length)
-{
-	switch (target[0]) {
-	case L'$':
-		if ((target[length - 1] == L']') && !wcsncmp(target, L"$pool", 5)) {
-			evaluation_mode = ResourceCopyTargetEvaluationMode::VARIABLE;
-			target++;
-			length--;
-			return IniParserResult::TOKEN_FOUND;
-		}
-	case L'@':
-		evaluation_mode = ResourceCopyTargetEvaluationMode::RESOURCE_IDENTITY;
-		target++;
-		length--;
-		return IniParserResult::TOKEN_FOUND;
-	case L'#':
-		evaluation_mode = ResourceCopyTargetEvaluationMode::POOL_INDEX;
-		target++;
-		length--;
-		return IniParserResult::TOKEN_FOUND;
-	}
-	return IniParserResult::TOKEN_NOT_FOUND;
-}
-
 float MemberArg::GetValue(CommandListState* state)
 {
 	if (expression)
@@ -7234,13 +7208,96 @@ const std::wstring& MemberArg::GetString() const
 	return constant_string;
 }
 
-bool ResourceCopyTarget::ParseMemberArguments(
-	const MemberInfo& member, const wchar_t* args_start, const wchar_t* args_end, const wstring* ini_namespace, CommandListScope* scope
-)
+IniParserResult SyntaxTarget::extract_arguments(const wchar_t* target, size_t& length, const wchar_t*& args_start, const wchar_t*& args_end)
+{
+	args_start = nullptr;
+	args_end = nullptr;
+
+	if (length == 0 || target[length - 1] != L')')
+		return IniParserResult::TOKEN_NOT_FOUND;
+
+	const wchar_t* open = wcsrchr(target, L'(');
+
+	if (!open || open <= target)
+		return IniParserResult::SYNTAX_ERROR;
+
+	// Remove "(...)" from target.
+	args_start = open + 1;
+	args_end = target + length - 1;
+
+	length = open - target;
+
+	return IniParserResult::TOKEN_FOUND;
+}
+
+bool SyntaxTarget::suffix_equals(const wchar_t* str, size_t len, const wchar_t* suffix, size_t suffix_len)
+{
+	return len >= suffix_len && !wmemcmp(str + len - suffix_len, suffix, suffix_len);
+}
+
+template<typename Mode, size_t N>
+IniParserResult SyntaxTarget::ParseTargetMember(
+    const MemberInfo<Mode> (&members)[N],
+    const wchar_t*& target,
+    size_t& length,
+    wstring& temp_target,
+    Mode& evaluation_mode,
+    const wstring* ini_namespace,
+    CommandListScope* scope)
+{
+    const wchar_t* args_start = nullptr;
+    const wchar_t* args_end = nullptr;
+
+    IniParserResult args_result =
+        extract_arguments(target, length, args_start, args_end);
+
+    if (args_result == IniParserResult::SYNTAX_ERROR)
+        return IniParserResult::SYNTAX_ERROR;
+
+    for (const auto& member : members)
+    {
+        if (length < member.len + 2)
+            break;
+
+        const wchar_t* member_pos = target + length - member.len;
+
+        if (member_pos[1] != L'>')
+            continue;
+
+        if (!suffix_equals(target, length, member.keyword, member.len))
+            continue;
+
+        if (!ParseMemberArguments(
+                member,
+                args_start,
+                args_end,
+                ini_namespace,
+                scope))
+            return IniParserResult::SYNTAX_ERROR;
+
+        evaluation_mode = member.mode;
+
+        length -= member.len;
+
+        temp_target.assign(target, length);
+        target = temp_target.c_str();
+
+        return IniParserResult::TOKEN_FOUND;
+    }
+
+    return IniParserResult::TOKEN_NOT_FOUND;
+}
+
+template<typename Mode>
+bool SyntaxTarget::ParseMemberArguments(
+	const MemberInfo<Mode>& member,
+	const wchar_t* args_start,
+	const wchar_t* args_end,
+	const wstring* ini_namespace,
+	CommandListScope* scope)
 {
 	size_t num_args = member.num_args();
 
-	// No "(...)" present.
 	if (!args_start)
 		return num_args == 0;
 
@@ -7292,31 +7349,30 @@ bool ResourceCopyTarget::ParseMemberArguments(
 	return args.Finished();
 }
 
-IniParserResult extract_arguments(const wchar_t* target, size_t& length, const wchar_t*& args_start, const wchar_t*& args_end)
+#pragma region ParseResourceCopyTarget
+
+IniParserResult ResourceCopyTarget::ParseTargetPrefix(const wchar_t*& target, size_t& length)
 {
-	args_start = nullptr;
-	args_end = nullptr;
-
-	if (length == 0 || target[length - 1] != L')')
-		return IniParserResult::TOKEN_NOT_FOUND;
-
-	const wchar_t* open = wcsrchr(target, L'(');
-
-	if (!open || open <= target)
-		return IniParserResult::SYNTAX_ERROR;
-
-	// Remove "(...)" from target.
-	args_start = open + 1;
-	args_end = target + length - 1;
-
-	length = open - target;
-
-	return IniParserResult::TOKEN_FOUND;
-}
-
-bool suffix_equals(const wchar_t* str, size_t len, const wchar_t* suffix, size_t suffix_len)
-{
-	return len >= suffix_len && !wmemcmp(str + len - suffix_len, suffix, suffix_len);
+	switch (target[0]) {
+	case L'$':
+		if ((target[length - 1] == L']') && !wcsncmp(target, L"$pool", 5)) {
+			evaluation_mode = ResourceCopyTargetEvaluationMode::VARIABLE;
+			target++;
+			length--;
+			return IniParserResult::TOKEN_FOUND;
+		}
+	case L'@':
+		evaluation_mode = ResourceCopyTargetEvaluationMode::RESOURCE_IDENTITY;
+		target++;
+		length--;
+		return IniParserResult::TOKEN_FOUND;
+	case L'#':
+		evaluation_mode = ResourceCopyTargetEvaluationMode::POOL_INDEX;
+		target++;
+		length--;
+		return IniParserResult::TOKEN_FOUND;
+	}
+	return IniParserResult::TOKEN_NOT_FOUND;
 }
 
 IniParserResult ResourceCopyTarget::ParseTargetMember(
@@ -7362,45 +7418,7 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 		}} },
 	};
 
-	// Consume (...) arguments contents (adjust `length` accordingly). Ensure syntax error passthrough.
-	const wchar_t* args_start = nullptr;
-	const wchar_t* args_end = nullptr;
-	IniParserResult args_result = extract_arguments(target, length, args_start, args_end);
-	if (args_result == IniParserResult::SYNTAX_ERROR)
-		return IniParserResult::SYNTAX_ERROR;
-
-	// Consume member keyword (adjust `target` and `length` accordingly).
-	for (const auto& member : members)
-	{
-		// Members are listed by ASC length. Exit loop if target is shorter than current member length plus "ib" length of 2.
-		if (length < member.len + 2)
-			break;
-
-		// Skip to next member if ">" pointer is not found at expected pos (avoids unneeded "wmemcmp" calls).
-		const wchar_t* member_pos = target + length - member.len;
-		if (member_pos[1] != L'>')
-			continue;
-
-		// Check if the trailing end matches the member substr, "->" included.
-		if (!suffix_equals(target, length, member.keyword, member.len))
-			continue;
-
-		if (!ParseMemberArguments(member, args_start, args_end, ini_namespace, scope))
-			return IniParserResult::SYNTAX_ERROR;
-
-		// Member found.
-		evaluation_mode = member.mode;
-
-		length -= member.len;
-
-		temp_target.assign(target, length);
-		target = temp_target.c_str();
-
-		//LogInfo("ParseTargetMember: TOKEN_FOUND keyword=%ls, target=%ls\n", member.keyword, target);
-		return IniParserResult::TOKEN_FOUND;
-	}
-
-	return IniParserResult::TOKEN_NOT_FOUND;
+	return SyntaxTarget::ParseTargetMember(members, target, length, temp_target, evaluation_mode, ini_namespace, scope);
 }
 
 IniParserResult ResourceCopyTarget::ParseTargetCustomResource(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope)

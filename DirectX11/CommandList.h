@@ -852,23 +852,59 @@ enum class IniParserResult : uint8_t {
 	SYNTAX_ERROR = 2,
 };
 
-class ResourceCopyTarget {
-	static constexpr size_t MAX_MEMBER_ARGS_COUNT = 4;
-public:
-	struct MemberInfo {
-		const wchar_t* keyword;
-		size_t len; // including "->"
-		ResourceCopyTargetEvaluationMode mode;
-		std::array<MemberArg::Type, MAX_MEMBER_ARGS_COUNT> args{};
 
-		size_t num_args() const
-		{
-			size_t n = 0;
-			while (n < args.size() && args[n] != MemberArg::Type::None)
-				++n;
-			return n;
-		}
-	};
+class SyntaxTarget
+{
+public:
+	static constexpr size_t MAX_MEMBER_ARGS_COUNT = 4;
+	std::array<MemberArg, MAX_MEMBER_ARGS_COUNT> member_args{};
+
+private:
+	static IniParserResult extract_arguments(const wchar_t* target, size_t& length, const wchar_t*& args_start, const wchar_t*& args_end);
+	static bool suffix_equals(const wchar_t* str, size_t len, const wchar_t* suffix, size_t suffix_len);
+
+protected:
+
+    template<typename Mode>
+    struct MemberInfo {
+        const wchar_t* keyword;
+        size_t len;
+        Mode mode;
+        std::array<MemberArg::Type, MAX_MEMBER_ARGS_COUNT> args{};
+
+        size_t num_args() const
+        {
+            size_t n = 0;
+            while (n < args.size() && args[n] != MemberArg::Type::None)
+                ++n;
+            return n;
+        }
+    };
+
+    template<typename Mode>
+    bool ParseMemberArguments(
+        const MemberInfo<Mode>& member,
+        const wchar_t* args_start,
+        const wchar_t* args_end,
+        const wstring* ini_namespace,
+        CommandListScope* scope);
+
+	template<typename Mode, size_t N>
+	IniParserResult ParseTargetMember(
+		const MemberInfo<Mode>(&members)[N],
+		const wchar_t*& target,
+		size_t& length,
+		wstring& temp_target,
+		Mode& evaluation_mode,
+		const wstring* ini_namespace,
+		CommandListScope* scope);
+};
+
+
+class ResourceCopyTarget : public SyntaxTarget
+{
+public:
+    using MemberInfo = SyntaxTarget::MemberInfo<ResourceCopyTargetEvaluationMode>;
 
 	ResourceCopyTargetType type = ResourceCopyTargetType::INVALID;
 	ResourceCopyTargetEvaluationMode evaluation_mode = ResourceCopyTargetEvaluationMode::RESOURCE;
@@ -877,8 +913,6 @@ public:
 
 	CustomResourcePool* custom_resource_pool = nullptr;
 	std::unique_ptr<CommandListExpression> pool_dynamic_index_expression = nullptr;
-
-	std::array<MemberArg, MAX_MEMBER_ARGS_COUNT> member_args{};
 
 	bool forbid_view_cache = false;
 
@@ -925,7 +959,6 @@ public:
 
 private:
 	IniParserResult ParseTargetPrefix(const wchar_t*& target, size_t& length);
-	bool ParseMemberArguments(const MemberInfo& member, const wchar_t* args_start, const wchar_t* args_end, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetMember(const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetPipelineSlot(const wchar_t*& target, size_t length, bool is_source);
 	IniParserResult ParseTargetCustomResource(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope);

@@ -2881,7 +2881,8 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
 	HackerContext *mHackerContext = state->mHackerContext;
 	ID3D11DeviceChild *shader = NULL;
 
-	switch (shader_filter_target) {
+	switch (shader_target.shader_type)
+	{
 		case L'v':
 			shader = mHackerContext->mCurrentVertexShaderHandle;
 			break;
@@ -2901,29 +2902,31 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
 			shader = mHackerContext->mCurrentComputeShaderHandle;
 			break;
 		default:
-			LogOverlay(LOG_DIRE, "BUG: Unknown shader filter type: \"%C\"\n", shader_filter_target);
+			LogOverlay(LOG_DIRE, "BUG: Unknown shader filter type: \"%C\"\n", shader_target.shader_type);
 			break;
 	}
 
-	// Negative zero means no shader bound:
 	if (!shader)
-		return -0.0;
+		return -0.0;  // Negative zero means no shader bound.
 
 	ShaderMap::iterator shader_it = lookup_shader_hash(shader);
 
 	if (shader_it == G->mShaders.end())
 		return 0.0;
 
-	// Positive zero means shader bound with no ShaderOverride
-	ShaderOverrideMap::iterator override = lookup_shaderoverride(shader_it->second);
-	if (override == G->mShaderOverrideMap.end())
-		return 0.0;
+	if (shader_target.evaluation_mode == ShaderTargetEvaluationMode::SHADER)
+	{
+		ShaderOverrideMap::iterator override = lookup_shaderoverride(shader_it->second);
+		if (override == G->mShaderOverrideMap.end())
+			return 0.0;  // Positive zero means shader bound with no ShaderOverride.
 
-	if (override->second.filter_index != FLT_MAX)
-		return override->second.filter_index;
+		if (override->second.filter_index != FLT_MAX)
+			return override->second.filter_index;
 
-	// Matched ShaderOverride / ShaderRegex, but no filter_index:
-	return 1.0;
+		return 1.0;  // Matched ShaderOverride / ShaderRegex, but no filter_index.
+	}
+
+	return 0.0;
 }
 
 void CommandList::clear()
@@ -4571,19 +4574,17 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 				pos += len_target;
 				goto import_operand;
 			}
-		}
 
-		// Must be attempted after target, otherwise it'll win over slots (e.g. `vs` over `vs-cb0`).
-		if (!has_prefix && len)
-		{
-			token = remain.substr(0, len);
-
-			// Parse shader (e.g. `vs`, `cs`).
-			if (operand->parse_shader(&token, ini_namespace, scope))
+			// Must be attempted after target, otherwise it'll win over slots (e.g. `vs` over `vs-cb0`).
+			if (!has_prefix)
 			{
-				LogDebug("      Shader: \"%S\"\n", token.c_str());
-				pos += len;
-				goto import_operand;
+				// Parse shader (e.g. `vs`, `cs`).
+				if (operand->parse_shader(&token, ini_namespace, scope))
+				{
+					LogDebug("      Shader: \"%S\"\n", token.c_str());
+					pos += len_target;
+					goto import_operand;
+				}
 			}
 		}
 
@@ -5410,24 +5411,11 @@ bool CommandListOperand::parse_target(const wstring* operand, const wstring* ini
 
 bool CommandListOperand::parse_shader(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
 {
-	// WARNING: This test is especially susceptible to an uninitialised
-	//          %n fooling it into thinking it has parsed the entire string
-	//          if the stack garbage happens to contain operand->length().
-	//          This is because the %n does not immediately follow another
-	//          conversion specification and does not alter the return
-	//          value, so the return value will not distinguish between
-	//          early termination and completion, and since %lc will match
-	//          any character this can trigger easily. Seems to only occur
-	//          on vs2013, though I'm not positive if vs2017 zeroes out
-	//          len1 or dumb luck gave different values in the stack.
-	int len1 = 0;
-	int ret = swscanf_s(operand->c_str(), L"%lcs%n", &shader_filter_target, 1, &len1);
-	if (ret == 1 && len1 == operand->length()) {
-		switch (shader_filter_target) {
-		case L'v': case L'h': case L'd': case L'g': case L'p': case L'c':
-			type = ParamOverrideType::SHADER;
-			return operand_allowed_in_context(type, scope);
-		}
+	int ret;
+	ret = shader_target.ParseTarget(operand->c_str(), true, ini_namespace, scope);
+	if (ret) {
+		type = ParamOverrideType::SHADER;
+		return operand_allowed_in_context(type, scope);
 	}
 	return false;
 }
@@ -7347,6 +7335,73 @@ bool SyntaxTarget::ParseMemberArguments(
 	}
 
 	return args.Finished();
+}
+
+IniParserResult ShaderTarget::ParseShaderPipelineSlot(const wchar_t*& target, size_t length, bool is_source)
+{
+	//LogInfo("ParseShaderPipelineSlot: target=%ls, length=%d, is_source=%d\n", target, length, is_source);
+
+	// WARNING: This test is especially susceptible to an uninitialised
+	//          %n fooling it into thinking it has parsed the entire string
+	//          if the stack garbage happens to contain operand->length().
+	//          This is because the %n does not immediately follow another
+	//          conversion specification and does not alter the return
+	//          value, so the return value will not distinguish between
+	//          early termination and completion, and since %lc will match
+	//          any character this can trigger easily. Seems to only occur
+	//          on vs2013, though I'm not positive if vs2017 zeroes out
+	//          len1 or dumb luck gave different values in the stack.
+
+	int len1 = 0;
+	int ret = swscanf_s(target, L"%lcs%n", &shader_type, 1, &len1);
+
+	if (ret == 1 && len1 == length) {
+		switch (shader_type) {
+		case L'v': case L'h': case L'd': case L'g': case L'p': case L'c':
+			return IniParserResult::TOKEN_FOUND;
+		}
+	}
+
+	return IniParserResult::TOKEN_NOT_FOUND;
+}
+
+bool ShaderTarget::ParseTarget(const wchar_t* target, bool is_source, const wstring* ini_namespace, CommandListScope* scope)
+{
+	IniParserResult ret;
+	size_t length = wcslen(target);
+	std::wstring temp_target;
+
+	if (!target || length < 2)
+		return false;
+
+	//LogInfo("ShaderTarget::ParseTarget: `%ls` is_source=%d\n", target, is_source);
+
+	// Consume an optional member suffix.
+	ret = ParseTargetMember(target, length, temp_target, ini_namespace, scope);
+	//LogInfo("ParseTarget: %d at ParseTargetMember\n", ret);
+	if (ret == IniParserResult::SYNTAX_ERROR)
+		return false;
+
+	// Parse the remainder as a pipeline slot (e.g. `vs`, `ps`, `cs`).
+	ret = ParseShaderPipelineSlot(target, length, is_source);
+	//LogInfo("ParseTarget: %d at ParseTargetPipelineSlot\n", ret);
+	if (ret != IniParserResult::TOKEN_NOT_FOUND)
+		return ret == IniParserResult::TOKEN_FOUND;
+
+	//LogInfo("ParseTarget: 0 at END\n");
+	return false;
+}
+
+IniParserResult ShaderTarget::ParseTargetMember(
+	const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope
+)
+{
+	//LogInfo("ShaderTarget::ParseTargetMember: target=%ls, length=%d\n", target, length);
+
+	static constexpr MemberInfo members[] = {
+	};
+
+	return SyntaxTarget::ParseTargetMember(members, target, length, temp_target, evaluation_mode, ini_namespace, scope);
 }
 
 #pragma region ParseResourceCopyTarget

@@ -901,6 +901,35 @@ protected:
 };
 
 
+enum class ShaderTargetEvaluationMode : uint32_t {
+	INVALID            = 0b00000000000000000000000000000000,
+
+	SHADER             = 0b00000000000000000000000000000001,
+};
+SENSIBLE_ENUM(ShaderTargetEvaluationMode);
+//static EnumName_t<const wchar_t*, ShaderTargetEvaluationMode> ShaderTargetEvaluationModeNames[] = {
+//	{L"Shader", ShaderTargetEvaluationMode::SHADER},
+//
+//	{NULL, ShaderTargetEvaluationMode::INVALID} // End of list marker
+//};
+
+
+class ShaderTarget : public SyntaxTarget
+{
+public:
+	using MemberInfo = SyntaxTarget::MemberInfo<ShaderTargetEvaluationMode>;
+
+	ShaderTargetEvaluationMode evaluation_mode = ShaderTargetEvaluationMode::SHADER;
+	wchar_t shader_type = L'\0';
+
+	bool ParseTarget(const wchar_t* target, bool is_source, const wstring* ini_namespace, CommandListScope* scope);
+
+private:
+	IniParserResult ParseTargetMember(const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope);
+	IniParserResult ParseShaderPipelineSlot(const wchar_t*& target, size_t length, bool is_source);
+};
+
+
 class ResourceCopyTarget : public SyntaxTarget
 {
 public:
@@ -1331,7 +1360,7 @@ public:
 
 	// For texture filters:
 	ResourceCopyTarget texture_filter_target;
-	wchar_t shader_filter_target;
+	ShaderTarget shader_target;
 
 	// For scissor rectangle:
 	unsigned scissor;

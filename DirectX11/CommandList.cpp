@@ -2926,6 +2926,59 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
 		return 1.0;  // Matched ShaderOverride / ShaderRegex, but no filter_index.
 	}
 
+	//LogDebug("ShaderTarget Member Evaluation hash=%016I64x\n", shader_it->second);
+
+	auto it = G->mShaderBindingsCache.find(shader_it->second);
+	if (it == G->mShaderBindingsCache.end()) {
+		assert(false);
+		return 0.0;  // Safety check, should never happen;
+	}
+
+	UINT slot_id = (UINT)shader_target.member_args[0].GetValue(state);
+
+	switch (shader_target.evaluation_mode)
+	{
+	case ShaderTargetEvaluationMode::DCL_CB_TYPE:
+	{
+		ShaderConstantBuffer& cb = it->second.constant_buffers[slot_id];
+
+		return (float)cb.type;
+	}
+	case ShaderTargetEvaluationMode::DCL_CB_SIZE:
+	{
+		ShaderConstantBuffer& cb = it->second.constant_buffers[slot_id];
+
+		if (cb.type == ShaderConstantBufferType::NONE)
+			return -1.0;  // Negative one means CB is not declared for this slot.
+
+		return (float)cb.size;
+	}
+	case ShaderTargetEvaluationMode::DCL_SRV_TYPE:
+	{
+		ShaderResource& t = it->second.resources[slot_id];
+
+		return (float)t.type;
+	}
+	case ShaderTargetEvaluationMode::DCL_SRV_STRIDE:
+	{
+		ShaderResource& t = it->second.resources[slot_id];
+
+		if (t.type == ShaderResourceType::NONE)
+			return -1.0;  // Negative one means SRV is not declared for this slot.
+
+		return (float)t.stride;
+	}
+	case ShaderTargetEvaluationMode::DCL_SRV_DIMENSION:
+	{
+		ShaderResource& t = it->second.resources[slot_id];
+
+		if (t.type == ShaderResourceType::NONE)
+			return -1.0;  // Negative one means SRV is not declared for this slot.
+
+		return (float)t.dimension;
+	}
+	}
+	
 	return 0.0;
 }
 
@@ -7398,7 +7451,27 @@ IniParserResult ShaderTarget::ParseTargetMember(
 {
 	//LogInfo("ShaderTarget::ParseTargetMember: target=%ls, length=%d\n", target, length);
 
+	if (length < 11) // Smallest possible match is "vs->cb_mask".
+		return IniParserResult::TOKEN_NOT_FOUND;
+
 	static constexpr MemberInfo members[] = {
+		{ L"->cb_mask",         9, ShaderTargetEvaluationMode::DCL_CB_MASK },
+		{ L"->cb_type",         9, ShaderTargetEvaluationMode::DCL_CB_TYPE, {{
+			MemberArg::Type::Unsigned, // Slot ID
+		}} },
+		{ L"->cb_size",         9, ShaderTargetEvaluationMode::DCL_CB_SIZE, {{
+			MemberArg::Type::Unsigned, // Slot ID
+		}} },
+		{ L"->srv_mask",       10, ShaderTargetEvaluationMode::DCL_SRV_MASK },
+		{ L"->srv_type",       10, ShaderTargetEvaluationMode::DCL_SRV_TYPE, {{
+			MemberArg::Type::Unsigned, // Slot ID
+		}} },
+		{ L"->srv_stride",     12, ShaderTargetEvaluationMode::DCL_SRV_STRIDE, {{
+			MemberArg::Type::Unsigned, // Slot ID
+		}} },
+		{ L"->srv_dimension",  15, ShaderTargetEvaluationMode::DCL_SRV_DIMENSION, {{
+			MemberArg::Type::Unsigned, // Slot ID
+		}} },
 	};
 
 	return SyntaxTarget::ParseTargetMember(members, target, length, temp_target, evaluation_mode, ini_namespace, scope);

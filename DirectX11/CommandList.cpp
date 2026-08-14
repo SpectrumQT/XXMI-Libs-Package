@@ -8330,7 +8330,8 @@ bool ParseCommandListResourceCopyTargetDirective(
 
 		if (dst.type == ResourceCopyTargetType::POOL)
 		{
-			if (src.type == ResourceCopyTargetType::POOL) // PoolFoo = ref PoolBar
+			if (src.type == ResourceCopyTargetType::POOL      // PoolFoo = ref PoolBar
+				|| src.type == ResourceCopyTargetType::EMPTY) // PoolFoo = null
 			{
 				// Pool - Copy Pool To Pool (`ref` and `copy_desc`)
 				operation = parse_pool_copy_operation(section, dst, src, options, command_list, ini_namespace);

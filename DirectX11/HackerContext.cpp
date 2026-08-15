@@ -574,14 +574,15 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 		if (it != G->mShaderModelCache.end()) {
 			orig_info->shaderModel = it->second.shaderModel;
 			LogInfo("%S %016I64x shader model %s is loaded from cache.\n", shader_type, hash, orig_info->shaderModel.c_str());
-		} else {
+		}
+		else {
 			if (orig_info->shaderModel == "bin") {
 				// Get shader model from bytecode.
 				if (!get_shader_model_from_bytecode(orig_info->byteCode->GetBufferPointer(), orig_info->byteCode->GetBufferSize(), &orig_info->shaderModel)) {
 					LogInfo("%S %016I64x shader model detection from bytecode failed.\n", shader_type, hash);
 					goto out_drop;
 				}
-				// Store shader modeli in cache.
+				// Store shader model in cache.
 				G->mShaderModelCache.emplace(hash, ShaderModelCacheEntry{ orig_info->shaderModel });
 				LogInfo("%S %016I64x shader model %s detected from bytecode.\n", shader_type, hash, orig_info->shaderModel.c_str());
 			}

@@ -646,6 +646,7 @@ public:
 	PoolIndexType index_type = PoolIndexType::RING;
 	bool lazy_initialization = true;
 	bool element_type_switch_reset = true;
+	bool allocate_slot_on_missing = false;
 	unsigned expiration_timeout_frames = UINT32_MAX;
 	bool reset_expired_elements = false;
 	bool read_refreshes_expiration = false;
@@ -851,23 +852,97 @@ enum class IniParserResult : uint8_t {
 	SYNTAX_ERROR = 2,
 };
 
-class ResourceCopyTarget {
-	static constexpr size_t MAX_MEMBER_ARGS_COUNT = 4;
-public:
-	struct MemberInfo {
-		const wchar_t* keyword;
-		size_t len; // including "->"
-		ResourceCopyTargetEvaluationMode mode;
-		std::array<MemberArg::Type, MAX_MEMBER_ARGS_COUNT> args{};
 
-		size_t num_args() const
-		{
-			size_t n = 0;
-			while (n < args.size() && args[n] != MemberArg::Type::None)
-				++n;
-			return n;
-		}
-	};
+class SyntaxTarget
+{
+public:
+	static constexpr size_t MAX_MEMBER_ARGS_COUNT = 4;
+	std::array<MemberArg, MAX_MEMBER_ARGS_COUNT> member_args{};
+
+private:
+	static IniParserResult extract_arguments(const wchar_t* target, size_t& length, const wchar_t*& args_start, const wchar_t*& args_end);
+	static bool suffix_equals(const wchar_t* str, size_t len, const wchar_t* suffix, size_t suffix_len);
+
+protected:
+
+    template<typename Mode>
+    struct MemberInfo {
+        const wchar_t* keyword;
+        size_t len;
+        Mode mode;
+        std::array<MemberArg::Type, MAX_MEMBER_ARGS_COUNT> args{};
+
+        size_t num_args() const
+        {
+            size_t n = 0;
+            while (n < args.size() && args[n] != MemberArg::Type::None)
+                ++n;
+            return n;
+        }
+    };
+
+    template<typename Mode>
+    bool ParseMemberArguments(
+        const MemberInfo<Mode>& member,
+        const wchar_t* args_start,
+        const wchar_t* args_end,
+        const wstring* ini_namespace,
+        CommandListScope* scope);
+
+	template<typename Mode, size_t N>
+	IniParserResult ParseTargetMember(
+		const MemberInfo<Mode>(&members)[N],
+		const wchar_t*& target,
+		size_t& length,
+		wstring& temp_target,
+		Mode& evaluation_mode,
+		const wstring* ini_namespace,
+		CommandListScope* scope);
+};
+
+
+enum class ShaderTargetEvaluationMode : uint32_t {
+	INVALID            = 0b00000000000000000000000000000000,
+
+	SHADER             = 0b00000000000000000000000000000001,
+
+	DCL_CB_MASK        = 0b00000000000000000000000000000010,
+	DCL_CB_TYPE        = 0b00000000000000000000000000000100,
+	DCL_CB_SIZE        = 0b00000000000000000000000000001000,
+
+	DCL_SRV_MASK       = 0b00000000000000000000000000010000,
+	DCL_SRV_TYPE       = 0b00000000000000000000000000100000,
+	DCL_SRV_DIMENSION  = 0b00000000000000000000000001000000,
+	DCL_SRV_STRIDE     = 0b00000000000000000000000010000000,
+};
+SENSIBLE_ENUM(ShaderTargetEvaluationMode);
+//static EnumName_t<const wchar_t*, ShaderTargetEvaluationMode> ShaderTargetEvaluationModeNames[] = {
+//	{L"Shader", ShaderTargetEvaluationMode::SHADER},
+//
+//	{NULL, ShaderTargetEvaluationMode::INVALID} // End of list marker
+//};
+
+
+class ShaderTarget : public SyntaxTarget
+{
+public:
+	using MemberInfo = SyntaxTarget::MemberInfo<ShaderTargetEvaluationMode>;
+
+	ShaderTargetEvaluationMode evaluation_mode = ShaderTargetEvaluationMode::SHADER;
+	wchar_t shader_type = L'\0';
+
+	bool ParseTarget(const wchar_t* target, bool is_source, const wstring* ini_namespace, CommandListScope* scope);
+
+private:
+	IniParserResult ParseTargetMember(const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope);
+	IniParserResult ParseShaderPipelineSlot(const wchar_t*& target, size_t length, bool is_source);
+};
+
+
+class ResourceCopyTarget : public SyntaxTarget
+{
+public:
+    using MemberInfo = SyntaxTarget::MemberInfo<ResourceCopyTargetEvaluationMode>;
 
 	ResourceCopyTargetType type = ResourceCopyTargetType::INVALID;
 	ResourceCopyTargetEvaluationMode evaluation_mode = ResourceCopyTargetEvaluationMode::RESOURCE;
@@ -877,11 +952,9 @@ public:
 	CustomResourcePool* custom_resource_pool = nullptr;
 	std::unique_ptr<CommandListExpression> pool_dynamic_index_expression = nullptr;
 
-	std::array<MemberArg, MAX_MEMBER_ARGS_COUNT> member_args{};
-
 	bool forbid_view_cache = false;
 
-	bool ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope);
+	bool ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope, bool allow_custom = true);
 
 	void SetCustomResource(CustomResource* resource);
 
@@ -924,7 +997,6 @@ public:
 
 private:
 	IniParserResult ParseTargetPrefix(const wchar_t*& target, size_t& length);
-	bool ParseMemberArguments(const MemberInfo& member, const wchar_t* args_start, const wchar_t* args_end, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetMember(const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetPipelineSlot(const wchar_t*& target, size_t length, bool is_source);
 	IniParserResult ParseTargetCustomResource(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope);
@@ -1020,7 +1092,7 @@ public:
 	void run(CommandListState*) override;
 
 private:
-	bool failed = false;
+	CustomResourcePool* failed_root = nullptr;
 };
 
 class LayoutElementOperation : public CommandListCommand {
@@ -1297,7 +1369,7 @@ public:
 
 	// For texture filters:
 	ResourceCopyTarget texture_filter_target;
-	wchar_t shader_filter_target;
+	ShaderTarget shader_target;
 
 	// For scissor rectangle:
 	unsigned scissor;
@@ -1315,6 +1387,7 @@ public:
 	bool parse_float(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope, size_t& out_length);
 	bool parse_ini_param(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_variable(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
+	bool parse_slot(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_target(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_shader(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_scissor(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
@@ -1571,7 +1644,7 @@ public:
 	virtual void run(CommandListState* state) override;
 
 private:
-	bool failed = false;
+	CommandList* failed_root = nullptr;
 };
 
 void RunCommandList(HackerDevice *mHackerDevice,
@@ -1652,8 +1725,8 @@ public:
 
 	template<typename T>
 	bool GetEnum(const EnumName_t<const wchar_t*, T>* names, T invalid, T* out);
-	bool GetVariable(CommandListVariable*& out, bool is_source);
-	bool GetTarget(ResourceCopyTarget* out, bool is_source);
+	bool GetVariable(CommandListVariable*& out, bool is_source, PeekMode mode = PeekMode::Token);
+	bool GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode = PeekMode::Token);
 	bool GetFloat(float* out);
 	bool GetExpression(unique_ptr<CommandListExpression>* out);
 

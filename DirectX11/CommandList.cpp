@@ -1676,9 +1676,86 @@ void StoreCommand::run(CommandListState* state)
 		return;
 	}
 
+	D3D11_BUFFER_DESC src_desc = {};
+	static_cast<ID3D11Buffer*>(src_resource)->GetDesc(&src_desc);
+
+	const bool is_structured = (src_desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) != 0;
+
+	const UINT value_index = offset_expression->evaluate(state);
+	const UINT value_size = sizeof(float);
+
+	// StoreCommand historically treats the source as a flat sequence of 4-byte values.
+	// The requested offset is therefore a value index, regardless of whether the underlying buffer is structured.
+	const UINT64 value_byte_offset = static_cast<UINT64>(value_index) * value_size;
+
+	UINT64 copy_offset = 0;
+	UINT64 copy_size = 0;
+	UINT value_offset = 0;
+
+	if (is_structured)
+	{
+		const UINT stride = src_desc.StructureByteStride;
+
+		if (stride == 0)
+		{
+			var->fval = 0.0f;
+			src_resource->Release();
+			return;
+		}
+
+		// CopySubresourceRegion requires a structured-buffer copy region to contain complete structure elements.
+		// Find the first structure touched by the requested value.
+		const UINT64 first_struct_offset = (value_byte_offset / stride) * stride;
+
+		// The requested value occupies [value_byte_offset, value_end_offset).
+		const UINT64 value_end_offset = value_byte_offset + value_size;
+
+		// Round the end of the requested value up to a structure boundary.
+		// This allows the requested 4-byte value to span multiple structures
+		// when StructureByteStride is smaller than sizeof(float).
+		const UINT64 copy_end_offset = ((value_end_offset + stride - 1) / stride) * stride;
+
+		// Copy whole structures, potentially more than one, while retaining
+		// the requested value's byte offset within the copied staging data.
+		copy_offset = first_struct_offset;
+		copy_size = copy_end_offset - first_struct_offset;
+		value_offset = static_cast<UINT>(value_byte_offset - first_struct_offset);
+	}
+	else
+	{
+		// Non-structured buffers have no structure-alignment restriction,
+		// so only the requested 4-byte value needs to be copied.
+		copy_offset = value_byte_offset;
+		copy_size = value_size;
+		value_offset = 0;
+	}
+
+	// Make sure the complete source copy region is inside the buffer.
+	if (copy_offset + copy_size > src_desc.ByteWidth)
+	{
+		var->fval = 0.0f;
+		src_resource->Release();
+		return;
+	}
+
+	// Copy the requested float into the staging buffer for CPU readback.
+	D3D11_BOX box = {};
+	box.left = static_cast<UINT>(copy_offset);
+	box.right = static_cast<UINT>(copy_offset + copy_size);
+	box.top = 0;
+	box.bottom = 1;
+	box.front = 0;
+	box.back = 1;
+
 	// Acquire a cached staging buffer. Buffers are pooled by size and reused
 	// across calls to avoid repeated CreateBuffer() overhead.
-	ID3D11Buffer* staging = mHackerContext->GetReadbackBuffer(sizeof(float));
+	//
+	// The staging buffer is always a linear CPU-readable buffer. It does not
+	// need to be structured even when the source buffer is structured.
+	//
+	// Its size is the complete copy region, which may contain multiple
+	// structures when the requested value crosses a structure boundary.
+	ID3D11Buffer* staging = mHackerContext->GetReadbackBuffer(copy_size);
 
 	if (!staging)
 	{
@@ -1687,17 +1764,7 @@ void StoreCommand::run(CommandListState* state)
 		return;
 	}
 
-	UINT offset = offset_expression->evaluate(state);
-
-	// Copy the requested float into the staging buffer for CPU readback.
-	D3D11_BOX box = {};
-	box.left = offset * sizeof(float);
-	box.right = box.left + sizeof(float);
-	box.top = 0;
-	box.bottom = 1;
-	box.front = 0;
-	box.back = 1;
-
+	// Copy the complete source region into the CPU-readable staging buffer.
 	mOrigContext1->CopySubresourceRegion(staging, 0, 0, 0, 0, src_resource, 0, &box);
 
 	// Map the staging buffer so the copied value can be read by the CPU.
@@ -1712,8 +1779,14 @@ void StoreCommand::run(CommandListState* state)
 		return;
 	}
 
-	// Read the value before unmapping, as the mapped pointer becomes invalid once Unmap() is called.
-	var->fval = *reinterpret_cast<float*>(map.pData);
+	// The staging buffer starts at copy_offset in the source resource.
+	// value_offset points from the beginning of the staging buffer to the
+	// requested 4-byte value.
+	const uint8_t* data = static_cast<const uint8_t*>(map.pData);
+
+	// Read the value before Unmap(), since the mapped pointer becomes
+	// invalid after the staging resource is unmapped.
+	var->fval = *reinterpret_cast<const float*>(value_offset + data);
 
 	mOrigContext1->Unmap(staging, 0);
 

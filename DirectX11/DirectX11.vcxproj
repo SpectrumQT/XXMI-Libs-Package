@@ -79,6 +79,7 @@
     <ClInclude Include="..\shader.h" />
     <ClInclude Include="..\util.h" />
     <ClInclude Include="..\version.h" />
+    <ClInclude Include="ByteCodeReader.h" />
     <ClInclude Include="cursor.h" />
     <ClInclude Include="d3d11TokenizedProgramFormat.hpp" />
     <ClInclude Include="D3D11Wrapper.h" />

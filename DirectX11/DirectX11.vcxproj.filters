@@ -66,6 +66,7 @@
     <ClInclude Include="Override.h" />
     <ClInclude Include="HackerInputLayout.h" />
     <ClInclude Include="d3d11TokenizedProgramFormat.hpp" />
+    <ClInclude Include="ByteCodeReader.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="DirectX11.rc" />

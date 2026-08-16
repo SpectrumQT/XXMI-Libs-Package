@@ -33,6 +33,7 @@
 #include "ShaderRegex.h"
 #include "CommandList.h"
 #include "Hunting.h"
+#include "ByteCodeReader.h"
 
 // A map to look up the HackerDevice from an IUnknown. The reason for using an
 // IUnknown as the key is that an ID3D11Device and IDXGIDevice are actually two

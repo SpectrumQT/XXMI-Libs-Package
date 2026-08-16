@@ -1556,7 +1556,7 @@ HRESULT STDMETHODCALLTYPE HackerDevice::QueryInterface(
 	HRESULT hr = mOrigDevice1->QueryInterface(riid, ppvObject);
 	if (FAILED(hr))
 	{
-		LogInfo("  failed result = %x for %p\n", hr, ppvObject);
+		LogDebug("  failed result = %x for %p\n", hr, ppvObject);
 		return hr;
 	}
 
@@ -2626,7 +2626,17 @@ STDMETHODIMP HackerDevice::CreateShader(THIS_
 	// Calculate hash
 	hash = hash_shader(pShaderBytecode, BytecodeLength);
 
+	//constexpr int iterations = 10000;
+	//auto start = std::chrono::steady_clock::now();
+	//for (int i = 0; i < iterations; ++i)
+	//{
 	CacheShaderBindings(hash, pShaderBytecode, BytecodeLength);
+	//}
+	//auto end = std::chrono::steady_clock::now();
+	//const double total_ms = std::chrono::duration<double, std::milli>(end - start).count();
+	//const double avg_ns = total_ms * 1'000'000.0 / iterations;
+	//LogInfo("  CacheShaderBindings: %.2f ns/call (%.2f ms total, %d iterations)\n",
+	//	avg_ns, total_ms, iterations);
 
 	hr = ReplaceShaderFromShaderFixes<ID3D11Shader, OrigCreateShader>
 		(hash, pShaderBytecode, BytecodeLength, pClassLinkage,

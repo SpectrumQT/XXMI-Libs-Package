@@ -357,7 +357,7 @@ static void UpdateInputLayout(const wchar_t* ini_section, CommandListState* stat
 	{
 		ID3D11InputLayout* new_layout = nullptr;
 
-		HRESULT hr = state->mHackerDevice->CreateInputLayout(
+		HRESULT hr = state->mHackerDevice->CreateCustomInputLayout(
 			elements.data(), static_cast<UINT>(elements.size()), current_layout->GetShaderSignature(), current_layout->GetShaderSignatureSize(), &new_layout
 		);
 

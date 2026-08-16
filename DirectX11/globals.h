@@ -575,6 +575,7 @@ struct Globals
 
 	std::unordered_map<UINT64, ShaderModelCacheEntry> mShaderModelCache;
 
+	CRITICAL_SECTION mShaderBindingsLock;
 	std::unordered_map<UINT64, ShaderBindings> mShaderBindingsCache;
 
 	unordered_map<uint32_t, TextureOverrideFuzzyMatches> mTextureOverrideDrawIndexMap;  // Contains hash+TextureOverrides pairs indexed by match_index_count

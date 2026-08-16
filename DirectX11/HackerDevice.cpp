@@ -2558,23 +2558,41 @@ fnv:
 
 static void CacheShaderBindings(uint64_t hash, const void* pShaderBytecode, SIZE_T BytecodeLength)
 {
-	// Detect shader bindings
-	auto it = G->mShaderBindingsCache.find(hash);
-	if (it != G->mShaderBindingsCache.end()) {
-		//orig_info->shaderModel = it->second.shaderModel;
-		LogDebug("  Skipped parsing %016I64x shader bindings from bytecode (already cached).\n", hash);
+	{
+		CriticalSectionGuard(&G->mShaderBindingsLock);
+
+		if (G->mShaderBindingsCache.find(hash) != G->mShaderBindingsCache.end())
+		{
+			LogDebug("  Skipped parsing %016I64x shader bindings from bytecode (already cached).\n", hash);
+			return;
+		}
 	}
-	else {
-		ShaderBindings bindings;
 
-		// Get shader bindings from bytecode.
-		if (!get_shader_bindings_from_bytecode(pShaderBytecode, BytecodeLength, &bindings))
+	ShaderBindings bindings{};
+
+	const bool parsed = get_shader_bindings_from_bytecode( pShaderBytecode, BytecodeLength, &bindings);
+
+	{
+		CriticalSectionGuard(&G->mShaderBindingsLock);
+
+		// Another thread may have inserted it while we were parsing.
+		std::pair<std::unordered_map<uint64_t, ShaderBindings>::iterator, bool > result = G->mShaderBindingsCache.emplace(hash, std::move(bindings));
+
+		if (!result.second)
+		{
+			// Another thread won the race.
+			LogDebug("  Shader bindings %016I64x were cached concurrently.\n", hash);
+			return;
+		}
+
+		if (!parsed)
+		{
 			LogInfo("  Failed to parse %016I64x shader bindings from bytecode.\n", hash);
+		}
 		else
+		{
 			LogDebug("  Cached %016I64x shader bindings (parsed from bytecode).\n", hash);
-
-		// Store shader bindings in cache (even if parsing failed).
-		G->mShaderBindingsCache.emplace(hash, std::move(bindings));
+		}
 	}
 }
 

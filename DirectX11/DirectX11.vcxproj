@@ -42,6 +42,7 @@
     <ClCompile Include="..\D3D_Shaders\Assembler.cpp" />
     <ClCompile Include="..\D3D_Shaders\SignatureParser.cpp" />
     <ClCompile Include="..\HLSLDecompiler\DecompileHLSL.cpp" />
+    <ClCompile Include="ByteCodeReader.cpp" />
     <ClCompile Include="CommandList.cpp" />
     <ClCompile Include="..\iid.cpp" />
     <ClCompile Include="..\ini_parser_lite.cpp" />

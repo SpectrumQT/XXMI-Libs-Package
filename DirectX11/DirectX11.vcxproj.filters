@@ -30,6 +30,7 @@
     <ClCompile Include="cursor.cpp" />
     <ClCompile Include="Override.cpp" />
     <ClCompile Include="HackerInputLayout.cpp" />
+    <ClCompile Include="ByteCodeReader.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="d3d11Wrapper.def" />

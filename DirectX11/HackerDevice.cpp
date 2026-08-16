@@ -2555,27 +2555,27 @@ fnv:
 	return hash;
 }
 
-//static void CacheShaderBindings(uint64_t hash, const void* pShaderBytecode, SIZE_T BytecodeLength)
-//{
-//	// Detect shader bindings
-//	auto it = G->mShaderBindingsCache.find(hash);
-//	if (it != G->mShaderBindingsCache.end()) {
-//		//orig_info->shaderModel = it->second.shaderModel;
-//		LogDebug("  Skipped parsing %016I64x shader bindings from bytecode (already cached).\n", hash);
-//	}
-//	else {
-//		ShaderBindings bindings;
-//
-//		// Get shader bindings from bytecode.
-//		if (!get_shader_bindings_from_bytecode(pShaderBytecode, BytecodeLength, &bindings))
-//			LogInfo("  Failed to parse %016I64x shader bindings from bytecode.\n", hash);
-//		else
-//			LogDebug("  Cached %016I64x shader bindings (parsed from bytecode).\n", hash);
-//
-//		// Store shader bindings in cache (even if parsing failed).
-//		G->mShaderBindingsCache.emplace(hash, std::move(bindings));
-//	}
-//}
+static void CacheShaderBindings(uint64_t hash, const void* pShaderBytecode, SIZE_T BytecodeLength)
+{
+	// Detect shader bindings
+	auto it = G->mShaderBindingsCache.find(hash);
+	if (it != G->mShaderBindingsCache.end()) {
+		//orig_info->shaderModel = it->second.shaderModel;
+		LogDebug("  Skipped parsing %016I64x shader bindings from bytecode (already cached).\n", hash);
+	}
+	else {
+		ShaderBindings bindings;
+
+		// Get shader bindings from bytecode.
+		if (!get_shader_bindings_from_bytecode(pShaderBytecode, BytecodeLength, &bindings))
+			LogInfo("  Failed to parse %016I64x shader bindings from bytecode.\n", hash);
+		else
+			LogDebug("  Cached %016I64x shader bindings (parsed from bytecode).\n", hash);
+
+		// Store shader bindings in cache (even if parsing failed).
+		G->mShaderBindingsCache.emplace(hash, std::move(bindings));
+	}
+}
 
 // C++ function template of common code shared by all CreateXXXShader functions:
 template <class ID3D11Shader,
@@ -2607,7 +2607,7 @@ STDMETHODIMP HackerDevice::CreateShader(THIS_
 	// Calculate hash
 	hash = hash_shader(pShaderBytecode, BytecodeLength);
 
-	//CacheShaderBindings(hash, pShaderBytecode, BytecodeLength);
+	CacheShaderBindings(hash, pShaderBytecode, BytecodeLength);
 
 	hr = ReplaceShaderFromShaderFixes<ID3D11Shader, OrigCreateShader>
 		(hash, pShaderBytecode, BytecodeLength, pClassLinkage,

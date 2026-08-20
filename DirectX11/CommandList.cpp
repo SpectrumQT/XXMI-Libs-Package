@@ -8337,7 +8337,7 @@ static bool parse_resource_copy_target_source(
 			continue;
 		}
 
-		if (!src_found && args.GetTarget(&src, true))
+		if (!src_found && args.GetTarget(&src, true, CommandArgumentReader::PeekMode::Token, false))
 		{
 			src_found = true;
 			continue;

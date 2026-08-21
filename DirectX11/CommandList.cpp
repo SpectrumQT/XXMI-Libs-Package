@@ -357,7 +357,7 @@ static void UpdateInputLayout(const wchar_t* ini_section, CommandListState* stat
 	{
 		ID3D11InputLayout* new_layout = nullptr;
 
-		HRESULT hr = state->mHackerDevice->CreateInputLayout(
+		HRESULT hr = state->mHackerDevice->CreateCustomInputLayout(
 			elements.data(), static_cast<UINT>(elements.size()), current_layout->GetShaderSignature(), current_layout->GetShaderSignatureSize(), &new_layout
 		);
 
@@ -4163,7 +4163,7 @@ bool CommandArgumentReader::GetVariable(CommandListVariable*& out, bool is_sourc
 	return true;
 }
 
-bool CommandArgumentReader::GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode)
+bool CommandArgumentReader::GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode, bool validate)
 {
 	wstring token;
 
@@ -4172,7 +4172,7 @@ bool CommandArgumentReader::GetTarget(ResourceCopyTarget* out, bool is_source, P
 
 	bool has_prefix = token[0] == L'$' || token[0] == L'@' || token[0] == L'#';
 
-	if (is_source && FindResourceCopyTargetTokenEnd(token, has_prefix ? 1 : 0) != token.size())
+	if (is_source && validate && FindResourceCopyTargetTokenEnd(token, has_prefix ? 1 : 0) != token.size())
 	{
 		SetError(L"Invalid target: " + token, m_peek_start_pos);
 		return false;
@@ -4581,7 +4581,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 		operand = make_shared<CommandListOperand>(friendly_pos, token);
 
 		// Numeric Literal
-		if (std::isdigit(remain[0]))
+		if (std::isdigit(remain[0]) || remain[0] == L'.')
 		{
 			// - Supported inputs: DECIMAL 0.0001, HEX 0x0001, BIN 0b0001.
 			// - Must tokenise subtraction operation first.
@@ -8371,7 +8371,7 @@ static bool parse_resource_copy_target_source(
 			continue;
 		}
 
-		if (!src_found && args.GetTarget(&src, true))
+		if (!src_found && args.GetTarget(&src, true, CommandArgumentReader::PeekMode::Token, false))
 		{
 			src_found = true;
 			continue;

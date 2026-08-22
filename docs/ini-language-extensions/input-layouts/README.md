@@ -35,5 +35,3 @@ vb0->ElementOffset(BLENDWEIGHTS, 0) = 8
 ```
 
 This overrides the offset of the `BLENDWEIGHTS0` element to `8` bytes from the beginning of the vertex.
-
-```

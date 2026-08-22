@@ -16,7 +16,7 @@ pool_size = 4 ; Increase the maximum pool size to 4.
 
 By default, pool elements are initialized on first read/write access.
 
-To force immideate initialization, set `pool_lazy_initialization = 0`:
+To force immediate initialization, set `pool_lazy_initialization = 0`:
 
 ```ini
 [PoolFoo]

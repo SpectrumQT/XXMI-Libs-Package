@@ -4986,6 +4986,10 @@ void ReloadConfig(HackerDevice *device)
 	auto stop = std::chrono::high_resolution_clock::now();
 	std::chrono::duration<float> duration = stop - start;
 
+	// Values Viewer
+
+	// Variables
+
 	variableList.clear();
 	variable_groups.clear();
 	namespace_list.clear();
@@ -5021,6 +5025,66 @@ void ReloadConfig(HackerDevice *device)
 	for (auto& group : variable_groups)
 	{
 		namespace_list.push_back(group.first);
+	}
+
+	// Custom Resources
+
+	customResourceList.clear();
+	custom_resource_groups.clear();
+	custom_resource_namespace_list.clear();
+
+	for (auto& resource : customResources)
+	{
+		CustomResourceEntry entry;
+
+		const std::wstring& key = resource.first;
+
+		size_t lastSlash = key.find_last_of(L'\\');
+
+		if (lastSlash == std::wstring::npos)
+		{
+			entry.resource_namespace = L"";
+			entry.name = key;
+		}
+		else
+		{
+			// CustomResource names use the same namespaced key format
+			// as command list globals: the first two characters are
+			// the resource namespace prefix.
+			std::wstring ns = key.substr(2, lastSlash - 2);
+
+			if (ns.compare(0, 5, L"mods\\") == 0)
+				ns.erase(0, 5);
+
+			entry.resource_namespace = ns;
+			entry.name = key.substr(lastSlash + 1);
+		}
+
+		entry.resource = &resource.second;
+
+		customResourceList.push_back(entry);
+	}
+
+	for (auto& resource : customResourceList)
+	{
+		custom_resource_groups[
+			resource.resource_namespace
+		].push_back(&resource);
+	}
+
+	for (auto& group : custom_resource_groups)
+	{
+		custom_resource_namespace_list.push_back(group.first);
+	}
+
+
+	// Pools
+
+	resource_pool_list.clear();
+
+	for (auto& pool : customResourcePools)
+	{
+		resource_pool_list.push_back(pool.first);
 	}
 
 	LogOverlayW(LOG_INFO, L"> Reloaded config in %.3fs\n", duration.count());

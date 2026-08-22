@@ -25,6 +25,8 @@
 //  will lose data, so rather than do anything heroic here, I'm just doing type casts on the strlen function.
 
 Profiling::VariableColumn* selected_column;
+Profiling::ResourcePoolColumn* selected_pool_column;
+Profiling::CustomResourceColumn* selected_resource_column;
 
 DWORD castStrLen(const char* string)
 {
@@ -1302,6 +1304,15 @@ static void AnalysePerf(HackerDevice *device, void *private_data)
 	if (Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES)
 		selected_column = &Profiling::variable_columns[Profiling::active_column];
 
+	if (Profiling::mode == Profiling::Mode::CUSTOM_RESOURCE_POOLS)
+		selected_pool_column = &Profiling::resource_pool_columns[Profiling::active_pool_column];
+
+	if (Profiling::mode == Profiling::Mode::CUSTOM_RESOURCES)
+		selected_resource_column =
+		&Profiling::custom_resource_columns[
+			Profiling::active_custom_resource_column
+		];
+
 	Profiling::text.clear();
 	Profiling::clear();
 }
@@ -1317,79 +1328,491 @@ static void FreezePerf(HackerDevice *device, void *private_data)
 		LogInfoW(L"%s", Profiling::text.c_str());
 }
 
-static void CycleNamespaceColumn(HackerDevice* device, void* private_data)
+static void CycleViewerColumn(
+	HackerDevice* device,
+	void* private_data)
 {
-	if (Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES) {
+	switch (Profiling::mode)
+	{
+	case Profiling::Mode::COMMAND_LIST_VARIABLES:
+	{
 		Profiling::active_column++;
 
-		if (Profiling::active_column > 5)
+		if (Profiling::active_column >=
+			Profiling::variable_columns.size())
+		{
 			Profiling::active_column = 0;
+		}
 
-		selected_column = &Profiling::variable_columns[Profiling::active_column];
+		selected_column =
+			&Profiling::variable_columns[
+				Profiling::active_column
+			];
 
-		Profiling::text.clear();
-		Profiling::clear();
+		break;
 	}
+
+	case Profiling::Mode::CUSTOM_RESOURCES:
+	{
+		Profiling::active_custom_resource_column++;
+
+		if (Profiling::active_custom_resource_column >=
+			Profiling::custom_resource_columns.size())
+		{
+			Profiling::active_custom_resource_column = 0;
+		}
+
+		break;
+	}
+
+	case Profiling::Mode::CUSTOM_RESOURCE_POOLS:
+	{
+		Profiling::active_pool_column++;
+
+		if (Profiling::active_pool_column >=
+			Profiling::resource_pool_columns.size())
+		{
+			Profiling::active_pool_column = 0;
+		}
+
+		break;
+	}
+
+	default:
+		return;
+	}
+
+	Profiling::text.clear();
+	Profiling::clear();
 }
 
-static void NextNamespace(HackerDevice* device, void* private_data)
+static void NextViewerGroup(
+	HackerDevice* device,
+	void* private_data)
 {
-	if (Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES) {
-		selected_column->namespace_index++;
+	switch (Profiling::mode)
+	{
+	case Profiling::Mode::COMMAND_LIST_VARIABLES:
+	{
+		auto& column =
+			Profiling::variable_columns[
+				Profiling::active_column
+			];
 
-		if (selected_column->namespace_index >= namespace_list.size())
-			selected_column->namespace_index = -1;
+		column.namespace_index++;
 
-		Profiling::text.clear();
-		Profiling::clear();
+		if (column.namespace_index >=
+			namespace_list.size())
+		{
+			column.namespace_index = -1;
+		}
+
+		column.scroll_offset = 0;
+
+		break;
 	}
+
+	case Profiling::Mode::CUSTOM_RESOURCES:
+	{
+		auto& column =
+			Profiling::custom_resource_columns[
+				Profiling::active_custom_resource_column
+			];
+
+		column.namespace_index++;
+
+		if (column.namespace_index >=
+			custom_resource_namespace_list.size())
+		{
+			column.namespace_index = -1;
+		}
+
+		column.resource_index = 0;
+		column.scroll_offset = 0;
+
+		break;
+	}
+
+	case Profiling::Mode::CUSTOM_RESOURCE_POOLS:
+	{
+		auto& column =
+			Profiling::resource_pool_columns[
+				Profiling::active_pool_column
+			];
+
+		column.pool_index++;
+
+		if (column.pool_index >=
+			resource_pool_list.size())
+		{
+			column.pool_index = -1;
+		}
+
+		column.scroll_offset = 0;
+
+		break;
+	}
+
+	default:
+		return;
+	}
+
+	Profiling::text.clear();
+	Profiling::clear();
 }
 
-static void PreviousNamespace(HackerDevice* device, void* private_data)
+static void PreviousViewerGroup(
+	HackerDevice* device,
+	void* private_data)
 {
-	if (Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES) {
-		selected_column->namespace_index--;
+	switch (Profiling::mode)
+	{
+	case Profiling::Mode::COMMAND_LIST_VARIABLES:
+	{
+		auto& column =
+			Profiling::variable_columns[
+				Profiling::active_column
+			];
 
-		if (selected_column->namespace_index < -1)
-			selected_column->namespace_index = namespace_list.size()-1;
+		column.namespace_index--;
 
-		Profiling::text.clear();
-		Profiling::clear();
+		if (column.namespace_index < -1)
+		{
+			column.namespace_index =
+				(int)namespace_list.size() - 1;
+		}
+
+		column.scroll_offset = 0;
+
+		break;
 	}
+
+	case Profiling::Mode::CUSTOM_RESOURCES:
+	{
+		auto& column =
+			Profiling::custom_resource_columns[
+				Profiling::active_custom_resource_column
+			];
+
+		column.namespace_index--;
+
+		if (column.namespace_index < -1)
+		{
+			column.namespace_index =
+				(int)custom_resource_namespace_list.size() - 1;
+		}
+
+		column.resource_index = 0;
+		column.scroll_offset = 0;
+
+		break;
+	}
+
+	case Profiling::Mode::CUSTOM_RESOURCE_POOLS:
+	{
+		auto& column =
+			Profiling::resource_pool_columns[
+				Profiling::active_pool_column
+			];
+
+		column.pool_index--;
+
+		if (column.pool_index < -1)
+		{
+			column.pool_index =
+				(int)resource_pool_list.size() - 1;
+		}
+
+		column.scroll_offset = 0;
+
+		break;
+	}
+
+	default:
+		return;
+	}
+
+	Profiling::text.clear();
+	Profiling::clear();
 }
 
-static void NextVar(HackerDevice* device, void* private_data)
+static void NextGroupElement(
+	HackerDevice* device,
+	void* private_data)
 {
-	if (Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES) {
+	switch (Profiling::mode)
+	{
+	case Profiling::Mode::COMMAND_LIST_VARIABLES:
+	{
+		auto& column =
+			Profiling::variable_columns[
+				Profiling::active_column
+			];
 
-		if (variable_groups[namespace_list[selected_column->namespace_index]].size() < Profiling::visible_rows || selected_column->namespace_index == -1)
+		if (column.namespace_index == -1)
 			return;
 
-		selected_column->scroll_offset++;
+		auto& variables =
+			variable_groups[
+				namespace_list[
+					column.namespace_index
+				]
+			];
 
-		if (selected_column->scroll_offset > (variable_groups[namespace_list[selected_column->namespace_index]].size() - Profiling::visible_rows))
-			selected_column->scroll_offset = 0;
-
-		Profiling::text.clear();
-		Profiling::clear();
-	}
-}
-
-static void PreviousVar(HackerDevice* device, void* private_data)
-{
-	if (Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES) {
-
-		if (variable_groups[namespace_list[selected_column->namespace_index]].size() < Profiling::visible_rows || selected_column->namespace_index == -1)
+		if (variables.size() <= Profiling::visible_rows)
 			return;
 
-		selected_column->scroll_offset--;
+		int max_scroll =
+			(int)variables.size() -
+			Profiling::visible_rows;
 
-		if (selected_column->scroll_offset < 0)
-			selected_column->scroll_offset = variable_groups[namespace_list[selected_column->namespace_index]].size() - Profiling::visible_rows;
+		column.scroll_offset++;
 
-		Profiling::text.clear();
-		Profiling::clear();
+		if (column.scroll_offset > max_scroll)
+			column.scroll_offset = 0;
+
+		break;
 	}
+
+
+	case Profiling::Mode::CUSTOM_RESOURCES:
+	{
+		auto& column =
+			Profiling::custom_resource_columns[
+				Profiling::active_custom_resource_column
+			];
+
+		if (column.namespace_index == -1)
+			return;
+
+		auto& resources =
+			custom_resource_groups[
+				custom_resource_namespace_list[
+					column.namespace_index
+				]
+			];
+
+		if (resources.empty())
+			return;
+
+		/*
+		 * Selected Resource
+		 */
+		column.resource_index++;
+
+		if (column.resource_index >=
+			resources.size())
+		{
+			column.resource_index = 0;
+		}
+
+
+		/*
+		 * Keep selected Resource visible.
+		 */
+		if (column.resource_index >=
+			column.scroll_offset +
+			Profiling::custom_resource_visible_rows)
+		{
+			column.scroll_offset =
+				column.resource_index -
+				Profiling::custom_resource_visible_rows +
+				1;
+		}
+
+		if (column.resource_index <
+			column.scroll_offset)
+		{
+			column.scroll_offset =
+				column.resource_index;
+		}
+
+		break;
+	}
+
+
+	case Profiling::Mode::CUSTOM_RESOURCE_POOLS:
+	{
+		auto& column =
+			Profiling::resource_pool_columns[
+				Profiling::active_pool_column
+			];
+
+		if (column.pool_index == -1)
+			return;
+
+		auto& pool =
+			customResourcePools[
+				resource_pool_list[
+					column.pool_index
+				]
+			];
+
+		if (pool.GetElements().size() <=
+			Profiling::visible_rows)
+		{
+			return;
+		}
+
+		int max_scroll =
+			(int)pool.GetElements().size() -
+			Profiling::visible_rows;
+
+		column.scroll_offset++;
+
+		if (column.scroll_offset > max_scroll)
+			column.scroll_offset = 0;
+
+		break;
+	}
+
+
+	default:
+		return;
+	}
+
+	Profiling::text.clear();
+	Profiling::clear();
+}
+
+static void PreviousGroupElement(
+	HackerDevice* device,
+	void* private_data)
+{
+	switch (Profiling::mode)
+	{
+	case Profiling::Mode::COMMAND_LIST_VARIABLES:
+	{
+		auto& column =
+			Profiling::variable_columns[
+				Profiling::active_column
+			];
+
+		if (column.namespace_index == -1)
+			return;
+
+		auto& variables =
+			variable_groups[
+				namespace_list[
+					column.namespace_index
+				]
+			];
+
+		if (variables.size() <= Profiling::visible_rows)
+			return;
+
+		int max_scroll =
+			(int)variables.size() -
+			Profiling::visible_rows;
+
+		column.scroll_offset--;
+
+		if (column.scroll_offset < 0)
+			column.scroll_offset = max_scroll;
+
+		break;
+	}
+
+
+	case Profiling::Mode::CUSTOM_RESOURCES:
+	{
+		auto& column =
+			Profiling::custom_resource_columns[
+				Profiling::active_custom_resource_column
+			];
+
+		if (column.namespace_index == -1)
+			return;
+
+		auto& resources =
+			custom_resource_groups[
+				custom_resource_namespace_list[
+					column.namespace_index
+				]
+			];
+
+		if (resources.empty())
+			return;
+
+
+		/*
+		 * Selected Resource
+		 */
+		column.resource_index--;
+
+		if (column.resource_index < 0)
+		{
+			column.resource_index =
+				(int)resources.size() - 1;
+		}
+
+
+		/*
+		 * Keep selected Resource visible.
+		 */
+		if (column.resource_index <
+			column.scroll_offset)
+		{
+			column.scroll_offset =
+				column.resource_index;
+		}
+
+		if (column.resource_index >=
+			column.scroll_offset +
+			Profiling::custom_resource_visible_rows)
+		{
+			column.scroll_offset =
+				column.resource_index -
+				Profiling::custom_resource_visible_rows +
+				1;
+		}
+
+		break;
+	}
+
+
+	case Profiling::Mode::CUSTOM_RESOURCE_POOLS:
+	{
+		auto& column =
+			Profiling::resource_pool_columns[
+				Profiling::active_pool_column
+			];
+
+		if (column.pool_index == -1)
+			return;
+
+		auto& pool =
+			customResourcePools[
+				resource_pool_list[
+					column.pool_index
+				]
+			];
+
+		if (pool.GetElements().size() <=
+			Profiling::visible_rows)
+		{
+			return;
+		}
+
+		int max_scroll =
+			(int)pool.GetElements().size() -
+			Profiling::visible_rows;
+
+		column.scroll_offset--;
+
+		if (column.scroll_offset < 0)
+			column.scroll_offset = max_scroll;
+
+		break;
+	}
+
+
+	default:
+		return;
+	}
+
+	Profiling::text.clear();
+	Profiling::clear();
 }
 
 static void DisableDeferred(HackerDevice *device, void *private_data)
@@ -2058,11 +2481,13 @@ void ParseHuntingSection()
 	RegisterIniKeyBinding(L"Hunting", L"monitor_performance", AnalysePerf, NULL, noRepeat, NULL);
 	RegisterIniKeyBinding(L"Hunting", L"freeze_performance_monitor", FreezePerf, NULL, noRepeat, NULL);
 
-	RegisterIniKeyBinding(L"Hunting", L"cycle_namespace_column", CycleNamespaceColumn, NULL, noRepeat, NULL);
-	RegisterIniKeyBinding(L"Hunting", L"next_namespace", NextNamespace, NULL, noRepeat, NULL);
-	RegisterIniKeyBinding(L"Hunting", L"previous_namespace", PreviousNamespace, NULL, noRepeat, NULL);
-	RegisterIniKeyBinding(L"Hunting", L"next_var", NextVar, NULL, noRepeat, NULL);
-	RegisterIniKeyBinding(L"Hunting", L"previous_var", PreviousVar, NULL, noRepeat, NULL);
+	// Values Viewer
+	RegisterIniKeyBinding(L"Hunting", L"cycle_viewer_column", CycleViewerColumn, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"next_viewer_group", NextViewerGroup, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"previous_viewer_group", PreviousViewerGroup, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"next_group_element", NextGroupElement, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"previous_group_element", PreviousGroupElement, NULL, noRepeat, NULL);
+
 
 	Profiling::interval = (INT64)(GetIniFloat(L"Hunting", L"monitor_performance_interval", 1.0f, NULL) * 1000000);
 

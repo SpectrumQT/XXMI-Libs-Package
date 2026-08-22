@@ -2289,14 +2289,26 @@ static void ParseCommandList(const wchar_t *id,
 			// the user config to be updated at the next save, but won't do this
 			// immediately just in case. Inform the user of what is happening.
 			if (!G->user_config_dirty) {
-				LogOverlay(LOG_WARNING,
-					"NOTICE: Unknown user settings will be removed from d3dx_user.ini\n"
-					" This is normal if you recently removed/changed any mods\n"
-					" Press %S to update the config now, or %S to reset all settings to default\n"
-					" The first unrecognised entry was: \"%S\"\n",
-					user_friendly_ini_key_binding(L"Hunting", L"reload_config").c_str(),
-					user_friendly_ini_key_binding(L"Hunting", L"wipe_user_config").c_str(),
-					raw_line->c_str());
+				if (G->auto_clear_persist_vars)
+					LogOverlay(LOG_WARNING,
+						"NOTICE: Unknown User Settings will be Removed from d3dx_user.ini\n"
+						" This is Normal if you recently Removed/Changed any Mods\n"
+						" Change auto_clear_persist_vars inside d3dx.ini to change this behaviour\n"
+						" Press %S to Update the Config now, or %S to Reset all Settings to Default\n"
+						" The first Unrecognised Entry was: \"%S\"\n",
+						user_friendly_ini_key_binding(L"Hunting", L"reload_config").c_str(),
+						user_friendly_ini_key_binding(L"Hunting", L"wipe_user_config").c_str(),
+						raw_line->c_str());
+				else
+					LogOverlay(LOG_WARNING,
+						"NOTICE: Unknown User Settings won't be Removed from d3dx_user.ini\n"
+						" Change auto_clear_persist_vars inside d3dx.ini to change this behaviour\n"
+						" Press %S to Update the Config now, or %S to Reset all Settings to Default\n"
+						" The first Unrecognised Entry was: \"%S\"\n",
+						user_friendly_ini_key_binding(L"Hunting", L"reload_config").c_str(),
+						user_friendly_ini_key_binding(L"Hunting", L"wipe_user_config").c_str(),
+						raw_line->c_str());
+
 				// Once the [Constants] command list has finished running the
 				// low bit will be cleared to ensure that loading the user config
 				// itself cannot mark the user config as dirty. Set the second
@@ -4843,18 +4855,7 @@ void SavePersistentSettings()
 
 	G->gSettingsSaveTime = G->gTime;
 
-	if (!G->user_config_dirty)
-		return;
-
-	setlocale(LC_CTYPE, "en_US.UTF-8");
-
-	// TODO: Ability to update existing file rather than overwriting:
-	//wfopen_ensuring_access(&f, G->user_config.c_str(), L"r+");
-	//if (!f)
-
-	std::unordered_map<std::wstring, float> saved_variables;
-
-	if (!G->gReloadConfigPending) {
+	if (!G->user_config_dirty || !G->gConfigInitialized) {
 
 		// Read Existing Variables from File.
 		if (_wfopen_s(&f, G->user_config.c_str(), L"r") == 0 && f) {
@@ -4872,11 +4873,8 @@ void SavePersistentSettings()
 
 				wchar_t* name_end = equals - 1;
 
-				while (name_end >= line &&
-					(*name_end == L' ' || *name_end == L'\t'))
-				{
+				while (name_end >= line && (*name_end == L' ' || *name_end == L'\t'))
 					name_end--;
-				}
 
 				*(name_end + 1) = L'\0';
 
@@ -4889,7 +4887,16 @@ void SavePersistentSettings()
 
 			fclose(f);
 		}
+
+		return;
 	}
+	
+
+	setlocale(LC_CTYPE, "en_US.UTF-8");
+
+	// TODO: Ability to update existing file rather than overwriting:
+	//wfopen_ensuring_access(&f, G->user_config.c_str(), L"r+");
+	//if (!f)
 
 	wfopen_ensuring_access(&f, G->user_config.c_str(), L"w");
 	if (!f) {
@@ -4909,7 +4916,7 @@ void SavePersistentSettings()
 	      "[Constants]\n", f);
 
 
-	if (!G->gReloadConfigPending) {
+	if (!G->gReloadConfigPending || !G->auto_clear_persist_vars) {
 
 		for (auto global : persistent_variables) {
 			fprintf_s(f, "%ls = %.9g\n", global->name.c_str(), global->fval);
@@ -4921,12 +4928,18 @@ void SavePersistentSettings()
 	}
 	
 	else {
-		for (auto global : persistent_variables)
+		for (auto global : persistent_variables) {
 			fprintf_s(f, "%ls = %.9g\n", global->name.c_str(), global->fval);
+			saved_variables.erase(global->name);
+		}
 
-		G->user_config_dirty = 0;
+		for (auto& entry : saved_variables)
+			fprintf_s(f, "%ls = %.9g\n", entry.first.c_str(), entry.second);
+
+		saved_variables.clear();
 	}
 
+	G->user_config_dirty = 0;
 
 	fclose(f);
 

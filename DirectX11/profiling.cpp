@@ -625,18 +625,8 @@ static std::wstring TrimText(
 }
 
 
-// ---------------------------------------------------------------------------
-// Returns everything after "mods\"
-//
-// source\mods\iris\kamisatoayaka.ini
-//            ^---------------------
-//
-// -> iris\kamisatoayaka.ini
-//
-// Also works for absolute paths containing "\mods\".
-// ---------------------------------------------------------------------------
 
-static std::wstring GetAfterMods(
+static std::wstring GetPathAfterMods(
 	const std::wstring& path)
 {
 	static const std::wstring marker = L"mods\\";
@@ -658,13 +648,6 @@ static std::wstring GetAfterMods(
 	return path.substr(pos + marker.size());
 }
 
-
-// ---------------------------------------------------------------------------
-// Last path component.
-//
-// iris\kamisatoayaka.ini
-// -> kamisatoayaka.ini
-// ---------------------------------------------------------------------------
 
 static std::wstring GetLastPathComponent(
 	const std::wstring& path)
@@ -754,7 +737,7 @@ static void GetResourceMetadata(
 
 
 	// ========================================================================
-	// Common information
+	// Common Data
 	// ========================================================================
 
 	lines[0] =
@@ -763,7 +746,7 @@ static void GetResourceMetadata(
 
 	lines[1] =
 		L"FileName: " +
-		GetAfterMods(resource->filename);
+		GetPathAfterMods(resource->filename);
 
 
 	// ========================================================================
@@ -997,8 +980,8 @@ static void GetResourceMetadata(
 	else
 	{
 		// ====================================================================
-		// Resource hasn't been substantiated yet.
-		// Use the description known from the Resource declaration.
+		// Resource hasn't been Substantiated yet.
+		// Use the Description known from the Resource Declaration.
 		// ====================================================================
 
 		lines[2] =
@@ -1629,7 +1612,7 @@ void Profiling::update_txt()
 		return;
 
 	collection_duration.QuadPart = (end_time.QuadPart - profiling_start_time.QuadPart) * 1000000 / freq.QuadPart;
-	if (collection_duration.QuadPart < ((Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES || Profiling::mode == Profiling::Mode::CUSTOM_RESOURCE_POOLS) ? 0.1 : interval)
+	if (collection_duration.QuadPart < ((Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES || Profiling::mode == Profiling::Mode::CUSTOM_RESOURCES || Profiling::mode == Profiling::Mode::POOLS) ? 0.1 : interval)
 		&& !Profiling::text.empty())
 		return;
 
@@ -1657,7 +1640,7 @@ void Profiling::update_txt()
 			case Profiling::Mode::CUSTOM_RESOURCES:
 				DrawResources();
 				break;
-			case Profiling::Mode::CUSTOM_RESOURCE_POOLS:
+			case Profiling::Mode::POOLS:
 				DrawResourcePools();
 				break;
 		}

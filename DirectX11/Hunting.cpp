@@ -1304,7 +1304,7 @@ static void AnalysePerf(HackerDevice *device, void *private_data)
 	if (Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES)
 		selected_column = &Profiling::variable_columns[Profiling::active_column];
 
-	if (Profiling::mode == Profiling::Mode::CUSTOM_RESOURCE_POOLS)
+	if (Profiling::mode == Profiling::Mode::POOLS)
 		selected_pool_column = &Profiling::resource_pool_columns[Profiling::active_pool_column];
 
 	if (Profiling::mode == Profiling::Mode::CUSTOM_RESOURCES)
@@ -1365,7 +1365,7 @@ static void CycleViewerColumn(
 		break;
 	}
 
-	case Profiling::Mode::CUSTOM_RESOURCE_POOLS:
+	case Profiling::Mode::POOLS:
 	{
 		Profiling::active_pool_column++;
 
@@ -1433,7 +1433,7 @@ static void NextViewerNamespace(
 		break;
 	}
 
-	case Profiling::Mode::CUSTOM_RESOURCE_POOLS:
+	case Profiling::Mode::POOLS:
 	{
 		auto& column =
 			Profiling::resource_pool_columns[
@@ -1508,7 +1508,7 @@ static void PreviousViewerNamespace(
 		break;
 	}
 
-	case Profiling::Mode::CUSTOM_RESOURCE_POOLS:
+	case Profiling::Mode::POOLS:
 	{
 		auto& column =
 			Profiling::resource_pool_columns[
@@ -1631,7 +1631,7 @@ static void NextNamespaceElement(
 	}
 
 
-	case Profiling::Mode::CUSTOM_RESOURCE_POOLS:
+	case Profiling::Mode::POOLS:
 	{
 		auto& column =
 			Profiling::resource_pool_columns[
@@ -1771,7 +1771,7 @@ static void PreviousNamespaceElement(
 	}
 
 
-	case Profiling::Mode::CUSTOM_RESOURCE_POOLS:
+	case Profiling::Mode::POOLS:
 	{
 		auto& column =
 			Profiling::resource_pool_columns[

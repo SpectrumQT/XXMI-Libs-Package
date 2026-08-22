@@ -13,7 +13,7 @@ namespace Profiling {
 		CTO_WARNING,
 		COMMAND_LIST_VARIABLES,
 		CUSTOM_RESOURCES,
-		CUSTOM_RESOURCE_POOLS,
+		POOLS,
 
 		INVALID, // Must be last
 	};

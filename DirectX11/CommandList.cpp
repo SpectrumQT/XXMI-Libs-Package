@@ -4492,8 +4492,7 @@ static const wchar_t *function_tokens[] = {
 
 	L"saturate",
 
-	L"random",
-	L"noise"
+	L"random"
 };
 
 static const wchar_t *operator_tokens[] = {

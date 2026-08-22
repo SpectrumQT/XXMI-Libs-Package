@@ -23,6 +23,8 @@ To force immideate initialization, set `pool_lazy_initialization = 0`:
 pool_lazy_initialization = 0 ; Initialize all elements at parse time.
 ```
 
+Each initialized pool element costs around 500 bytes of RAM and slows down INI parsing a bit.
+
 ## Pool Index Types
 
 ### Ring

@@ -36,6 +36,22 @@ endif
 
 Resource attributes can be accessed using the `->` syntax.
 
+### `Offset`
+
+Returns the byte offset of the currently configured buffer region.
+
+For constant buffers, index buffers, and vertex buffers, the offset is derived from the corresponding D3D11 region parameter:
+
+* Constant buffers — `FirstConstant`
+* Index buffers — `FirstIndex`
+* Vertex buffers — `FirstVertex`
+
+```ini
+$offset = vs-cb0->Offset
+$offset = ib0->Offset
+$offset = vb0->Offset
+```
+
 ### `Size`
 
 Returns the resource size in bytes.

@@ -6,3 +6,4 @@
 
 - [Expressions](expressions/README.md) — operators and runtime resource metadata
 - [Pools](pools/README.md) — indexed storage and resource management
+- [Resources](resources/README.md) — resource metadata

@@ -1386,7 +1386,7 @@ static void CycleViewerColumn(
 	Profiling::clear();
 }
 
-static void NextViewerGroup(
+static void NextViewerNamespace(
 	HackerDevice* device,
 	void* private_data)
 {
@@ -1461,7 +1461,7 @@ static void NextViewerGroup(
 	Profiling::clear();
 }
 
-static void PreviousViewerGroup(
+static void PreviousViewerNamespace(
 	HackerDevice* device,
 	void* private_data)
 {
@@ -1536,7 +1536,7 @@ static void PreviousViewerGroup(
 	Profiling::clear();
 }
 
-static void NextGroupElement(
+static void NextNamespaceElement(
 	HackerDevice* device,
 	void* private_data)
 {
@@ -1675,7 +1675,7 @@ static void NextGroupElement(
 	Profiling::clear();
 }
 
-static void PreviousGroupElement(
+static void PreviousNamespaceElement(
 	HackerDevice* device,
 	void* private_data)
 {
@@ -2483,10 +2483,10 @@ void ParseHuntingSection()
 
 	// Values Viewer
 	RegisterIniKeyBinding(L"Hunting", L"cycle_viewer_column", CycleViewerColumn, NULL, noRepeat, NULL);
-	RegisterIniKeyBinding(L"Hunting", L"next_viewer_group", NextViewerGroup, NULL, noRepeat, NULL);
-	RegisterIniKeyBinding(L"Hunting", L"previous_viewer_group", PreviousViewerGroup, NULL, noRepeat, NULL);
-	RegisterIniKeyBinding(L"Hunting", L"next_group_element", NextGroupElement, NULL, noRepeat, NULL);
-	RegisterIniKeyBinding(L"Hunting", L"previous_group_element", PreviousGroupElement, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"next_viewer_namespace", NextViewerNamespace, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"previous_viewer_namespace", PreviousViewerNamespace, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"next_namespace_element", NextNamespaceElement, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"previous_namespace_element", PreviousNamespaceElement, NULL, noRepeat, NULL);
 
 
 	Profiling::interval = (INT64)(GetIniFloat(L"Hunting", L"monitor_performance_interval", 1.0f, NULL) * 1000000);

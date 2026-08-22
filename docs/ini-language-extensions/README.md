@@ -4,5 +4,5 @@
 
 ## Topics
 
-- [Expressions](expressions/readme.md) — operators and runtime resource metadata
-- [Pools](pools/readme.md) — indexed storage and resource management
+- [Expressions](expressions/README.md) — operators and runtime resource metadata
+- [Pools](pools/README.md) — indexed storage and resource management

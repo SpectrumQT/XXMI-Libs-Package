@@ -149,6 +149,10 @@ typedef std::unordered_map<std::wstring, class CommandListVariable> CommandListV
 extern CommandListVariables command_list_globals;
 extern std::vector<CommandListVariable*> persistent_variables;
 
+// Values Viewer
+
+// Variables
+
 struct VariableEntry
 {
     std::wstring name;
@@ -160,6 +164,25 @@ struct VariableEntry
 extern std::vector<VariableEntry> variableList;
 extern std::map<std::wstring, std::vector<VariableEntry*>> variable_groups;
 extern std::vector<std::wstring> namespace_list;
+
+// Custom Resources
+
+struct CustomResourceEntry
+{
+	std::wstring name;
+	std::wstring resource_namespace;
+
+	CustomResource* resource;
+};
+
+extern std::vector<CustomResourceEntry> customResourceList;
+extern std::map<std::wstring, std::vector<CustomResourceEntry*>> custom_resource_groups;
+extern std::vector<std::wstring> custom_resource_namespace_list;
+
+// Pools
+
+extern std::vector<std::wstring> resource_pool_list;
+
 
 // The scope object is used to declare local variables in a command list. The
 // multiple levels are to isolate variables declared inside if blocks from
@@ -681,6 +704,11 @@ public:
 
 	void ResetElements();
 	void ResetPool(bool reset_elements = true);
+
+	const std::vector<PoolElement>& GetElements() const
+	{
+		return elements;
+	}
 
 private:
 	void InitializeResource(size_t pool_index);

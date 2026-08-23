@@ -6947,8 +6947,15 @@ size_t CustomResourcePool::GetElementIndex(float id, bool use_ring_index, bool i
 			}
 		}
 
+		// Scale the spatial reuse radius with frame time so the allowed cell
+		// displacement remains approximately consistent across different FPS.
+		// `spatial_radius` is defined relative to a 120 FPS reference frame.
+		// A longer frame therefore permits a proportionally larger cell distance.
+		float frame_scale = G->gFrameTime * 120.0f;
+		uint32_t effective_radius = static_cast<uint32_t>(std::ceil(spatial_radius * frame_scale));
+
 		// Existing nearby spatial entry is a valid lookup hit.
-		if (closest_distance <= spatial_radius && nearest_slot != SIZE_MAX)
+		if (closest_distance <= effective_radius && nearest_slot != SIZE_MAX)
 		{
 			// Reuse the slot belonging to the closest nearby spatial cell.
 			// This keeps resources stable when objects move within the radius.

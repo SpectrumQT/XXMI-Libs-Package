@@ -52,6 +52,7 @@ struct LogLevelParams {
 struct LogLevelParams log_levels[] = {
 	{ DirectX::Colors::Red,       20000, false, &Overlay::mFontNotifications }, // DIRE
 	{ DirectX::Colors::OrangeRed, 10000, false, &Overlay::mFontNotifications }, // WARNING
+	{ DirectX::Colors::OrangeRed, 10000, false, &Overlay::mFontNotifications }, // WARNING_ALWAYS
 	{ DirectX::Colors::OrangeRed, 10000, false, &Overlay::mFontProfiling     }, // WARNING_MONOSPACE
 	{ DirectX::Colors::Orange,     5000, false, &Overlay::mFontNotifications }, // NOTICE
 	{ DirectX::Colors::LimeGreen,  2000, false, &Overlay::mFontNotifications }, // INFO
@@ -869,9 +870,31 @@ void ClearNotices()
 	LeaveCriticalSection(&notices.lock);
 }
 
+static void AddOverlayNotice(LogLevel level, const wchar_t *message)
+{
+	std::vector<OverlayNotice> &level_notices = notices.notices[level];
+	OverlayNotice *duplicate = NULL;
+
+	EnterCriticalSectionPretty(&notices.lock);
+
+	if (level == LOG_WARNING_ALWAYS)
+		for (OverlayNotice &notice : level_notices)
+			if (notice.message == message) {
+				duplicate = &notice;
+				break;
+			}
+	if (duplicate)
+		duplicate->timestamp = 0;
+	else
+		level_notices.emplace_back(message);
+	has_notice = true;
+
+	LeaveCriticalSection(&notices.lock);
+}
+
 void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
 {
-	if (!G->gShowWarnings && level != LOG_INFO) {
+	if (!G->gShowWarnings && level != LOG_INFO && level != LOG_WARNING_ALWAYS) {
 		return;
 	}
 
@@ -887,12 +910,7 @@ void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
 	// cares if it gets cut off somewhere off screen anyway?
 	_vsnwprintf_s(msg, maxstring, _TRUNCATE, fmt, ap);
 
-	EnterCriticalSectionPretty(&notices.lock);
-
-	notices.notices[level].emplace_back(msg);
-	has_notice = true;
-
-	LeaveCriticalSection(&notices.lock);
+	AddOverlayNotice(level, msg);
 
 	va_end(ap);
 }
@@ -904,7 +922,7 @@ void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
 // format string correctly and convert the result to a wide string.
 void LogOverlay(LogLevel level, char *fmt, ...)
 {
-	if (!G->gShowWarnings && level != LOG_INFO) {
+	if (!G->gShowWarnings && level != LOG_INFO && level != LOG_WARNING_ALWAYS) {
 		return;
 	}
 
@@ -923,12 +941,7 @@ void LogOverlay(LogLevel level, char *fmt, ...)
 		_vsnprintf_s(amsg, maxstring, _TRUNCATE, fmt, ap);
 		mbstowcs(wmsg, amsg, maxstring);
 
-		EnterCriticalSectionPretty(&notices.lock);
-
-		notices.notices[level].emplace_back(wmsg);
-		has_notice = true;
-
-		LeaveCriticalSection(&notices.lock);
+		AddOverlayNotice(level, wmsg);
 	}
 
 	va_end(ap);

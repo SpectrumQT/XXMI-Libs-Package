@@ -20,6 +20,7 @@ class HackerSwapChain;
 enum LogLevel {
 	LOG_DIRE,
 	LOG_WARNING,
+	LOG_WARNING_ALWAYS, // Safety notices unaffected by show_warnings
 	LOG_WARNING_MONOSPACE,
 	LOG_NOTICE,
 	LOG_INFO,

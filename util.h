@@ -1587,3 +1587,24 @@ float get_effective_dpi();
 uint32_t popcount(uint32_t x);
 float random(float max);
 uint64_t GetSystemTicks();
+
+class FPSCounter
+{
+public:
+	FPSCounter(float smoothing = 0.1f, float min_fps = 1.0f) : 
+		m_smoothing((std::max)(0.0f, (std::min)(smoothing, 1.0f))), // TODO C++17: m_smoothing(std::clamp(smoothing, 0.0f, 1.0f))
+		m_max_delta(static_cast<uint64_t>(1'000'000.0f / (std::max)(min_fps, 0.001f)))
+	{}
+
+	void Update(uint64_t system_tick_count);
+	float GetFPS() const;
+
+private:
+	float m_smoothing;
+	uint64_t m_max_delta;
+
+	uint64_t m_last_tick = 0;
+	float m_average_frame_time = 0.0f;
+	float m_fps = 0.0f;
+	bool m_initialized = false;
+};

@@ -414,6 +414,8 @@ struct Globals
 	float gFrameTime;
 	float gSettingsSaveTime;
 
+	FPSCounter gFPSCounter{ 0.1f, 1.0f };
+
 	std::wstring additionalForegroundWindowTitle;
 	const std::wstring gDefaultNamespace = L"d3dx.ini";
 

@@ -207,6 +207,8 @@ void HackerSwapChain::RunFrameActions()
 
 	G->gSystemTickCount = system_tick_count;
 
+	G->gFPSCounter.Update(system_tick_count);
+
 	// Run the command list here, before drawing the overlay so that a
 	// custom shader on the present call won't remove the overlay. Also,
 	// run this before most frame actions so that this can be considered as

@@ -3512,6 +3512,8 @@ float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device
 			return G->gTime;
 		case ParamOverrideType::FRAME_TIME:
 			return G->gFrameTime;
+		case ParamOverrideType::FPS:
+			return G->gFPSCounter.GetFPS();
 		case ParamOverrideType::FRAME_NUMBER:
 			return (float)G->frame_no;
 		case ParamOverrideType::HUNTING:

@@ -782,3 +782,34 @@ uint64_t GetSystemTicks()
 		std::chrono::steady_clock::now().time_since_epoch()
 	).count();
 }
+
+void FPSCounter::Update(uint64_t system_tick_count)
+{
+	if (!m_initialized)
+	{
+		m_last_tick = system_tick_count;
+		m_initialized = true;
+		return;
+	}
+
+	const uint64_t delta = system_tick_count - m_last_tick;
+	m_last_tick = system_tick_count;
+
+	// Ignore zero frame times and long pauses.
+	if (delta == 0 || delta > m_max_delta)
+		return;
+
+	const float frame_time = delta / 1'000'000.0f;
+
+	if (m_average_frame_time == 0.0f)
+		m_average_frame_time = frame_time;
+	else
+		m_average_frame_time += (frame_time - m_average_frame_time) * m_smoothing;
+
+	m_fps = static_cast<float>(1.0f / m_average_frame_time);
+}
+
+float FPSCounter::GetFPS() const
+{
+	return m_fps;
+}

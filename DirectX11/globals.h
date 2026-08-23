@@ -407,10 +407,10 @@ struct Globals
 	bool gLogInput;
 	bool gShowWarnings;
 	bool dump_all_profiles;
-	unsigned gSystemTickCount;
+	uint64_t ticks_at_launch;
+	uint64_t gSystemTickCount;
 	float gTime;
 	float gSettingsSaveTime;
-	DWORD ticks_at_launch;
 	std::wstring additionalForegroundWindowTitle;
 	const std::wstring gDefaultNamespace = L"d3dx.ini";
 
@@ -752,7 +752,7 @@ struct Globals
 		for (i = 0; i < 11; i++)
 			FILTER_REFRESH[i] = 0;
 
-		ticks_at_launch = GetTickCount();
+		ticks_at_launch = GetSystemTicks();
 	}
 };
 

@@ -8782,12 +8782,22 @@ bool IfCommand::noop(bool post, bool ignore_cto_pre, bool ignore_cto_post)
 		return true;
 	}
 
-	is_static = expression.static_evaluate(&static_val);
+	if (!static_evaluated)
+	{
+		static_value = 0.0f;
+		static_result = expression.static_evaluate(&static_value);
+		static_evaluated = true;
+	}
+
+	is_static = static_result;
+	static_val = static_value;
+
 	if (is_static) {
 		if (static_val) {
 			false_commands_pre->clear();
 			false_commands_post->clear();
-		} else {
+		}
+		else {
 			true_commands_pre->clear();
 			true_commands_post->clear();
 		}
@@ -8795,6 +8805,7 @@ bool IfCommand::noop(bool post, bool ignore_cto_pre, bool ignore_cto_post)
 
 	if (post)
 		return true_commands_post->noop() && false_commands_post->noop();
+
 	return true_commands_pre->noop() && false_commands_pre->noop();
 }
 

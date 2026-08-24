@@ -42,6 +42,8 @@ run = CommandListA ; Runs CommandListB
 
 If `CommandListA` already contains its own commands, those commands will not be executed as long as the proxy reference is active.
 
+> Non-empty CommandList from different namespace cannot be overriden this way.
+
 ### Clear Proxy Reference
 
 A proxy reference can be cleared by assigning `null`:

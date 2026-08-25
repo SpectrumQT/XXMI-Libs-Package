@@ -6043,7 +6043,8 @@ out_close:
 	CloseHandle(f);
 }
 
-bool CustomResource::HasPNGsRGBChunk(wstring filename) {
+bool CustomResource::HasPNGsRGBChunk(wstring filename)
+{
 	FILE *f = _wfopen(filename.c_str(), L"rb");
 	if (f != nullptr) {
 		unsigned char signature[8];
@@ -6072,7 +6073,8 @@ bool CustomResource::HasPNGsRGBChunk(wstring filename) {
 	return false;
 }
 
-DirectX::WIC_LOADER_FLAGS CustomResource::GetWICFlags(wstring filename) {
+DirectX::WIC_LOADER_FLAGS CustomResource::GetWICFlags(wstring filename)
+{
 	switch (override_color_space) {
 		case CustomColorSpace::LINEAR:
 		case CustomColorSpace::SRGB:

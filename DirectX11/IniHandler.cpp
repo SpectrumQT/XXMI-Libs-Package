@@ -1163,7 +1163,7 @@ T GetIniValue(
 
 inline bool ConvertExpressionToFloat(float expr, float& out) noexcept
 {
-	// Preserve the evaluated IEEE-754 value, including NaN and ±infinity.
+	// Preserve the evaluated IEEE-754 value, including NaN and Â±infinity.
 	out = expr;
 	return true;
 }
@@ -1178,7 +1178,7 @@ bool ParseFloatValue(const wchar_t* section, const wchar_t* key, const wstring& 
 	{
 		if (errno == ERANGE)
 		{
-			// Treat floating-point overflow as ±infinity.
+			// Treat floating-point overflow as Â±infinity.
 			out = std::signbit(out) ? -std::numeric_limits<float>::infinity() : std::numeric_limits<float>::infinity();
 		}
 		return true;
@@ -1251,7 +1251,7 @@ int GetIniInt(const wchar_t* section, const wchar_t* key, int def, bool* found, 
 
 inline bool ConvertExpressionToBool(float expr, bool& out) noexcept
 {
-	// NaN is false; all other non-zero values (including ±infinity) are true.
+	// NaN is false; all other non-zero values (including Â±infinity) are true.
 	out = !std::isnan(expr) && expr != 0.0f;
 	return true;
 }
@@ -2048,10 +2048,10 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 	wstring lower_space(setting);
 	std::transform(lower_space.begin(), lower_space.end(), lower_space.begin(), ::towlower);
 	custom_resource->override_color_space = lower_space;
-	if(!custom_resource->override_color_space.empty()){
-		if(custom_resource->override_color_space == L"srgb"||custom_resource->override_color_space == L"linear"){
+	if (!custom_resource->override_color_space.empty()) {
+		if (custom_resource->override_color_space == L"srgb" || custom_resource->override_color_space == L"linear") {
 			LogInfo("  override_color_space=%ls\n", custom_resource->override_color_space);
-		}else{
+		} else {
 			custom_resource->override_color_space = L"";
 			IniWarningW(L"Ignoring unknown color space \"%ls\"\n - [%ls]\n", lower_space, section_name);
 		}

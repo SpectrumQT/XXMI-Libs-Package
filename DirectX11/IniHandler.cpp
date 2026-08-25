@@ -2044,19 +2044,7 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		}
 	}
 
-	GetIniString(section_name, L"color_space", L"", setting, MAX_PATH);
-	wstring lower_space(setting);
-	std::transform(lower_space.begin(), lower_space.end(), lower_space.begin(), ::towlower);
-	custom_resource->override_color_space = lower_space;
-	if (!custom_resource->override_color_space.empty()) {
-		if (custom_resource->override_color_space == L"srgb" || custom_resource->override_color_space == L"linear") {
-			LogInfo("  override_color_space=%ls\n", custom_resource->override_color_space);
-		} else {
-			custom_resource->override_color_space = L"";
-			IniWarningW(L"Ignoring unknown color space \"%ls\"\n - [%ls]\n", lower_space, section_name);
-		}
-	}
-
+	custom_resource->override_color_space = GetIniEnumClass(section_name, L"color_space", CustomColorSpace::DEFAULT, NULL, CustomColorSpaceNames);
 	custom_resource->override_width = GetIniInt(section_name, L"width", -1, NULL);
 	custom_resource->override_height = GetIniInt(section_name, L"height", -1, NULL);
 	custom_resource->override_depth = GetIniInt(section_name, L"depth", -1, NULL);

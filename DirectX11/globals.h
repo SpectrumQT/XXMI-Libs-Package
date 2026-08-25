@@ -407,10 +407,15 @@ struct Globals
 	bool gLogInput;
 	bool gShowWarnings;
 	bool dump_all_profiles;
-	unsigned gSystemTickCount;
+
+	uint64_t ticks_at_launch;
+	uint64_t gSystemTickCount;
 	float gTime;
+	float gFrameTime;
 	float gSettingsSaveTime;
-	DWORD ticks_at_launch;
+
+	FPSCounter gFPSCounter{ 0.1f, 1.0f };
+
 	std::wstring additionalForegroundWindowTitle;
 	const std::wstring gDefaultNamespace = L"d3dx.ini";
 
@@ -736,7 +741,8 @@ struct Globals
 		gFallbackScreenHeight(0),
 		dump_all_profiles(false),
 		gSystemTickCount(0),
-		gTime(0)
+		gTime(0),
+		gFrameTime(0)
 	{
 		int i;
 
@@ -752,7 +758,7 @@ struct Globals
 		for (i = 0; i < 11; i++)
 			FILTER_REFRESH[i] = 0;
 
-		ticks_at_launch = GetTickCount();
+		ticks_at_launch = GetSystemTicks();
 	}
 };
 

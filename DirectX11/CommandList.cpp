@@ -959,6 +959,20 @@ bool ParseCopyCommandListCommand(const wchar_t* section,
 	if (!operation->dst)
 		goto bail;
 
+	// Destination CommandList from *different* namespace must be empty.
+	// Otherwise it'll be too easy to accidentally break libraries.
+	if (operation->src && (!operation->dst->command_list.commands.empty() || !operation->dst->post_command_list.commands.empty()))
+	{
+		wstring dst_namespace;
+		bool found = get_section_namespace(operation->dst->command_list.ini_section.c_str(), &dst_namespace);
+		if (found && (*ini_namespace != dst_namespace))
+		{
+			LogOverlayW(LOG_WARNING, L"Overriding non-empty CommandList from different namespace is not allowed: \"%ls = %ls\"\n - [%ls] @ [%ls]\n",
+				key, val->c_str(), section, ini_namespace->c_str());
+			goto bail;
+		}
+	}
+
 	operation->dst->command_list.runtime_populated = true;
 	operation->dst->post_command_list.runtime_populated = true;
 
@@ -3509,7 +3523,11 @@ float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device
 		case ParamOverrideType::RES_HEIGHT:
 			return (float)G->mResolutionInfo.height;
 		case ParamOverrideType::TIME:
-			return (float)G->gTime;
+			return G->gTime;
+		case ParamOverrideType::FRAME_TIME:
+			return G->gFrameTime;
+		case ParamOverrideType::FPS:
+			return G->gFPSCounter.GetFPS();
 		case ParamOverrideType::FRAME_NUMBER:
 			return (float)G->frame_no;
 		case ParamOverrideType::HUNTING:
@@ -3681,7 +3699,13 @@ bool CommandListOperand::static_evaluate(float *ret, HackerDevice *device, bool 
 			return false;
 		case ParamOverrideType::TIME:
 			if (evaluate_variables) {
-				*ret = (float)G->gTime;
+				*ret = G->gTime;
+				return true;
+			}
+			return false;
+		case ParamOverrideType::FRAME_TIME:
+			if (evaluate_variables) {
+				*ret = G->gFrameTime;
 				return true;
 			}
 			return false;
@@ -4492,8 +4516,7 @@ static const wchar_t *function_tokens[] = {
 
 	L"saturate",
 
-	L"random",
-	L"noise"
+	L"random"
 };
 
 static const wchar_t *operator_tokens[] = {
@@ -6972,8 +6995,15 @@ size_t CustomResourcePool::GetElementIndex(float id, bool use_ring_index, bool i
 			}
 		}
 
+		// Scale the spatial reuse radius with frame time so the allowed cell
+		// displacement remains approximately consistent across different FPS.
+		// `spatial_radius` is defined relative to a 120 FPS reference frame.
+		// A longer frame therefore permits a proportionally larger cell distance.
+		float frame_scale = G->gFrameTime * 120.0f;
+		uint32_t effective_radius = static_cast<uint32_t>(std::ceil(spatial_radius * frame_scale));
+
 		// Existing nearby spatial entry is a valid lookup hit.
-		if (closest_distance <= spatial_radius && nearest_slot != SIZE_MAX)
+		if (closest_distance <= effective_radius && nearest_slot != SIZE_MAX)
 		{
 			// Reuse the slot belonging to the closest nearby spatial cell.
 			// This keeps resources stable when objects move within the radius.

@@ -1308,6 +1308,8 @@ enum class ParamOverrideType {
 	FRAME_NUMBER,
 	DRAW_NUMBER,
 	DISPATCH_NUMBER,
+	FRAME_TIME,
+	FPS,
 };
 static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] = {
 	{L"rt_width", ParamOverrideType::RT_WIDTH},
@@ -1350,6 +1352,8 @@ static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] =
 	{L"frame_number", ParamOverrideType::FRAME_NUMBER},
 	{L"draw_number", ParamOverrideType::DRAW_NUMBER},
 	{L"dispatch_number", ParamOverrideType::DISPATCH_NUMBER},
+	{L"frame_time", ParamOverrideType::FRAME_TIME},
+	{L"fps", ParamOverrideType::FPS},
 	{NULL, ParamOverrideType::INVALID} // End of list marker
 };
 class CommandListOperand :

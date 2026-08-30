@@ -4857,40 +4857,12 @@ void SavePersistentSettings()
 
 	if (!G->user_config_dirty || !G->gConfigInitialized) {
 
-		// Read Existing Variables from File.
-		if (_wfopen_s(&f, G->user_config.c_str(), L"r") == 0 && f) {
-			wchar_t line[1024];
-
-			while (fgetws(line, _countof(line), f)) {
-				if (line[0] != L'$')
-					continue;
-
-				wchar_t* equals = wcschr(line, L'=');
-				if (!equals)
-					continue;
-
-				*equals = L'\0';
-
-				wchar_t* name_end = equals - 1;
-
-				while (name_end >= line && (*name_end == L' ' || *name_end == L'\t'))
-					name_end--;
-
-				*(name_end + 1) = L'\0';
-
-				float value;
-				if (swscanf_s(equals + 1, L"%f", &value) != 1)
-					continue;
-
-				saved_variables[line] = value;
-			}
-
-			fclose(f);
-		}
+		// Save Existing Variables
+		for (auto global : persistent_variables)
+			saved_variables[global->name.c_str()] = global->fval;
 
 		return;
 	}
-	
 
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 
@@ -4936,7 +4908,12 @@ void SavePersistentSettings()
 		for (auto& entry : saved_variables)
 			fprintf_s(f, "%ls = %.9g\n", entry.first.c_str(), entry.second);
 
-		saved_variables.clear();
+		if (G->clear_saved_persist_vars) {
+			saved_variables.clear();
+			G->clear_saved_persist_vars = false;
+		}
+		else
+			G->clear_saved_persist_vars = true;
 	}
 
 	G->user_config_dirty = 0;

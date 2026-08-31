@@ -5654,10 +5654,23 @@ bool CommandListOperand::parse_scissor(const wstring* operand, const wstring* in
 
 bool CommandListOperand::parse_ini_keywords(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
 {
-	type = lookup_enum_val<const wchar_t*, ParamOverrideType>
-		(ParamOverrideTypeNames, operand->c_str(), ParamOverrideType::INVALID);
+	if (operand->size() >= 14 && !wcsncmp(operand->c_str(), L"dxgi_format_", 4))
+	{
+		val = (float)ParseFormatString(operand->c_str(), false);
+
+		if (val == -1.0f)
+			return false;
+
+		type = ParamOverrideType::VALUE;
+	}
+	else
+	{
+		type = lookup_enum_val<const wchar_t*, ParamOverrideType>(ParamOverrideTypeNames, operand->c_str(), ParamOverrideType::INVALID);
+	}
+
 	if (type != ParamOverrideType::INVALID)
 		return operand_allowed_in_context(type, scope);
+
 	return false;
 }
 

@@ -1854,129 +1854,183 @@ bool FrameAnalysisChangeOptionsCommand::noop(bool post, bool ignore_cto_pre, boo
 	return (G->hunting == HUNTING_MODE_DISABLED || G->frame_analysis_registered == false);
 }
 
-static void FillInMissingInfo(ResourceCopyTargetType type, ID3D11Resource *resource, ID3D11View *view,
-		UINT *stride, UINT *offset, UINT *buf_size, DXGI_FORMAT *format)
+struct ViewInfo {
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+	bool is_buffer_view = false;
+	UINT first_element = 0;
+	UINT num_elements = 0;
+};
+
+static ViewInfo GetViewInfo(ResourceCopyTargetType type, ID3D11View* view)
+{
+	ViewInfo info;
+
+	if (!view)
+		return info;
+
+	switch (type) 
+	{
+	case ResourceCopyTargetType::SHADER_RESOURCE: 
+	{
+		D3D11_SHADER_RESOURCE_VIEW_DESC desc;
+		static_cast<ID3D11ShaderResourceView*>(view)->GetDesc(&desc);
+
+		info.format = desc.Format;
+
+		if (desc.ViewDimension == D3D11_SRV_DIMENSION_BUFFER ||
+			desc.ViewDimension == D3D11_SRV_DIMENSION_BUFFEREX) {
+			info.is_buffer_view = true;
+			info.first_element = desc.Buffer.FirstElement;
+			info.num_elements = desc.Buffer.NumElements;
+		}
+
+		break;
+	}
+	case ResourceCopyTargetType::RENDER_TARGET: 
+	{
+		D3D11_RENDER_TARGET_VIEW_DESC desc;
+		static_cast<ID3D11RenderTargetView*>(view)->GetDesc(&desc);
+
+		info.format = desc.Format;
+
+		if (desc.ViewDimension == D3D11_RTV_DIMENSION_BUFFER) {
+			info.is_buffer_view = true;
+			info.first_element = desc.Buffer.FirstElement;
+			info.num_elements = desc.Buffer.NumElements;
+		}
+
+		break;
+	}
+	case ResourceCopyTargetType::DEPTH_STENCIL_TARGET:
+	{
+		D3D11_DEPTH_STENCIL_VIEW_DESC desc;
+		static_cast<ID3D11DepthStencilView*>(view)->GetDesc(&desc);
+
+		info.format = desc.Format;
+
+		// DSVs cannot represent buffers.
+		break;
+	}
+	case ResourceCopyTargetType::UNORDERED_ACCESS_VIEW:
+	{
+		D3D11_UNORDERED_ACCESS_VIEW_DESC desc;
+		static_cast<ID3D11UnorderedAccessView*>(view)->GetDesc(&desc);
+
+		info.format = desc.Format;
+
+		if (desc.ViewDimension == D3D11_UAV_DIMENSION_BUFFER) {
+			info.is_buffer_view = true;
+			info.first_element = desc.Buffer.FirstElement;
+			info.num_elements = desc.Buffer.NumElements;
+		}
+
+		break;
+	}
+	}
+
+	return info;
+}
+
+static DXGI_FORMAT GetResourceFormat(ID3D11Resource* resource, D3D11_RESOURCE_DIMENSION dimension)
+{
+	switch (dimension) 
+	{
+	case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+	{
+		D3D11_TEXTURE1D_DESC desc;
+		static_cast<ID3D11Texture1D*>(resource)->GetDesc(&desc);
+		return desc.Format;
+	}
+	case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+	{
+		D3D11_TEXTURE2D_DESC desc;
+		static_cast<ID3D11Texture2D*>(resource)->GetDesc(&desc);
+		return desc.Format;
+	}
+	case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+	{
+		D3D11_TEXTURE3D_DESC desc;
+		static_cast<ID3D11Texture3D*>(resource)->GetDesc(&desc);
+		return desc.Format;
+	}
+	default:
+		// Buffers do not have a DXGI_FORMAT in their resource description.
+		return DXGI_FORMAT_UNKNOWN;
+	}
+}
+
+static void FillInMissingInfo(
+	ResourceCopyTargetType type,
+	ID3D11Resource* resource,
+	ID3D11View* view,
+	UINT* stride,
+	UINT* offset,
+	UINT* buf_size,
+	DXGI_FORMAT* format)
 {
 	D3D11_RESOURCE_DIMENSION dimension;
-	D3D11_BUFFER_DESC buf_desc;
-	ID3D11Buffer *buffer;
-
-	ID3D11ShaderResourceView *resource_view = NULL;
-	ID3D11RenderTargetView *render_view = NULL;
-	ID3D11DepthStencilView *depth_view = NULL;
-	ID3D11UnorderedAccessView *unordered_view = NULL;
-
-	D3D11_SHADER_RESOURCE_VIEW_DESC resource_view_desc;
-	D3D11_RENDER_TARGET_VIEW_DESC render_view_desc;
-	D3D11_DEPTH_STENCIL_VIEW_DESC depth_view_desc;
-	D3D11_UNORDERED_ACCESS_VIEW_DESC unordered_view_desc;
-
-	ID3D11Texture1D *tex1d;
-	ID3D11Texture2D *tex2d;
-	ID3D11Texture3D *tex3d;
-	D3D11_TEXTURE1D_DESC tex1d_desc;
-	D3D11_TEXTURE2D_DESC tex2d_desc;
-	D3D11_TEXTURE3D_DESC tex3d_desc;
-
-	// Some of these may already be filled in when getting the resource
-	// (either because it is stored in the pipeline state and retrieved
-	// with the resource, or was stored in a custom resource). If they are
-	// not we will try to fill them in here from either the resource or
-	// view description as they may be necessary later to create a
-	// compatible view or perform a region copy:
-
 	resource->GetType(&dimension);
+
+	// Some of these values may already have been supplied by the caller.
+	// Only fill in missing values, preserving explicitly provided information.
+
+	// First get information intrinsic to the resource itself.
 	if (dimension == D3D11_RESOURCE_DIMENSION_BUFFER) {
-		buffer = (ID3D11Buffer*)resource;
-		buffer->GetDesc(&buf_desc);
+		D3D11_BUFFER_DESC desc;
+		static_cast<ID3D11Buffer*>(resource)->GetDesc(&desc);
 
+		// Do not allow an existing buffer size to exceed the actual resource size.
+		// Otherwise, use the complete buffer.
 		if (*buf_size)
-			*buf_size = min(*buf_size, buf_desc.ByteWidth);
+			*buf_size = min(*buf_size, desc.ByteWidth);
 		else
-			*buf_size = buf_desc.ByteWidth;
+			*buf_size = desc.ByteWidth;
 
+		// Structured buffers provide their element size directly.
 		if (!*stride)
-			*stride = buf_desc.StructureByteStride;
+			*stride = desc.StructureByteStride;
 	}
 
 	if (view) {
-		switch (type) {
-			case ResourceCopyTargetType::SHADER_RESOURCE:
-				resource_view = (ID3D11ShaderResourceView*)view;
-				resource_view->GetDesc(&resource_view_desc);
-				if (*format == DXGI_FORMAT_UNKNOWN)
-					*format = resource_view_desc.Format;
-				if (!*stride)
-					*stride = dxgi_format_size(*format);
-				if (!*offset)
-					*offset = resource_view_desc.Buffer.FirstElement * *stride;
-				if (!*buf_size)
-					*buf_size = resource_view_desc.Buffer.NumElements * *stride + *offset;
-				break;
-			case ResourceCopyTargetType::RENDER_TARGET:
-				render_view = (ID3D11RenderTargetView*)view;
-				render_view->GetDesc(&render_view_desc);
-				if (*format == DXGI_FORMAT_UNKNOWN)
-					*format = render_view_desc.Format;
-				if (!*stride)
-					*stride = dxgi_format_size(*format);
-				if (!*offset)
-					*offset = render_view_desc.Buffer.FirstElement * *stride;
-				if (!*buf_size)
-					*buf_size = render_view_desc.Buffer.NumElements * *stride + *offset;
-				break;
-			case ResourceCopyTargetType::DEPTH_STENCIL_TARGET:
-				depth_view = (ID3D11DepthStencilView*)view;
-				depth_view->GetDesc(&depth_view_desc);
-				if (*format == DXGI_FORMAT_UNKNOWN)
-					*format = depth_view_desc.Format;
-				if (!*stride)
-					*stride = dxgi_format_size(*format);
-				// Depth stencil buffers cannot be buffers
-				break;
-			case ResourceCopyTargetType::UNORDERED_ACCESS_VIEW:
-				unordered_view = (ID3D11UnorderedAccessView*)view;
-				unordered_view->GetDesc(&unordered_view_desc);
-				if (*format == DXGI_FORMAT_UNKNOWN)
-					*format = unordered_view_desc.Format;
-				if (!*stride)
-					*stride = dxgi_format_size(*format);
-				if (!*offset)
-					*offset = unordered_view_desc.Buffer.FirstElement * *stride;
-				if (!*buf_size)
-					*buf_size = unordered_view_desc.Buffer.NumElements * *stride + *offset;
-				break;
+		// Extract format and, when applicable, buffer range information from the view.
+		const ViewInfo view_info = GetViewInfo(type, view);
+
+		// Preserve a caller-provided format; otherwise prefer the format of the view,
+		// since a view may reinterpret the underlying resource.
+		if (*format == DXGI_FORMAT_UNKNOWN)
+			*format = view_info.format;
+
+		// For typed buffers, the DXGI format determines the element size.
+		// Structured buffers already obtained their stride from the resource description above.
+		if (!*stride)
+			*stride = dxgi_format_size(*format);
+
+		// FirstElement and NumElements are meaningful only for buffer views.
+		// Calculate these after determining the stride because both values are expressed in elements rather than bytes.
+		if (view_info.is_buffer_view) {
+			if (!*offset)
+				*offset =
+				view_info.first_element * *stride;
+
+			if (!*buf_size)
+				*buf_size =
+				view_info.num_elements * *stride + *offset;
 		}
-	} else if (*format == DXGI_FORMAT_UNKNOWN) {
-		// If we *still* don't know the format and it's a texture, get it from
-		// the resource description. This will be the case for the back buffer
-		// since that does not have a view.
-		switch (dimension) {
-			case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
-				tex1d = (ID3D11Texture1D*)resource;
-				tex1d->GetDesc(&tex1d_desc);
-				*format = tex1d_desc.Format;
-				break;
-			case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
-				tex2d = (ID3D11Texture2D*)resource;
-				tex2d->GetDesc(&tex2d_desc);
-				*format = tex2d_desc.Format;
-				break;
-			case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
-				tex3d = (ID3D11Texture3D*)resource;
-				tex3d->GetDesc(&tex3d_desc);
-				*format = tex3d_desc.Format;
-		}
+	}
+	else if (*format == DXGI_FORMAT_UNKNOWN) {
+		// With no view available, fall back to the texture's native format.
+		// This is important for resources such as the back buffer, which may not have an associated view.
+		*format = GetResourceFormat(resource, dimension);
 	}
 
 	if (!*stride) {
-		// This will catch index buffers, which are not structured and
-		// don't have a view, but they do have a format we can use:
+		// This catches unstructured typed buffers, such as Index Buffers,
+		// which may not have a structured stride but do have a DXGI format.
 		*stride = dxgi_format_size(*format);
 
-		// This will catch constant buffers, which are not structured
-		// and don't have either a view or format, so set the stride to
-		// the size of the whole buffer:
+		// Constant Buffers and other unformatted, unstructured buffers have
+		// neither a format-derived element size nor StructureByteStride.
+		// In that case, treat the whole buffer as one element.
 		if (!*stride)
 			*stride = *buf_size;
 	}
@@ -2909,6 +2963,15 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 
 		case ResourceCopyTargetEvaluationMode::RESOURCE_STRIDE:
 			return texture_filter_target.GetResourceStride(state);
+
+		case ResourceCopyTargetEvaluationMode::RESOURCE_FORMAT:
+			return texture_filter_target.GetResourceFormat(state);
+
+		case ResourceCopyTargetEvaluationMode::RESOURCE_WIDTH:
+			return texture_filter_target.GetResourceWidth(state);
+
+		case ResourceCopyTargetEvaluationMode::RESOURCE_HEIGHT:
+			return texture_filter_target.GetResourceHeight(state);
 
 		case ResourceCopyTargetEvaluationMode::RESOURCE_SIZE:
 			return texture_filter_target.GetResourceSize(state);
@@ -7666,8 +7729,11 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 	static constexpr MemberInfo members[] = {
 		{ L"->size",           6, ResourceCopyTargetEvaluationMode::RESOURCE_SIZE },
 		{ L"->index",          7, ResourceCopyTargetEvaluationMode::POOL_INDEX },
+		{ L"->width",          7, ResourceCopyTargetEvaluationMode::RESOURCE_WIDTH },
 		{ L"->offset",         8, ResourceCopyTargetEvaluationMode::RESOURCE_OFFSET },
 		{ L"->stride",         8, ResourceCopyTargetEvaluationMode::RESOURCE_STRIDE },
+		{ L"->format",         8, ResourceCopyTargetEvaluationMode::RESOURCE_FORMAT },
+		{ L"->height",         8, ResourceCopyTargetEvaluationMode::RESOURCE_HEIGHT },
 		{ L"->region",         8, ResourceCopyTargetEvaluationMode::RESOURCE_REGION, {{
 			MemberArg::Type::Unsigned, // Byte Offset 
 			MemberArg::Type::Unsigned  // Byte Size 
@@ -9619,6 +9685,7 @@ namespace ResourcePropertyResult {
 	constexpr float UNKNOWN             = -1.0f;
 	constexpr float RESOURCE_NOT_FOUND  = -2.0f;
 	constexpr float NOT_A_BUFFER        = -3.0f;
+	constexpr float NOT_A_TEXTURE       = -4.0f;
 }
 
 float ResourceCopyTarget::GetResourceStride(CommandListState* state)
@@ -9677,6 +9744,153 @@ float ResourceCopyTarget::GetResourceStride(CommandListState* state)
 			}
 		}
 
+		resource->Release();
+	}
+
+	if (view)
+		view->Release();
+
+	return ret;
+}
+
+float ResourceCopyTarget::GetResourceFormat(CommandListState* state)
+{
+	if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
+		CustomResource* custom_resource = GetCustomResource(state);
+		if (custom_resource) {
+			if (custom_resource->override_format != (DXGI_FORMAT)-1 &&
+				custom_resource->override_format != DXGI_FORMAT_UNKNOWN)
+				return (float)custom_resource->override_format;
+			if (custom_resource->format != DXGI_FORMAT_UNKNOWN)
+				return (float)custom_resource->format;
+		} else {
+			// GetResource()'s CUSTOM_RESOURCE branch dereferences
+			// GetCustomResource() without a null check, so bail out for an
+			// unassigned pool resource instead of falling through.
+			return ResourcePropertyResult::RESOURCE_NOT_FOUND;
+		}
+	}
+
+	ID3D11View* view = nullptr;
+	UINT stride = 0, offset = 0, buf_size = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+
+	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, &buf_size);
+
+	float ret = ResourcePropertyResult::UNKNOWN;
+
+	if (!resource) {
+		ret = ResourcePropertyResult::RESOURCE_NOT_FOUND;
+	} else {
+		// GetResource populates format for index buffers. For other types
+		// (textures, SRVs, RTVs, UAVs) derive it from the view or resource desc.
+		if (format == DXGI_FORMAT_UNKNOWN)
+			FillInMissingInfo(type, resource, view, &stride, &offset, &buf_size, &format);
+
+		if (format != DXGI_FORMAT_UNKNOWN)
+			ret = (float)format;
+
+		resource->Release();
+	}
+
+	if (view)
+		view->Release();
+
+	return ret;
+}
+
+// Returns the requested extent (0 = width, 1 = height) of a texture resource,
+// or NOT_A_TEXTURE for buffers. Uses the resource description, so for texture
+// arrays / mip-level SRVs this is the full resource dimension, not the view's.
+static float GetResourceExtent(ID3D11Resource* resource, int extent)
+{
+	D3D11_RESOURCE_DIMENSION dimension;
+	resource->GetType(&dimension);
+
+	switch (dimension) {
+		case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
+			D3D11_TEXTURE1D_DESC desc;
+			static_cast<ID3D11Texture1D*>(resource)->GetDesc(&desc);
+			return (extent == 0) ? (float)desc.Width : 1.0f;
+		}
+		case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
+			D3D11_TEXTURE2D_DESC desc;
+			static_cast<ID3D11Texture2D*>(resource)->GetDesc(&desc);
+			return (extent == 0) ? (float)desc.Width : (float)desc.Height;
+		}
+		case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
+			D3D11_TEXTURE3D_DESC desc;
+			static_cast<ID3D11Texture3D*>(resource)->GetDesc(&desc);
+			return (extent == 0) ? (float)desc.Width : (float)desc.Height;
+		}
+	}
+
+	return ResourcePropertyResult::NOT_A_TEXTURE;
+}
+
+float ResourceCopyTarget::GetResourceWidth(CommandListState* state)
+{
+	if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
+		CustomResource* custom_resource = GetCustomResource(state);
+		if (custom_resource) {
+			if (custom_resource->override_width != -1)
+				return (float)custom_resource->override_width;
+		} else {
+			// GetResource()'s CUSTOM_RESOURCE branch dereferences
+			// GetCustomResource() without a null check, so bail out for an
+			// unassigned pool resource instead of falling through.
+			return ResourcePropertyResult::RESOURCE_NOT_FOUND;
+		}
+	}
+
+	ID3D11View* view = NULL;
+	UINT stride = 0, offset = 0, buf_size = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+
+	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, &buf_size);
+
+	float ret = ResourcePropertyResult::UNKNOWN;
+
+	if (!resource) {
+		ret = ResourcePropertyResult::RESOURCE_NOT_FOUND;
+	} else {
+		ret = GetResourceExtent(resource, 0);
+		resource->Release();
+	}
+
+	if (view)
+		view->Release();
+
+	return ret;
+}
+
+float ResourceCopyTarget::GetResourceHeight(CommandListState* state)
+{
+	if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
+		CustomResource* custom_resource = GetCustomResource(state);
+		if (custom_resource) {
+			if (custom_resource->override_height != -1)
+				return (float)custom_resource->override_height;
+		} else {
+			// GetResource()'s CUSTOM_RESOURCE branch dereferences
+			// GetCustomResource() without a null check, so bail out for an
+			// unassigned pool resource instead of falling through.
+			return ResourcePropertyResult::RESOURCE_NOT_FOUND;
+		}
+	}
+
+	ID3D11View* view = NULL;
+	UINT stride = 0, offset = 0, buf_size = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+
+	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, &buf_size);
+
+	float ret = ResourcePropertyResult::UNKNOWN;
+
+	if (!resource) {
+		ret = ResourcePropertyResult::RESOURCE_NOT_FOUND;
+	} else {
+		ret = GetResourceExtent(resource, 1);
 		resource->Release();
 	}
 

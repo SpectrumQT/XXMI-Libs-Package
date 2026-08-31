@@ -1931,7 +1931,7 @@ static ViewInfo GetViewInfo(ResourceCopyTargetType type, ID3D11View* view)
 	return info;
 }
 
-static DXGI_FORMAT GetResourceFormat(ID3D11Resource* resource, D3D11_RESOURCE_DIMENSION dimension)
+static DXGI_FORMAT GetTextureFormat(ID3D11Resource* resource, D3D11_RESOURCE_DIMENSION dimension)
 {
 	switch (dimension) 
 	{
@@ -2020,7 +2020,7 @@ static void FillInMissingInfo(
 	else if (*format == DXGI_FORMAT_UNKNOWN) {
 		// With no view available, fall back to the texture's native format.
 		// This is important for resources such as the back buffer, which may not have an associated view.
-		*format = GetResourceFormat(resource, dimension);
+		*format = GetTextureFormat(resource, dimension);
 	}
 
 	if (!*stride) {
@@ -9737,10 +9737,20 @@ float ResourceCopyTarget::GetResourceFormat(CommandListState* state)
 	if (!resource) {
 		ret = ResourcePropertyResult::RESOURCE_NOT_FOUND;
 	} else {
-		// GetResource populates format for index buffers. For other types
-		// (textures, SRVs, RTVs, UAVs) derive it from the view or resource desc.
+
+		if (format == DXGI_FORMAT_UNKNOWN && view)
+		{
+			const ViewInfo view_info = GetViewInfo(type, view);
+			format = view_info.format;
+		}
+
 		if (format == DXGI_FORMAT_UNKNOWN)
-			FillInMissingInfo(type, resource, view, &stride, &offset, &buf_size, &format);
+		{
+			D3D11_RESOURCE_DIMENSION dimension;
+			resource->GetType(&dimension);
+
+			format = GetTextureFormat(resource, dimension);
+		}
 
 		if (format != DXGI_FORMAT_UNKNOWN)
 			ret = (float)format;

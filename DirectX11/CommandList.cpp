@@ -9605,9 +9605,8 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 
 float ResourceCopyTarget::GetResourceId(CommandListState* state)
 {
-	ID3D11View* view = NULL;
-
-	ID3D11Resource* resource = GetResource(state, &view, NULL, NULL, NULL, NULL);
+	ID3D11View* view = nullptr;
+	ID3D11Resource* resource = GetResource(state, &view, nullptr, nullptr, nullptr, nullptr);
 
 	if (!resource)
 		return 0.0f;
@@ -9669,11 +9668,10 @@ float ResourceCopyTarget::GetResourceStride(CommandListState* state)
 		}
 	}
 
-	ID3D11View* view = nullptr;
 	UINT stride = 0;
-	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 
-	ID3D11Resource* resource = GetResource(state, &view, &stride, nullptr, &format, nullptr);
+	ID3D11View* view = nullptr;
+	ID3D11Resource* resource = GetResource(state, &view, &stride, nullptr, nullptr, nullptr);
 
 	float ret = ResourcePropertyResult::UNKNOWN;
 
@@ -9726,11 +9724,10 @@ float ResourceCopyTarget::GetResourceFormat(CommandListState* state)
 		}
 	}
 
-	ID3D11View* view = nullptr;
-	UINT stride = 0, offset = 0, buf_size = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 
-	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, &buf_size);
+	ID3D11View* view = nullptr;
+	ID3D11Resource* resource = GetResource(state, &view, nullptr, nullptr, &format, nullptr);
 
 	float ret = ResourcePropertyResult::UNKNOWN;
 
@@ -9808,11 +9805,8 @@ float ResourceCopyTarget::GetResourceWidth(CommandListState* state)
 		}
 	}
 
-	ID3D11View* view = NULL;
-	UINT stride = 0, offset = 0, buf_size = 0;
-	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-
-	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, &buf_size);
+	ID3D11View* view = nullptr;
+	ID3D11Resource* resource = GetResource(state, &view, nullptr, nullptr, nullptr, nullptr);
 
 	float ret = ResourcePropertyResult::UNKNOWN;
 
@@ -9844,11 +9838,8 @@ float ResourceCopyTarget::GetResourceHeight(CommandListState* state)
 		}
 	}
 
-	ID3D11View* view = NULL;
-	UINT stride = 0, offset = 0, buf_size = 0;
-	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-
-	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, &buf_size);
+	ID3D11View* view = nullptr;
+	ID3D11Resource* resource = GetResource(state, &view, nullptr, nullptr, nullptr, nullptr);
 
 	float ret = ResourcePropertyResult::UNKNOWN;
 
@@ -9877,11 +9868,10 @@ float ResourceCopyTarget::GetResourceSize(CommandListState* state)
 		}
 	}
 
-	ID3D11View* view = nullptr;
-	UINT stride = 0, size = 0;
-	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+	UINT size = 0;
 
-	ID3D11Resource* resource = GetResource(state, &view, &stride, nullptr, &format, &size);
+	ID3D11View* view = nullptr;
+	ID3D11Resource* resource = GetResource(state, &view, nullptr, nullptr, nullptr, &size);
 
 	float ret = ResourcePropertyResult::UNKNOWN;
 
@@ -9918,12 +9908,11 @@ float ResourceCopyTarget::GetResourceSize(CommandListState* state)
 
 float ResourceCopyTarget::GetResourceOffset(CommandListState* state)
 {
-
-	ID3D11View* view = NULL;
 	UINT stride = 0, offset = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 
-	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, NULL);
+	ID3D11View* view = nullptr;
+	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, nullptr);
 
 	float ret = ResourcePropertyResult::UNKNOWN;
 
@@ -9966,10 +9955,10 @@ float ResourceCopyTarget::GetResourceOffset(CommandListState* state)
 
 float ResourceCopyTarget::GetResourceRegionHash(CommandListState* state)
 {
-	ID3D11View* view = NULL;
 	UINT stride = 0, offset = 0, size = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 
+	ID3D11View* view = nullptr;
 	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, &size);
 
 	float ret = ResourcePropertyResult::UNKNOWN;
@@ -10026,11 +10015,11 @@ float ResourceCopyTarget::GetResourceRegionHash(CommandListState* state)
 
 float ResourceCopyTarget::GetResourceSpatialHash(CommandListState* state)
 {
-	ID3D11View* view = NULL;
-	UINT stride = 0, offset = 0, size = 0;
+	UINT stride = 0, offset = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 
-	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, &size);
+	ID3D11View* view = nullptr;
+	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, nullptr);
 
 	float ret = ResourcePropertyResult::UNKNOWN;
 

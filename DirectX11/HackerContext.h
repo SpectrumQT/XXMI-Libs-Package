@@ -244,8 +244,9 @@ public:
 	// public to allow CommandList access
 	virtual void FrameAnalysisLog(char *fmt, ...) {};
 	virtual void FrameAnalysisTrigger(FrameAnalysisOptions new_options) {};
-	virtual void FrameAnalysisDump(ID3D11Resource *resource, FrameAnalysisOptions options,
-		const wchar_t *target, DXGI_FORMAT format, UINT stride, UINT offset) {};
+	virtual bool FrameAnalysisDump(ID3D11Resource *resource, FrameAnalysisOptions options,
+		const wchar_t *target, DXGI_FORMAT format, UINT stride, UINT offset,
+		const wchar_t *exact_filename = NULL) { return false; };
 
 	unsigned GetDrawNumber() const { return draw_number; };
 	unsigned GetDispatchNumber() const { return dispatch_number; };

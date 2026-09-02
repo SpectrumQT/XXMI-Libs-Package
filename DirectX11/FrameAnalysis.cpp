@@ -504,6 +504,16 @@ ID3D11DeviceContext* FrameAnalysisContext::GetDumpingContext()
 	return GetPassThroughOrigContext1();
 }
 
+bool FrameAnalysisContext::abort_dump()
+{
+	if (analyse_options & FrameAnalysisOptions::FILENAME_EXACT)
+		return false;
+	if (!G->analyse_frame)
+		return true;
+	DispatchInputEvents(GetHackerDevice());
+	return !G->analyse_frame;
+}
+
 void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 		wstring filename, D3D11_TEXTURE2D_DESC *orig_desc, DXGI_FORMAT format)
 {
@@ -512,6 +522,25 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 	wstring save_filename;
 	wchar_t *wic_ext = L".jpg";
 	size_t ext, save_ext;
+
+	if (analyse_options & FrameAnalysisOptions::FILENAME_EXACT) {
+		const wchar_t *extension = wcsrchr(filename.c_str(), L'.');
+		GUID container = GUID_ContainerFormatJpeg;
+
+		EnsureCOM();
+		if (!_wcsicmp(extension, L".dds"))
+			hr = DirectX::SaveDDSTextureToFile(GetDumpingContext(), staging, filename.c_str());
+		else {
+			if (!_wcsicmp(extension, L".png"))
+				container = GUID_ContainerFormatPng;
+			else if (!_wcsicmp(extension, L".bmp"))
+				container = GUID_ContainerFormatBmp;
+			hr = DirectX::SaveWICTextureToFile(GetDumpingContext(), staging, container, filename.c_str());
+		}
+		if (FAILED(hr))
+			FALogErr(L"Failed to save Texture2D %ls: 0x%x\n", filename.c_str(), hr);
+		return;
+	}
 
 	save_filename = dedupe_tex2d_filename(staging, orig_desc, dedupe_filename, MAX_PATH, filename.c_str(), format);
 
@@ -769,7 +798,7 @@ void FrameAnalysisContext::dedupe_buf_filename_txt(const wchar_t *bin_filename,
  * try to use the reflection information in the shaders to add names and
  * correct types.
  */
-void FrameAnalysisContext::DumpBufferTxt(wchar_t *filename, D3D11_MAPPED_SUBRESOURCE *map,
+void FrameAnalysisContext::DumpBufferTxt(const wchar_t *filename, D3D11_MAPPED_SUBRESOURCE *map,
 		UINT size, char type, int idx, UINT stride, UINT offset)
 {
 	FILE *fd = NULL;
@@ -1602,12 +1631,9 @@ void FrameAnalysisContext::dump_deferred_resources(ID3D11CommandList *command_li
 	} catch (std::out_of_range) {}
 	if (deferred_buffers) {
 		for (FrameAnalysisDeferredDumpBufferArgs &i : *deferred_buffers) {
-			// Process key inputs to allow user to abort long running frame analysis sessions:
-			DispatchInputEvents(GetHackerDevice());
-			if (!G->analyse_frame)
-				break;
-
 			this->analyse_options = i.analyse_options;
+			if (abort_dump())
+				continue;
 			DumpBufferImmediateCtx(i.staging.Get(), &i.orig_desc,
 					i.filename, i.buf_type_mask, i.idx,
 					i.ib_fmt, i.stride, i.offset, i.first,
@@ -1622,12 +1648,9 @@ void FrameAnalysisContext::dump_deferred_resources(ID3D11CommandList *command_li
 	} catch (std::out_of_range) {}
 	if (deferred_tex2d) {
 		for (FrameAnalysisDeferredDumpTex2DArgs &i : *deferred_tex2d) {
-			// Process key inputs to allow user to abort long running frame analysis sessions:
-			DispatchInputEvents(GetHackerDevice());
-			if (!G->analyse_frame)
-				break;
-
 			this->analyse_options = i.analyse_options;
+			if (abort_dump())
+				continue;
 			Dump2DResourceImmediateCtx(i.staging.Get(), i.filename, &i.orig_desc, i.format);
 		}
 	}
@@ -1735,6 +1758,21 @@ void FrameAnalysisContext::DumpBufferImmediateCtx(ID3D11Buffer *staging, D3D11_B
 		FALogErr(L"DumpBuffer failed to map staging resource: 0x%x\n", hr);
 		return;
 	}
+	if (analyse_options & FrameAnalysisOptions::FILENAME_EXACT) {
+		if (analyse_options & FrameAnalysisOptions::FMT_BUF_BIN) {
+			err = wfopen_ensuring_access(&fd, filename.c_str(), L"wb");
+			if (fd) {
+				fwrite(map.pData, 1, orig_desc->ByteWidth, fd);
+				fclose(fd);
+			} else {
+				FALogErr(L"Unable to create %ls: %u\n", filename.c_str(), err);
+			}
+		} else {
+			DumpBufferTxt(filename.c_str(), &map,
+				orig_desc->ByteWidth, '?', -1, stride, offset);
+		}
+		goto out_unmap;
+	}
 
 	dedupe_buf_filename(staging, orig_desc, &map, bin_filename, MAX_PATH);
 
@@ -1823,11 +1861,8 @@ void FrameAnalysisContext::DumpBuffer(ID3D11Buffer *buffer, wchar_t *filename,
 	ID3D11Buffer *staging = NULL;
 	HRESULT hr;
 
-	// Process key inputs to allow user to abort long running frame
-	// analysis sessions (this case is specifically for dump_vb and dump_ib
-	// which bypasses DumpResource()):
-	DispatchInputEvents(GetHackerDevice());
-	if (!G->analyse_frame)
+	// dump_vb and dump_ib bypass DumpResource(), so handle aborts here.
+	if (abort_dump())
 		return;
 
 	buffer->GetDesc(&desc);
@@ -1867,9 +1902,7 @@ void FrameAnalysisContext::DumpResource(ID3D11Resource *resource, wchar_t *filen
 {
 	D3D11_RESOURCE_DIMENSION dim;
 
-	// Process key inputs to allow user to abort long running frame analysis sessions:
-	DispatchInputEvents(GetHackerDevice());
-	if (!G->analyse_frame)
+	if (abort_dump())
 		return;
 
 	resource->GetType(&dim);
@@ -1901,22 +1934,18 @@ void FrameAnalysisContext::DumpResource(ID3D11Resource *resource, wchar_t *filen
 	}
 }
 
-static BOOL CreateDeferredFADirectory(LPCWSTR path)
+static BOOL EnsureDirectory(LPCWSTR path)
 {
-	DWORD err;
+	DWORD attributes, err;
 
-	// Deferred contexts don't have an opportunity to create their
-	// dumps directory earlier, so do so now:
-
-	if (!CreateDirectoryEnsuringAccess(path)) {
-		err = GetLastError();
-		if (err != ERROR_ALREADY_EXISTS) {
-			LogInfoW(L"Error creating deferred frame analysis directory: %i\n", err);
-			return FALSE;
-		}
-	}
-
-	return TRUE;
+	if (CreateDirectoryEnsuringAccess(path))
+		return TRUE;
+	err = GetLastError();
+	attributes = GetFileAttributes(path);
+	if (attributes != INVALID_FILE_ATTRIBUTES && attributes & FILE_ATTRIBUTE_DIRECTORY)
+		return TRUE;
+	LogInfoW(L"Error creating directory: %i\n", err);
+	return FALSE;
 }
 
 void FrameAnalysisContext::get_deduped_dir(wchar_t *path, size_t size)
@@ -1945,7 +1974,7 @@ HRESULT FrameAnalysisContext::FrameAnalysisFilename(wchar_t *filename, size_t si
 	StringCchPrintfExW(filename, size, &pos, &rem, NULL, L"%ls\\", G->ANALYSIS_PATH);
 	if (GetPassThroughOrigContext1()->GetType() == D3D11_DEVICE_CONTEXT_DEFERRED) {
 		StringCchPrintfExW(pos, rem, &pos, &rem, NULL, L"ctx-0x%p\\", this);
-		if (!CreateDeferredFADirectory(filename))
+		if (!EnsureDirectory(filename))
 			return E_FAIL;
 	}
 
@@ -2054,7 +2083,7 @@ HRESULT FrameAnalysisContext::FrameAnalysisFilenameResource(wchar_t *filename, s
 	StringCchPrintfExW(filename, size, &pos, &rem, NULL, L"%ls\\", G->ANALYSIS_PATH);
 	if (GetPassThroughOrigContext1()->GetType() == D3D11_DEVICE_CONTEXT_DEFERRED) {
 		StringCchPrintfExW(pos, rem, &pos, &rem, NULL, L"ctx-0x%p\\", this);
-		if (!CreateDeferredFADirectory(filename))
+		if (!EnsureDirectory(filename))
 			return E_FAIL;
 	}
 
@@ -2949,13 +2978,46 @@ void FrameAnalysisContext::FrameAnalysisAfterUpdate(ID3D11Resource *resource)
 	_FrameAnalysisAfterUpdate(resource, FrameAnalysisOptions::DUMP_ON_UPDATE, L"update");
 }
 
-void FrameAnalysisContext::FrameAnalysisDump(ID3D11Resource *resource, FrameAnalysisOptions options,
-		const wchar_t *target, DXGI_FORMAT format, UINT stride, UINT offset)
+static bool CreateSaveDirectories(const wchar_t *filename)
+{
+	wchar_t path[MAX_PATH];
+	wchar_t *end, *p;
+	DWORD attributes;
+
+	if (wcscpy_s(path, filename))
+		return false;
+	end = wcsrchr(path, L'\\');
+	if (!end)
+		return false;
+	*end = 0;
+	p = PathSkipRootW(path);
+	if (!p)
+		return false;
+	attributes = GetFileAttributes(path);
+	if (attributes != INVALID_FILE_ATTRIBUTES && attributes & FILE_ATTRIBUTE_DIRECTORY)
+		return true;
+
+	for (; *p; p++) {
+		if (*p != L'\\')
+			continue;
+		*p = 0;
+		if (!EnsureDirectory(path))
+			return false;
+		*p = L'\\';
+	}
+	return EnsureDirectory(path);
+}
+
+bool FrameAnalysisContext::FrameAnalysisDump(ID3D11Resource *resource, FrameAnalysisOptions options,
+		const wchar_t *target, DXGI_FORMAT format, UINT stride, UINT offset,
+		const wchar_t *exact_filename)
 {
 	wchar_t filename[MAX_PATH];
-	HRESULT hr;
+	HRESULT hr = S_OK;
 
 	analyse_options = options;
+	if (exact_filename)
+		analyse_options |= FrameAnalysisOptions::FILENAME_EXACT;
 
 	if (!(analyse_options & FrameAnalysisOptions::DEFRD_CTX_MASK) &&
 	   (GetPassThroughOrigContext1()->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
@@ -2971,17 +3033,24 @@ void FrameAnalysisContext::FrameAnalysisDump(ID3D11Resource *resource, FrameAnal
 	analyse_options &= (FrameAnalysisOptions)~FrameAnalysisOptions::STEREO_MASK;
 	analyse_options |= FrameAnalysisOptions::MONO;
 
-	set_default_dump_formats(false);
+	if (!exact_filename)
+		set_default_dump_formats(false);
+	else if (wcscpy_s(filename, exact_filename) || !CreateSaveDirectories(filename)) {
+		FALogErr(L"Unable to create save path: %ls\n", exact_filename);
+		return false;
+	}
 
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 
-	hr = FrameAnalysisFilenameResource(filename, MAX_PATH, target, resource, false);
-	if (FAILED(hr)) {
-		// If the ini section and resource name makes the filename too
-		// long, try again without them:
-		hr = FrameAnalysisFilenameResource(filename, MAX_PATH, L"...", resource, false);
+	if (!exact_filename) {
+		hr = FrameAnalysisFilenameResource(filename, MAX_PATH, target, resource, false);
+		if (FAILED(hr)) {
+			// If the ini section and resource name makes the filename too
+			// long, try again without them:
+			hr = FrameAnalysisFilenameResource(filename, MAX_PATH, L"...", resource, false);
+		}
 	}
 	if (SUCCEEDED(hr))
 		DumpResource(resource, filename, analyse_options, -1, format, stride, offset);
@@ -2990,7 +3059,9 @@ void FrameAnalysisContext::FrameAnalysisDump(ID3D11Resource *resource, FrameAnal
 
 	LeaveCriticalSection(&G->mCriticalSection);
 
-	non_draw_call_dump_counter++;
+	if (!exact_filename)
+		non_draw_call_dump_counter++;
+	return SUCCEEDED(hr);
 }
 
 // -----------------------------------------------------------------------------------------------

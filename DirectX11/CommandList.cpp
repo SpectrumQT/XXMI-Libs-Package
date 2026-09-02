@@ -18,6 +18,7 @@
 #include "cursor.h"
 
 #include <D3DCompiler.h>
+#include <Shlwapi.h>
 
 CustomResources customResources;
 CustomResourcePools customResourcePools;
@@ -1146,6 +1147,122 @@ bail:
 	return false;
 }
 
+static bool GetMigotoPath(wstring *path)
+{
+	wchar_t module[MAX_PATH];
+	wchar_t *slash;
+	DWORD length = GetModuleFileName(migoto_handle, module, MAX_PATH);
+
+	if (!length || length >= MAX_PATH || !(slash = wcsrchr(module, L'\\')))
+		return false;
+	slash[1] = 0;
+	*path = module;
+	return true;
+}
+
+static bool PathWithin(const wstring &path, wstring directory)
+{
+	std::replace(directory.begin(), directory.end(), L'/', L'\\');
+	if (directory.empty() || directory.back() != L'\\')
+		directory += L'\\';
+	return path.size() >= directory.size() && !_wcsnicmp(path.c_str(), directory.c_str(), directory.size());
+}
+
+static bool CanonicalPath(const wstring &path, wstring *canonical)
+{
+	wchar_t buffer[MAX_PATH];
+	DWORD length = GetFullPathName(path.c_str(), MAX_PATH, buffer, NULL);
+
+	if (!length || length >= MAX_PATH)
+		return false;
+	*canonical = buffer;
+	std::replace(canonical->begin(), canonical->end(), L'/', L'\\');
+	return true;
+}
+
+static FrameAnalysisOptions SaveFormat(const wstring &path, D3D11_RESOURCE_DIMENSION dimension)
+{
+	const wchar_t *extension = wcsrchr(path.c_str(), L'.');
+	if (!extension)
+		return FrameAnalysisOptions::INVALID;
+
+	if (dimension == D3D11_RESOURCE_DIMENSION_UNKNOWN || dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
+		if (!_wcsicmp(extension, L".dds"))
+			return FrameAnalysisOptions::FMT_2D_DDS;
+		if (!_wcsicmp(extension, L".png") || !_wcsicmp(extension, L".jpg") ||
+				!_wcsicmp(extension, L".jpeg") || !_wcsicmp(extension, L".bmp"))
+			return FrameAnalysisOptions::FMT_2D_AUTO;
+	}
+	if (dimension == D3D11_RESOURCE_DIMENSION_UNKNOWN || dimension == D3D11_RESOURCE_DIMENSION_BUFFER) {
+		if (!_wcsicmp(extension, L".txt"))
+			return FrameAnalysisOptions::FMT_BUF_TXT;
+		if (!_wcsicmp(extension, L".buf") || !_wcsicmp(extension, L".bin") ||
+				!_wcsicmp(extension, L".ib") || !_wcsicmp(extension, L".vb"))
+			return FrameAnalysisOptions::FMT_BUF_BIN;
+	}
+	return FrameAnalysisOptions::INVALID;
+}
+
+static bool SavePathIsSafe(const wstring &candidate, const wstring &ini_directory)
+{
+	static const wchar_t *protected_directories[] = {
+		L"Core", L"ShaderFixes", L"ShaderCache", L"ShaderFromGame"
+	};
+	wstring root, path;
+	size_t slash;
+
+	if (!GetMigotoPath(&root) || candidate.find_first_of(L"<>\"|?*") != wstring::npos ||
+			!CanonicalPath(candidate, &path) ||
+			path.find(L" \\") != wstring::npos || path.find(L".\\") != wstring::npos ||
+			candidate.find(L':', 2) != wstring::npos || !PathWithin(path, root))
+		return false;
+
+	slash = path.find(L'\\', root.size());
+	if (slash == wstring::npos || slash == root.size() ||
+			SaveFormat(path, D3D11_RESOURCE_DIMENSION_UNKNOWN) == FrameAnalysisOptions::INVALID)
+		return false;
+
+	for (const wchar_t *directory : protected_directories)
+		if (PathWithin(path, root + directory))
+			return false;
+	if ((G->SHADER_PATH[0] && PathWithin(path, G->SHADER_PATH)) ||
+			(G->SHADER_CACHE_PATH[0] && PathWithin(path, G->SHADER_CACHE_PATH)))
+		return false;
+
+	if (PathWithin(path, root + L"Mods")) {
+		if (ini_directory.size() <= 5 || _wcsnicmp(ini_directory.c_str(), L"Mods\\", 5) ||
+				!PathWithin(path, root + ini_directory))
+			return false;
+	}
+
+	for (slash = root.size(); (slash = path.find(L'\\', slash)) != wstring::npos; slash++) {
+		DWORD attributes = GetFileAttributes(path.substr(0, slash).c_str());
+		if (attributes != INVALID_FILE_ATTRIBUTES && attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+			return false;
+	}
+	DWORD attributes = GetFileAttributes(path.c_str());
+	return attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_REPARSE_POINT);
+}
+
+static bool ResolveSavePath(const wstring &filename, wstring *ini_directory, wstring *path)
+{
+	wstring root, source_directory, canonical_directory;
+
+	if (filename.empty() || !PathIsRelativeW(filename.c_str()) || !GetMigotoPath(&root))
+		return false;
+	if (!ini_directory->empty()) {
+		source_directory = PathIsRelativeW(ini_directory->c_str()) ? root + *ini_directory : *ini_directory;
+		if (!CanonicalPath(source_directory, &canonical_directory) || !PathWithin(canonical_directory, root))
+			return false;
+		*ini_directory = canonical_directory.substr(root.size());
+		if (!ini_directory->empty() && ini_directory->back() != L'\\')
+			*ini_directory += L'\\';
+	}
+	return CanonicalPath(root + (filename.size() > 1 && filename[0] == L'.' &&
+		(filename[1] == L'\\' || filename[1] == L'/') ? filename.substr(2) : *ini_directory + filename), path) &&
+		SavePathIsSafe(*path, *ini_directory);
+}
+
 static bool ParseFrameAnalysisDump(const wchar_t *section,
 		const wchar_t *key, wstring *val,
 		CommandList *explicit_command_list,
@@ -1153,26 +1270,56 @@ static bool ParseFrameAnalysisDump(const wchar_t *section,
 		CommandList *post_command_list,
 		const wstring *ini_namespace)
 {
-	FrameAnalysisDumpCommand *operation = new FrameAnalysisDumpCommand();
-	wchar_t *buf;
-	size_t size = val->size() + 1;
+	auto operation = make_unique<FrameAnalysisDumpCommand>();
+	bool save = !wcscmp(key, L"save");
+	wstring target_args = *val;
+	wstring filename, source_ini, ini_directory;
+	vector<wchar_t> buf;
 	wchar_t *target = NULL;
 
-	// parse_enum_option_string replaces spaces with NULLs, so it can't
-	// operate on the buffer in the wstring directly. I could potentially
-	// change it to work without modifying the string, but for now it's
-	// easier to just make a copy of the string:
-	buf = new wchar_t[size];
-	wcscpy_s(buf, size, val->c_str());
+	if (save) {
+		CommandArgumentReader args(L"save", *val, section, ini_namespace, pre_command_list->scope);
+		if (!args.GetToken(&target_args, CommandArgumentReader::PeekMode::Argument) ||
+				!args.ConsumeSeparator(SeparatorMode::Comma) ||
+				!args.GetToken(&filename, CommandArgumentReader::PeekMode::Argument))
+			return args.Fail();
+		if (args.HasMore() && (!args.ConsumeSeparator(SeparatorMode::Comma) ||
+				!args.GetUInt(&operation->save_limit)))
+			return args.Fail();
+		if (!args.Finished())
+			return args.Fail();
+		if (!operation->save_limit || (G->export_command_list_save_count &&
+				G->export_command_list_save_count < operation->save_limit))
+			operation->save_limit = G->export_command_list_save_count;
+		if (filename.size() >= 2 && filename.front() == L'"' && filename.back() == L'"')
+			filename = filename.substr(1, filename.size() - 2);
+
+		if (!get_section_path(section, &source_ini))
+			source_ini = L"d3dx.ini";
+		size_t slash = source_ini.find_last_of(L"\\/");
+		if (slash != wstring::npos)
+			ini_directory = source_ini.substr(0, slash + 1);
+		if (!ResolveSavePath(filename, &ini_directory, &operation->save_path) ||
+				!_wcsicmp(ini_directory.c_str(), L"Mods\\")) {
+			LogOverlayW(LOG_WARNING_ALWAYS,
+				L"save= blocked invalid path: %ls\nSource: %ls\n", filename.c_str(), source_ini.c_str());
+			return false;
+		}
+		operation->save_directory = ini_directory;
+		operation->source_ini = source_ini;
+	}
+
+	buf.assign(target_args.begin(), target_args.end());
+	buf.push_back(0);
 
 	operation->analyse_options = parse_enum_option_string<wchar_t *, FrameAnalysisOptions>
-		(FrameAnalysisOptionNames, buf, &target);
+		(FrameAnalysisOptionNames, buf.data(), &target);
 
 	if (!target)
-		goto bail;
+		return false;
 
 	if (!operation->target.ParseTarget(target, true, ini_namespace, pre_command_list->scope))
-		goto bail;
+		return false;
 
 	operation->target_name = L"[" + wstring(section) + L"]-" + wstring(target);
 	// target_name will be used in the filenames, so replace any reserved characters:
@@ -1186,13 +1333,7 @@ static bool ParseFrameAnalysisDump(const wchar_t *section,
 	std::replace(operation->target_name.begin(), operation->target_name.end(), L'?', L'_');
 	std::replace(operation->target_name.begin(), operation->target_name.end(), L'*', L'_');
 
-	delete [] buf;
-	return AddCommandToList(operation, explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
-
-bail:
-	delete [] buf;
-	delete operation;
-	return false;
+	return AddCommandToList(operation.release(), explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
 }
 
 bool ParseStoreCommand(const wchar_t* section,
@@ -1271,7 +1412,7 @@ bool ParseCommandListGeneralCommands(const wchar_t *section,
 	if (!wcscmp(key, L"analyse_options"))
 		return AddCommandToList(new FrameAnalysisChangeOptionsCommand(val), explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
 
-	if (!wcscmp(key, L"dump"))
+	if (!wcscmp(key, L"dump") || !wcscmp(key, L"save"))
 		return ParseFrameAnalysisDump(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 
 	if (!wcscmp(key, L"special")) {
@@ -2036,6 +2177,55 @@ static void FillInMissingInfo(
 	}
 }
 
+static void ReplacePathToken(wstring *path, const wchar_t *token, const wchar_t *value)
+{
+	size_t pos = 0, length = wcslen(token), value_length = wcslen(value);
+	while (pos + length <= path->size()) {
+		if (_wcsnicmp(path->c_str() + pos, token, length)) {
+			pos++;
+			continue;
+		}
+		path->replace(pos, length, value);
+		pos += value_length;
+	}
+}
+
+static wstring FormatSavePath(const wstring &path_template, CommandListState *state)
+{
+	wstring path = path_template;
+	wchar_t value[32];
+	SYSTEMTIME time;
+	FILETIME file_time;
+	ULONGLONG ticks;
+	if (path.find(L'%') == wstring::npos)
+		return path;
+
+	GetLocalTime(&time);
+	swprintf_s(value, L"%04u-%02u-%02u", time.wYear, time.wMonth, time.wDay);
+	ReplacePathToken(&path, L"%DATE%", value);
+	swprintf_s(value, L"%02u-%02u-%02u", time.wHour, time.wMinute, time.wSecond);
+	ReplacePathToken(&path, L"%TIME%", value);
+	swprintf_s(value, L"%03u", time.wMilliseconds);
+	ReplacePathToken(&path, L"%MS%", value);
+
+	GetSystemTimeAsFileTime(&file_time);
+	ticks = ((ULONGLONG)file_time.dwHighDateTime << 32) | file_time.dwLowDateTime;
+	swprintf_s(value, L"%06u", (unsigned)((ticks / 10) % 1000000));
+	ReplacePathToken(&path, L"%US%", value);
+	swprintf_s(value, L"%u", G->frame_no);
+	ReplacePathToken(&path, L"%FRAME%", value);
+	swprintf_s(value, L"%u", state->mHackerContext->GetDrawNumber());
+	ReplacePathToken(&path, L"%DRAW%", value);
+
+	if (path.find(L'%') != wstring::npos)
+		for (const auto &variable : command_list_globals) {
+			wstring token = L"%" + variable.first + L"%";
+			swprintf_s(value, L"%.9g", variable.second.fval);
+			ReplacePathToken(&path, token.c_str(), value);
+		}
+	return path;
+}
+
 void FrameAnalysisDumpCommand::run(CommandListState *state)
 {
 	ID3D11Resource *resource = NULL;
@@ -2044,17 +2234,63 @@ void FrameAnalysisDumpCommand::run(CommandListState *state)
 	UINT offset = 0;
 	UINT buf_size = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+	FrameAnalysisOptions options = analyse_options;
+	wstring filename;
+	bool save = !save_path.empty();
 
-	// Fast exit if frame analysis is currently inactive:
-	if (!G->analyse_frame)
+	if (save && !G->export_command_list_save) {
+		LogOverlayW(LOG_WARNING_ALWAYS,
+			L"save= is disabled; set export_command_list_save=1 in [Rendering] and restart the game\nPath: %ls\nSource: %ls\n",
+			save_path.c_str(), source_ini.c_str());
+		return;
+	}
+	if (!save && !G->analyse_frame)
 		return;
 
 	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
+	if (save) {
+		if (save_limit && save_calls >= save_limit) {
+			LogOverlayW(LOG_WARNING_ALWAYS,
+				L"save= blocked: continuous invocation limit reached\nPath: %ls\nSource: %ls\n",
+				save_path.c_str(), source_ini.c_str());
+			return;
+		}
+		filename = FormatSavePath(save_path, state);
+		if (!SavePathIsSafe(filename, save_directory)) {
+			LogOverlayW(LOG_WARNING_ALWAYS, L"save= blocked invalid path: %ls\nSource: %ls\n",
+				save_path.c_str(), source_ini.c_str());
+			return;
+		}
+
+		if (!save_calls || (G->frame_no != save_last_frame && G->frame_no - save_last_frame != 1))
+			save_calls = 1;
+		else if (save_calls != UINT_MAX)
+			save_calls++;
+		save_last_frame = G->frame_no;
+		if (save_limit && save_calls >= save_limit) {
+			LogOverlayW(LOG_WARNING_ALWAYS,
+				L"save= continuous invocation limit %u reached; further calls are blocked until config reload\nPath: %ls\nSource: %ls\n",
+				save_limit, filename.c_str(), source_ini.c_str());
+		}
+	}
 
 	resource = target.GetResource(state, &view, &stride, &offset, &format, NULL);
 	if (!resource) {
-		COMMAND_LIST_LOG(state, "  No resource to dump\n");
+		COMMAND_LIST_LOG(state, "  No resource to %s\n", save ? "save" : "dump");
 		return;
+	}
+	if (save) {
+		D3D11_RESOURCE_DIMENSION dimension;
+		resource->GetType(&dimension);
+		FrameAnalysisOptions save_format = SaveFormat(filename, dimension);
+		if (save_format == FrameAnalysisOptions::INVALID) {
+			LogOverlayW(LOG_WARNING_ALWAYS,
+				L"save= extension is incompatible with the resource type: %ls\nSource: %ls\n",
+				save_path.c_str(), source_ini.c_str());
+			goto out;
+		}
+		options &= (FrameAnalysisOptions)~(FrameAnalysisOptions::FMT_2D_MASK | FrameAnalysisOptions::FMT_BUF_MASK);
+		options |= save_format;
 	}
 
 	// Fill in any missing info before handing it to frame analysis. The
@@ -2062,16 +2298,25 @@ void FrameAnalysisDumpCommand::run(CommandListState *state)
 	// resources:
 	FillInMissingInfo(target.type, resource, view, &stride, &offset, &buf_size, &format);
 
-	state->mHackerContext->FrameAnalysisDump(resource, analyse_options, target_name.c_str(), format, stride, offset);
+	if (state->mHackerContext->FrameAnalysisDump(resource, options, target_name.c_str(), format, stride, offset,
+			save ? filename.c_str() : NULL)) {
+		if (save)
+			LogOverlayW(LOG_INFO, L"save= %ls\nSource: %ls\n", filename.c_str(), source_ini.c_str());
+	} else if (save) {
+		LogOverlayW(LOG_WARNING_ALWAYS,
+			L"save= failed to submit: %ls\nSource: %ls\n", filename.c_str(), source_ini.c_str());
+	}
 
-	if (resource)
-		resource->Release();
+out:
+	resource->Release();
 	if (view)
 		view->Release();
 }
 
 bool FrameAnalysisDumpCommand::noop(bool post, bool ignore_cto_pre, bool ignore_cto_post)
 {
+	if (!save_path.empty())
+		return false;
 	return (G->hunting == HUNTING_MODE_DISABLED || G->frame_analysis_registered == false);
 }
 
@@ -4300,6 +4545,25 @@ bool CommandArgumentReader::GetFloat(float* out)
 	return true;
 }
 
+bool CommandArgumentReader::GetUInt(unsigned* out)
+{
+	wstring token;
+
+	if (!PeekToken(&token))
+		return false;
+	errno = 0;
+	unsigned long value = wcstoul(token.c_str(), NULL, 10);
+	if (token.find_first_not_of(L"0123456789") != wstring::npos || errno == ERANGE ||
+			value > (std::numeric_limits<unsigned>::max)()) {
+		SetError(L"Invalid unsigned integer: " + token, m_peek_start_pos);
+		return false;
+	}
+	*out = (unsigned)value;
+	ConsumeToken();
+	LogDebugW(L"  Unsigned integer: '%ls'\n", token.c_str());
+	return true;
+}
+
 bool CommandArgumentReader::GetExpression(unique_ptr<CommandListExpression>* out)
 {
 	wstring token;
@@ -4365,6 +4629,11 @@ bool CommandArgumentReader::ConsumeSeparator(SeparatorMode separator_mode)
 
 	SetError(L"Internal parser error", m_pos);
 	return false;
+}
+
+bool CommandArgumentReader::HasMore() const
+{
+	return m_input.find_first_not_of(L" \t\r\n", m_pos) != wstring::npos;
 }
 
 bool CommandArgumentReader::Finished()

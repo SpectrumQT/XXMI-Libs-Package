@@ -324,6 +324,11 @@ static bool _get_section_path(IniSections *custom_ini_sections, const wchar_t *s
 	return (!ret->empty());
 }
 
+bool get_section_path(const wchar_t *section, wstring *ret)
+{
+	return _get_section_path(&ini_sections, section, ret);
+}
+
 static size_t get_section_namespace_endpos(const wchar_t *section)
 {
 	const wchar_t *section_prefix;
@@ -4474,6 +4479,23 @@ void LoadConfigFile()
 		enable_lock_dependency_checks();
 
 	G->gShowWarnings = GetIniBool(L"Logging", L"show_warnings", true, NULL);
+
+	// Read before includes so mods cannot enable save I/O.
+	G->export_command_list_save = GetIniBool(L"Rendering", L"export_command_list_save", false, NULL);
+	G->export_command_list_save_count = 100;
+	const wstring *save_count = GetIniWstring(L"Rendering", L"export_command_list_save_count");
+	if (save_count) {
+		errno = 0;
+		unsigned long long value = wcstoull(save_count->c_str(), NULL, 10);
+		if (save_count->empty() || save_count->find_first_not_of(L"0123456789") != wstring::npos ||
+				errno == ERANGE || value > UINT_MAX) {
+			LogOverlayW(LOG_WARNING_ALWAYS,
+				L"export_command_list_save_count must be a non-negative integer; using 100\n - [Rendering]\n");
+		} else {
+			G->export_command_list_save_count = (unsigned)value;
+			LogInfoW(L"  export_command_list_save_count=%u\n", G->export_command_list_save_count);
+		}
+	}
 
 	// Allows to delay DLL initialization by given ms count
 	G->gDllInitializationDelay = GetIniInt(L"System", L"dll_initialization_delay", 0, NULL);

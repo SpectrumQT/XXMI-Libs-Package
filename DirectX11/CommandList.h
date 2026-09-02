@@ -1638,6 +1638,12 @@ public:
 	ResourceCopyTarget target;
 	wstring target_name;
 	FrameAnalysisOptions analyse_options;
+	wstring save_path;
+	wstring save_directory;
+	wstring source_ini;
+	unsigned save_limit = 0;
+	unsigned save_calls = 0;
+	unsigned save_last_frame = 0;
 
 	void run(CommandListState*) override;
 	bool noop(bool post, bool ignore_cto_pre, bool ignore_cto_post) override;
@@ -1757,9 +1763,11 @@ public:
 	bool GetVariable(CommandListVariable*& out, bool is_source, PeekMode mode = PeekMode::Token);
 	bool GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode = PeekMode::Token, bool validate = true);
 	bool GetFloat(float* out);
+	bool GetUInt(unsigned* out);
 	bool GetExpression(unique_ptr<CommandListExpression>* out);
 
 	bool ConsumeSeparator(SeparatorMode separator_mode);
+	bool HasMore() const;
 	bool Finished();
 
 	const wstring& Error() const { return m_error; }

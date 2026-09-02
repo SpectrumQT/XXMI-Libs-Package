@@ -54,7 +54,8 @@ HackerContext* HackerContextFactory(ID3D11Device1 *pDevice1, ID3D11DeviceContext
 	// because frame analysis resource dumping still has some dependencies
 	// on stat collection), so G->hunting is already a pre-requisite for
 	// frame analysis:
-	if (G->hunting || gLogDebug) {
+	// Command-list save reuses the same dumping backend without enabling analysis.
+	if (G->hunting || gLogDebug || G->export_command_list_save) {
 		LogInfo("  Creating FrameAnalysisContext\n");
 		return new FrameAnalysisContext(pDevice1, pContext1);
 	}

@@ -2293,7 +2293,7 @@ static void ParseCommandList(const wchar_t *id,
 					LogOverlay(LOG_WARNING,
 						"NOTICE: Unknown User Settings will be Removed from d3dx_user.ini\n"
 						" This is Normal if you recently Removed/Changed any Mods\n"
-						" Change auto_clear_persist_vars inside d3dx.ini to change this behaviour\n"
+						" Set auto_clear_persist_vars to 0 inside d3dx.ini to Disable Automatic Clean-up\n"
 						" Press %S to Update the Config now, or %S to Reset all Settings to Default\n"
 						" The first Unrecognised Entry was: \"%S\"\n",
 						user_friendly_ini_key_binding(L"Hunting", L"reload_config").c_str(),
@@ -2302,7 +2302,7 @@ static void ParseCommandList(const wchar_t *id,
 				else
 					LogOverlay(LOG_WARNING,
 						"NOTICE: Unknown User Settings won't be Removed from d3dx_user.ini\n"
-						" Change auto_clear_persist_vars inside d3dx.ini to change this behaviour\n"
+						" Set auto_clear_persist_vars to 1 inside d3dx.ini to Enable Automatic Clean-up\n"
 						" Press %S to Update the Config now, or %S to Reset all Settings to Default\n"
 						" The first Unrecognised Entry was: \"%S\"\n",
 						user_friendly_ini_key_binding(L"Hunting", L"reload_config").c_str(),
@@ -4888,26 +4888,15 @@ void SavePersistentSettings()
 	      "[Constants]\n", f);
 
 
-	if (!G->gReloadConfigPending || !G->auto_clear_persist_vars) {
-
-		for (auto global : persistent_variables) {
-			fprintf_s(f, "%ls = %.9g\n", global->name.c_str(), global->fval);
-			saved_variables.erase(global->name);
-		}
-
-		for (auto& entry : saved_variables)
-			fprintf_s(f, "%ls = %.9g\n", entry.first.c_str(), entry.second);
+	for (auto global : persistent_variables) {
+		fprintf_s(f, "%ls = %.9g\n", global->name.c_str(), global->fval);
+		saved_variables.erase(global->name);
 	}
-	
-	else {
-		for (auto global : persistent_variables) {
-			fprintf_s(f, "%ls = %.9g\n", global->name.c_str(), global->fval);
-			saved_variables.erase(global->name);
-		}
 
-		for (auto& entry : saved_variables)
-			fprintf_s(f, "%ls = %.9g\n", entry.first.c_str(), entry.second);
+	for (auto& entry : saved_variables)
+		fprintf_s(f, "%ls = %.9g\n", entry.first.c_str(), entry.second);
 
+	if (G->gReloadConfigPending && G->auto_clear_persist_vars) {
 		if (G->clear_saved_persist_vars) {
 			saved_variables.clear();
 			G->clear_saved_persist_vars = false;

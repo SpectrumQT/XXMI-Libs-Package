@@ -5,8 +5,8 @@
 #include "CommandList.h"
 
 #include <DDSTextureLoader.h>
-#include <WICTextureLoader.h>
 #include <algorithm>
+#include <cstdio>
 #include <sstream>
 #include "HackerDevice.h"
 #include "HackerContext.h"
@@ -6119,6 +6119,50 @@ out_close:
 	CloseHandle(f);
 }
 
+bool CustomResource::HasPNGsRGBChunk(wstring filename)
+{
+	FILE *f = _wfopen(filename.c_str(), L"rb");
+	if (f != nullptr) {
+		unsigned char signature[8];
+		fread(signature, 1, 8, f);
+		if (memcmp(signature, "\x89PNG\r\n\x1a\n", 8) == 0) { // File is png
+			unsigned char chunk_size[4], chunk_type[4];
+			uint32_t chunk_size_int;
+			while (true) {
+				if (!fread(chunk_size, 1, 4, f)) break; // Read chunk size or break from loop on read failure
+				chunk_size_int = ((uint32_t)chunk_size[0] << 24) |
+								 ((uint32_t)chunk_size[1] << 16) |
+								 ((uint32_t)chunk_size[2] << 8)  |
+								 chunk_size[3];
+				if (!fread(chunk_type, 1, 4, f)) break; // Read chunk type or break from loop on read failure
+				if (memcmp(chunk_type, "sRGB", 4) == 0) { // sRGB found
+					fclose(f);
+					return true;
+				} else if (memcmp(chunk_type, "IDAT", 4) == 0) { // IDAT found
+					break;
+				}
+				fseek(f, chunk_size_int + 4, SEEK_CUR);
+			}
+		}
+		fclose(f);
+	}
+	return false;
+}
+
+DirectX::WIC_LOADER_FLAGS CustomResource::GetWICFlags(wstring filename)
+{
+	switch (override_color_space) {
+		case CustomColorSpace::LINEAR:
+		case CustomColorSpace::SRGB:
+			return (DirectX::WIC_LOADER_FLAGS) override_color_space;
+		default:
+			if (HasPNGsRGBChunk(filename)) {
+				return DirectX::WIC_LOADER_FLAGS::WIC_LOADER_FORCE_SRGB;
+			}
+	}
+	return DirectX::WIC_LOADER_FLAGS::WIC_LOADER_DEFAULT;
+}
+
 void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 {
 	wstring ext;
@@ -6163,13 +6207,13 @@ void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 		hr = DirectX::CreateDDSTextureFromFileEx(mOrigDevice1,
 				filename.c_str(), 0,
 				D3D11_USAGE_DEFAULT, bind_flags, 0, misc_flags,
-				false, &resource, NULL, NULL);
+				override_color_space == CustomColorSpace::SRGB, &resource, NULL, NULL);
 	} else {
 		LogInfoW(L"Loading custom resource %s as WIC, bind_flags=0x%03x\n", filename.c_str(), bind_flags);
 		hr = DirectX::CreateWICTextureFromFileEx(mOrigDevice1,
 				filename.c_str(), 0,
 				D3D11_USAGE_DEFAULT, bind_flags, 0, misc_flags,
-				DirectX::WIC_LOADER_FLAGS::WIC_LOADER_DEFAULT, &resource, NULL);
+				GetWICFlags(filename), &resource, NULL);
 	}
 	if (SUCCEEDED(hr)) {
 		device = mOrigDevice1;
@@ -6467,6 +6511,7 @@ void CustomResource::CopyMetadataFrom(const CustomResource& src)
 
 	override_type = src.override_type;
 	override_format = src.override_format;
+	override_color_space = src.override_color_space;
 	override_byte_width = src.override_byte_width;
 	override_stride = src.override_stride;
 	override_array = src.override_array;
@@ -9536,7 +9581,7 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 
 	// For vertex and index buffers the game may pack multiple meshes into
 	// one buffer and bind them at different offsets. In that case the base
-	// resource hash alone is not enough — we must use the same region data hash
+	// resource hash alone is not enough – we must use the same region data hash 
 	// that IASetVertexBuffers / IASetIndexBuffer computed and stored in 
 	// mCurrentVertexBuffers[] /mCurrentIndexBuffer, and that the hunting overlay displays.
 	// That way the hash the user copies from the overlay matches the one looked up

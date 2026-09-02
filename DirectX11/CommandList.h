@@ -8,6 +8,7 @@
 #include <d3d11_1.h>
 #include <DirectXMath.h>
 #include <util.h>
+#include <WICTextureLoader.h>
 
 #include "DrawCallInfo.h"
 #include "ResourceHash.h"
@@ -450,6 +451,18 @@ static EnumName_t<const wchar_t *, CustomResourceType> CustomResourceTypeNames[]
 	{NULL, CustomResourceType::INVALID} // End of list marker
 };
 
+enum class CustomColorSpace {
+	DEFAULT = DirectX::WIC_LOADER_FLAGS::WIC_LOADER_DEFAULT,
+	SRGB    = DirectX::WIC_LOADER_FLAGS::WIC_LOADER_FORCE_SRGB,
+	LINEAR  = DirectX::WIC_LOADER_FLAGS::WIC_LOADER_IGNORE_SRGB,
+};
+static EnumName_t<const wchar_t *, CustomColorSpace> CustomColorSpaceNames[] = {
+	{L"sRGB", CustomColorSpace::SRGB},
+	{L"Linear", CustomColorSpace::LINEAR},
+
+	{NULL, CustomColorSpace::DEFAULT} // End of list marker
+};
+
 // The bind flags are usually set automatically, but there are cases where
 // these can be used to influence driver heuristics (e.g. a buffer that
 // includes a render target or UAV bind flag may be stereoised), so we allow
@@ -549,6 +562,7 @@ public:
 	CustomResourceBindFlags override_bind_flags;
 	ResourceMiscFlags override_misc_flags;
 	DXGI_FORMAT override_format;
+	CustomColorSpace override_color_space;
 	int override_width;
 	int override_height;
 	int override_depth;
@@ -583,6 +597,8 @@ public:
 	void expire(ID3D11Device *mOrigDevice1, ID3D11DeviceContext *mOrigContext1);
 
 private:
+	bool HasPNGsRGBChunk(wstring filename);
+	DirectX::WIC_LOADER_FLAGS GetWICFlags(wstring filename);
 	void LoadFromFile(ID3D11Device *mOrigDevice);
 	void LoadBufferFromFile(ID3D11Device *mOrigDevice);
 	void SubstantiateBuffer(ID3D11Device *mOrigDevice, void **buf, DWORD size);

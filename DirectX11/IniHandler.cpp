@@ -1163,7 +1163,7 @@ T GetIniValue(
 
 inline bool ConvertExpressionToFloat(float expr, float& out) noexcept
 {
-	// Preserve the evaluated IEEE-754 value, including NaN and ±infinity.
+	// Preserve the evaluated IEEE-754 value, including NaN and Â±infinity.
 	out = expr;
 	return true;
 }
@@ -1178,7 +1178,7 @@ bool ParseFloatValue(const wchar_t* section, const wchar_t* key, const wstring& 
 	{
 		if (errno == ERANGE)
 		{
-			// Treat floating-point overflow as ±infinity.
+			// Treat floating-point overflow as Â±infinity.
 			out = std::signbit(out) ? -std::numeric_limits<float>::infinity() : std::numeric_limits<float>::infinity();
 		}
 		return true;
@@ -1251,7 +1251,7 @@ int GetIniInt(const wchar_t* section, const wchar_t* key, int def, bool* found, 
 
 inline bool ConvertExpressionToBool(float expr, bool& out) noexcept
 {
-	// NaN is false; all other non-zero values (including ±infinity) are true.
+	// NaN is false; all other non-zero values (including Â±infinity) are true.
 	out = !std::isnan(expr) && expr != 0.0f;
 	return true;
 }
@@ -2044,6 +2044,7 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		}
 	}
 
+	custom_resource->override_color_space = GetIniEnumClass(section_name, L"color_space", CustomColorSpace::DEFAULT, NULL, CustomColorSpaceNames);
 	custom_resource->override_width = GetIniInt(section_name, L"width", -1, NULL);
 	custom_resource->override_height = GetIniInt(section_name, L"height", -1, NULL);
 	custom_resource->override_depth = GetIniInt(section_name, L"depth", -1, NULL);

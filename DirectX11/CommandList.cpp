@@ -6156,9 +6156,8 @@ DirectX::WIC_LOADER_FLAGS CustomResource::GetWICFlags(wstring filename)
 		case CustomColorSpace::SRGB:
 			return (DirectX::WIC_LOADER_FLAGS) override_color_space;
 		default:
-			if (HasPNGsRGBChunk(filename)) {
+			if (G->gForceDetectColorSpace && HasPNGsRGBChunk(filename))
 				return DirectX::WIC_LOADER_FLAGS::WIC_LOADER_FORCE_SRGB;
-			}
 	}
 	return DirectX::WIC_LOADER_FLAGS::WIC_LOADER_DEFAULT;
 }

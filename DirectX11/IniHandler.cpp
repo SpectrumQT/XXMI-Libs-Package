@@ -4527,6 +4527,8 @@ void LoadConfigFile()
 		G->gFallbackScreenHeight = 1080;
 	}
 
+	G->gForceDetectColorSpace = GetIniBool(L"System", L"force_detect_color_space", false, NULL);
+
 	// [Device] (DXGI parameters)
 	LogInfo("[Device]\n");
 	G->SCREEN_WIDTH = GetIniInt(L"Device", L"width", -1, NULL);

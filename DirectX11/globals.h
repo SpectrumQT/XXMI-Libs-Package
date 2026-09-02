@@ -516,6 +516,7 @@ struct Globals
 	bool gSkipEarlyIncludesLoad;
 	int gFallbackScreenWidth;
 	int gFallbackScreenHeight;
+	bool gForceDetectColorSpace;
 
 	CRITICAL_SECTION mCriticalSection;
 
@@ -739,6 +740,7 @@ struct Globals
 		gSkipEarlyIncludesLoad(true),
 		gFallbackScreenWidth(0),
 		gFallbackScreenHeight(0),
+		gForceDetectColorSpace(false),
 		dump_all_profiles(false),
 		gSystemTickCount(0),
 		gTime(0),

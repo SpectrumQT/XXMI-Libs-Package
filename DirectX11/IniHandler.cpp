@@ -238,21 +238,15 @@ static IniSections::iterator prefix_upper_bound(IniSections &sections, wstring &
 // eyes may be focussed elsewhere and may miss the notification message[s].
 static bool ini_warned = false;
 #define IniWarning(fmt, ...) do { \
-	if (G->gShowWarnings) { \
-		ini_warned = true; \
-		LogOverlay(LOG_WARNING, fmt, __VA_ARGS__); \
-	} \
+	ini_warned = true; \
+	LogOverlay(LOG_WARNING, fmt, __VA_ARGS__); \
 } while (0)
 #define IniWarningW(fmt, ...) do { \
-	if (G->gShowWarnings) { \
-		ini_warned = true; \
-		LogOverlayW(LOG_WARNING, fmt, __VA_ARGS__); \
-	} \
+	ini_warned = true; \
+	LogOverlayW(LOG_WARNING, fmt, __VA_ARGS__); \
 } while (0)
 #define IniWarningBeep() do { \
-	if (G->gShowWarnings) { \
-		ini_warned = true; \
-	} \
+	ini_warned = true; \
 } while (0)
 
 static void emit_ini_warning_tone()
@@ -260,7 +254,8 @@ static void emit_ini_warning_tone()
 	if (!ini_warned)
 		return;
 	ini_warned = false;
-	BeepFailure();
+	if (G->gShowWarnings)
+		BeepFailure();
 }
 
 static bool get_namespaced_section_name(const wstring *section, const wstring *ini_namespace, wstring *ret)
@@ -4411,11 +4406,53 @@ void LoadConfigFile()
 	// so that there is no question what settings we are using.
 
 	// [Logging]
-	// Not using the helper function for this one since logging isn't enabled yet
-	if (GetPrivateProfileInt(L"Logging", L"calls", 1, iniFile))
+
+	gLogVerbosity = LogVerbosity::DISABLED;
+
+	// GetPrivateProfileString is used because we need to initialize LogFile before using GetIni* helpers.
+	static wchar_t log_level[MAX_PATH] = { 0 };
+	GetPrivateProfileString(L"Logging", L"log_level", L"", log_level, MAX_PATH, iniFile);
+	bool log_level_specified = log_level[0] != L'\0';
+
+	bool init_log_file = false;
+	if (log_level_specified)
+	{
+		// New: `log_level` takes precedence over legacy options.
+		if (_wcsicmp(log_level, L"disabled") != 0)
+		{
+			init_log_file = true;
+			gLogVerbosity = LogVerbosity::INFO;  // Set verbosity to INFO until enum is parsed.
+		}
+	}
+	else
+	{
+		// Handle legacy `calls` option.
+		bool log_calls = GetPrivateProfileInt(L"Logging", L"calls", 0, iniFile);
+		if (log_calls)
+		{
+			init_log_file = true;  // `calls` option historically toggles logging.
+			gLogVerbosity = LogVerbosity::INFO;
+		}
+
+		// Handle legacy `debug` option.
+		bool log_debug = GetPrivateProfileInt(L"Logging", L"debug", 0, iniFile);
+		if (log_debug && log_calls)  // `debug` option historically relies on `calls = 1` set.
+		{
+			gLogVerbosity = LogVerbosity::DEBUG;
+		}
+	}
+
+	if (init_log_file)
 	{
 		if (!LogFile)
 			LogFile = _wfsopen(logFilename, L"w", _SH_DENYNO);
+
+		if (!LogFile)
+			gLogVerbosity = LogVerbosity::DISABLED;
+	}
+
+	if (LogFile)
+	{
 		LogInfo("\nD3D11 DLL starting init - v %s - %s\n", VER_FILE_VERSION_STR, LogTime().c_str());
 
 		wchar_t our_path[MAX_PATH], exe_path[MAX_PATH];
@@ -4426,14 +4463,24 @@ void LoadConfigFile()
 			exe_path, our_path);
 
 		LogInfoW(L"----------- " INI_FILENAME L" settings -----------\n");
+
+		LogInfo("[Logging]\n");
+
+		if (log_level_specified)
+		{
+			gLogVerbosity = GetIniEnumClass(L"Logging", L"log_level", LogVerbosity::DISABLED, NULL, LogVerbosityNames);
+		}
+		else
+		{
+			LogInfo("  calls=%d\n", gLogVerbosity >= LogVerbosity::INFO ? 1 : 0);
+			LogInfo("  debug=%d\n", gLogVerbosity == LogVerbosity::DEBUG ? 1 : 0);
+		}
 	}
-	LogInfo("[Logging]\n");
-	LogInfo("  calls=1\n");
+
+	gLogDebug = gLogVerbosity == LogVerbosity::DEBUG;
 
 	ParseIniFile(iniFile);
 	InsertBuiltInIniSections();
-
-	gLogDebug = GetIniBool(L"Logging", L"debug", false, NULL);
 
 	// Unbuffered logging to remove need for fflush calls, and r/w access to make it easy
 	// to open active files.

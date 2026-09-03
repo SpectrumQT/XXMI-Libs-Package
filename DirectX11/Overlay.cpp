@@ -871,20 +871,27 @@ void ClearNotices()
 
 void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
 {
-	if (!G->gShowWarnings && level != LOG_INFO) {
-		return;
-	}
+	bool show_overlay_message = (level == LOG_INFO) || G->gShowWarnings;
 
-	wchar_t msg[maxstring];
+	if (!show_overlay_message && gLogVerbosity < LogVerbosity::WARNING)
+		return;
+
 	va_list ap;
 
 	va_start(ap, fmt);
-	vLogInfoW(fmt, ap);
+
+	vLogWarningW(fmt, ap);
+
+	if (!show_overlay_message) {
+		va_end(ap);
+		return;
+	}
 
 	// Using _vsnwprintf_s so we don't crash if the message is too long for
 	// the buffer, and truncate it instead - unless we can automatically
 	// wrap the message, which DirectXTK doesn't appear to support, who
 	// cares if it gets cut off somewhere off screen anyway?
+	wchar_t msg[maxstring];
 	_vsnwprintf_s(msg, maxstring, _TRUNCATE, fmt, ap);
 
 	EnterCriticalSectionPretty(&notices.lock);
@@ -904,18 +911,26 @@ void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
 // format string correctly and convert the result to a wide string.
 void LogOverlay(LogLevel level, char *fmt, ...)
 {
-	if (!G->gShowWarnings && level != LOG_INFO) {
-		return;
-	}
+	bool show_overlay_message = (level == LOG_INFO) || G->gShowWarnings;
 
-	char amsg[maxstring];
-	wchar_t wmsg[maxstring];
+	if (!show_overlay_message && gLogVerbosity < LogVerbosity::WARNING)
+		return;
+
 	va_list ap;
 
 	va_start(ap, fmt);
-	vLogInfo(fmt, ap);
+
+	vLogWarning(fmt, ap);
+
+	if (!show_overlay_message) {
+		va_end(ap);
+		return;
+	}
 
 	if (!log_levels[level].hide_in_release || G->hunting) {
+		char amsg[maxstring];
+		wchar_t wmsg[maxstring];
+
 		// Using _vsnprintf_s so we don't crash if the message is too long for
 		// the buffer, and truncate it instead - unless we can automatically
 		// wrap the message, which DirectXTK doesn't appear to support, who

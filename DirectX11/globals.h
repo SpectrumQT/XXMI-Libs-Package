@@ -22,6 +22,14 @@
 
 extern HINSTANCE migoto_handle;
 
+static EnumName_t<const wchar_t*, LogVerbosity> LogVerbosityNames[] = {
+	{L"disabled", LogVerbosity::DISABLED},
+	{L"warning",  LogVerbosity::WARNING},
+	{L"info",     LogVerbosity::INFO},
+	{L"debug",    LogVerbosity::DEBUG},
+	{NULL,        LogVerbosity::INVALID} // End of list marker
+};
+
 // Resolve circular include dependency between Globals.h ->
 // CommandList.h -> HackerContext.h -> Globals.h
 class CommandListCommand;

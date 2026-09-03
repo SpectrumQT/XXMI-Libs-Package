@@ -36,6 +36,7 @@ Globals *G = &StaticG;
 
 FILE *LogFile = 0;		// off by default.
 bool gLogDebug = false;
+LogVerbosity gLogVerbosity = LogVerbosity::INVALID;
 
 
 // This critical section must be held to avoid race conditions when creating

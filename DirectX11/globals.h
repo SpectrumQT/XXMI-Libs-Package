@@ -404,7 +404,6 @@ struct Globals
 	bool gReloadConfigPending;
 	bool gConfigInitialized;
 	bool gWipeUserConfig;
-	bool gLogInput;
 	bool gShowWarnings;
 	bool dump_all_profiles;
 
@@ -732,7 +731,6 @@ struct Globals
 		gConfigInitialized(false),
 		gWipeUserConfig(false),
 		user_config_dirty(0),
-		gLogInput(false),
 		gShowWarnings(true),
 		gDllInitializationDelay(0),
 		gSettingsAutoSaveInterval(0),

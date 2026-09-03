@@ -4433,7 +4433,6 @@ void LoadConfigFile()
 	ParseIniFile(iniFile);
 	InsertBuiltInIniSections();
 
-	G->gLogInput = GetIniBool(L"Logging", L"input", false, NULL);
 	gLogDebug = GetIniBool(L"Logging", L"debug", false, NULL);
 
 	// Unbuffered logging to remove need for fflush calls, and r/w access to make it easy

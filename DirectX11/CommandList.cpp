@@ -5085,6 +5085,9 @@ static void transform_operators_visit(CommandListSyntaxTree *tree,
 	if (!tree)
 		return;
 
+	if (tree->tokens.empty())
+		throw CommandListSyntaxError(L"Expression inside parentheses must not be empty", 0);
+
 	if (right_associative) {
 		if (unary) {
 			// Start at the second from the right

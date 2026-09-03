@@ -4816,35 +4816,50 @@ import_operand:
 	}
 }
 
-static void group_parenthesis(CommandListSyntaxTree *tree)
+static void group_parenthesis(CommandListSyntaxTree* tree)
 {
 	CommandListSyntaxTree::Tokens::iterator i;
-	CommandListSyntaxTree::Tokens::reverse_iterator rit;
-	CommandListOperatorToken *rbracket, *lbracket;
-	std::shared_ptr<CommandListSyntaxTree> inner;
+	CommandListOperatorToken* rbracket, * lbracket;
 
-	for (i = tree->tokens.begin(); i != tree->tokens.end(); i++) {
+	for (i = tree->tokens.begin(); i != tree->tokens.end(); ++i) {
 		rbracket = dynamic_cast<CommandListOperatorToken*>(i->get());
-		if (rbracket && !rbracket->token.compare(L")")) {
-			for (rit = std::reverse_iterator<CommandListSyntaxTree::Tokens::iterator>(i); rit != tree->tokens.rend(); rit++) {
-				lbracket = dynamic_cast<CommandListOperatorToken*>(rit->get());
-				if (lbracket && !lbracket->token.compare(L"(")) {
-					inner = std::make_shared<CommandListSyntaxTree>(lbracket->token_pos);
-					// XXX: Double check bounds are right:
-					inner->tokens.assign(rit.base(), i);
-					i = tree->tokens.erase(rit.base() - 1, i + 1);
-					i = tree->tokens.insert(i, std::move(inner));
-					goto continue_rbracket_search; // continue would continue wrong loop
-				}
+
+		if (!rbracket || rbracket->token != L")")
+			continue;
+
+		auto l = i;
+		bool grouped = false;
+
+		while (l != tree->tokens.begin()) {
+			--l;
+
+			lbracket = dynamic_cast<CommandListOperatorToken*>(l->get());
+
+			if (lbracket && lbracket->token == L"(") {
+				auto inner = std::make_shared<CommandListSyntaxTree>(lbracket->token_pos);
+
+				// Everything strictly between '(' and ')'.
+				inner->tokens.assign(std::next(l), i);
+
+				// Erase '(' through ')'.
+				i = tree->tokens.erase(l, std::next(i));
+
+				// Replace them with the grouped tree.
+				i = tree->tokens.insert(i, std::move(inner));
+
+				grouped = true;
+				break;
 			}
-			throw CommandListSyntaxError(L"Unmatched )", rbracket->token_pos);
 		}
-	continue_rbracket_search: false;
+
+		if (!grouped)
+			throw CommandListSyntaxError(L"Unmatched )", rbracket->token_pos);
 	}
 
-	for (i = tree->tokens.begin(); i != tree->tokens.end(); i++) {
+	for (i = tree->tokens.begin(); i != tree->tokens.end(); ++i) {
 		lbracket = dynamic_cast<CommandListOperatorToken*>(i->get());
-		if (lbracket && !lbracket->token.compare(L"("))
+
+		if (lbracket && lbracket->token == L"(")
 			throw CommandListSyntaxError(L"Unmatched (", lbracket->token_pos);
 	}
 }

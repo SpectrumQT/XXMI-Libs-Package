@@ -119,12 +119,6 @@ static bool InitializeDLL()
 
 void DestroyDLL()
 {
-	if (LogFile)
-	{
-		LogInfo("Destroying DLL...\n");
-		SavePersistentSettings();
-		fclose(LogFile);
-	}
 }
 
 int WINAPI D3DKMTCloseAdapter()

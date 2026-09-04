@@ -517,6 +517,8 @@ struct Globals
 	bool hide_cursor;
 	bool cursor_upscaling_bypass;
 	bool check_foreground_window;
+	bool disable_input;
+	bool disable_input_initialized;
 	int gDllInitializationDelay;
 	int gSettingsAutoSaveInterval;
 	int gConfigInitializationDelay;
@@ -710,6 +712,8 @@ struct Globals
 		hide_cursor(false),
 		cursor_upscaling_bypass(true),
 		check_foreground_window(false),
+		disable_input(false),
+		disable_input_initialized(false),
 
 		GAME_INTERNAL_WIDTH(1), // it gonna be used by mouse pos hook in case of softwaremouse is on and it can be called before
 		GAME_INTERNAL_HEIGHT(1),//  the swap chain is created and the proper data set to avoid errors in the hooked winapi functions

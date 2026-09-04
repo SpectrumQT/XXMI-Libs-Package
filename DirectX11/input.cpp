@@ -588,6 +588,8 @@ bool DispatchInputEvents(HackerDevice *device)
 		action = *i;
 
 		input_processed |= action->Dispatch(device);
+		if (G->disable_input)
+			return input_processed;
 	}
 
 	return input_processed;

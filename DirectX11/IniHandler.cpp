@@ -4312,6 +4312,13 @@ void FlagConfigReload(HackerDevice *device, void *private_data)
 	G->gWipeUserConfig = !!private_data;
 }
 
+void ToggleInput(HackerDevice *device, void *private_data)
+{
+	G->disable_input = !G->disable_input;
+	LPCWSTR status = G->disable_input ? L"disabled" : L"enabled";
+	LogOverlayW(LOG_INFO, L"> Inputs %s\n", status);
+}
+
 static void ToggleFullScreen(HackerDevice *device, void *private_data)
 {
 	// SCREEN_FULLSCREEN has several options now, so to preserve the
@@ -4542,6 +4549,13 @@ void LoadConfigFile()
 	LogInfo("[System]\n");
 	GetIniStringAndLog(L"System", L"proxy_d3d11", 0, G->CHAIN_DLL_PATH, MAX_PATH);	
 	G->load_library_redirect = GetIniInt(L"System", L"load_library_redirect", 2, NULL);
+
+	// Toggles other keybindings. This one stays active since it's the first registered.
+	RegisterIniKeyBinding(L"System", L"toggle_input", ToggleInput, NULL, 0, NULL);
+	if (!G->disable_input_initialized) { // Only load initial state on game start
+		G->disable_input = GetIniBool(L"System", L"disable_input", false, NULL);
+		G->disable_input_initialized = true;
+	}
 
 	if (GetIniStringAndLog(L"System", L"hook", 0, setting, MAX_PATH))
 	{

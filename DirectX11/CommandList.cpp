@@ -5135,16 +5135,70 @@ static void transform_operators_recursive(CommandListWalkable *tree,
 		CommandListOperatorFactoryBase *factories[], int num_factories,
 		bool right_associative, bool unary)
 {
-	// Depth first to ensure that we have visited all sub-trees before
-	// transforming operators in this level, since that may add new
-	// sub-trees
-	for (auto &inner: tree->walk()) {
-		transform_operators_recursive(dynamic_cast<CommandListWalkable*>(inner.get()),
-				factories, num_factories, right_associative, unary);
+	if (!tree)
+		return;
+
+	// Syntax trees contain their child nodes directly in tokens.
+	if (CommandListSyntaxTree *syntax_tree =
+			dynamic_cast<CommandListSyntaxTree *>(tree))
+	{
+		for (auto &token : syntax_tree->tokens)
+		{
+			if (CommandListWalkable *child =
+					dynamic_cast<CommandListWalkable *>(token.get()))
+			{
+				transform_operators_recursive(
+					child,
+					factories,
+					num_factories,
+					right_associative,
+					unary);
+			}
+		}
+
+		transform_operators_visit(
+			syntax_tree,
+			factories,
+			num_factories,
+			right_associative,
+			unary);
+
+		return;
 	}
 
-	transform_operators_visit(dynamic_cast<CommandListSyntaxTree*>(tree),
-			factories, num_factories, right_associative, unary);
+	// Operators are also walkable, but their children are stored
+	// separately as lhs_tree/rhs_tree rather than in tokens.
+	if (CommandListOperator *op =
+			dynamic_cast<CommandListOperator *>(tree))
+	{
+		if (op->lhs_tree)
+		{
+			if (CommandListWalkable *lhs =
+					dynamic_cast<CommandListWalkable *>(op->lhs_tree.get()))
+			{
+				transform_operators_recursive(
+					lhs,
+					factories,
+					num_factories,
+					right_associative,
+					unary);
+			}
+		}
+
+		if (op->rhs_tree)
+		{
+			if (CommandListWalkable *rhs =
+					dynamic_cast<CommandListWalkable *>(op->rhs_tree.get()))
+			{
+				transform_operators_recursive(
+					rhs,
+					factories,
+					num_factories,
+					right_associative,
+					unary);
+			}
+		}
+	}
 }
 
 #pragma endregion OperatorTokenization

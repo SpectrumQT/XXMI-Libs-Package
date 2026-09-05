@@ -2345,11 +2345,10 @@ CommandListVariable* RegisterGlobalVariable(wstring& name, float* fval, Variable
 static void ParseConstantsSection()
 {
 	VariableFlags flags;
-	IniSectionVector *section = NULL;
-	IniSectionVector::iterator entry, next;
-	wstring *key, *val, name;
-	const wchar_t *name_pos;
-	const wstring *ini_namespace;
+	IniSectionVector* section = NULL;
+	wstring* key, * val, name;
+	const wchar_t* name_pos;
+	const wstring* ini_namespace;
 
 	// The naming on this one is historical - [Constants] used to define
 	// iniParams that couldn't change, then later we allowed them to be
@@ -2372,43 +2371,65 @@ static void ParseConstantsSection()
 	command_list_globals.clear();
 	persistent_variables.clear();
 	GetIniSection(&section, L"Constants");
-	for (next = section->begin(), entry = next; entry < section->end(); entry = next) {
-		next++;
-		key = &entry->first;
-		val = &entry->second;
-		ini_namespace = &entry->ini_namespace;
 
-		// The variable name will either be in the key if this line
+	// Process Globals while Compacting the Vector in-place.
+	//
+	// Previously each Global was Removed with vector::erase(), which
+	// Shifted every Following IniLine and therefore repeatedly Assigned
+	// it's Four WStrings. Instead, move each Non-Global Entry down once and
+	// Re:Size the Vector after the Pass.
+	size_t write_index = 0;
+
+	for (size_t read_index = 0; read_index < section->size(); ++read_index)
+	{
+		IniLine& entry = (*section)[read_index];
+
+		key = &entry.first;
+		val = &entry.second;
+		ini_namespace = &entry.ini_namespace;
+
+		// The Variable Name will either be in the Key if this Line
 		// also includes an assignment, or in raw_line if it does not:
 		if (!key->empty())
 			name = *key;
 		else
-			name = entry->raw_line;
+			name = entry.raw_line;
 
-		// Convert variable name to lower case since ini files are
-		// supposed to be case insensitive:
+		// Convert Variable Name to Lower Case since Ini Files are
+		// supposed to be Case Insensitive:
 		std::transform(name.begin(), name.end(), name.begin(), ::towlower);
 
-		// Globals do not support pre/post since they are declarations
-		// with static initialisers where pre/post doesn't make sense
-		// (and [Constants] doesn't support them as yet either)
+		// Globals do not Support Pre/Post since they are Declarations
+		// with Static Initialisers where Pre/Post doesn't make sense
+		// (and [Constants] doesn't Support them as yet either)
 
-		flags = parse_enum_option_string_prefix<const wchar_t *, VariableFlags>
+		flags = parse_enum_option_string_prefix<const wchar_t*, VariableFlags>
 			(VariableFlagNames, name.c_str(), &name_pos);
+
 		if (!(flags & VariableFlags::GLOBAL))
+		{
+			// Keep Non-Global Entries in their Original Order.
+			// Move instead of Copy so the WStrings are Transferred
+			// without Allocating/Copying their Contents.
+			if (write_index != read_index)
+				(*section)[write_index] = std::move(entry);
+
+			++write_index;
 			continue;
+		}
+
 		name = name_pos;
 
 		if (!valid_variable_name(name)) {
-			IniWarningW(L"Illegal global variable name: \"%ls\"\n - [Constants] @ [%ls]\n", name.c_str(), ini_namespace->c_str());
+			IniWarningW(L"Illegal Global Variable Name: \"%ls\"\n - [Constants] @ [%ls]\n", name.c_str(), ini_namespace->c_str());
 			continue;
 		}
 
 		if (!ini_namespace->empty())
 			name = get_namespaced_var_name_lower(name, ini_namespace);
 
-		// Initialisation is optional and deferred until the command list is run.
-		// If the initialiser is present and simple.
+		// Initialisation is Optional and Deferred until the Command List is Run.
+		// If the Initialiser is Present and Simple.
 		float fval = 0.0f;
 		if (!val->empty())
 		{
@@ -2421,10 +2442,12 @@ static void ParseConstantsSection()
 			continue;
 		}
 
-		// Remove this line from the ini section data structures so the
-		// command list won't consider it in the 2nd pass:
-		next = section->erase(entry);
+		// Global Entries are Intentionally not Copied into the Compacted
+		// Vector, so they will not be Processed during the Second Pass.
 	}
+
+	// Remove the Trailing Entries left behind by the Compacting Pass.
+	section->erase(section->begin() + write_index, section->end());
 }
 
 static wchar_t *true_false_overrule[] = {

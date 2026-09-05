@@ -556,12 +556,11 @@ static void ParseIniKeyValLine(wstring *wline, wstring *section,
 	section_vector->emplace_back(key, val, *wline, *ini_namespace);
 }
 
-static void ParseIniStream(wistream *stream, const wstring *_ini_namespace)
+static void ParseIniBuffer(const wchar_t *buffer, size_t length, const wstring *_ini_namespace)
 {
-	string aline;
 	wstring wline, section, ini_path;
-	size_t first, last;
 	IniSectionVector *section_vector = NULL;
+	size_t line_start = 0;
 	int warn_duplicates = 1;
 	bool warn_lines_without_equals = true;
 	wstring ini_namespace;
@@ -572,17 +571,35 @@ static void ParseIniStream(wistream *stream, const wstring *_ini_namespace)
 		ini_namespace = *_ini_namespace;
 	else
 		ini_namespace = L"";
+
 	ini_path = ini_namespace;
 
-	while (std::getline(*stream, wline)) {
-		// Strip preceding and trailing whitespace:
-		first = wline.find_first_not_of(L" \t");
-		last = wline.find_last_not_of(L" \t");
+	while (line_start < length) {
+		size_t line_end = line_start;
 
+		while (line_end < length && buffer[line_end] != L'\r' && buffer[line_end] != L'\n')
+			line_end++;
+
+		wline.assign(buffer + line_start, line_end - line_start);
+
+		// Handle CRLF, LF and CR line endings.
+		if (line_end < length && buffer[line_end] == L'\r')
+			line_end++;
+
+		if (line_end < length && buffer[line_end] == L'\n')
+			line_end++;
+
+		line_start = line_end;
+
+		// Strip preceding and trailing whitespace:
+		size_t first = wline.find_first_not_of(L" \t");
 		if (first == wline.npos)
 			continue;
 
-		wline = wline.substr(first, last - first + 1);
+		size_t last = wline.find_last_not_of(L" \t");
+
+		wline.erase(last + 1);
+		wline.erase(0, first);
 
 		// Comments are lines that start with a semicolon as the first
 		// non-whitespace character that we want to skip over (note
@@ -621,9 +638,7 @@ static void ParseIniStream(wistream *stream, const wstring *_ini_namespace)
 
 static void ParseIniExcerpt(const wchar_t *excerpt)
 {
-	std::wistringstream stream(excerpt);
-
-	ParseIniStream(&stream, NULL);
+	ParseIniBuffer(excerpt, wcslen(excerpt), NULL);
 }
 
 // Parse the ini file into data structures. We used to use the
@@ -646,13 +661,70 @@ static void ParseIniExcerpt(const wchar_t *excerpt)
 // it, make sure you delay calling it until after the log file has been opened!
 static void ParseNamespacedIniFile(const wchar_t *ini, const wstring *ini_namespace)
 {
-	wifstream f(ini, ios::in, _SH_DENYNO);
-	if (!f) {
+	HANDLE f = CreateFile(ini, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+	if (f == INVALID_HANDLE_VALUE) {
 		LogOverlay(LOG_WARNING, "  Error opening %S\n", ini);
 		return;
 	}
-	f.imbue(std::locale(f.getloc(), new std::codecvt_utf8<wchar_t, 0x10ffff, std::consume_header>));
-	ParseIniStream(&f, ini_namespace);
+
+	LARGE_INTEGER file_size;
+	if (!GetFileSizeEx(f, &file_size) || file_size.QuadPart > SIZE_MAX) {
+		LogOverlay(LOG_WARNING, "  Error getting size of %S\n", ini);
+		CloseHandle(f);
+		return;
+	}
+
+	size_t size = static_cast<size_t>(file_size.QuadPart);
+	vector<char> data(size);
+
+	DWORD read_size = 0;
+	if (size && (!ReadFile(f, data.data(), static_cast<DWORD>(size), &read_size, NULL) || read_size != size)) {
+		LogOverlay(LOG_WARNING, "  Error reading %S\n", ini);
+		CloseHandle(f);
+		return;
+	}
+
+	CloseHandle(f);
+
+	// Match std::codecvt_utf8<..., std::consume_header> behaviour:
+	// consume an optional UTF-8 BOM before converting the file contents.
+	const char* utf8 = data.data();
+	size_t utf8_size = size;
+
+	if (utf8_size >= 3 &&
+		static_cast<unsigned char>(utf8[0]) == 0xEF &&
+		static_cast<unsigned char>(utf8[1]) == 0xBB &&
+		static_cast<unsigned char>(utf8[2]) == 0xBF)
+	{
+		utf8 += 3;
+		utf8_size -= 3;
+	}
+
+	if (!utf8_size) {
+		ParseIniBuffer(L"", 0, ini_namespace);
+		return;
+	}
+
+	int wsize = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, static_cast<int>(utf8_size),
+		NULL, 0);
+
+	if (!wsize) {
+		LogOverlay(LOG_WARNING, "  Error decoding UTF-8 file %S\n", ini);
+		return;
+	}
+
+	wstring wdata(wsize, L'\0');
+
+	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, static_cast<int>(utf8_size),
+		&wdata[0], wsize))
+	{
+		LogOverlay(LOG_WARNING, "  Error decoding UTF-8 file %S\n", ini);
+		return;
+	}
+
+	ParseIniBuffer(wdata.data(), wdata.size(), ini_namespace);
 }
 
 static void ParseIniFile(const wchar_t *ini)

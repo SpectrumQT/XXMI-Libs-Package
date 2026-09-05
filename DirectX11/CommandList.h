@@ -1471,8 +1471,8 @@ public:
 	wstring section;
 
 	bool static_evaluated = false;
-	bool static_result = false;
-	float static_value = 0.0f;
+	bool is_static = false;
+	float static_val = 0.0f;
 
 	// Commands cannot statically contain command lists, because the
 	// command may be optimised out and the command list freed while we are

@@ -8774,9 +8774,6 @@ bool IfCommand::optimise(HackerDevice *device)
 
 bool IfCommand::noop(bool post, bool ignore_cto_pre, bool ignore_cto_post)
 {
-	float static_val;
-	bool is_static;
-
 	if ((post && !post_finalised) || (!post && !pre_finalised)) {
 		LogOverlayW(LOG_WARNING, L"Statement \"if\" missing \"endif\":\n - \"%ls\"\n", ini_line.c_str());
 		return true;
@@ -8784,13 +8781,9 @@ bool IfCommand::noop(bool post, bool ignore_cto_pre, bool ignore_cto_post)
 
 	if (!static_evaluated)
 	{
-		static_value = 0.0f;
-		static_result = expression.static_evaluate(&static_value);
+		is_static = expression.static_evaluate(&static_val);
 		static_evaluated = true;
 	}
-
-	is_static = static_result;
-	static_val = static_value;
 
 	if (is_static) {
 		if (static_val) {

@@ -5515,6 +5515,9 @@ bool ParseCommandListVariableAssignment(const wchar_t *section,
 	if (name.back() == L']')
 		return false;
 
+	if (G->frame_no == 0 && *ini_namespace == G->user_config)
+		saved_variables[name] = GetIniFloat(section, name.c_str(), 0.0f, NULL);
+
 	CommandListVariable* var = nullptr;
 
 	if (!args.GetVariable(var, false, CommandArgumentReader::PeekMode::Argument))

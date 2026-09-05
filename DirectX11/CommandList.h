@@ -1486,6 +1486,10 @@ public:
 	bool has_nested_else_if;
 	wstring section;
 
+	bool static_evaluated = false;
+	bool is_static = false;
+	float static_val = 0.0f;
+
 	// Commands cannot statically contain command lists, because the
 	// command may be optimised out and the command list freed while we are
 	// still in the middle of optimisations. These are dynamically

@@ -5139,64 +5139,33 @@ static void transform_operators_recursive(CommandListWalkable *tree,
 		return;
 
 	// Syntax trees contain their child nodes directly in tokens.
-	if (CommandListSyntaxTree *syntax_tree =
-			dynamic_cast<CommandListSyntaxTree *>(tree))
+	if (CommandListSyntaxTree *syntax_tree = dynamic_cast<CommandListSyntaxTree *>(tree))
 	{
 		for (auto &token : syntax_tree->tokens)
 		{
-			if (CommandListWalkable *child =
-					dynamic_cast<CommandListWalkable *>(token.get()))
-			{
-				transform_operators_recursive(
-					child,
-					factories,
-					num_factories,
-					right_associative,
-					unary);
-			}
+			if (CommandListWalkable *child = dynamic_cast<CommandListWalkable *>(token.get()))
+				transform_operators_recursive(child, factories, num_factories, right_associative, unary);
 		}
 
-		transform_operators_visit(
-			syntax_tree,
-			factories,
-			num_factories,
-			right_associative,
-			unary);
+		transform_operators_visit(syntax_tree, factories, num_factories, right_associative, unary);
 
 		return;
 	}
 
 	// Operators are also walkable, but their children are stored
 	// separately as lhs_tree/rhs_tree rather than in tokens.
-	if (CommandListOperator *op =
-			dynamic_cast<CommandListOperator *>(tree))
+	if (CommandListOperator *op = dynamic_cast<CommandListOperator *>(tree))
 	{
 		if (op->lhs_tree)
 		{
-			if (CommandListWalkable *lhs =
-					dynamic_cast<CommandListWalkable *>(op->lhs_tree.get()))
-			{
-				transform_operators_recursive(
-					lhs,
-					factories,
-					num_factories,
-					right_associative,
-					unary);
-			}
+			if (CommandListWalkable *lhs = dynamic_cast<CommandListWalkable *>(op->lhs_tree.get()))
+				transform_operators_recursive(lhs, factories, num_factories, right_associative, unary);
 		}
 
 		if (op->rhs_tree)
 		{
-			if (CommandListWalkable *rhs =
-					dynamic_cast<CommandListWalkable *>(op->rhs_tree.get()))
-			{
-				transform_operators_recursive(
-					rhs,
-					factories,
-					num_factories,
-					right_associative,
-					unary);
-			}
+			if (CommandListWalkable *rhs = dynamic_cast<CommandListWalkable *>(op->rhs_tree.get()))
+				transform_operators_recursive(rhs, factories, num_factories, right_associative, unary);
 		}
 	}
 }

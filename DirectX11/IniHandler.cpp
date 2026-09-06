@@ -2184,20 +2184,20 @@ static bool ParseCommandListLine(const wchar_t *ini_section,
 		CommandList *post_command_list,
 		const wstring *ini_namespace)
 {
+	if (ParseCommandListVariableAssignment(ini_section, lhs, rhs, raw_line, command_list, pre_command_list, post_command_list, ini_namespace))
+		return true;
+
+	if (raw_line && !explicit_command_list &&
+		ParseCommandListFlowControl(ini_section, raw_line, pre_command_list, post_command_list, ini_namespace))
+		return true;
+
 	if (ParseCommandListGeneralCommands(ini_section, lhs, rhs, explicit_command_list, pre_command_list, post_command_list, ini_namespace))
 		return true;
 
 	if (ParseCommandListIniParamOverride(ini_section, lhs, rhs, command_list, ini_namespace))
 		return true;
 
-	if (ParseCommandListVariableAssignment(ini_section, lhs, rhs, raw_line, command_list, pre_command_list, post_command_list, ini_namespace))
-		return true;
-
 	if (ParseCommandListResourceCopyTargetDirective(ini_section, lhs, rhs, command_list, ini_namespace))
-		return true;
-
-	if (raw_line && !explicit_command_list &&
-			ParseCommandListFlowControl(ini_section, raw_line, pre_command_list, post_command_list, ini_namespace))
 		return true;
 
 	return false;

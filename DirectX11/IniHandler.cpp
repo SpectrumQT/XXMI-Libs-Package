@@ -661,8 +661,7 @@ static void ParseIniExcerpt(const wchar_t *excerpt)
 // it, make sure you delay calling it until after the log file has been opened!
 static void ParseNamespacedIniFile(const wchar_t *ini, const wstring *ini_namespace)
 {
-	HANDLE f = CreateFile(ini, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	HANDLE f = CreateFile(ini, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
 	if (f == INVALID_HANDLE_VALUE) {
 		LogOverlay(LOG_WARNING, "  Error opening %S\n", ini);
@@ -693,11 +692,7 @@ static void ParseNamespacedIniFile(const wchar_t *ini, const wstring *ini_namesp
 	const char* utf8 = data.data();
 	size_t utf8_size = size;
 
-	if (utf8_size >= 3 &&
-		static_cast<unsigned char>(utf8[0]) == 0xEF &&
-		static_cast<unsigned char>(utf8[1]) == 0xBB &&
-		static_cast<unsigned char>(utf8[2]) == 0xBF)
-	{
+	if (utf8_size >= 3 && static_cast<unsigned char>(utf8[0]) == 0xEF && static_cast<unsigned char>(utf8[1]) == 0xBB && static_cast<unsigned char>(utf8[2]) == 0xBF){
 		utf8 += 3;
 		utf8_size -= 3;
 	}
@@ -717,9 +712,7 @@ static void ParseNamespacedIniFile(const wchar_t *ini, const wstring *ini_namesp
 
 	wstring wdata(wsize, L'\0');
 
-	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, static_cast<int>(utf8_size),
-		&wdata[0], wsize))
-	{
+	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, static_cast<int>(utf8_size), &wdata[0], wsize)){
 		LogOverlay(LOG_WARNING, "  Error decoding UTF-8 file %S\n", ini);
 		return;
 	}

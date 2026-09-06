@@ -1507,7 +1507,7 @@ static void ParseIncludedIniFiles()
 {
 	IniSections include_sections;
 	IniSections::iterator lower, upper, i;
-	const wchar_t *section_id;
+	const wstring *section_id;
 	IniSectionVector *section = NULL;
 	IniSectionVector::iterator entry;
 	wstring *key, *val;
@@ -1544,15 +1544,17 @@ static void ParseIncludedIniFiles()
 		ini_sections.erase(lower, upper);
 
 		for (i = include_sections.begin(); i != include_sections.end(); i++) {
-			section_id = i->first.c_str();
-			LogInfo("[%S]\n", section_id);
+			section_id = &i->first;
+			LogInfo("[%S]\n", section_id->c_str());
 
-			_get_namespaced_section_path(&include_sections, i->first.c_str(), &namespace_path);
+			_get_namespaced_section_path(&include_sections, section_id->c_str(), &namespace_path);
 
-			_GetIniSection(&include_sections, &section, section_id);
+			_GetIniSection(&include_sections, &section, section_id->c_str());
+
 			for (entry = section->begin(); entry < section->end(); entry++) {
 				key = &entry->first;
 				val = &entry->second;
+
 				LogInfo("  %S=%S\n", key->c_str(), val->c_str());
 
 				rel_path = namespace_path + *val;
@@ -1560,24 +1562,47 @@ static void ParseIncludedIniFiles()
 				// This is not a strong protection against including the same file multiple times,
 				// but it is intended to ensure that this do while loop will eventually terminate.
 				if (seen.count(rel_path)) {
-					IniWarningW(L"File included multiple times: %ls\n - [%ls]\n", rel_path.c_str(), section_id);
+					IniWarningW(L"File included multiple times: %ls\n - [%ls]\n", rel_path.c_str(), section_id->c_str());
 					continue;
 				}
+
 				seen.insert(rel_path);
 
-				if (!wcscmp(key->c_str(), L"include")) {
-					ini_path = wstring(migoto_path) + rel_path;
-					ParseNamespacedIniFile(ini_path.c_str(), &rel_path);
-				} else if (!wcscmp(key->c_str(), L"include_recursive")) {
-					recursive_includes.insert(*val);
-					ParseIniFilesRecursive(migoto_path, rel_path, exclude);
-				} else if (!wcscmp(key->c_str(), L"exclude_recursive")) {
-					// Handled above
-				} else if (!wcscmp(key->c_str(), L"user_config")) {
-					// Handled below
-				} else {
-					IniWarningW(L"Unrecognised entry: %ls=%ls\n - [%ls] @ [%ls]\n", key->c_str(), val->c_str(), section_id, namespace_path.c_str());
+				switch (key->size())
+				{
+				case 7: // include
+					if (!wcscmp(key->c_str(), L"include")) {
+						ini_path = wstring(migoto_path) + rel_path;
+						ParseNamespacedIniFile(ini_path.c_str(), &rel_path);
+						continue;
+					}
+					break;
+
+				case 11: // user_config
+					if (!wcscmp(key->c_str(), L"user_config")) {
+						// Handled below
+						continue;
+					}
+					break;
+
+				case 17: // include_recursive / exclude_recursive
+					if (key->c_str()[0] == L'i') {
+						if (!wcscmp(key->c_str(), L"include_recursive")) {
+							ParseIniFilesRecursive(migoto_path, rel_path, exclude);
+							continue;
+						}
+					}
+					else if (key->c_str()[0] == L'e') {
+						if (!wcscmp(key->c_str(), L"exclude_recursive")) {
+							// Handled above
+							continue;
+						}
+					}
+					break;
 				}
+
+				IniWarningW(L"Unrecognised entry: %ls=%ls\n - [%ls] @ [%ls]\n",
+					key->c_str(), val->c_str(), section_id->c_str(), namespace_path.c_str());
 			}
 		}
 	} while (!include_sections.empty());

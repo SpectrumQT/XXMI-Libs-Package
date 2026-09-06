@@ -569,8 +569,12 @@ static void ParseIniStream(wistream *stream, const wstring *_ini_namespace)
 {
 	string aline;
 	wstring wline, section, ini_path;
+
 	size_t first, last;
+	size_t line_start = 0;
 	IniSectionVector *section_vector = NULL;
+	IniSection* section_entry = NULL;
+
 	int warn_duplicates = 1;
 	bool warn_lines_without_equals = true;
 	wstring ini_namespace;
@@ -611,7 +615,7 @@ static void ParseIniStream(wistream *stream, const wstring *_ini_namespace)
 			preamble = false;
 			ParseIniSectionLine(&wline, &section, &warn_duplicates,
 					    &warn_lines_without_equals,
-					    &section_vector, &ini_namespace,
+					    &section_entry, &ini_namespace,
 					    &ini_path);
 			continue;
 		}
@@ -623,7 +627,7 @@ static void ParseIniStream(wistream *stream, const wstring *_ini_namespace)
 		}
 
 		ParseIniKeyValLine(&wline, &section, warn_duplicates,
-				   warn_lines_without_equals, section_vector,
+				   warn_lines_without_equals, section_entry,
 				   &ini_namespace);
 	}
 }

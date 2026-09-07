@@ -611,10 +611,11 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 			}
 
 			// Build an immutable snapshot of every matching ShaderRegex group
-			// on the render thread so it is consistent with the config:
+			// on the render thread so it is consistent with the config. Whether
+			// disassembly is needed is decided by the worker from the
+			// snapshot's patterns, so we don't need decompilation_required:
 			std::vector<ShaderRegexGroupSnapshot> snapshot;
-			bool decompilation_required = false;
-			build_shader_regex_group_snapshot(&orig_info->shaderModel, &snapshot, &decompilation_required);
+			build_shader_regex_group_snapshot(&orig_info->shaderModel, &snapshot, nullptr);
 
 			// Queue the job on the background worker. The worker first checks
 			// the on-disk cache, and only disassembles/matches/patches on a

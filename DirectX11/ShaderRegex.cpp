@@ -767,13 +767,15 @@ bool get_shader_model_from_bytecode(const void* data, size_t size, std::string* 
 // given shader model, so the expensive disassembly/regex/reassembly work can
 // run on a background thread without touching the config reloadable
 // shader_regex_groups. Sets *decompilation_required if any matching group has
-// patterns (those are the only ones that require disassembly).
+// patterns (those are the only ones that require disassembly). May be NULL -
+// the background worker determines this itself from the snapshot's patterns.
 void build_shader_regex_group_snapshot(const std::string *shader_model,
 		std::vector<ShaderRegexGroupSnapshot> *snapshot, bool *decompilation_required)
 {
 	uint32_t j = 0;
 
-	*decompilation_required = false;
+	if (decompilation_required)
+		*decompilation_required = false;
 
 	for (auto &pair : shader_regex_groups) {
 		ShaderRegexGroup *group = &pair.second;
@@ -797,7 +799,7 @@ void build_shader_regex_group_snapshot(const std::string *shader_model,
 			group_snap.patterns.push_back(std::move(pattern_snap));
 		}
 
-		if (!group_snap.patterns.empty())
+		if (!group_snap.patterns.empty() && decompilation_required)
 			*decompilation_required = true;
 
 		LogDebug("ShaderRegex snapshot: %s matches [%S]\n", shader_model->c_str(), group->ini_section.c_str());
@@ -971,7 +973,10 @@ static void run_shader_regex_job(ShaderRegexJob *job)
 			job->patched_bytecode = std::move(cached_bytecode);
 
 			// Rebuild the tagline from the snapshot's section names - we can't
-			// touch the live groups from the worker:
+			// touch the live groups from the worker. Start with the same "//"
+			// prefix as the non-cached path (L1020) so Overlay's FindInfoText
+			// can uniformly skip the first two characters:
+			job->tagline = L"//";
 			for (uint32_t id : job->match_ids)
 				for (auto &group_snap : job->groups)
 					if (group_snap.group_index == id) {

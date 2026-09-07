@@ -17,6 +17,46 @@ enum class ShaderRegexCache {
 };
 
 bool get_shader_model_from_bytecode(const void* data, size_t size, std::string* out_model);
+
+enum class ShaderConstantBufferType : uint8_t
+{
+	NONE              = 0,
+	IMMEDIATE_INDEXED = 1,
+	DYNAMIC_INDEXED   = 2
+};
+
+struct ShaderConstantBuffer
+{
+	ShaderConstantBufferType type = ShaderConstantBufferType::NONE;
+	uint32_t size = 0;
+};
+
+enum class ShaderResourceType : uint8_t
+{
+	NONE       = 0,
+	TYPED      = 1,
+	STRUCTURED = 2,
+	RAW        = 3
+};
+
+struct ShaderResource
+{
+	ShaderResourceType type = ShaderResourceType::NONE;
+
+	// Always D3D_SRV_DIMENSION_BUFFEREX for ShaderResourceType::RAW.
+	// Always D3D_SRV_DIMENSION_BUFFER for ShaderResourceType::STRUCTURED.
+	D3D_SRV_DIMENSION dimension = D3D_SRV_DIMENSION_UNKNOWN;
+
+	// Only meaningful for ShaderResourceType::STRUCTURED.
+	uint32_t stride = 0;
+};
+
+struct ShaderBindings
+{
+	std::array<ShaderConstantBuffer, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT> constant_buffers{};
+	std::array<ShaderResource, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> resources{};
+};
+
 void link_shader_regex_groups_without_patterns(const wchar_t* shader_type, std::string* shader_model, UINT64 hash, bool* decompilation_required);
 bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type, std::string *shader_model, UINT64 hash, std::wstring *tagline);
 ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type, vector<byte> *bytecode, std::wstring *tagline);

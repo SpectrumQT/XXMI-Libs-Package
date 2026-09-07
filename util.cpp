@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <Dbghelp.h>
 #include <shellscalingapi.h>
+#include <chrono>
 
 // FIXME: Move any dependencies from these headers into common:
 #if MIGOTO_DX == 9
@@ -766,11 +767,49 @@ float random(float max)
 
 	uint32_t seed = G->frame_no;
 	seed += 0x9e3779b9 * random_call_counter++;
-	seed ^= G->gSystemTickCount;
+	seed ^= static_cast<uint32_t>(G->gSystemTickCount);
 
 	uint32_t value = hash32(seed);
 
 	float normalized = (value & 0x00ffffff) / 16777216.0f;
 
 	return normalized * max * sign;
+}
+
+uint64_t GetSystemTicks()
+{
+	return std::chrono::duration_cast<std::chrono::microseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()
+	).count();
+}
+
+void FPSCounter::Update(uint64_t system_tick_count)
+{
+	if (!m_initialized)
+	{
+		m_last_tick = system_tick_count;
+		m_initialized = true;
+		return;
+	}
+
+	const uint64_t delta = system_tick_count - m_last_tick;
+	m_last_tick = system_tick_count;
+
+	// Ignore zero frame times and long pauses.
+	if (delta == 0 || delta > m_max_delta)
+		return;
+
+	const float frame_time = delta / 1'000'000.0f;
+
+	if (m_average_frame_time == 0.0f)
+		m_average_frame_time = frame_time;
+	else
+		m_average_frame_time += (frame_time - m_average_frame_time) * m_smoothing;
+
+	m_fps = static_cast<float>(1.0f / m_average_frame_time);
+}
+
+float FPSCounter::GetFPS() const
+{
+	return m_fps;
 }

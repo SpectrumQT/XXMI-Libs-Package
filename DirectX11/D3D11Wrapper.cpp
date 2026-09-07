@@ -36,6 +36,7 @@ Globals *G = &StaticG;
 
 FILE *LogFile = 0;		// off by default.
 bool gLogDebug = false;
+LogVerbosity gLogVerbosity = LogVerbosity::INVALID;
 
 
 // This critical section must be held to avoid race conditions when creating
@@ -118,12 +119,6 @@ static bool InitializeDLL()
 
 void DestroyDLL()
 {
-	if (LogFile)
-	{
-		LogInfo("Destroying DLL...\n");
-		SavePersistentSettings();
-		fclose(LogFile);
-	}
 }
 
 int WINAPI D3DKMTCloseAdapter()
@@ -378,6 +373,7 @@ void InitD311()
 	InitializeCriticalSectionPretty(&G->mCriticalSection);
 	InitializeCriticalSectionPretty(&G->mResourcesLock);
 	InitializeCriticalSectionPretty(&resource_creation_mode_lock);
+	InitializeCriticalSectionPretty(&G->mShaderBindingsLock);
 
 	InitializeDLL();
 	

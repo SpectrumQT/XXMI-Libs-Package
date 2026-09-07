@@ -8,6 +8,7 @@
 #include <d3d11_1.h>
 #include <DirectXMath.h>
 #include <util.h>
+#include <WICTextureLoader.h>
 
 #include "DrawCallInfo.h"
 #include "ResourceHash.h"
@@ -451,6 +452,18 @@ static EnumName_t<const wchar_t *, CustomResourceType> CustomResourceTypeNames[]
 	{NULL, CustomResourceType::INVALID} // End of list marker
 };
 
+enum class CustomColorSpace {
+	DEFAULT = DirectX::WIC_LOADER_FLAGS::WIC_LOADER_DEFAULT,
+	SRGB    = DirectX::WIC_LOADER_FLAGS::WIC_LOADER_FORCE_SRGB,
+	LINEAR  = DirectX::WIC_LOADER_FLAGS::WIC_LOADER_IGNORE_SRGB,
+};
+static EnumName_t<const wchar_t *, CustomColorSpace> CustomColorSpaceNames[] = {
+	{L"sRGB", CustomColorSpace::SRGB},
+	{L"Linear", CustomColorSpace::LINEAR},
+
+	{NULL, CustomColorSpace::DEFAULT} // End of list marker
+};
+
 // The bind flags are usually set automatically, but there are cases where
 // these can be used to influence driver heuristics (e.g. a buffer that
 // includes a render target or UAV bind flag may be stereoised), so we allow
@@ -550,6 +563,7 @@ public:
 	CustomResourceBindFlags override_bind_flags;
 	ResourceMiscFlags override_misc_flags;
 	DXGI_FORMAT override_format;
+	CustomColorSpace override_color_space;
 	int override_width;
 	int override_height;
 	int override_depth;
@@ -584,6 +598,8 @@ public:
 	void expire(ID3D11Device *mOrigDevice1, ID3D11DeviceContext *mOrigContext1);
 
 private:
+	bool HasPNGsRGBChunk(wstring filename);
+	DirectX::WIC_LOADER_FLAGS GetWICFlags(wstring filename);
 	void LoadFromFile(ID3D11Device *mOrigDevice);
 	void LoadBufferFromFile(ID3D11Device *mOrigDevice);
 	void SubstantiateBuffer(ID3D11Device *mOrigDevice, void **buf, DWORD size);
@@ -647,6 +663,7 @@ public:
 	PoolIndexType index_type = PoolIndexType::RING;
 	bool lazy_initialization = true;
 	bool element_type_switch_reset = true;
+	bool allocate_slot_on_missing = false;
 	unsigned expiration_timeout_frames = UINT32_MAX;
 	bool reset_expired_elements = false;
 	bool read_refreshes_expiration = false;
@@ -779,26 +796,29 @@ enum class ResourceCopyTargetEvaluationMode : uint32_t {
 	RESOURCE_REGION_HASH   = 0b00000000000000000000000001000000,
 	RESOURCE_SPATIAL_HASH  = 0b00000000000000000000000010000000,
 	RESOURCE_REGION        = 0b00000000000000000000000100000000,
+	RESOURCE_FORMAT        = 0b00000000000000000000001000000000,
+	RESOURCE_WIDTH         = 0b00000000000000000000010000000000,
+	RESOURCE_HEIGHT        = 0b00000000000000000000100000000000,
 
-	RESOURCE_MASK          = 0b00000000000000000000000111111111,
+	RESOURCE_MASK          = 0b00000000000000000000111111111111,
 
 	// POOL
-	POOL_IDENTITY          = 0b00000000000000000000001000000000,
-	POOL_SIZE              = 0b00000000000000000000010000000000,
-	POOL_INDEX             = 0b00000000000000000000100000000000,
-	POOL_FULL_RANGE        = 0b00000000000000000001000000000000,
-	POOL_LAST_FRAME        = 0b00000000000000000010000000000000,
+	POOL_IDENTITY          = 0b00000000000000000001000000000000,
+	POOL_SIZE              = 0b00000000000000000010000000000000,
+	POOL_INDEX             = 0b00000000000000000100000000000000,
+	POOL_FULL_RANGE        = 0b00000000000000001000000000000000,
+	POOL_LAST_FRAME        = 0b00000000000000010000000000000000,
 
-	POOL_MASK              = 0b00000000000000000011111000000000,
+	POOL_MASK              = 0b00000000000000011111000000000000,
 
 	// VARIABLE
-	VARIABLE               = 0b00000000000000000100000000000000,
+	VARIABLE               = 0b00000000000000100000000000000000,
 
 	// LAYOUT
-	LAYOUT_ELEMENT_FORMAT  = 0b00000000000000001000000000000000,
-	LAYOUT_ELEMENT_OFFSET  = 0b00000000000000010000000000000000,
+	LAYOUT_ELEMENT_FORMAT  = 0b00000000000001000000000000000000,
+	LAYOUT_ELEMENT_OFFSET  = 0b00000000000010000000000000000000,
 
-	LAYOUT_MASK            = 0b00000000000000011000000000000000
+	LAYOUT_MASK            = 0b00000000000011000000000000000000
 };
 SENSIBLE_ENUM(ResourceCopyTargetEvaluationMode);
 static EnumName_t<const wchar_t*, ResourceCopyTargetEvaluationMode> ResourceCopyTargetEvaluationModeNames[] = {
@@ -810,6 +830,9 @@ static EnumName_t<const wchar_t*, ResourceCopyTargetEvaluationMode> ResourceCopy
 	{L"ResourceOffset", ResourceCopyTargetEvaluationMode::RESOURCE_OFFSET},
 	{L"ResourceRegionHash", ResourceCopyTargetEvaluationMode::RESOURCE_REGION_HASH},
 	{L"ResourceSpatialHash", ResourceCopyTargetEvaluationMode::RESOURCE_SPATIAL_HASH},
+	{L"ResourceFormat", ResourceCopyTargetEvaluationMode::RESOURCE_FORMAT},
+	{L"ResourceWidth", ResourceCopyTargetEvaluationMode::RESOURCE_WIDTH},
+	{L"ResourceHeight", ResourceCopyTargetEvaluationMode::RESOURCE_HEIGHT},
 
 	{L"PoolIdentity", ResourceCopyTargetEvaluationMode::POOL_IDENTITY},
 	{L"PoolSize", ResourceCopyTargetEvaluationMode::POOL_SIZE},
@@ -852,23 +875,97 @@ enum class IniParserResult : uint8_t {
 	SYNTAX_ERROR = 2,
 };
 
-class ResourceCopyTarget {
-	static constexpr size_t MAX_MEMBER_ARGS_COUNT = 4;
-public:
-	struct MemberInfo {
-		const wchar_t* keyword;
-		size_t len; // including "->"
-		ResourceCopyTargetEvaluationMode mode;
-		std::array<MemberArg::Type, MAX_MEMBER_ARGS_COUNT> args{};
 
-		size_t num_args() const
-		{
-			size_t n = 0;
-			while (n < args.size() && args[n] != MemberArg::Type::None)
-				++n;
-			return n;
-		}
-	};
+class SyntaxTarget
+{
+public:
+	static constexpr size_t MAX_MEMBER_ARGS_COUNT = 4;
+	std::array<MemberArg, MAX_MEMBER_ARGS_COUNT> member_args{};
+
+private:
+	static IniParserResult extract_arguments(const wchar_t* target, size_t& length, const wchar_t*& args_start, const wchar_t*& args_end);
+	static bool suffix_equals(const wchar_t* str, size_t len, const wchar_t* suffix, size_t suffix_len);
+
+protected:
+
+    template<typename Mode>
+    struct MemberInfo {
+        const wchar_t* keyword;
+        size_t len;
+        Mode mode;
+        std::array<MemberArg::Type, MAX_MEMBER_ARGS_COUNT> args{};
+
+        size_t num_args() const
+        {
+            size_t n = 0;
+            while (n < args.size() && args[n] != MemberArg::Type::None)
+                ++n;
+            return n;
+        }
+    };
+
+    template<typename Mode>
+    bool ParseMemberArguments(
+        const MemberInfo<Mode>& member,
+        const wchar_t* args_start,
+        const wchar_t* args_end,
+        const wstring* ini_namespace,
+        CommandListScope* scope);
+
+	template<typename Mode, size_t N>
+	IniParserResult ParseTargetMember(
+		const MemberInfo<Mode>(&members)[N],
+		const wchar_t*& target,
+		size_t& length,
+		wstring& temp_target,
+		Mode& evaluation_mode,
+		const wstring* ini_namespace,
+		CommandListScope* scope);
+};
+
+
+enum class ShaderTargetEvaluationMode : uint32_t {
+	INVALID            = 0b00000000000000000000000000000000,
+
+	SHADER             = 0b00000000000000000000000000000001,
+
+	DCL_CB_MASK        = 0b00000000000000000000000000000010,
+	DCL_CB_TYPE        = 0b00000000000000000000000000000100,
+	DCL_CB_SIZE        = 0b00000000000000000000000000001000,
+
+	DCL_SRV_MASK       = 0b00000000000000000000000000010000,
+	DCL_SRV_TYPE       = 0b00000000000000000000000000100000,
+	DCL_SRV_DIMENSION  = 0b00000000000000000000000001000000,
+	DCL_SRV_STRIDE     = 0b00000000000000000000000010000000,
+};
+SENSIBLE_ENUM(ShaderTargetEvaluationMode);
+//static EnumName_t<const wchar_t*, ShaderTargetEvaluationMode> ShaderTargetEvaluationModeNames[] = {
+//	{L"Shader", ShaderTargetEvaluationMode::SHADER},
+//
+//	{NULL, ShaderTargetEvaluationMode::INVALID} // End of list marker
+//};
+
+
+class ShaderTarget : public SyntaxTarget
+{
+public:
+	using MemberInfo = SyntaxTarget::MemberInfo<ShaderTargetEvaluationMode>;
+
+	ShaderTargetEvaluationMode evaluation_mode = ShaderTargetEvaluationMode::SHADER;
+	wchar_t shader_type = L'\0';
+
+	bool ParseTarget(const wchar_t* target, bool is_source, const wstring* ini_namespace, CommandListScope* scope);
+
+private:
+	IniParserResult ParseTargetMember(const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope);
+	IniParserResult ParseShaderPipelineSlot(const wchar_t*& target, size_t length, bool is_source);
+};
+
+
+class ResourceCopyTarget : public SyntaxTarget
+{
+public:
+    using MemberInfo = SyntaxTarget::MemberInfo<ResourceCopyTargetEvaluationMode>;
 
 	ResourceCopyTargetType type = ResourceCopyTargetType::INVALID;
 	ResourceCopyTargetEvaluationMode evaluation_mode = ResourceCopyTargetEvaluationMode::RESOURCE;
@@ -877,8 +974,6 @@ public:
 
 	CustomResourcePool* custom_resource_pool = nullptr;
 	std::unique_ptr<CommandListExpression> pool_dynamic_index_expression = nullptr;
-
-	std::array<MemberArg, MAX_MEMBER_ARGS_COUNT> member_args{};
 
 	bool forbid_view_cache = false;
 
@@ -919,13 +1014,15 @@ public:
 	float GetResourceOffset(CommandListState* state);
 	float GetResourceRegionHash(CommandListState* state);
 	float GetResourceSpatialHash(CommandListState* state);
+	float GetResourceFormat(CommandListState* state);
+	float GetResourceWidth(CommandListState* state);
+	float GetResourceHeight(CommandListState* state);
 	float GetPoolElementLastFrame(CommandListState* state);
 
 	D3D11_BIND_FLAG BindFlags(CommandListState *state, D3D11_RESOURCE_MISC_FLAG *misc_flags=NULL);
 
 private:
 	IniParserResult ParseTargetPrefix(const wchar_t*& target, size_t& length);
-	bool ParseMemberArguments(const MemberInfo& member, const wchar_t* args_start, const wchar_t* args_end, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetMember(const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetPipelineSlot(const wchar_t*& target, size_t length, bool is_source);
 	IniParserResult ParseTargetCustomResource(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope);
@@ -1021,7 +1118,7 @@ public:
 	void run(CommandListState*) override;
 
 private:
-	bool failed = false;
+	CustomResourcePool* failed_root = nullptr;
 };
 
 class LayoutElementOperation : public CommandListCommand {
@@ -1234,6 +1331,8 @@ enum class ParamOverrideType {
 	FRAME_NUMBER,
 	DRAW_NUMBER,
 	DISPATCH_NUMBER,
+	FRAME_TIME,
+	FPS,
 };
 static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] = {
 	{L"rt_width", ParamOverrideType::RT_WIDTH},
@@ -1276,6 +1375,8 @@ static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] =
 	{L"frame_number", ParamOverrideType::FRAME_NUMBER},
 	{L"draw_number", ParamOverrideType::DRAW_NUMBER},
 	{L"dispatch_number", ParamOverrideType::DISPATCH_NUMBER},
+	{L"frame_time", ParamOverrideType::FRAME_TIME},
+	{L"fps", ParamOverrideType::FPS},
 	{NULL, ParamOverrideType::INVALID} // End of list marker
 };
 class CommandListOperand :
@@ -1298,7 +1399,7 @@ public:
 
 	// For texture filters:
 	ResourceCopyTarget texture_filter_target;
-	wchar_t shader_filter_target;
+	ShaderTarget shader_target;
 
 	// For scissor rectangle:
 	unsigned scissor;
@@ -1573,7 +1674,7 @@ public:
 	virtual void run(CommandListState* state) override;
 
 private:
-	bool failed = false;
+	CommandList* failed_root = nullptr;
 };
 
 void RunCommandList(HackerDevice *mHackerDevice,
@@ -1655,7 +1756,7 @@ public:
 	template<typename T>
 	bool GetEnum(const EnumName_t<const wchar_t*, T>* names, T invalid, T* out);
 	bool GetVariable(CommandListVariable*& out, bool is_source, PeekMode mode = PeekMode::Token);
-	bool GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode = PeekMode::Token);
+	bool GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode = PeekMode::Token, bool validate = true);
 	bool GetFloat(float* out);
 	bool GetExpression(unique_ptr<CommandListExpression>* out);
 

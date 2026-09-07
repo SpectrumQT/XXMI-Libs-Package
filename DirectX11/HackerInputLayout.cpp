@@ -61,7 +61,8 @@ HackerInputLayout::HackerInputLayout(
 	}
 
 	mShaderSignature.resize(signatureSize);
-	memcpy(mShaderSignature.data(), shaderSignature, signatureSize);
+	if (signatureSize)
+		memcpy(mShaderSignature.data(), shaderSignature, signatureSize);
 
 	mLayoutHash = hash ? hash : CalculateInputLayoutHash(pElements, numElements, shaderSignature, signatureSize);
 }

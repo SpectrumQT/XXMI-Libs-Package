@@ -70,6 +70,7 @@ static Section RegularSections[] = {
 	{L"Hunting", false},
 	{L"Logging", false},
 	{L"System", false},
+	{L"Input", false},
 	{L"Device", false},
 	{L"Rendering", false},
 	{L"Loader", false},
@@ -216,6 +217,7 @@ struct IniSection {
 typedef std::map<wstring, IniSection, WStringInsensitiveLess> IniSections;
 
 IniSections ini_sections;
+std::unordered_set<wstring> recursive_includes;
 
 // Returns an iterator to the first element in a set that does not begin with
 // prefix in a case insensitive way. Combined with set::lower_bound, this can
@@ -238,21 +240,15 @@ static IniSections::iterator prefix_upper_bound(IniSections &sections, wstring &
 // eyes may be focussed elsewhere and may miss the notification message[s].
 static bool ini_warned = false;
 #define IniWarning(fmt, ...) do { \
-	if (G->gShowWarnings) { \
-		ini_warned = true; \
-		LogOverlay(LOG_WARNING, fmt, __VA_ARGS__); \
-	} \
+	ini_warned = true; \
+	LogOverlay(LOG_WARNING, fmt, __VA_ARGS__); \
 } while (0)
 #define IniWarningW(fmt, ...) do { \
-	if (G->gShowWarnings) { \
-		ini_warned = true; \
-		LogOverlayW(LOG_WARNING, fmt, __VA_ARGS__); \
-	} \
+	ini_warned = true; \
+	LogOverlayW(LOG_WARNING, fmt, __VA_ARGS__); \
 } while (0)
 #define IniWarningBeep() do { \
-	if (G->gShowWarnings) { \
-		ini_warned = true; \
-	} \
+	ini_warned = true; \
 } while (0)
 
 static void emit_ini_warning_tone()
@@ -260,7 +256,8 @@ static void emit_ini_warning_tone()
 	if (!ini_warned)
 		return;
 	ini_warned = false;
-	BeepFailure();
+	if (G->gShowWarnings)
+		BeepFailure();
 }
 
 static bool get_namespaced_section_name(const wstring *section, const wstring *ini_namespace, wstring *ret)
@@ -1163,7 +1160,7 @@ T GetIniValue(
 
 inline bool ConvertExpressionToFloat(float expr, float& out) noexcept
 {
-	// Preserve the evaluated IEEE-754 value, including NaN and ±infinity.
+	// Preserve the evaluated IEEE-754 value, including NaN and Â±infinity.
 	out = expr;
 	return true;
 }
@@ -1178,7 +1175,7 @@ bool ParseFloatValue(const wchar_t* section, const wchar_t* key, const wstring& 
 	{
 		if (errno == ERANGE)
 		{
-			// Treat floating-point overflow as ±infinity.
+			// Treat floating-point overflow as Â±infinity.
 			out = std::signbit(out) ? -std::numeric_limits<float>::infinity() : std::numeric_limits<float>::infinity();
 		}
 		return true;
@@ -1251,7 +1248,7 @@ int GetIniInt(const wchar_t* section, const wchar_t* key, int def, bool* found, 
 
 inline bool ConvertExpressionToBool(float expr, bool& out) noexcept
 {
-	// NaN is false; all other non-zero values (including ±infinity) are true.
+	// NaN is false; all other non-zero values (including Â±infinity) are true.
 	out = !std::isnan(expr) && expr != 0.0f;
 	return true;
 }
@@ -1513,6 +1510,8 @@ static void ParseIncludedIniFiles()
 	vector<pcre2_code*> exclude;
 	DWORD attrib;
 
+	recursive_includes.clear();
+
 	GetModuleFileName(migoto_handle, migoto_path, MAX_PATH);
 	wcsrchr(migoto_path, L'\\')[1] = 0;
 
@@ -1564,6 +1563,7 @@ static void ParseIncludedIniFiles()
 					ini_path = wstring(migoto_path) + rel_path;
 					ParseNamespacedIniFile(ini_path.c_str(), &rel_path);
 				} else if (!wcscmp(key->c_str(), L"include_recursive")) {
+					recursive_includes.insert(*val);
 					ParseIniFilesRecursive(migoto_path, rel_path, exclude);
 				} else if (!wcscmp(key->c_str(), L"exclude_recursive")) {
 					// Handled above
@@ -1583,6 +1583,14 @@ static void ParseIncludedIniFiles()
 	attrib = GetFileAttributes(G->user_config.c_str());
 	if (attrib != INVALID_FILE_ATTRIBUTES)
 		ParseNamespacedIniFile(G->user_config.c_str(), &G->user_config);
+}
+
+bool starts_with_any(const std::wstring& str, const std::unordered_set<std::wstring>& prefixes)
+{
+	return std::any_of(prefixes.begin(), prefixes.end(),
+		[&](const std::wstring& prefix) {
+			return str.compare(0, prefix.size(), prefix) == 0;
+		});
 }
 
 static void RegisterPresetKeyBindings()
@@ -1614,12 +1622,16 @@ static void RegisterPresetKeyBindings()
 		delay = GetIniInt(id, L"delay", 0, NULL);
 		release_delay = GetIniInt(id, L"release_delay", 0, NULL);
 
+		// Only keys declared by INIs from "recursive_includes" paths should be disabled by "input_disable_mode = mods".
+		bool is_mod = starts_with_any(i->second.ini_path.empty() ? i->second.ini_namespace : i->second.ini_path, recursive_includes);
+		InputDisableScope input_disable_scope = is_mod ? InputDisableScope::MODS : InputDisableScope::ALL;
+
 		if (type == KeyOverrideType::CYCLE) {
 			shared_ptr<KeyOverrideCycle> cycle_preset = make_shared<KeyOverrideCycle>();
 			shared_ptr<KeyOverrideCycleBack> cycle_back = make_shared<KeyOverrideCycleBack>(cycle_preset);
 			preset = cycle_preset;
 			for (wstring key : back)
-				RegisterKeyBinding(L"Back", key.c_str(), cycle_back, 0, delay, release_delay);
+				RegisterKeyBinding(L"Back", key.c_str(), cycle_back, 0, delay, release_delay, input_disable_scope);
 		} else {
 			preset = make_shared<KeyOverride>(type);
 		}
@@ -1627,7 +1639,7 @@ static void RegisterPresetKeyBindings()
 		preset->ParseIniSection(id);
 
 		for (wstring key : keys)
-			RegisterKeyBinding(L"Key", key.c_str(), preset, 0, delay, release_delay);
+			RegisterKeyBinding(L"Key", key.c_str(), preset, 0, delay, release_delay, input_disable_scope);
 	}
 }
 
@@ -2044,6 +2056,7 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		}
 	}
 
+	custom_resource->override_color_space = GetIniEnumClass(section_name, L"color_space", CustomColorSpace::DEFAULT, NULL, CustomColorSpaceNames);
 	custom_resource->override_width = GetIniInt(section_name, L"width", -1, NULL);
 	custom_resource->override_height = GetIniInt(section_name, L"height", -1, NULL);
 	custom_resource->override_depth = GetIniInt(section_name, L"depth", -1, NULL);
@@ -2089,6 +2102,7 @@ static CustomResourcePool* ParseResourcePoolSection(const wchar_t* section_name)
 	pool->index_type = GetIniEnumClass(section_name, L"pool_index_type", PoolIndexType::RING, NULL, PoolIndexTypeNames);
 	pool->lazy_initialization = GetIniBool(section_name, L"pool_lazy_initialization", true, NULL);
 	pool->element_type_switch_reset = GetIniBool(section_name, L"pool_element_type_switch_reset", true, NULL);
+	pool->allocate_slot_on_missing = GetIniBool(section_name, L"pool_allocate_slot_on_missing", false, NULL);
 	
 	int expiration_timeout_frames = GetIniInt(section_name, L"pool_expiration_timeout_frames", -1, NULL);
 	if (expiration_timeout_frames >= 0)
@@ -4327,6 +4341,12 @@ void FlagConfigReload(HackerDevice *device, void *private_data)
 	G->gWipeUserConfig = !!private_data;
 }
 
+void ToggleInput(HackerDevice *device, void *private_data)
+{
+	G->disable_input = !G->disable_input;
+	LogOverlayW(LOG_INFO, L"> %ls %ls key bindings\n", G->disable_input ? L"Disabled" : L"Enabled", lookup_enum_name(InputDisableScopeNames, G->input_disable_scope));
+}
+
 static void ToggleFullScreen(HackerDevice *device, void *private_data)
 {
 	// SCREEN_FULLSCREEN has several options now, so to preserve the
@@ -4421,11 +4441,53 @@ void LoadConfigFile()
 	// so that there is no question what settings we are using.
 
 	// [Logging]
-	// Not using the helper function for this one since logging isn't enabled yet
-	if (GetPrivateProfileInt(L"Logging", L"calls", 1, iniFile))
+
+	gLogVerbosity = LogVerbosity::DISABLED;
+
+	// GetPrivateProfileString is used because we need to initialize LogFile before using GetIni* helpers.
+	static wchar_t log_level[MAX_PATH] = { 0 };
+	GetPrivateProfileString(L"Logging", L"log_level", L"", log_level, MAX_PATH, iniFile);
+	bool log_level_specified = log_level[0] != L'\0';
+
+	bool init_log_file = false;
+	if (log_level_specified)
+	{
+		// New: `log_level` takes precedence over legacy options.
+		if (_wcsicmp(log_level, L"disabled") != 0)
+		{
+			init_log_file = true;
+			gLogVerbosity = LogVerbosity::INFO;  // Set verbosity to INFO until enum is parsed.
+		}
+	}
+	else
+	{
+		// Handle legacy `calls` option.
+		bool log_calls = GetPrivateProfileInt(L"Logging", L"calls", 0, iniFile);
+		if (log_calls)
+		{
+			init_log_file = true;  // `calls` option historically toggles logging.
+			gLogVerbosity = LogVerbosity::INFO;
+		}
+
+		// Handle legacy `debug` option.
+		bool log_debug = GetPrivateProfileInt(L"Logging", L"debug", 0, iniFile);
+		if (log_debug && log_calls)  // `debug` option historically relies on `calls = 1` set.
+		{
+			gLogVerbosity = LogVerbosity::DEBUG;
+		}
+	}
+
+	if (init_log_file)
 	{
 		if (!LogFile)
 			LogFile = _wfsopen(logFilename, L"w", _SH_DENYNO);
+
+		if (!LogFile)
+			gLogVerbosity = LogVerbosity::DISABLED;
+	}
+
+	if (LogFile)
+	{
 		LogInfo("\nD3D11 DLL starting init - v %s - %s\n", VER_FILE_VERSION_STR, LogTime().c_str());
 
 		wchar_t our_path[MAX_PATH], exe_path[MAX_PATH];
@@ -4436,15 +4498,24 @@ void LoadConfigFile()
 			exe_path, our_path);
 
 		LogInfoW(L"----------- " INI_FILENAME L" settings -----------\n");
+
+		LogInfo("[Logging]\n");
+
+		if (log_level_specified)
+		{
+			gLogVerbosity = GetIniEnumClass(L"Logging", L"log_level", LogVerbosity::DISABLED, NULL, LogVerbosityNames);
+		}
+		else
+		{
+			LogInfo("  calls=%d\n", gLogVerbosity >= LogVerbosity::INFO ? 1 : 0);
+			LogInfo("  debug=%d\n", gLogVerbosity == LogVerbosity::DEBUG ? 1 : 0);
+		}
 	}
-	LogInfo("[Logging]\n");
-	LogInfo("  calls=1\n");
+
+	gLogDebug = gLogVerbosity == LogVerbosity::DEBUG;
 
 	ParseIniFile(iniFile);
 	InsertBuiltInIniSections();
-
-	G->gLogInput = GetIniBool(L"Logging", L"input", false, NULL);
-	gLogDebug = GetIniBool(L"Logging", L"debug", false, NULL);
 
 	// Unbuffered logging to remove need for fflush calls, and r/w access to make it easy
 	// to open active files.
@@ -4527,6 +4598,9 @@ void LoadConfigFile()
 		G->gSettingsAutoSaveInterval = 2147483647;
 	}
 
+	// Controls whether saved values of persistent variables should be cleared when source mods are no longer detected (disabled or removed).
+	G->auto_clear_persist_vars = GetIniBool(L"System", L"auto_clear_persist_vars", true, NULL);
+
 	// Allows to configure fallback screen resolution to be used as return for `window_width` and `window_height`
 	G->gFallbackScreenWidth = GetIniInt(L"System", L"screen_width", 1920, NULL);
 	if (G->gFallbackScreenWidth < 640 || G->gFallbackScreenWidth > 15360) {
@@ -4537,8 +4611,15 @@ void LoadConfigFile()
 		G->gFallbackScreenHeight = 1080;
 	}
 
-	// Controls whether saved values of persistent variables should be cleared when source mods are no longer detected (disabled or removed).
-	G->auto_clear_persist_vars = GetIniBool(L"System", L"auto_clear_persist_vars", true, NULL);
+	G->gForceDetectColorSpace = GetIniBool(L"System", L"force_detect_color_space", false, NULL);
+
+	// [Input]
+	LogInfo("[Input]\n");
+	RegisterIniKeyBinding(L"Input", L"toggle_input", ToggleInput, NULL, 0, NULL);
+	bool disable_input_initialized = G->input_disable_scope != InputDisableScope::INVALID;
+	G->input_disable_scope = GetIniEnumClass(L"Input", L"input_disable_mode", InputDisableScope::MODS, NULL, InputDisableScopeNames);
+	if (!disable_input_initialized)
+		G->disable_input = !GetIniBool(L"Input", L"input", false, NULL);
 
 	// [Device] (DXGI parameters)
 	LogInfo("[Device]\n");

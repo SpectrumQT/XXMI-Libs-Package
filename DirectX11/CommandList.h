@@ -149,7 +149,7 @@ public:
 typedef std::unordered_map<std::wstring, class CommandListVariable> CommandListVariables;
 extern CommandListVariables command_list_globals;
 extern std::vector<CommandListVariable*> persistent_variables;
-extern std::unordered_map<std::wstring, float> saved_variables;
+extern std::unordered_map<std::wstring, float> unknown_variables;
 
 // The scope object is used to declare local variables in a command list. The
 // multiple levels are to isolate variables declared inside if blocks from

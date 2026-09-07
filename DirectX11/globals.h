@@ -429,7 +429,7 @@ struct Globals
 	bool dump_all_profiles;
 
 	bool auto_clear_persist_vars;
-	bool clear_saved_persist_vars;
+	uint32_t unknown_persist_vars_count;
 
 	uint64_t ticks_at_launch;
 	uint64_t gSystemTickCount;
@@ -769,7 +769,7 @@ struct Globals
 		gForceDetectColorSpace(false),
 		dump_all_profiles(false),
 		auto_clear_persist_vars(true),
-		clear_saved_persist_vars(false),
+		unknown_persist_vars_count(0),
 		gSystemTickCount(0),
 		gTime(0),
 		gFrameTime(0)

@@ -25,7 +25,7 @@ CustomShaders customShaders;
 ExplicitCommandListSections explicitCommandListSections;
 CommandListVariables command_list_globals;
 std::vector<CommandListVariable*> persistent_variables;
-std::unordered_map<std::wstring, float> saved_variables;
+std::unordered_map<std::wstring, float> unknown_variables;
 std::vector<CommandList*> registered_command_lists;
 std::unordered_set<CommandList*> command_lists_profiling;
 std::unordered_set<CommandListCommand*> command_lists_cmd_profiling;
@@ -5770,13 +5770,20 @@ bool ParseCommandListVariableAssignment(const wchar_t *section,
 	if (name.back() == L']')
 		return false;
 
-	if (G->frame_no == 0 && *ini_namespace == G->user_config)
-		saved_variables[name] = GetIniFloat(section, name.c_str(), 0.0f, NULL);
-
 	CommandListVariable* var = nullptr;
 
 	if (!args.GetVariable(var, false, CommandArgumentReader::PeekMode::Argument))
 	{
+		// Remember unrecognized persistent variable.
+		// Used for `d3dx_user.ini` auto-clear disabling support.
+		if (*ini_namespace == G->user_config)
+		{
+			float out;
+			size_t len;
+			if (ParseFloatToken(*val, out, len))
+				unknown_variables[name] = out;
+		}
+
 		// Report only "locked" variable error for now to avoid `d3dx_user.ini` error spam.
 		// TODO: Refactor syntax parsing errors reporting.
 		if (var && var->flags & VariableFlags::LOCKED)
@@ -8552,7 +8559,21 @@ bool ParseCommandListResourceCopyTargetDirective(
 	ResourceCopyTarget dst = ResourceCopyTarget();
 
 	if (!dst.ParseTarget(key, false, ini_namespace, command_list->scope))
+	{
+		if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::VARIABLE)
+		{
+			// Remember unrecognized persistent pool variable.
+			// Used for `d3dx_user.ini` auto-clear disabling support.
+			if (*ini_namespace == G->user_config)
+			{
+				float out;
+				size_t len;
+				if (ParseFloatToken(*val, out, len))
+					unknown_variables[key] = out;
+			}
+		}
 		return false;
+	}
 
 	CommandListCommand* operation = nullptr;
 

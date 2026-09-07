@@ -2305,20 +2305,20 @@ static void ParseCommandList(const wchar_t *id,
 			if (!G->user_config_dirty) {
 				if (G->auto_clear_persist_vars)
 					LogOverlay(LOG_WARNING,
-						"NOTICE: Unknown User Settings will be Removed from d3dx_user.ini\n"
-						" This is Normal if you recently Removed/Changed any Mods\n"
-						" Set auto_clear_persist_vars to 0 inside d3dx.ini to Disable Automatic Clean-up\n"
-						" Press %S to Update the Config now, or %S to Reset all Settings to Default\n"
-						" The first Unrecognised Entry was: \"%S\"\n",
+						"NOTICE: Unknown user settings will be removed from d3dx_user.ini\n"
+						" This is normal if you recently removed/changed any mods\n"
+						" Press %S to update the config now, or %S to reset all settings to default\n"
+						" To disable automatic clean-up set \"auto_clear_persist_vars = 0\" inside d3dx.ini\n"
+						" The first unrecognised entry was: \"%S\"\n",
 						user_friendly_ini_key_binding(L"Hunting", L"reload_config").c_str(),
 						user_friendly_ini_key_binding(L"Hunting", L"wipe_user_config").c_str(),
 						raw_line->c_str());
 				else
 					LogOverlay(LOG_WARNING,
-						"NOTICE: Unknown User Settings won't be Removed from d3dx_user.ini\n"
-						" Set auto_clear_persist_vars to 1 inside d3dx.ini to Enable Automatic Clean-up\n"
-						" Press %S to Update the Config now, or %S to Reset all Settings to Default\n"
-						" The first Unrecognised Entry was: \"%S\"\n",
+						"NOTICE: Unknown user settings will not be removed from d3dx_user.ini\n"
+						" Press %S to manually reset all settings to default\n"
+						" To enable automatic clean-up set \"auto_clear_persist_vars = 1\" inside d3dx.ini \n"
+						" The first unrecognised entry was: \"%S\"\n",
 						user_friendly_ini_key_binding(L"Hunting", L"reload_config").c_str(),
 						user_friendly_ini_key_binding(L"Hunting", L"wipe_user_config").c_str(),
 						raw_line->c_str());
@@ -4939,14 +4939,8 @@ void SavePersistentSettings()
 
 	G->gSettingsSaveTime = G->gTime;
 
-	if (!G->user_config_dirty) {
-
-		// Save Existing Variables
-		for (auto global : persistent_variables)
-			saved_variables[global->name.c_str()] = global->fval;
-
+	if (!G->user_config_dirty)
 		return;
-	}
 
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 
@@ -4971,24 +4965,21 @@ void SavePersistentSettings()
 	      ";\n"
 	      "[Constants]\n", f);
 
-
 	for (auto global : persistent_variables) {
 		fprintf_s(f, "%ls = %.9g\n", global->name.c_str(), global->fval);
-		saved_variables.erase(global->name);
+		unknown_variables.erase(global->name);
 	}
-
-	for (auto& entry : saved_variables)
-		fprintf_s(f, "%ls = %.9g\n", entry.first.c_str(), entry.second);
 
 	if (G->gReloadConfigPending && G->auto_clear_persist_vars) {
 
-		if (G->clear_saved_persist_vars) {
-			saved_variables.clear();
-			G->clear_saved_persist_vars = false;
-		}
-		else
-			G->clear_saved_persist_vars = true;
+		if (G->unknown_persist_vars_count == unknown_variables.size())
+			unknown_variables.clear();
+
+		G->unknown_persist_vars_count = unknown_variables.size();
 	}
+
+	for (auto& entry : unknown_variables)
+		fprintf_s(f, "%ls = %.9g\n", entry.first.c_str(), entry.second);
 
 	G->user_config_dirty = 0;
 
@@ -5001,6 +4992,8 @@ static void WipeUserConfig()
 {
 	G->gWipeUserConfig = false;
 	G->user_config_dirty = 0;
+
+	unknown_variables.clear();
 
 	DeleteFile(G->user_config.c_str());
 }
@@ -5030,6 +5023,7 @@ void ReloadConfig(HackerDevice *device)
 
 	HackerContext *mHackerContext = device->GetHackerContext();
 
+	bool wiped_config = G->gWipeUserConfig;
 	if (G->gWipeUserConfig)
 		WipeUserConfig();
 
@@ -5104,6 +5098,9 @@ void ReloadConfig(HackerDevice *device)
 
 	auto stop = std::chrono::high_resolution_clock::now();
 	std::chrono::duration<float> duration = stop - start;
+
+	if (wiped_config)
+		LogOverlayW(LOG_INFO, L"> Wiped user config file d3dx_user.ini\n");
 
 	LogOverlayW(LOG_INFO, L"> Reloaded config in %.3fs\n", duration.count());
 }

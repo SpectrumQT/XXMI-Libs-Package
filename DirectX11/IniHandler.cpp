@@ -70,6 +70,7 @@ static Section RegularSections[] = {
 	{L"Hunting", false},
 	{L"Logging", false},
 	{L"System", false},
+	{L"Input", false},
 	{L"Device", false},
 	{L"Rendering", false},
 	{L"Loader", false},
@@ -216,6 +217,7 @@ struct IniSection {
 typedef std::map<wstring, IniSection, WStringInsensitiveLess> IniSections;
 
 IniSections ini_sections;
+std::unordered_set<wstring> recursive_includes;
 
 // Returns an iterator to the first element in a set that does not begin with
 // prefix in a case insensitive way. Combined with set::lower_bound, this can
@@ -1508,6 +1510,8 @@ static void ParseIncludedIniFiles()
 	vector<pcre2_code*> exclude;
 	DWORD attrib;
 
+	recursive_includes.clear();
+
 	GetModuleFileName(migoto_handle, migoto_path, MAX_PATH);
 	wcsrchr(migoto_path, L'\\')[1] = 0;
 
@@ -1559,6 +1563,7 @@ static void ParseIncludedIniFiles()
 					ini_path = wstring(migoto_path) + rel_path;
 					ParseNamespacedIniFile(ini_path.c_str(), &rel_path);
 				} else if (!wcscmp(key->c_str(), L"include_recursive")) {
+					recursive_includes.insert(*val);
 					ParseIniFilesRecursive(migoto_path, rel_path, exclude);
 				} else if (!wcscmp(key->c_str(), L"exclude_recursive")) {
 					// Handled above
@@ -1578,6 +1583,14 @@ static void ParseIncludedIniFiles()
 	attrib = GetFileAttributes(G->user_config.c_str());
 	if (attrib != INVALID_FILE_ATTRIBUTES)
 		ParseNamespacedIniFile(G->user_config.c_str(), &G->user_config);
+}
+
+bool starts_with_any(const std::wstring& str, const std::unordered_set<std::wstring>& prefixes)
+{
+	return std::any_of(prefixes.begin(), prefixes.end(),
+		[&](const std::wstring& prefix) {
+			return str.compare(0, prefix.size(), prefix) == 0;
+		});
 }
 
 static void RegisterPresetKeyBindings()
@@ -1609,12 +1622,16 @@ static void RegisterPresetKeyBindings()
 		delay = GetIniInt(id, L"delay", 0, NULL);
 		release_delay = GetIniInt(id, L"release_delay", 0, NULL);
 
+		// Only keys declared by INIs from "recursive_includes" paths should be disabled by "input_disable_mode = mods".
+		bool is_mod = starts_with_any(i->second.ini_path.empty() ? i->second.ini_namespace : i->second.ini_path, recursive_includes);
+		InputDisableScope input_disable_scope = is_mod ? InputDisableScope::MODS : InputDisableScope::ALL;
+
 		if (type == KeyOverrideType::CYCLE) {
 			shared_ptr<KeyOverrideCycle> cycle_preset = make_shared<KeyOverrideCycle>();
 			shared_ptr<KeyOverrideCycleBack> cycle_back = make_shared<KeyOverrideCycleBack>(cycle_preset);
 			preset = cycle_preset;
 			for (wstring key : back)
-				RegisterKeyBinding(L"Back", key.c_str(), cycle_back, 0, delay, release_delay);
+				RegisterKeyBinding(L"Back", key.c_str(), cycle_back, 0, delay, release_delay, input_disable_scope);
 		} else {
 			preset = make_shared<KeyOverride>(type);
 		}
@@ -1622,7 +1639,7 @@ static void RegisterPresetKeyBindings()
 		preset->ParseIniSection(id);
 
 		for (wstring key : keys)
-			RegisterKeyBinding(L"Key", key.c_str(), preset, 0, delay, release_delay);
+			RegisterKeyBinding(L"Key", key.c_str(), preset, 0, delay, release_delay, input_disable_scope);
 	}
 }
 
@@ -4315,8 +4332,7 @@ void FlagConfigReload(HackerDevice *device, void *private_data)
 void ToggleInput(HackerDevice *device, void *private_data)
 {
 	G->disable_input = !G->disable_input;
-	LPCWSTR status = G->disable_input ? L"disabled" : L"enabled";
-	LogOverlayW(LOG_INFO, L"> Inputs %s\n", status);
+	LogOverlayW(LOG_INFO, L"> %ls %ls key bindings\n", G->disable_input ? L"Disabled" : L"Enabled", lookup_enum_name(InputDisableScopeNames, G->input_disable_scope));
 }
 
 static void ToggleFullScreen(HackerDevice *device, void *private_data)
@@ -4550,13 +4566,6 @@ void LoadConfigFile()
 	GetIniStringAndLog(L"System", L"proxy_d3d11", 0, G->CHAIN_DLL_PATH, MAX_PATH);	
 	G->load_library_redirect = GetIniInt(L"System", L"load_library_redirect", 2, NULL);
 
-	// Toggles other keybindings. This one stays active since it's the first registered.
-	RegisterIniKeyBinding(L"System", L"toggle_input", ToggleInput, NULL, 0, NULL);
-	if (!G->disable_input_initialized) { // Only load initial state on game start
-		G->disable_input = GetIniBool(L"System", L"disable_input", false, NULL);
-		G->disable_input_initialized = true;
-	}
-
 	if (GetIniStringAndLog(L"System", L"hook", 0, setting, MAX_PATH))
 	{
 		G->enable_hooks = parse_enum_option_string<wchar_t *, EnableHooks>
@@ -4588,6 +4597,14 @@ void LoadConfigFile()
 	}
 
 	G->gForceDetectColorSpace = GetIniBool(L"System", L"force_detect_color_space", false, NULL);
+
+	// [Input]
+	LogInfo("[Input]\n");
+	RegisterIniKeyBinding(L"Input", L"toggle_input", ToggleInput, NULL, 0, NULL);
+	bool disable_input_initialized = G->input_disable_scope != InputDisableScope::INVALID;
+	G->input_disable_scope = GetIniEnumClass(L"Input", L"input_disable_mode", InputDisableScope::MODS, NULL, InputDisableScopeNames);
+	if (!disable_input_initialized)
+		G->disable_input = !GetIniBool(L"Input", L"input", false, NULL);
 
 	// [Device] (DXGI parameters)
 	LogInfo("[Device]\n");

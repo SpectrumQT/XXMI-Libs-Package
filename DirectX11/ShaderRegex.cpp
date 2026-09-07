@@ -4,11 +4,24 @@
 #include "log.h"
 
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <iterator>
+#include <memory>
+#include <mutex>
+#include <thread>
 
 ShaderRegexGroups shader_regex_groups;
 std::vector<ShaderRegexGroup*> shader_regex_group_index;
 uint32_t shader_regex_hash;
+
+// Background ShaderRegex worker state. The worker processes one shader at a
+// time off the render thread so a new shader never blocks the frame.
+static std::mutex s_shader_regex_queue_mutex;
+static std::condition_variable s_shader_regex_queue_cv;
+static std::deque<std::shared_ptr<ShaderRegexJob>> s_shader_regex_queue;
+static bool s_shader_regex_worker_running = false;
 
 static void log_pcre2_error_nonl(int err, char *fmt, ...)
 {
@@ -154,6 +167,7 @@ bool ShaderRegexPattern::compile(std::string *pattern)
 	// CASELESS is for compatibility with d3dcompiler_46 & 47 without
 	// having to always remember to account for the dcl_constantbuffer
 	// differences:
+	this->pattern = *pattern;
 	regex = pcre2_compile((PCRE2_SPTR)pattern->c_str(),
 			pattern->length(), // or PCRE2_ZERO_TERMINATED
 			PCRE2_CASELESS | PCRE2_MULTILINE,
@@ -474,21 +488,30 @@ struct ShaderRegexCacheHeader {
 	uint32_t num_matches;
 };
 
-ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type, vector<byte> *bytecode, std::wstring *tagline)
+// Pure file-I/O read of the ShaderRegex cache for a shader. Fills in the
+// cached match ids and, for patched caches, the patched bytecode. It does NOT
+// touch the config reloadable shader_regex_groups nor link any command lists,
+// so it is safe to call from the background worker. The cache directory and
+// shader_regex_hash are snapshotted into the job so the worker never reads
+// globals that the render thread can reload.
+static ShaderRegexCache read_shader_regex_cache(const wchar_t *shader_cache_path, uint32_t shader_regex_hash_snapshot,
+		UINT64 hash, const wchar_t *shader_type, vector<uint32_t> *match_ids, vector<byte> *bytecode, bool *patched)
 {
 	ShaderRegexCache ret = ShaderRegexCache::NO_CACHE;
 	HANDLE meta_f = INVALID_HANDLE_VALUE;
 	HANDLE bin_f = INVALID_HANDLE_VALUE;
 	ShaderRegexCacheHeader *header;
-	ShaderRegexGroup *group;
 	wchar_t path[MAX_PATH];
-	uint32_t *match_ids;
+	uint32_t *file_match_ids;
 	DWORD size, size2;
 	byte *buf = NULL;
 	size_t suffix;
 	uint32_t i;
 
-	suffix = swprintf_s(path, MAX_PATH, L"%ls\\%016llx-%ls_regex.", G->SHADER_CACHE_PATH, hash, shader_type);
+	if (!shader_cache_path[0])
+		return ret;
+
+	suffix = swprintf_s(path, MAX_PATH, L"%ls\\%016llx-%ls_regex.", shader_cache_path, hash, shader_type);
 	wcscpy_s(path+suffix, MAX_PATH-suffix, L"dat");
 	meta_f = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (meta_f == INVALID_HANDLE_VALUE)
@@ -504,14 +527,17 @@ ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type
 		goto out;
 
 	header = (ShaderRegexCacheHeader*)buf;
-	match_ids = (uint32_t*)(buf + sizeof(ShaderRegexCacheHeader));
+	file_match_ids = (uint32_t*)(buf + sizeof(ShaderRegexCacheHeader));
 
 	if (header->version != SHADER_REGEX_CACHE_VERSION
-	 || header->shader_regex_hash != shader_regex_hash)
+	 || header->shader_regex_hash != shader_regex_hash_snapshot)
 		goto out;
 
 	if (size != sizeof(ShaderRegexCacheHeader) + header->num_matches * sizeof(uint32_t))
 		goto out;
+
+	if (patched)
+		*patched = !!header->patched;
 
 	// num_matches may be 0, which means the ShaderRegex didn't match the
 	// shader, but we cache it anyway to skip processing the shader again.
@@ -523,22 +549,9 @@ ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type
 		goto out;
 	}
 
-	for (i = 0; i < header->num_matches; i++) {
-		// The ShaderRegex groups are sorted and since the cached hash
-		// already matched the map should be identical to when the
-		// cache was made, so we can use that to find the matching
-		// groups without having to do an expensive lookup by name:
-		if (match_ids[i] >= shader_regex_group_index.size())
-			goto out;
-		group = shader_regex_group_index[match_ids[i]];
-
-		LogInfo("ShaderRegexCache: %S %016I64x matches [%S]\n", shader_type, hash, group->ini_section.c_str());
-
-		if (header->patched && tagline)
-			tagline->append(std::wstring(L"[") + group->ini_section + std::wstring(L"]"));
-
-		group->link_command_lists_and_filter_index(hash);
-	}
+	match_ids->resize(header->num_matches);
+	for (i = 0; i < header->num_matches; i++)
+		(*match_ids)[i] = file_match_ids[i];
 
 	if (header->patched) {
 		wcscpy_s(path+suffix, MAX_PATH-suffix, L"bin");
@@ -563,7 +576,40 @@ out:
 	return ret;
 }
 
-static void save_shader_regex_cache_meta(UINT64 hash, const wchar_t *shader_type, vector<uint32_t> *match_ids,
+ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type, vector<byte> *bytecode, std::wstring *tagline)
+{
+	ShaderRegexCache ret;
+	ShaderRegexGroup *group;
+	vector<uint32_t> match_ids;
+	bool patched = false;
+
+	ret = read_shader_regex_cache(G->SHADER_CACHE_PATH, shader_regex_hash, hash, shader_type,
+			&match_ids, bytecode, &patched);
+
+	if (ret == ShaderRegexCache::NO_CACHE || ret == ShaderRegexCache::NO_MATCH)
+		return ret;
+
+	// The ShaderRegex groups are sorted and since the cached hash already
+	// matched the map should be identical to when the cache was made, so we
+	// can use that to find the matching groups without having to do an
+	// expensive lookup by name:
+	for (uint32_t match_id : match_ids) {
+		if (match_id >= shader_regex_group_index.size())
+			return ShaderRegexCache::NO_CACHE;
+		group = shader_regex_group_index[match_id];
+
+		LogInfo("ShaderRegexCache: %S %016I64x matches [%S]\n", shader_type, hash, group->ini_section.c_str());
+
+		if (patched && tagline)
+			tagline->append(std::wstring(L"[") + group->ini_section + std::wstring(L"]"));
+
+		group->link_command_lists_and_filter_index(hash);
+	}
+
+	return ret;
+}
+
+void save_shader_regex_cache_meta(UINT64 hash, const wchar_t *shader_type, vector<uint32_t> *match_ids,
 		bool patched, std::string *asm_text, std::wstring *tagline)
 {
 	ShaderRegexCacheHeader header;
@@ -717,46 +763,46 @@ bool get_shader_model_from_bytecode(const void* data, size_t size, std::string* 
 	return false;
 }
 
-// Process groups that do not have patches to apply. Those can be handled without disassembly.
-void link_shader_regex_groups_without_patterns(const wchar_t* shader_type, std::string* shader_model, UINT64 hash, bool* decompilation_required)
+// Build an immutable snapshot of every ShaderRegex group that matches the
+// given shader model, so the expensive disassembly/regex/reassembly work can
+// run on a background thread without touching the config reloadable
+// shader_regex_groups. Sets *decompilation_required if any matching group has
+// patterns (those are the only ones that require disassembly).
+void build_shader_regex_group_snapshot(const std::string *shader_model,
+		std::vector<ShaderRegexGroupSnapshot> *snapshot, bool *decompilation_required)
 {
-	ShaderRegexGroups::iterator i;
-	vector<uint32_t> match_ids;
-	vector<ShaderRegexGroup*> match_groups;
-	uint32_t j;
+	uint32_t j = 0;
 
-	for (i = shader_regex_groups.begin(), j = 0; i != shader_regex_groups.end(); i++, j++) {
-		ShaderRegexGroup* group = &i->second;
+	*decompilation_required = false;
+
+	for (auto &pair : shader_regex_groups) {
+		ShaderRegexGroup *group = &pair.second;
+		uint32_t group_index = j++;
 
 		// Skip group without matching shader model.
-		if (!group->shader_models.count(*shader_model)) {
+		if (!group->shader_models.count(*shader_model))
 			continue;
+
+		ShaderRegexGroupSnapshot group_snap;
+		group_snap.group_index = group_index;
+		group_snap.ini_section = group->ini_section;
+		group_snap.temp_regs = group->temp_regs;
+		group_snap.declarations = group->declarations;
+
+		for (auto &pattern_pair : group->patterns) {
+			ShaderRegexPatternSnapshot pattern_snap;
+			pattern_snap.pattern = pattern_pair.second.pattern;
+			pattern_snap.replace = pattern_pair.second.replace;
+			pattern_snap.do_replace = pattern_pair.second.do_replace;
+			group_snap.patterns.push_back(std::move(pattern_snap));
 		}
 
-		// Skip group with patterns. Those ones need txt to match.
-		if (!group->patterns.empty()) {
-			if (decompilation_required)
-				*decompilation_required = true;
-			continue;
-		}
+		if (!group_snap.patterns.empty())
+			*decompilation_required = true;
 
-		match_ids.push_back(j);
-		match_groups.push_back(group);
+		LogDebug("ShaderRegex snapshot: %s matches [%S]\n", shader_model->c_str(), group->ini_section.c_str());
 
-		LogInfo("ShaderRegex (no pattern): %S %016I64x matches [%S]\n", shader_type, hash, group->ini_section.c_str());
-	}
-
-	// If no ShaderRegEx requires decompilation, link CommandLists and update shader cache here instead of `apply_shader_regex_groups`. 
-	if (decompilation_required && !*decompilation_required) {
-		// Enable CommandList sections execution for this group.
-		for (ShaderRegexGroup* group : match_groups) {
-			group->link_command_lists_and_filter_index(hash);
-		}
-		// We save the cache metadata even if we didn't match anything. That
-		// way we can skip checking for a match next time when we know there
-		// won't be any. This only saves the metadata - the caller will use
-		// save_shader_regex_cache_bin to save the assembled binary.
-		save_shader_regex_cache_meta(hash, shader_type, &match_ids, false, nullptr, nullptr);
+		snapshot->push_back(std::move(group_snap));
 	}
 }
 
@@ -805,4 +851,313 @@ bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type
 	save_shader_regex_cache_meta(hash, shader_type, &match_ids, patched, asm_text, tagline);
 
 	return patched;
+}
+
+// -----------------------------------------------------------------------------
+// Background ShaderRegex worker.
+//
+// Disassembling, regex matching and re-assembling a shader is expensive, so we
+// run it on a background thread and keep using the original shader until the
+// replacement is ready. This means a new shader never blocks the render thread
+// - it is swapped to the patched shader on a later draw call instead.
+//
+// Thread safety:
+//  - The worker only ever touches the immutable ShaderRegexGroupSnapshot data
+//    captured at submit time, never the config reloadable shader_regex_groups
+//    or any DirectX state.
+//  - Linking the command lists (which the draw call code executes) and writing
+//    the shader cache happen on the render thread in finalize_shader_regex_job.
+//  - LogInfo is safe to call from multiple threads because the CRT serializes
+//    access to a shared FILE* stream.
+// -----------------------------------------------------------------------------
+
+// Mirrors ShaderRegexGroup::apply_regex_patterns, but works purely on an
+// immutable snapshot and recompiles the regexes locally on the worker thread.
+static void apply_regex_patterns_to_snapshot(ShaderRegexGroupSnapshot *group_snap, std::string *asm_text,
+		bool *match_out, bool *patch_out)
+{
+	unsigned dcl_temps = 0;
+
+	// Match defaults to true so that if there are no patterns we can still
+	// apply the command list. Patch defaults to false because we don't want to
+	// waste time re-assembling the shader if we didn't change it.
+	*match_out = true;
+	*patch_out = false;
+
+	if (!group_snap->temp_regs.empty())
+		dcl_temps = get_dcl_temps(asm_text);
+
+	for (auto &pattern_snap : group_snap->patterns) {
+		ShaderRegexPattern pattern;
+
+		// Compiled regexes are cheap to produce compared to the disassembly
+		// and reassembly work they replace, and keep the worker independent
+		// of the live (config reloadable) groups:
+		if (!pattern.compile(&pattern_snap.pattern)) {
+			*match_out = false;
+			*patch_out = false;
+			return;
+		}
+		pattern.do_replace = pattern_snap.do_replace;
+		pattern.replace = pattern_snap.replace;
+
+		if (pattern.do_replace)
+			*match_out = *patch_out = pattern.patch(asm_text, &group_snap->temp_regs, dcl_temps);
+		else
+			*match_out = pattern.matches(asm_text);
+
+		if (!*match_out) {
+			*patch_out = false;
+			return;
+		}
+	}
+
+	// Only update dcl_temps if we are patching:
+	if (*patch_out && !group_snap->temp_regs.empty())
+		*patch_out = update_dcl_temps(asm_text, dcl_temps + group_snap->temp_regs.size());
+
+	// But we can update declarations even if we aren't doing a regex replace in
+	// some cases, so long as the patterns all matched:
+	if (!group_snap->declarations.empty())
+		*patch_out = insert_declarations(asm_text, &group_snap->declarations) || *patch_out;
+}
+
+// Execute one job on the worker thread. Only fills in the job result - it never
+// touches the render thread's state.
+static void run_shader_regex_job(ShaderRegexJob *job)
+{
+	// 1) Try the on-disk cache first so the render thread never does file I/O
+	// when a shader is first used:
+	std::vector<byte> cached_bytecode;
+	std::vector<uint32_t> cached_match_ids;
+	bool cached_patched = false;
+	ShaderRegexCache cache = read_shader_regex_cache(job->shader_cache_path.c_str(), job->shader_regex_hash,
+			job->hash, job->shader_type.c_str(), &cached_match_ids, &cached_bytecode, &cached_patched);
+
+	if (cache == ShaderRegexCache::NO_MATCH) {
+		// Cached miss - nothing to link and nothing to patch:
+		job->from_cache = true;
+		job->done.store(true);
+		return;
+	}
+
+	if (cache == ShaderRegexCache::MATCH || cache == ShaderRegexCache::PATCH) {
+		job->from_cache = true;
+		job->match_ids = std::move(cached_match_ids);
+
+		// The cached groups all matched this shader model, so they must be
+		// present in our snapshot. Treat a cache that references unknown groups
+		// as stale and re-analyse the shader instead:
+		bool valid = true;
+		for (uint32_t id : job->match_ids) {
+			bool found = false;
+			for (auto &group_snap : job->groups) {
+				if (group_snap.group_index == id) {
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				valid = false;
+				break;
+			}
+		}
+		if (!valid) {
+			LogInfo("ShaderRegexCache: %S %016I64x stale cache, re-analysing\n", job->shader_type.c_str(), job->hash);
+			job->from_cache = false;
+			job->match_ids.clear();
+		} else if (cache == ShaderRegexCache::PATCH) {
+			job->patched = true;
+			job->patched_bytecode = std::move(cached_bytecode);
+
+			// Rebuild the tagline from the snapshot's section names - we can't
+			// touch the live groups from the worker:
+			for (uint32_t id : job->match_ids)
+				for (auto &group_snap : job->groups)
+					if (group_snap.group_index == id) {
+						job->tagline.append(std::wstring(L"[") + group_snap.ini_section + std::wstring(L"]"));
+						break;
+					}
+			job->done.store(true);
+			return;
+		} else {
+			job->done.store(true);
+			return;
+		}
+	}
+
+	// 2) No usable cache - analyse the shader. If none of the matching groups
+	// have patterns, no disassembly is needed - their command lists still get
+	// linked, but we can skip the expensive decompile:
+	bool any_patterns = false;
+	for (auto &group_snap : job->groups) {
+		if (!group_snap.patterns.empty()) {
+			any_patterns = true;
+			break;
+		}
+	}
+
+	if (!any_patterns) {
+		for (auto &group_snap : job->groups)
+			job->match_ids.push_back(group_snap.group_index);
+		job->done.store(true);
+		return;
+	}
+
+	// Disassemble the shader bytecode to assembly text:
+	std::string asm_text = BinaryToAsmText(job->bytecode.data(), job->bytecode.size(),
+			job->patch_cb_offsets, job->disassemble_undecipherable_custom_data);
+	if (asm_text.empty()) {
+		LogInfo("  Background ShaderRegex disassembly failed for %S %016I64x\n", job->shader_type.c_str(), job->hash);
+		job->failed = true;
+		job->done.store(true);
+		return;
+	}
+
+	// Apply every matching group. Groups without patterns always "match" so that
+	// their command lists can be linked; groups with patterns must match (and may
+	// patch) the assembly:
+	std::wstring tagline(L"//");
+	std::vector<uint32_t> match_ids;
+	bool patched = false;
+
+	for (auto &group_snap : job->groups) {
+		if (group_snap.patterns.empty()) {
+			match_ids.push_back(group_snap.group_index);
+			continue;
+		}
+
+		bool match, patch;
+		apply_regex_patterns_to_snapshot(&group_snap, &asm_text, &match, &patch);
+		if (!match)
+			continue;
+
+		LogInfo("ShaderRegex: %s %016I64x matches [%S]\n",
+				job->shader_model.c_str(), job->hash, group_snap.ini_section.c_str());
+		patched = patched || patch;
+
+		// Append section to patch sequence:
+		if (patch)
+			tagline.append(std::wstring(L"[") + group_snap.ini_section + std::wstring(L"]"));
+
+		match_ids.push_back(group_snap.group_index);
+	}
+
+	job->match_ids = std::move(match_ids);
+	job->tagline = std::move(tagline);
+
+	if (patched) {
+		// Reassemble the patched assembly back into bytecode on the worker:
+		std::vector<char> asm_vector(asm_text.begin(), asm_text.end());
+		try {
+			std::vector<AssemblerParseError> parse_errors;
+			HRESULT hr = AssembleFluganWithSignatureParsing(&asm_vector, &job->patched_bytecode, &parse_errors);
+			if (FAILED(hr)) {
+				LogInfo("    *** Background ShaderRegex assembling patched shader failed\n");
+				job->failed = true;
+				job->done.store(true);
+				return;
+			}
+			// Parse errors are currently treated as non-fatal - remember them so
+			// the render thread can log them to the OSD:
+			for (auto &parse_error : parse_errors)
+				job->parse_error_messages.push_back(parse_error.what());
+			job->patched_asm = std::move(asm_text);
+			job->patched = true;
+		} catch (const std::exception &e) {
+			LogInfo("    *** Background ShaderRegex assembling patched shader threw: %s\n", e.what());
+			job->failed = true;
+		}
+	}
+
+	job->done.store(true);
+}
+
+static void shader_regex_worker_main()
+{
+	// Run at a low priority so disassembling/reassembling a shader in the
+	// background never competes with the render thread for CPU time. This is
+	// what makes the delayed replacement effectively invisible even on low
+	// core-count CPUs - the worker only runs when the game leaves CPU time
+	// available, and lets the render thread have it back whenever it is needed:
+	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+
+	for (;;) {
+		std::shared_ptr<ShaderRegexJob> job;
+
+		{
+			std::unique_lock<std::mutex> lock(s_shader_regex_queue_mutex);
+			s_shader_regex_queue_cv.wait(lock, [] { return !s_shader_regex_queue.empty(); });
+			job = std::move(s_shader_regex_queue.front());
+			s_shader_regex_queue.pop_front();
+		}
+
+		run_shader_regex_job(job.get());
+	}
+}
+
+void submit_shader_regex_job(std::shared_ptr<ShaderRegexJob> job)
+{
+	{
+		std::lock_guard<std::mutex> lock(s_shader_regex_queue_mutex);
+		s_shader_regex_queue.push_back(std::move(job));
+	}
+	s_shader_regex_queue_cv.notify_one();
+
+	// Lazily start the worker thread on the first job:
+	std::lock_guard<std::mutex> lock(s_shader_regex_queue_mutex);
+	if (s_shader_regex_worker_running)
+		return;
+	s_shader_regex_worker_running = true;
+	try {
+		std::thread(shader_regex_worker_main).detach();
+	} catch (const std::system_error &) {
+		// Couldn't start the worker thread (e.g. out of resources). Fail every
+		// queued job so no shader stays stuck in PROCESSING forever; they will
+		// fall back to using the original shader until the next config reload:
+		LogInfo("WARNING: ShaderRegex worker thread creation failed\n");
+		s_shader_regex_worker_running = false;
+		for (auto &queued : s_shader_regex_queue) {
+			queued->failed = true;
+			queued->done.store(true);
+		}
+		s_shader_regex_queue.clear();
+	}
+}
+
+bool finalize_shader_regex_job(ShaderRegexJob *job, UINT64 hash, const wchar_t *shader_type,
+		std::vector<byte> *out_bytecode, std::wstring *out_tagline)
+{
+	// Linking the command lists must happen on the render thread because the
+	// ShaderOverride command lists are executed by the draw call code:
+	for (uint32_t match_id : job->match_ids) {
+		if (match_id >= shader_regex_group_index.size()) {
+			LogInfo("%S %016I64x ShaderRegex finalize failed: match id out of range\n", shader_type, hash);
+			job->failed = true;
+			return false;
+		}
+		shader_regex_group_index[match_id]->link_command_lists_and_filter_index(hash);
+	}
+
+	if (job->failed)
+		return false;
+
+	if (job->patched) {
+		if (!job->from_cache) {
+			// Only write the cache when we analysed the shader ourselves - a
+			// cache hit already has its cache on disk:
+			save_shader_regex_cache_meta(hash, shader_type, &job->match_ids, true, &job->patched_asm, &job->tagline);
+			save_shader_regex_cache_bin(hash, shader_type, &job->patched_bytecode);
+		}
+		*out_bytecode = job->patched_bytecode;
+		*out_tagline = job->tagline;
+		return true;
+	}
+
+	if (!job->from_cache) {
+		// Matched but nothing was patched - cache the metadata anyway so the
+		// command list matching isn't repeated next time:
+		save_shader_regex_cache_meta(hash, shader_type, &job->match_ids, false, nullptr, nullptr);
+	}
+	return false;
 }

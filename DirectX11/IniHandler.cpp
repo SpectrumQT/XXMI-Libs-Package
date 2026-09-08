@@ -1508,7 +1508,6 @@ static void ParseIncludedIniFiles()
 	wstring namespace_path, rel_path, ini_path;
 	wchar_t migoto_path[MAX_PATH];
 	vector<pcre2_code*> exclude;
-	DWORD attrib;
 
 	recursive_includes.clear();
 
@@ -1577,12 +1576,14 @@ static void ParseIncludedIniFiles()
 	} while (!include_sections.empty());
 
 	free_globbing_vector(exclude);
+}
 
-	// User config is loaded very last to allow it to override all other
-	// ini files.
-	attrib = GetFileAttributes(G->user_config.c_str());
-	if (attrib != INVALID_FILE_ATTRIBUTES)
-		ParseNamespacedIniFile(G->user_config.c_str(), &G->user_config);
+static void ParsePersistentSettings()
+{
+	DWORD attrib = GetFileAttributes(G->user_config.c_str());
+	if (attrib == INVALID_FILE_ATTRIBUTES)
+		return;
+	ParseNamespacedIniFile(G->user_config.c_str(), &G->user_config);
 }
 
 bool starts_with_any(const std::wstring& str, const std::unordered_set<std::wstring>& prefixes)
@@ -4549,10 +4550,12 @@ void LoadConfigFile()
 
 	G->gShowWarnings = GetIniBool(L"Logging", L"show_warnings", true, NULL);
 
+	// [Include]
+	LogInfo("[Include]\n");
+
 	// Allows to delay DLL initialization by given ms count
 	G->gDllInitializationDelay = GetIniInt(L"System", L"dll_initialization_delay", 0, NULL);
 
-	// [Include]
 	// If enabled, prevents loading of includes during initialization
 	G->gSkipEarlyIncludesLoad = GetIniBool(L"System", L"skip_early_includes_load", true, NULL);
 
@@ -4564,6 +4567,8 @@ void LoadConfigFile()
 
 	if (G->gConfigInitialized || !G->gSkipEarlyIncludesLoad) {
 		ParseIncludedIniFiles();
+		// User config is loaded very last to allow it to override all other ini files.
+		ParsePersistentSettings();
 	}
 
 	// [System]

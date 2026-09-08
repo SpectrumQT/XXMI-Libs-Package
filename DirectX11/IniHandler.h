@@ -4,7 +4,6 @@ void FlagConfigReload(HackerDevice *device, void *private_data);
 void ToggleInput(HackerDevice *device, void *private_data);
 void LoadConfigFile();
 void ReloadConfig(HackerDevice *device);
-void LoadProfileManagerConfig(const wchar_t *config_dir);
 void SavePersistentSettings();
 
 struct IniLine {

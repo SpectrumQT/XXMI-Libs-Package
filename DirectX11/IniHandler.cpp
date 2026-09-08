@@ -4887,50 +4887,6 @@ void LoadConfigFile()
 	emit_ini_warning_tone();
 }
 
-// This variant is called by the profile manager helper with the path to the
-// game's executable passed in. It doesn't need to parse most of the config,
-// only the [Profile] section and some of the logging. It uses a separate log
-// file from the main DLL.
-void LoadProfileManagerConfig(const wchar_t *config_dir)
-{
-	wchar_t iniFile[MAX_PATH], logFilename[MAX_PATH];
-
-	G->gInitialized = true;
-
-	if (wcscpy_s(iniFile, MAX_PATH, config_dir))
-		DoubleBeepExit();
-	wcsrchr(iniFile, L'\\')[1] = 0;
-	wcscpy(logFilename, iniFile);
-	wcscat(iniFile, INI_FILENAME);
-	wcscat(logFilename, L"d3d11_profile_log.txt");
-
-	// [Logging]
-	// Not using the helper function for this one since logging isn't enabled yet
-	if (GetPrivateProfileInt(L"Logging", L"calls", 1, iniFile))
-	{
-		if (!LogFile)
-			LogFile = _wfsopen(logFilename, L"w", _SH_DENYNO);
-		LogInfo("\n3DMigoto profile helper starting init - v %s - %s\n\n", VER_FILE_VERSION_STR, LogTime().c_str());
-		LogInfoW(L"----------- " INI_FILENAME L" settings -----------\n");
-	}
-	LogInfo("[Logging]\n");
-	LogInfo("  calls=1\n");
-
-	ParseIniFile(iniFile);
-
-	gLogDebug = GetIniBool(L"Logging", L"debug", false, NULL);
-
-	// Unbuffered logging to remove need for fflush calls, and r/w access to make it easy
-	// to open active files.
-	if (LogFile && GetIniBool(L"Logging", L"unbuffered", false, NULL))
-	{
-		int unbuffered = setvbuf(LogFile, NULL, _IONBF, 0);
-		LogInfo("    unbuffered return: %d\n", unbuffered);
-	}
-
-	LogInfo("\n");
-}
-
 void SavePersistentSettings()
 {
 	FILE *f;

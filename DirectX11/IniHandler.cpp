@@ -4892,6 +4892,22 @@ static void DetectUnknownPersistentSettings()
 		LogWarningW(L"Unrecognised persistent variable: %ls = %f\n", entry.first.c_str(), entry.second);
 }
 
+static void ClearUnknownPersistentSettings()
+{
+	if (unknown_variables.empty())
+		return;
+
+	if (G->auto_clear_persist_vars)
+	{
+		if (G->unknown_persist_vars_count == unknown_variables.size())
+			unknown_variables.clear();
+
+		LogOverlayW(LOG_WARNING, L"> Cleared %d unknown user settings from d3dx_user.ini\n", G->unknown_persist_vars_count);
+
+		G->unknown_persist_vars_count = unknown_variables.size();
+	}
+}
+
 void SavePersistentSettings()
 {
 	FILE *f;
@@ -4909,11 +4925,11 @@ void SavePersistentSettings()
 
 	wfopen_ensuring_access(&f, G->user_config.c_str(), L"w");
 	if (!f) {
-		LogInfo("Unable to save settings in %S\n", G->user_config.c_str());
+		LogWarning("Unable to save settings in %S\n", G->user_config.c_str());
 		return;
 	}
 
-	LogInfo("Saving user settings to %S\n", G->user_config.c_str());
+	LogWarning("Saving user settings to %S\n", G->user_config.c_str());
 
 	fputs("; AUTOMATICALLY GENERATED FILE - DO NOT EDIT\n"
 	      ";\n"
@@ -4924,17 +4940,10 @@ void SavePersistentSettings()
 	      ";\n"
 	      "[Constants]\n", f);
 
-	for (auto global : persistent_variables) {
+	for (auto global : persistent_variables)
+	{
 		fprintf_s(f, "%ls = %.9g\n", global->name.c_str(), global->fval);
 		unknown_variables.erase(global->name);
-	}
-
-	if (G->gReloadConfigPending && G->auto_clear_persist_vars) {
-
-		if (G->unknown_persist_vars_count == unknown_variables.size())
-			unknown_variables.clear();
-
-		G->unknown_persist_vars_count = unknown_variables.size();
 	}
 
 	for (auto& entry : unknown_variables)
@@ -5024,6 +5033,8 @@ void ReloadConfig(HackerDevice *device)
 
 	// Reset the counters on the global parameter save area:
 	OverrideSave.Reset(device);
+
+	ClearUnknownPersistentSettings();
 
 	SavePersistentSettings();
 

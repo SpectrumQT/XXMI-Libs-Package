@@ -260,6 +260,11 @@ static void emit_ini_warning_tone()
 		BeepFailure();
 }
 
+inline wchar_t ascii_tolower(wchar_t c)
+{
+	return (c >= L'A' && c <= L'Z') ? c + (L'a' - L'A') : c;
+}
+
 static bool get_namespaced_section_name(const wstring *section, const wstring *ini_namespace, wstring *ret)
 {
 	const wchar_t *section_prefix = SectionPrefix(section->c_str());
@@ -281,10 +286,12 @@ bool get_namespaced_section_name_lower(const wstring *section, const wstring *in
 	return rc;
 }
 
-wstring get_namespaced_var_name_lower(const wstring var, const wstring *ini_namespace)
+wstring get_namespaced_var_name_lower(const wstring& low_name, const wstring* ini_namespace)
 {
-	wstring ret = wstring(L"$\\") + *ini_namespace + wstring(L"\\") + var.substr(1);
-	std::transform(ret.begin(), ret.end(), ret.begin(), ::towlower);
+	wstring ret = L"$\\" + *ini_namespace + L'\\';
+	auto namespace_begin = ret.begin() + 2;  // Skip "$\\"
+	std::transform(namespace_begin, namespace_begin + ini_namespace->size(), namespace_begin, ::towlower);
+	ret.append(low_name, 1, wstring::npos);
 	return ret;
 }
 
@@ -2399,7 +2406,8 @@ static void ParseConstantsSection()
 
 		// Convert Variable Name to Lower Case since Ini Files are
 		// supposed to be Case Insensitive:
-		std::transform(name.begin(), name.end(), name.begin(), ::towlower);
+		for (wchar_t& c : name)
+			c = ascii_tolower(c);
 
 		// Globals do not Support Pre/Post since they are Declarations
 		// with Static Initialisers where Pre/Post doesn't make sense

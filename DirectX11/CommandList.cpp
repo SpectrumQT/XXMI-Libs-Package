@@ -3843,11 +3843,6 @@ enum class OptionalChars : uint8_t
 };
 SENSIBLE_ENUM(OptionalChars);
 
-static inline wchar_t ascii_tolower(wchar_t c)
-{
-	return (c >= L'A' && c <= L'Z') ? c + (L'a' - L'A') : c;
-}
-
 static inline bool is_identifier_char(wchar_t c, OptionalChars identifier_flags)
 {
 	if ((c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9') || c == L'_')
@@ -5692,24 +5687,6 @@ bool valid_variable_name(const wstring &name)
 	return (name.find_first_not_of(L"abcdefghijklmnopqrstuvwxyz_0123456789", 2) == wstring::npos);
 }
 
-static wstring get_namespaced_var_name_lower_from_lower_name(const wstring& low_name,
-	const wstring* ini_namespace)
-{
-	wstring ret = L"$\\";
-	ret += *ini_namespace;
-	ret += L'\\';
-
-	if (low_name.size() > 1)
-		ret.append(low_name, 1, wstring::npos);
-
-	std::transform(ret.begin() + 2,
-		ret.begin() + 2 + ini_namespace->size(),
-		ret.begin() + 2,
-		::towlower);
-
-	return ret;
-}
-
 bool parse_command_list_var_name(const wstring &name, const wstring *ini_namespace, CommandListVariable **target)
 {
 	CommandListVariables::iterator var = command_list_globals.end();
@@ -5727,7 +5704,7 @@ bool parse_command_list_var_name(const wstring &name, const wstring *ini_namespa
 		c = ascii_tolower(c);
 
 	if (!ini_namespace->empty())
-		var = command_list_globals.find(get_namespaced_var_name_lower_from_lower_name(low_name, ini_namespace));
+		var = command_list_globals.find(get_namespaced_var_name_lower(low_name, ini_namespace));
 
 	if (var == command_list_globals.end())
 		var = command_list_globals.find(low_name);

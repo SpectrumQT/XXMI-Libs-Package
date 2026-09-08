@@ -4425,8 +4425,6 @@ void LoadConfigFile()
 	wchar_t iniFile[MAX_PATH], logFilename[MAX_PATH];
 	wchar_t setting[MAX_PATH];
 
-	G->gInitialized = true;
-
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 
 	if (!GetModuleFileName(migoto_handle, iniFile, MAX_PATH))

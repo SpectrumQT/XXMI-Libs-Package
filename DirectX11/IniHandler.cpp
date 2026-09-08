@@ -4955,6 +4955,8 @@ static void WipeUserConfig()
 	unknown_variables.clear();
 
 	DeleteFile(G->user_config.c_str());
+
+	LogOverlayW(LOG_INFO, L"> Wiped user config file d3dx_user.ini\n");
 }
 
 static void MarkAllShadersDeferredUnprocessed()
@@ -4982,17 +4984,6 @@ void ReloadConfig(HackerDevice *device)
 
 	HackerContext *mHackerContext = device->GetHackerContext();
 
-	bool wiped_config = G->gWipeUserConfig;
-	if (G->gWipeUserConfig)
-		WipeUserConfig();
-
-	SavePersistentSettings();
-
-	LogInfoW(L"Reloading " INI_FILENAME L" (EXPERIMENTAL)...\n");
-
-	G->gReloadConfigPending = false;
-	G->iniParamsReserved = 0;
-
 	// Lock the entire config reload as it touches many global structures
 	// that could potentially be accessed from other threads (e.g. deferred
 	// contexts) while we do this
@@ -5013,6 +5004,19 @@ void ReloadConfig(HackerDevice *device)
 	// many as possible inside LoadConfigFile() where they are set.
 	ClearKeyBindings();
 
+	LogWarningW(
+		L"\n\n"
+		L"------------------------------------------------------------------------------------------------------\n"
+		L" Reloading " INI_FILENAME L"...\n"
+		L"------------------------------------------------------------------------------------------------------\n"
+	);
+
+	if (G->gWipeUserConfig)
+		WipeUserConfig();
+
+	G->gReloadConfigPending = false;
+	G->iniParamsReserved = 0;
+
 	// Clear active command lists set, as the pointers in this set will
 	// become invalid as the config is reloaded:
 	command_lists_profiling.clear();
@@ -5020,6 +5024,8 @@ void ReloadConfig(HackerDevice *device)
 
 	// Reset the counters on the global parameter save area:
 	OverrideSave.Reset(device);
+
+	SavePersistentSettings();
 
 	LoadConfigFile();
 
@@ -5059,9 +5065,6 @@ void ReloadConfig(HackerDevice *device)
 
 	auto stop = std::chrono::high_resolution_clock::now();
 	std::chrono::duration<float> duration = stop - start;
-
-	if (wiped_config)
-		LogOverlayW(LOG_INFO, L"> Wiped user config file d3dx_user.ini\n");
 
 	LogOverlayW(LOG_INFO, L"> Reloaded config in %.3fs\n", duration.count());
 }

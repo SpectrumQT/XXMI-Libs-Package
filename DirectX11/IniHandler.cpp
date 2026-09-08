@@ -2299,41 +2299,13 @@ static void ParseCommandList(const wchar_t *id,
 		}
 
 		if (entry->ini_namespace == G->user_config && !G->user_config.empty()) {
-			// Invalid command, but it is in the user config, which may happen
-			// if the user recently uninstalled/upgraded/etc a mod. We will flag
-			// the user config to be updated at the next save, but won't do this
-			// immediately just in case. Inform the user of what is happening.
 			if (!G->user_config_dirty) {
-				if (G->auto_clear_persist_vars)
-					LogOverlay(LOG_WARNING,
-						"NOTICE: Unknown user settings will be removed from d3dx_user.ini\n"
-						" This is normal if you recently removed/changed any mods\n"
-						" Press %S to update the config now, or %S to reset all settings to default\n"
-						" To disable automatic clean-up set \"auto_clear_persist_vars = 0\" inside d3dx.ini\n"
-						" The first unrecognised entry was: \"%S\"\n",
-						user_friendly_ini_key_binding(L"Hunting", L"reload_config").c_str(),
-						user_friendly_ini_key_binding(L"Hunting", L"wipe_user_config").c_str(),
-						raw_line->c_str());
-				else
-					LogOverlay(LOG_WARNING,
-						"NOTICE: Unknown user settings will not be removed from d3dx_user.ini\n"
-						" Press %S to manually reset all settings to default\n"
-						" To enable automatic clean-up set \"auto_clear_persist_vars = 1\" inside d3dx.ini \n"
-						" The first unrecognised entry was: \"%S\"\n",
-						user_friendly_ini_key_binding(L"Hunting", L"reload_config").c_str(),
-						user_friendly_ini_key_binding(L"Hunting", L"wipe_user_config").c_str(),
-						raw_line->c_str());
-
 				// Once the [Constants] command list has finished running the
 				// low bit will be cleared to ensure that loading the user config
 				// itself cannot mark the user config as dirty. Set the second
 				// bit to indicate that it should be updated regardless:
 				G->user_config_dirty |= 2;
 			}
-			// There might be a lot of entries if a large mod was just
-			// uninstalled, so we only show the first bad setting on the
-			// overlay and log all other invalid settings to the log file:
-			LogInfoW(L"WARNING: Unrecognised entry in %ls: %ls\n", G->user_config.c_str(), raw_line->c_str());
 			continue;
 		}
 
@@ -4887,6 +4859,39 @@ void LoadConfigFile()
 	emit_ini_warning_tone();
 }
 
+static void DetectUnknownPersistentSettings()
+{
+	if (unknown_variables.empty())
+		return;
+
+	if (G->auto_clear_persist_vars)
+		G->unknown_persist_vars_count = unknown_variables.size();
+
+	const auto it = unknown_variables.begin();
+
+	const wchar_t* cleanup_message = G->auto_clear_persist_vars
+		? L" Automatic clean-up will remove them from d3dx_user.ini on next config reload\n"
+		L" To disable automatic clean-up, set \"auto_clear_persist_vars = 0\" inside d3dx.ini\n"
+		: L" Automatic clean-up is disabled, so they will stay in d3dx_user.ini\n"
+		L" To enable automatic clean-up, set \"auto_clear_persist_vars = 1\" inside d3dx.ini\n";
+
+	LogOverlayW(LOG_WARNING,
+		L"NOTICE: Detected %d unknown user settings in d3dx_user.ini\n"
+		L" This is normal if you removed/changed any mods\n"
+		L"%ls"
+		L" Press %ls to reload the config now, or %ls to reset all settings to default\n"
+		L" The first unrecognised entry was: \"%ls = %f\"\n",
+		G->unknown_persist_vars_count,
+		cleanup_message,
+		user_friendly_ini_key_binding(L"Hunting", L"reload_config").c_str(),
+		user_friendly_ini_key_binding(L"Hunting", L"wipe_user_config").c_str(),
+		it->first.c_str(),
+		it->second);
+
+	for (auto& entry : unknown_variables)
+		LogWarningW(L"Unrecognised persistent variable: %ls = %f\n", entry.first.c_str(), entry.second);
+}
+
 void SavePersistentSettings()
 {
 	FILE *f;
@@ -5017,6 +5022,8 @@ void ReloadConfig(HackerDevice *device)
 	OverrideSave.Reset(device);
 
 	LoadConfigFile();
+
+	DetectUnknownPersistentSettings();
 
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 

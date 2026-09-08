@@ -4440,7 +4440,7 @@ void LoadConfigFile()
 
 	// [Logging]
 
-	gLogVerbosity = LogVerbosity::DISABLED;
+	gLogVerbosity = LogVerbosity::INVALID;
 
 	// GetPrivateProfileString is used because we need to initialize LogFile before using GetIni* helpers.
 	static wchar_t log_level[MAX_PATH] = { 0 };
@@ -4451,13 +4451,14 @@ void LoadConfigFile()
 	if (log_level_specified)
 	{
 		// New: `log_level` takes precedence over legacy options.
-		if (_wcsicmp(log_level, L"disabled") != 0)
+		gLogVerbosity = lookup_enum_val(LogVerbosityNames, static_cast<const wchar_t*>(log_level), LogVerbosity::INVALID);
+		if (gLogVerbosity != LogVerbosity::INVALID)
 		{
-			init_log_file = true;
-			gLogVerbosity = LogVerbosity::INFO;  // Set verbosity to INFO until enum is parsed.
+			init_log_file = gLogVerbosity != LogVerbosity::DISABLED;
 		}
 	}
-	else
+
+	if (gLogVerbosity == LogVerbosity::INVALID)
 	{
 		// Handle legacy `calls` option.
 		bool log_calls = GetPrivateProfileInt(L"Logging", L"calls", 0, iniFile);
@@ -4484,30 +4485,24 @@ void LoadConfigFile()
 			gLogVerbosity = LogVerbosity::DISABLED;
 	}
 
-	if (LogFile)
+	if (gLogVerbosity == LogVerbosity::INVALID)
+		gLogVerbosity = LogVerbosity::DISABLED;
+
+	if (gLogVerbosity != LogVerbosity::DISABLED)
 	{
-		LogInfo("\nD3D11 DLL starting init - v %s - %s\n", VER_FILE_VERSION_STR, LogTime().c_str());
+		LogWarning("\nD3D11 DLL starting init - v %s - %s\n", VER_FILE_VERSION_STR, LogTime().c_str());
 
 		wchar_t our_path[MAX_PATH], exe_path[MAX_PATH];
 		GetModuleFileName(migoto_handle, our_path, MAX_PATH);
 		GetModuleFileName(NULL, exe_path, MAX_PATH);
-		LogInfo("Game path: %S\n"
-			"3DMigoto path: %S\n\n",
-			exe_path, our_path);
+
+		LogWarning("Game path: %S\n", exe_path);
+		LogWarning("3DMigoto path: %S\n\n", our_path);
 
 		LogInfoW(L"----------- " INI_FILENAME L" settings -----------\n");
 
 		LogInfo("[Logging]\n");
-
-		if (log_level_specified)
-		{
-			gLogVerbosity = GetIniEnumClass(L"Logging", L"log_level", LogVerbosity::DISABLED, NULL, LogVerbosityNames);
-		}
-		else
-		{
-			LogInfo("  calls=%d\n", gLogVerbosity >= LogVerbosity::INFO ? 1 : 0);
-			LogInfo("  debug=%d\n", gLogVerbosity == LogVerbosity::DEBUG ? 1 : 0);
-		}
+		LogInfoW(L"  log_level=%ls\n", lookup_enum_name(LogVerbosityNames, gLogVerbosity));
 	}
 
 	gLogDebug = gLogVerbosity == LogVerbosity::DEBUG;

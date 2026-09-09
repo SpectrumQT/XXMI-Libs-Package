@@ -5018,14 +5018,10 @@ void ReloadConfig(HackerDevice *device)
 	}
 
 	for (auto& var : variableList)
-	{
 		variable_groups[var.var_namespace].push_back(&var);
-	}
 
 	for (auto& group : variable_groups)
-	{
 		namespace_list.push_back(group.first);
-	}
 
 	// Custom Resources
 

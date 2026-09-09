@@ -223,23 +223,13 @@ static void DrawVariables()
 			auto& column = Profiling::variable_columns[c];
 
 			if (column.namespace_index >= 0)
-			{
-				counter =
-					std::to_wstring(column.namespace_index + 1) +
-					L"/" +
-					std::to_wstring(namespace_list.size());
-			}
+				counter = std::to_wstring(column.namespace_index + 1) + L"/" + std::to_wstring(namespace_list.size());
+
 			else
-			{
 				counter = L"0/" + std::to_wstring(namespace_list.size());
-			}
 		}
 
-		AddColumn(
-			Profiling::text,
-			counter,
-			Profiling::column_width
-		);
+		AddColumn(Profiling::text, counter, Profiling::column_width);
 	}
 
 	Profiling::text += L"\n";
@@ -251,17 +241,9 @@ static void DrawVariables()
 
 	for (int c = 0; c < Profiling::variable_columns.size(); c++)
 	{
-		std::wstring header =
-			TrimNamespace(
-				GetColumnHeader(c),
-				Profiling::column_width
-			);
+		std::wstring header = TrimNamespace(GetColumnHeader(c), Profiling::column_width);
 
-		AddColumn(
-			Profiling::text,
-			header,
-			Profiling::column_width
-		);
+		AddColumn(Profiling::text, header, Profiling::column_width);
 	}
 
 	Profiling::text += L"\n\n";
@@ -280,13 +262,9 @@ static void DrawVariables()
 			std::wstring text;
 
 
-			if (column.namespace_index >= 0 &&
-				column.namespace_index < namespace_list.size())
+			if (column.namespace_index >= 0 && column.namespace_index < namespace_list.size())
 			{
-				auto& vars =
-					variable_groups[
-						namespace_list[column.namespace_index]
-					];
+				auto& vars = variable_groups[namespace_list[column.namespace_index]];
 
 
 				int index = row + column.scroll_offset;
@@ -300,17 +278,12 @@ static void DrawVariables()
 					text += L"$";
 					text += var->name;
 					text += L" = ";
-					text += std::to_wstring(
-						var->variable->fval
-					);
+					text += std::to_wstring(var->variable->fval);
 				}
 			}
 
 
-			AddColumn(
-				Profiling::text,
-				text,
-				Profiling::column_width
+			AddColumn(Profiling::text, text, Profiling::column_width
 			);
 		}
 
@@ -330,16 +303,11 @@ static std::wstring GetResourcePoolHeader(int index)
 
 	std::wstring name = L"Select";
 
-	if (column.pool_index >= 0 &&
-		column.pool_index < resource_pool_list.size())
-	{
+	if (column.pool_index >= 0 && column.pool_index < resource_pool_list.size())
 		name = resource_pool_list[column.pool_index];
-	}
 
 	if (index == Profiling::active_pool_column)
-	{
 		return L"<" + name + L">";
-	}
 
 	return name;
 }
@@ -348,17 +316,17 @@ static std::wstring GetPoolElementType(const PoolElement& element)
 {
 	switch (element.type)
 	{
-	case PoolElement::Type::Resource:
-		return L"Resource";
+		case PoolElement::Type::Resource:
+			return L"Resource";
 
-	case PoolElement::Type::Variable:
-		return L"Variable";
+		case PoolElement::Type::Variable:
+			return L"Variable";
 
-	case PoolElement::Type::Mixed:
-		return L"Mixed";
+		case PoolElement::Type::Mixed:
+			return L"Mixed";
 
-	default:
-		return L"None";
+		default:
+			return L"None";
 	}
 }
 
@@ -390,25 +358,12 @@ static void DrawResourcePools()
 			auto& column = Profiling::resource_pool_columns[c];
 
 			if (column.pool_index >= 0)
-			{
-				counter =
-					std::to_wstring(column.pool_index + 1) +
-					L"/" +
-					std::to_wstring(resource_pool_list.size());
-			}
+				counter =std::to_wstring(column.pool_index + 1) + L"/" + std::to_wstring(resource_pool_list.size());
 			else
-			{
-				counter =
-					L"0/" +
-					std::to_wstring(resource_pool_list.size());
-			}
+				counter = L"0/" + std::to_wstring(resource_pool_list.size());
 		}
 
-		AddColumn(
-			Profiling::text,
-			counter,
-			Profiling::column_width
-		);
+		AddColumn(Profiling::text, counter, Profiling::column_width);
 	}
 
 	Profiling::text += L"\n";
@@ -420,17 +375,9 @@ static void DrawResourcePools()
 
 	for (int c = 0; c < Profiling::resource_pool_columns.size(); c++)
 	{
-		std::wstring header =
-			TrimNamespace(
-				GetResourcePoolHeader(c),
-				Profiling::column_width
-			);
+		std::wstring header =TrimNamespace(GetResourcePoolHeader(c), Profiling::column_width);
 
-		AddColumn(
-			Profiling::text,
-			header,
-			Profiling::column_width
-		);
+		AddColumn(Profiling::text, header, Profiling::column_width);
 	}
 
 	Profiling::text += L"\n\n";
@@ -449,13 +396,9 @@ static void DrawResourcePools()
 			std::wstring text;
 
 
-			if (column.pool_index >= 0 &&
-				column.pool_index < resource_pool_list.size())
+			if (column.pool_index >= 0 && column.pool_index < resource_pool_list.size())
 			{
-				auto& pool =
-					customResourcePools[
-						resource_pool_list[column.pool_index]
-					];
+				auto& pool = customResourcePools[resource_pool_list[column.pool_index]];
 
 
 				int index = row + column.scroll_offset;
@@ -478,13 +421,7 @@ static void DrawResourcePools()
 						float resource_id = GetResourceId(element.resource);
 
 						wchar_t buffer[64];
-						swprintf_s(
-							buffer,
-							_countof(buffer),
-							L"%.*g",
-							9,
-							resource_id
-						);
+						swprintf_s(buffer, _countof(buffer), L"%.*g", 9, resource_id);
 
 						text += (resource_id == 0.0 ? L"Null" : buffer);
 					}
@@ -498,11 +435,7 @@ static void DrawResourcePools()
 			}
 
 
-			AddColumn(
-				Profiling::text,
-				text,
-				Profiling::column_width
-			);
+			AddColumn(Profiling::text, text, Profiling::column_width);
 		}
 
 		Profiling::text += L"\n";
@@ -515,11 +448,8 @@ static void DrawResourcePools()
 
 static std::wstring FormatToWString(DXGI_FORMAT format)
 {
-	if (format == DXGI_FORMAT_UNKNOWN ||
-		format == (DXGI_FORMAT)-1)
-	{
+	if (format == DXGI_FORMAT_UNKNOWN || format == (DXGI_FORMAT)-1)
 		return L"Unknown";
-	}
 
 	const char* str = TexFormatStr(format);
 
@@ -535,30 +465,30 @@ static std::wstring CustomResourceTypeToWString(
 {
 	switch (type)
 	{
-	case CustomResourceType::BUFFER:
-		return L"Buffer";
+		case CustomResourceType::BUFFER:
+			return L"Buffer";
 
-	case CustomResourceType::STRUCTURED_BUFFER:
-		return L"StructuredBuffer";
+		case CustomResourceType::STRUCTURED_BUFFER:
+			return L"StructuredBuffer";
 
-	case CustomResourceType::RAW_BUFFER:
-		return L"RawBuffer";
+		case CustomResourceType::RAW_BUFFER:
+			return L"RawBuffer";
 
-	case CustomResourceType::TEXTURE1D:
-		return L"Texture1D";
+		case CustomResourceType::TEXTURE1D:
+			return L"Texture1D";
 
-	case CustomResourceType::TEXTURE2D:
-		return L"Texture2D";
+		case CustomResourceType::TEXTURE2D:
+			return L"Texture2D";
 
-	case CustomResourceType::TEXTURE3D:
-		return L"Texture3D";
+		case CustomResourceType::TEXTURE3D:
+			return L"Texture3D";
 
-	case CustomResourceType::CUBE:
-		return L"Cube";
+		case CustomResourceType::CUBE:
+			return L"Cube";
 
-	case CustomResourceType::INVALID:
-	default:
-		return L"Unknown";
+		case CustomResourceType::INVALID:
+		default:
+			return L"Unknown";
 	}
 }
 
@@ -569,48 +499,42 @@ static std::wstring GetActualResourceType(
 	if (!resource)
 		return L"Unknown";
 
-	D3D11_RESOURCE_DIMENSION dimension =
-		D3D11_RESOURCE_DIMENSION_UNKNOWN;
+	D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
 
 	resource->GetType(&dimension);
 
 	switch (dimension)
 	{
-	case D3D11_RESOURCE_DIMENSION_BUFFER:
+		case D3D11_RESOURCE_DIMENSION_BUFFER:
 	{
-		D3D11_BUFFER_DESC desc;
-		static_cast<ID3D11Buffer*>(resource)->GetDesc(&desc);
+			D3D11_BUFFER_DESC desc;
+			static_cast<ID3D11Buffer*>(resource)->GetDesc(&desc);
 
-		if (desc.StructureByteStride != 0)
-			return L"StructuredBuffer";
+			if (desc.StructureByteStride != 0)
+				return L"StructuredBuffer";
 
-		if (desc.MiscFlags &
-			D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS)
-		{
-			return L"RawBuffer";
-		}
+			if (desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS)
+				return L"RawBuffer";
 
-		return L"Buffer";
+			return L"Buffer";
 	}
 
-	case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
-		return L"Texture1D";
+		case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+			return L"Texture1D";
 
-	case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
-		return L"Texture2D";
+		case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+			return L"Texture2D";
 
-	case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
-		return L"Texture3D";
+		case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+			return L"Texture3D";
 
-	default:
-		return L"Unknown";
+		default:
+			return L"Unknown";
 	}
 }
 
 
-static std::wstring TrimText(
-	const std::wstring& text,
-	int max_length)
+static std::wstring TrimText(const std::wstring& text, int max_length)
 {
 	if (max_length <= 0)
 		return L"";
@@ -626,19 +550,13 @@ static std::wstring TrimText(
 
 
 
-static std::wstring GetPathAfterMods(
-	const std::wstring& path)
+static std::wstring GetPathAfterMods(const std::wstring& path)
 {
 	static const std::wstring marker = L"mods\\";
 
 	std::wstring lower = path;
 
-	std::transform(
-		lower.begin(),
-		lower.end(),
-		lower.begin(),
-		::towlower
-	);
+	std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
 
 	size_t pos = lower.find(marker);
 
@@ -663,31 +581,16 @@ static std::wstring GetLastPathComponent(
 
 static std::wstring GetCustomResourceColumnHeader(int index)
 {
-	auto& column =
-		Profiling::custom_resource_columns[index];
+	auto& column = Profiling::custom_resource_columns[index];
 
-	if (
-		column.namespace_index < 0 ||
-		column.namespace_index >=
-		(int)custom_resource_namespace_list.size()
-		)
-	{
+	if (column.namespace_index < 0 || column.namespace_index >= (int)custom_resource_namespace_list.size())
 		return L"Select";
-	}
 
-	std::wstring name =
-		custom_resource_namespace_list[
-			column.namespace_index
-		];
+	std::wstring name = custom_resource_namespace_list[column.namespace_index];
 
 	std::wstring lower = name;
 
-	std::transform(
-		lower.begin(),
-		lower.end(),
-		lower.begin(),
-		::towlower
-	);
+	std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
 
 	const std::wstring mods_marker = L"mods\\";
 	const std::wstring source_prefix = L"source\\";
@@ -695,25 +598,10 @@ static std::wstring GetCustomResourceColumnHeader(int index)
 	size_t mods_pos = lower.find(mods_marker);
 
 	if (mods_pos != std::wstring::npos)
-	{
-		name.erase(
-			0,
-			mods_pos + mods_marker.size()
-		);
-	}
-	else if (
-		lower.compare(
-			0,
-			source_prefix.size(),
-			source_prefix
-		) == 0
-		)
-	{
-		name.erase(
-			0,
-			source_prefix.size()
-		);
-	}
+		name.erase(0, mods_pos + mods_marker.size());
+
+	else if (lower.compare(0,source_prefix.size(),source_prefix) == 0)
+		name.erase(0, source_prefix.size());
 
 	if (index == Profiling::active_custom_resource_column)
 		return L"<" + name + L">";
@@ -740,13 +628,9 @@ static void GetResourceMetadata(
 	// Common Data
 	// ========================================================================
 
-	lines[0] =
-		L"Name: " +
-		GetLastPathComponent(resource->name);
+	lines[0] = L"Name: " + GetLastPathComponent(resource->name);
 
-	lines[1] =
-		L"FileName: " +
-		GetPathAfterMods(resource->filename);
+	lines[1] = L"FileName: " + GetPathAfterMods(resource->filename);
 
 
 	// ========================================================================
@@ -755,226 +639,95 @@ static void GetResourceMetadata(
 
 	if (resource->resource)
 	{
-		D3D11_RESOURCE_DIMENSION dimension =
-			D3D11_RESOURCE_DIMENSION_UNKNOWN;
+		D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
 
 		resource->resource->GetType(&dimension);
 
-		lines[2] =
-			L"Type: " +
-			GetActualResourceType(resource->resource);
+		lines[2] = L"Type: " + GetActualResourceType(resource->resource);
 
 
 		switch (dimension)
 		{
-		case D3D11_RESOURCE_DIMENSION_BUFFER:
-		{
-			D3D11_BUFFER_DESC desc;
-			static_cast<ID3D11Buffer*>(
-				resource->resource
-				)->GetDesc(&desc);
+			case D3D11_RESOURCE_DIMENSION_BUFFER:
+			{
+				D3D11_BUFFER_DESC desc;
+				static_cast<ID3D11Buffer*>(resource->resource)->GetDesc(&desc);
 
-			lines[3] =
-				L"Format: Unknown";
+				lines[3] =
+					L"Format: Unknown";
 
-			lines[4] =
-				L"ByteWidth: " +
-				std::to_wstring(desc.ByteWidth);
+				lines[4] = L"ByteWidth: " + std::to_wstring(desc.ByteWidth);
 
-			lines[5] =
-				L"Stride: " +
-				std::to_wstring(
-					resource->stride
-				);
+				lines[5] = L"Stride: " + std::to_wstring(resource->stride);
 
-			lines[6] =
-				L"Bind: " +
-				std::to_wstring(
-					static_cast<unsigned>(
-						resource->bind_flags
-						)
-				);
+				lines[6] = L"Bind: " + std::to_wstring(static_cast<unsigned>(resource->bind_flags));
+				lines[7] = L"Misc: " + std::to_wstring(static_cast<unsigned>(resource->misc_flags));
+				lines[8] = L"SourceStride: " + std::to_wstring(resource->source_stride);
 
-			lines[7] =
-				L"Misc: " +
-				std::to_wstring(
-					static_cast<unsigned>(
-						resource->misc_flags
-						)
-				);
-
-			lines[8] =
-				L"SourceStride: " +
-				std::to_wstring(
-					resource->source_stride
-				);
-
-			break;
-		}
+				break;
+			}
 
 
-		case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
-		{
-			D3D11_TEXTURE1D_DESC desc;
-			static_cast<ID3D11Texture1D*>(
-				resource->resource
-				)->GetDesc(&desc);
-
-			lines[3] =
-				L"Format: " +
-				FormatToWString(desc.Format);
-
-			lines[4] =
-				L"Size: " +
-				std::to_wstring(desc.Width);
-
-			lines[5] =
-				L"Mips: " +
-				std::to_wstring(desc.MipLevels);
-
-			lines[6] =
-				L"Array: " +
-				std::to_wstring(desc.ArraySize);
-
-			lines[7] =
-				L"Bind: " +
-				std::to_wstring(
-					static_cast<unsigned>(
-						resource->bind_flags
-						)
-				);
-
-			lines[8] =
-				L"Misc: " +
-				std::to_wstring(
-					static_cast<unsigned>(
-						resource->misc_flags
-						)
-				);
-
-			lines[9] =
-				L"SourceStride: " +
-				std::to_wstring(
-					resource->source_stride
-				);
-
-			break;
-		}
+			case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+			{
+				D3D11_TEXTURE1D_DESC desc;
+				static_cast<ID3D11Texture1D*>(resource->resource)->GetDesc(&desc);
 
 
-		case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
-		{
-			D3D11_TEXTURE2D_DESC desc;
-			static_cast<ID3D11Texture2D*>(
-				resource->resource
-				)->GetDesc(&desc);
-
-			lines[3] =
-				L"Format: " +
-				FormatToWString(desc.Format);
-
-			lines[4] =
-				L"Size: " +
-				std::to_wstring(desc.Width) +
-				L"x" +
-				std::to_wstring(desc.Height);
-
-			lines[5] =
-				L"Mips: " +
-				std::to_wstring(desc.MipLevels);
-
-			lines[6] =
-				L"Array: " +
-				std::to_wstring(desc.ArraySize);
-
-			lines[7] =
-				L"MSAA: " +
-				std::to_wstring(
-					desc.SampleDesc.Count
-				) +
-				L"/" +
-				std::to_wstring(
-					desc.SampleDesc.Quality
-				);
-
-			lines[8] =
-				L"Bind: " +
-				std::to_wstring(
-					static_cast<unsigned>(
-						resource->bind_flags
-						)
-				);
-
-			lines[9] =
-				L"Misc: " +
-				std::to_wstring(
-					static_cast<unsigned>(
-						resource->misc_flags
-						)
-				);
-
-			lines[10] =
-				L"SourceStride: " +
-				std::to_wstring(
-					resource->source_stride
-				);
-
-			break;
-		}
+				lines[3] = L"Format: " + FormatToWString(desc.Format);
+				lines[4] = L"Size: " + std::to_wstring(desc.Width);
+				lines[5] = L"Mips: " + std::to_wstring(desc.MipLevels);
+				lines[6] = L"Array: " + std::to_wstring(desc.ArraySize);
+				lines[7] = L"Bind: " + std::to_wstring(static_cast<unsigned>(resource->bind_flags));
+				lines[8] = L"Misc: " + std::to_wstring(static_cast<unsigned>(resource->misc_flags));
+				lines[9] = L"SourceStride: " + std::to_wstring(resource->source_stride);
 
 
-		case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
-		{
-			D3D11_TEXTURE3D_DESC desc;
-			static_cast<ID3D11Texture3D*>(
-				resource->resource
-				)->GetDesc(&desc);
-
-			lines[3] =
-				L"Format: " +
-				FormatToWString(desc.Format);
-
-			lines[4] =
-				L"Size: " +
-				std::to_wstring(desc.Width) +
-				L"x" +
-				std::to_wstring(desc.Height) +
-				L"x" +
-				std::to_wstring(desc.Depth);
-
-			lines[5] =
-				L"Mips: " +
-				std::to_wstring(desc.MipLevels);
-
-			lines[6] =
-				L"Bind: " +
-				std::to_wstring(
-					static_cast<unsigned>(
-						resource->bind_flags
-						)
-				);
-
-			lines[7] =
-				L"Misc: " +
-				std::to_wstring(
-					static_cast<unsigned>(
-						resource->misc_flags
-						)
-				);
-
-			lines[8] =
-				L"SourceStride: " +
-				std::to_wstring(
-					resource->source_stride
-				);
-
-			break;
-		}
+				break;
+			}
 
 
-		default:
-			lines[3] = L"Format: Unknown";
-			break;
+			case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+			{
+				D3D11_TEXTURE2D_DESC desc;
+				static_cast<ID3D11Texture2D*>(resource->resource)->GetDesc(&desc);
+
+
+				lines[3] = L"Format: " + FormatToWString(desc.Format);
+				lines[4] = L"Size: " + std::to_wstring(desc.Width) + L"x" + std::to_wstring(desc.Height);
+				lines[5] = L"Mips: " + std::to_wstring(desc.MipLevels);
+				lines[6] = L"Array: " + std::to_wstring(desc.ArraySize);
+				lines[7] = L"MSAA: " + std::to_wstring(desc.SampleDesc.Count) + L"/" + std::to_wstring(desc.SampleDesc.Quality);
+				lines[8] = L"Bind: " + std::to_wstring(static_cast<unsigned>(resource->bind_flags));
+				lines[9] = L"Misc: " + std::to_wstring(static_cast<unsigned>(resource->misc_flags));
+				lines[10] = L"SourceStride: " + std::to_wstring(resource->source_stride);
+
+
+				break;
+			}
+
+
+			case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+			{
+				D3D11_TEXTURE3D_DESC desc;
+				static_cast<ID3D11Texture3D*>(resource->resource)->GetDesc(&desc);
+
+
+				lines[3] = L"Format: " + FormatToWString(desc.Format);
+				lines[4] = L"Size: " + std::to_wstring(desc.Width) + L"x" + std::to_wstring(desc.Height) + L"x" + std::to_wstring(desc.Depth);
+				lines[5] = L"Mips: " + std::to_wstring(desc.MipLevels);
+				lines[6] = L"Bind: " + std::to_wstring(static_cast<unsigned>(resource->bind_flags));
+				lines[7] = L"Misc: " + std::to_wstring(static_cast<unsigned>(resource->misc_flags));
+				lines[8] = L"SourceStride: " + std::to_wstring(resource->source_stride);
+
+
+				break;
+			}
+
+
+			default:
+				lines[3] = L"Format: Unknown";
+				break;
 		}
 	}
 	else
@@ -984,91 +737,19 @@ static void GetResourceMetadata(
 		// Use the Description known from the Resource Declaration.
 		// ====================================================================
 
-		lines[2] =
-			L"Type: " +
-			CustomResourceTypeToWString(
-				resource->override_type
-			);
-
-		lines[3] =
-			L"Format: " +
-			FormatToWString(
-				resource->override_format
-			);
-
-		lines[4] =
-			L"Width: " +
-			std::to_wstring(
-				resource->override_width
-			);
-
-		lines[5] =
-			L"Height: " +
-			std::to_wstring(
-				resource->override_height
-			);
-
-		lines[6] =
-			L"Depth: " +
-			std::to_wstring(
-				resource->override_depth
-			);
-
-		lines[7] =
-			L"Mips: " +
-			std::to_wstring(
-				resource->override_mips
-			);
-
-		lines[8] =
-			L"Array: " +
-			std::to_wstring(
-				resource->override_array
-			);
-
-		lines[9] =
-			L"MSAA: " +
-			std::to_wstring(
-				resource->override_msaa
-			) +
-			L"/" +
-			std::to_wstring(
-				resource->override_msaa_quality
-			);
-
-		lines[10] =
-			L"ByteWidth: " +
-			std::to_wstring(
-				resource->override_byte_width
-			);
-
-		lines[11] =
-			L"Stride: " +
-			std::to_wstring(
-				resource->override_stride
-			);
-
-		lines[12] =
-			L"Bind: " +
-			std::to_wstring(
-				static_cast<unsigned>(
-					resource->override_bind_flags
-					)
-			);
-
-		lines[13] =
-			L"Misc: " +
-			std::to_wstring(
-				static_cast<unsigned>(
-					resource->override_misc_flags
-					)
-			);
-
-		lines[14] =
-			L"SourceStride: " +
-			std::to_wstring(
-				resource->source_stride
-			);
+		lines[2] = L"Type: " + CustomResourceTypeToWString(resource->override_type);
+		lines[3] = L"Format: " + FormatToWString(resource->override_format);
+		lines[4] = L"Width: " + std::to_wstring(resource->override_width);
+		lines[5] = L"Height: " + std::to_wstring(resource->override_height);
+		lines[6] = L"Depth: " + std::to_wstring(resource->override_depth);
+		lines[7] = L"Mips: " + std::to_wstring(resource->override_mips);
+		lines[8] = L"Array: " + std::to_wstring(resource->override_array);
+		lines[9] = L"MSAA: " + std::to_wstring(resource->override_msaa) + L"/" + std::to_wstring(resource->override_msaa_quality);
+		lines[10] = L"ByteWidth: " + std::to_wstring(resource->override_byte_width);
+		lines[11] = L"Stride: " + std::to_wstring(resource->override_stride);
+		lines[12] = L"Bind: " + std::to_wstring(static_cast<unsigned>(resource->override_bind_flags));
+		lines[13] = L"Misc: " + std::to_wstring(static_cast<unsigned>(resource->override_misc_flags));
+		lines[14] = L"SourceStride: " + std::to_wstring(resource->source_stride);
 	}
 
 
@@ -1076,13 +757,7 @@ static void GetResourceMetadata(
 	// Runtime state
 	// ========================================================================
 
-	lines[15] =
-		L"Substantiated: " +
-		std::wstring(
-			resource->substantiated
-			? L"true"
-			: L"false"
-		);
+	lines[15] = L"Substantiated: " + std::wstring(resource->substantiated ? L"true" : L"false");
 }
 
 
@@ -1095,48 +770,24 @@ static void DrawResources()
 	// Namespace Counters
 	// ========================================================================
 
-	for (int c = 0;
-		c < (int)Profiling::custom_resource_columns.size();
-		c++)
+	for (int c = 0; c < Profiling::custom_resource_columns.size(); c++)
 	{
 		std::wstring counter;
 
-		if (c ==
-			Profiling::active_custom_resource_column)
-		{
-			auto& column =
-				Profiling::custom_resource_columns[c];
 
-			if (
-				column.namespace_index >= 0 &&
-				column.namespace_index <
-				(int)custom_resource_namespace_list.size()
-				)
-			{
-				counter =
-					std::to_wstring(
-						column.namespace_index + 1
-					) +
-					L"/" +
-					std::to_wstring(
-						custom_resource_namespace_list.size()
-					);
-			}
+		if (c == Profiling::active_custom_resource_column)
+		{
+			auto& column = Profiling::custom_resource_columns[c];
+
+
+			if (column.namespace_index >= 0 && column.namespace_index < custom_resource_namespace_list.size())
+				counter = std::to_wstring(column.namespace_index + 1) + L"/" + std::to_wstring(custom_resource_namespace_list.size());
 			else
-			{
-				counter =
-					L"0/" +
-					std::to_wstring(
-						custom_resource_namespace_list.size()
-					);
-			}
+				counter = L"0/" + std::to_wstring(custom_resource_namespace_list.size());
 		}
 
-		AddColumn(
-			Profiling::text,
-			counter,
-			Profiling::column_width
-		);
+
+		AddColumn(Profiling::text, counter, Profiling::column_width);
 	}
 
 	Profiling::text += L"\n";
@@ -1146,19 +797,8 @@ static void DrawResources()
 	// Namespace Headers
 	// ========================================================================
 
-	for (int c = 0;
-		c < (int)Profiling::custom_resource_columns.size();
-		c++)
-	{
-		AddColumn(
-			Profiling::text,
-			TrimText(
-				GetCustomResourceColumnHeader(c),
-				Profiling::column_width
-			),
-			Profiling::column_width
-		);
-	}
+	for (int c = 0; c < Profiling::custom_resource_columns.size(); c++)
+		AddColumn(Profiling::text, TrimText(GetCustomResourceColumnHeader(c), Profiling::column_width), Profiling::column_width);
 
 	Profiling::text += L"\n";
 
@@ -1167,65 +807,37 @@ static void DrawResources()
 	// Resource List
 	// ========================================================================
 
-	for (
-		int row = 0;
-		row < Profiling::custom_resource_visible_rows;
-		row++
-		)
+	for (int row = 0; row < Profiling::custom_resource_visible_rows; row++)
 	{
-		for (
-			int c = 0;
-			c < (int)Profiling::custom_resource_columns.size();
-			c++
-			)
+		for (int c = 0; c < Profiling::custom_resource_columns.size(); c++)
 		{
-			auto& column =
-				Profiling::custom_resource_columns[c];
+			auto& column = Profiling::custom_resource_columns[c];
 
 			std::wstring text;
 
-			if (
-				column.namespace_index >= 0 &&
-				column.namespace_index <
-				(int)custom_resource_namespace_list.size()
-				)
+
+			if (column.namespace_index >= 0 && column.namespace_index < custom_resource_namespace_list.size())
 			{
-				auto& resources =
-					custom_resource_groups[
-						custom_resource_namespace_list[
-							column.namespace_index
-						]
-					];
+				auto& resources = custom_resource_groups[custom_resource_namespace_list[column.namespace_index]];
 
-				int index =
-					row +
-					column.scroll_offset;
 
-				if (
-					index >= 0 &&
-					index < (int)resources.size()
-					)
+				int index = row + column.scroll_offset;
+
+
+				if (index >= 0 && index < resources.size())
 				{
-					CustomResourceEntry* entry =
-						resources[index];
+					CustomResourceEntry* entry = resources[index];
 
-					text = GetLastPathComponent(
-						entry->name
-					);
+					text = GetLastPathComponent(entry->name);
+
 
 					if (index == column.resource_index)
 						text = L"> " + text;
 				}
 			}
 
-			AddColumn(
-				Profiling::text,
-				TrimText(
-					text,
-					Profiling::column_width
-				),
-				Profiling::column_width
-			);
+
+			AddColumn(Profiling::text, TrimText(text, Profiling::column_width), Profiling::column_width);
 		}
 
 		Profiling::text += L"\n";
@@ -1236,16 +848,8 @@ static void DrawResources()
 	// Separator
 	// ========================================================================
 
-	for (int c = 0;
-		c < (int)Profiling::custom_resource_columns.size();
-		c++)
-	{
-		AddColumn(
-			Profiling::text,
-			L"----------------------------------------",
-			Profiling::column_width
-		);
-	}
+	for (int c = 0; c < Profiling::custom_resource_columns.size(); c++)
+		AddColumn(Profiling::text, L"----------------------------------------", Profiling::column_width);
 
 	Profiling::text += L"\n";
 
@@ -1254,67 +858,34 @@ static void DrawResources()
 	// Selected Resource Metadata
 	// ========================================================================
 
-	for (
-		int row = 0;
-		row < Profiling::custom_resource_metadata_rows;
-		row++
-		)
+	for (int row = 0; row < Profiling::custom_resource_metadata_rows; row++)
 	{
-		for (
-			int c = 0;
-			c < (int)Profiling::custom_resource_columns.size();
-			c++
-			)
+		for (int c = 0; c < Profiling::custom_resource_columns.size(); c++)
 		{
-			auto& column =
-				Profiling::custom_resource_columns[c];
+			auto& column = Profiling::custom_resource_columns[c];
 
 			std::wstring text;
 
-			if (
-				column.namespace_index >= 0 &&
-				column.namespace_index <
-				(int)custom_resource_namespace_list.size()
-				)
-			{
-				auto& resources =
-					custom_resource_groups[
-						custom_resource_namespace_list[
-							column.namespace_index
-						]
-					];
 
-				if (
-					column.resource_index >= 0 &&
-					column.resource_index <
-					(int)resources.size()
-					)
+			if (column.namespace_index >= 0 && column.namespace_index < custom_resource_namespace_list.size())
+			{
+				auto& resources = custom_resource_groups[custom_resource_namespace_list[column.namespace_index]];
+
+
+				if (column.resource_index >= 0 && column.resource_index < resources.size())
 				{
-					CustomResource* resource =
-						resources[
-							column.resource_index
-						]->resource;
+					CustomResource* resource = resources[column.resource_index]->resource;
 
 					std::wstring lines[16];
 
-					GetResourceMetadata(
-						resource,
-						lines
-					);
+					GetResourceMetadata(resource, lines);
 
-					text =
-						lines[row];
+					text = lines[row];
 				}
 			}
 
-			AddColumn(
-				Profiling::text,
-				TrimText(
-					text,
-					Profiling::column_width
-				),
-				Profiling::column_width
-			);
+
+			AddColumn(Profiling::text, TrimText(text, Profiling::column_width), Profiling::column_width);
 		}
 
 		Profiling::text += L"\n";
@@ -1612,13 +1183,13 @@ void Profiling::update_txt()
 		return;
 
 	collection_duration.QuadPart = (end_time.QuadPart - profiling_start_time.QuadPart) * 1000000 / freq.QuadPart;
+
 	if (collection_duration.QuadPart < ((Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES || Profiling::mode == Profiling::Mode::CUSTOM_RESOURCES || Profiling::mode == Profiling::Mode::POOLS) ? 0.1 : interval)
 		&& !Profiling::text.empty())
 		return;
 
 	if (frames && collection_duration.QuadPart) {
-		_snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE,
-				    L"Performance Monitor %.1ffps", frames * 1000000.0 / collection_duration.QuadPart);
+		_snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE, L"Performance Monitor %.1ffps", frames * 1000000.0 / collection_duration.QuadPart);
 		Profiling::text = buf;
 
 		switch (Profiling::mode) {

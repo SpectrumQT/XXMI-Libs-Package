@@ -200,8 +200,14 @@ void HackerSwapChain::RunFrameActions()
 	// so that the most lost will be one frame worth.  Tradeoff of performance to accuracy
 	if (LogFile) fflush(LogFile);
 
-	G->gSystemTickCount = GetTickCount();
-	G->gTime = (G->gSystemTickCount - G->ticks_at_launch) / 1000.0f;
+	uint64_t system_tick_count = GetSystemTicks();
+
+	G->gFrameTime = (system_tick_count - G->gSystemTickCount) / 1'000'000.0f;
+	G->gTime = (system_tick_count - G->ticks_at_launch) / 1'000'000.0f;
+
+	G->gSystemTickCount = system_tick_count;
+
+	G->gFPSCounter.Update(system_tick_count);
 
 	// Run the command list here, before drawing the overlay so that a
 	// custom shader on the present call won't remove the overlay. Also,

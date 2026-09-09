@@ -36,6 +36,7 @@ Globals *G = &StaticG;
 
 FILE *LogFile = 0;		// off by default.
 bool gLogDebug = false;
+LogVerbosity gLogVerbosity = LogVerbosity::INVALID;
 
 
 // This critical section must be held to avoid race conditions when creating
@@ -93,11 +94,18 @@ static bool verify_intended_target_late()
 
 static bool InitializeDLL()
 {
+	// Ensure only one thread performs DLL initialization.
+	{
+		CriticalSectionGuard(&G->mCriticalSection);
+
+		if (G->gInitialized)
+			return true;
+
+		G->gInitialized = true;
+	}
+
 	const char* default_locale = setlocale(LC_CTYPE, nullptr);
 	G->gDefaultLocale = default_locale ? default_locale : "";
-
-	if (G->gInitialized)
-		return true;
 
 	LoadConfigFile();
 
@@ -113,17 +121,12 @@ static bool InitializeDLL()
 	}
 
 	LogInfo("\n***  D3D11 DLL successfully initialized.  ***\n\n");
+
 	return true;
 }
 
 void DestroyDLL()
 {
-	if (LogFile)
-	{
-		LogInfo("Destroying DLL...\n");
-		SavePersistentSettings();
-		fclose(LogFile);
-	}
 }
 
 int WINAPI D3DKMTCloseAdapter()

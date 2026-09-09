@@ -8,6 +8,7 @@
 #include <d3d11_1.h>
 #include <DirectXMath.h>
 #include <util.h>
+#include <WICTextureLoader.h>
 
 #include "DrawCallInfo.h"
 #include "ResourceHash.h"
@@ -148,6 +149,7 @@ public:
 typedef std::unordered_map<std::wstring, class CommandListVariable> CommandListVariables;
 extern CommandListVariables command_list_globals;
 extern std::vector<CommandListVariable*> persistent_variables;
+extern std::unordered_map<std::wstring, float> unknown_variables;
 
 // Values Viewer
 
@@ -485,6 +487,18 @@ static EnumName_t<const wchar_t *, CustomResourceType> CustomResourceTypeNames[]
 	{NULL, CustomResourceType::INVALID} // End of list marker
 };
 
+enum class CustomColorSpace {
+	DEFAULT = DirectX::WIC_LOADER_FLAGS::WIC_LOADER_DEFAULT,
+	SRGB    = DirectX::WIC_LOADER_FLAGS::WIC_LOADER_FORCE_SRGB,
+	LINEAR  = DirectX::WIC_LOADER_FLAGS::WIC_LOADER_IGNORE_SRGB,
+};
+static EnumName_t<const wchar_t *, CustomColorSpace> CustomColorSpaceNames[] = {
+	{L"sRGB", CustomColorSpace::SRGB},
+	{L"Linear", CustomColorSpace::LINEAR},
+
+	{NULL, CustomColorSpace::DEFAULT} // End of list marker
+};
+
 // The bind flags are usually set automatically, but there are cases where
 // these can be used to influence driver heuristics (e.g. a buffer that
 // includes a render target or UAV bind flag may be stereoised), so we allow
@@ -584,6 +598,7 @@ public:
 	CustomResourceBindFlags override_bind_flags;
 	ResourceMiscFlags override_misc_flags;
 	DXGI_FORMAT override_format;
+	CustomColorSpace override_color_space;
 	int override_width;
 	int override_height;
 	int override_depth;
@@ -618,6 +633,8 @@ public:
 	void expire(ID3D11Device *mOrigDevice1, ID3D11DeviceContext *mOrigContext1);
 
 private:
+	bool HasPNGsRGBChunk(wstring filename);
+	DirectX::WIC_LOADER_FLAGS GetWICFlags(wstring filename);
 	void LoadFromFile(ID3D11Device *mOrigDevice);
 	void LoadBufferFromFile(ID3D11Device *mOrigDevice);
 	void SubstantiateBuffer(ID3D11Device *mOrigDevice, void **buf, DWORD size);
@@ -819,26 +836,29 @@ enum class ResourceCopyTargetEvaluationMode : uint32_t {
 	RESOURCE_REGION_HASH   = 0b00000000000000000000000001000000,
 	RESOURCE_SPATIAL_HASH  = 0b00000000000000000000000010000000,
 	RESOURCE_REGION        = 0b00000000000000000000000100000000,
+	RESOURCE_FORMAT        = 0b00000000000000000000001000000000,
+	RESOURCE_WIDTH         = 0b00000000000000000000010000000000,
+	RESOURCE_HEIGHT        = 0b00000000000000000000100000000000,
 
-	RESOURCE_MASK          = 0b00000000000000000000000111111111,
+	RESOURCE_MASK          = 0b00000000000000000000111111111111,
 
 	// POOL
-	POOL_IDENTITY          = 0b00000000000000000000001000000000,
-	POOL_SIZE              = 0b00000000000000000000010000000000,
-	POOL_INDEX             = 0b00000000000000000000100000000000,
-	POOL_FULL_RANGE        = 0b00000000000000000001000000000000,
-	POOL_LAST_FRAME        = 0b00000000000000000010000000000000,
+	POOL_IDENTITY          = 0b00000000000000000001000000000000,
+	POOL_SIZE              = 0b00000000000000000010000000000000,
+	POOL_INDEX             = 0b00000000000000000100000000000000,
+	POOL_FULL_RANGE        = 0b00000000000000001000000000000000,
+	POOL_LAST_FRAME        = 0b00000000000000010000000000000000,
 
-	POOL_MASK              = 0b00000000000000000011111000000000,
+	POOL_MASK              = 0b00000000000000011111000000000000,
 
 	// VARIABLE
-	VARIABLE               = 0b00000000000000000100000000000000,
+	VARIABLE               = 0b00000000000000100000000000000000,
 
 	// LAYOUT
-	LAYOUT_ELEMENT_FORMAT  = 0b00000000000000001000000000000000,
-	LAYOUT_ELEMENT_OFFSET  = 0b00000000000000010000000000000000,
+	LAYOUT_ELEMENT_FORMAT  = 0b00000000000001000000000000000000,
+	LAYOUT_ELEMENT_OFFSET  = 0b00000000000010000000000000000000,
 
-	LAYOUT_MASK            = 0b00000000000000011000000000000000
+	LAYOUT_MASK            = 0b00000000000011000000000000000000
 };
 SENSIBLE_ENUM(ResourceCopyTargetEvaluationMode);
 static EnumName_t<const wchar_t*, ResourceCopyTargetEvaluationMode> ResourceCopyTargetEvaluationModeNames[] = {
@@ -850,6 +870,9 @@ static EnumName_t<const wchar_t*, ResourceCopyTargetEvaluationMode> ResourceCopy
 	{L"ResourceOffset", ResourceCopyTargetEvaluationMode::RESOURCE_OFFSET},
 	{L"ResourceRegionHash", ResourceCopyTargetEvaluationMode::RESOURCE_REGION_HASH},
 	{L"ResourceSpatialHash", ResourceCopyTargetEvaluationMode::RESOURCE_SPATIAL_HASH},
+	{L"ResourceFormat", ResourceCopyTargetEvaluationMode::RESOURCE_FORMAT},
+	{L"ResourceWidth", ResourceCopyTargetEvaluationMode::RESOURCE_WIDTH},
+	{L"ResourceHeight", ResourceCopyTargetEvaluationMode::RESOURCE_HEIGHT},
 
 	{L"PoolIdentity", ResourceCopyTargetEvaluationMode::POOL_IDENTITY},
 	{L"PoolSize", ResourceCopyTargetEvaluationMode::POOL_SIZE},
@@ -1031,6 +1054,9 @@ public:
 	float GetResourceOffset(CommandListState* state);
 	float GetResourceRegionHash(CommandListState* state);
 	float GetResourceSpatialHash(CommandListState* state);
+	float GetResourceFormat(CommandListState* state);
+	float GetResourceWidth(CommandListState* state);
+	float GetResourceHeight(CommandListState* state);
 	float GetPoolElementLastFrame(CommandListState* state);
 
 	D3D11_BIND_FLAG BindFlags(CommandListState *state, D3D11_RESOURCE_MISC_FLAG *misc_flags=NULL);
@@ -1345,6 +1371,8 @@ enum class ParamOverrideType {
 	FRAME_NUMBER,
 	DRAW_NUMBER,
 	DISPATCH_NUMBER,
+	FRAME_TIME,
+	FPS,
 };
 static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] = {
 	{L"rt_width", ParamOverrideType::RT_WIDTH},
@@ -1387,6 +1415,8 @@ static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] =
 	{L"frame_number", ParamOverrideType::FRAME_NUMBER},
 	{L"draw_number", ParamOverrideType::DRAW_NUMBER},
 	{L"dispatch_number", ParamOverrideType::DISPATCH_NUMBER},
+	{L"frame_time", ParamOverrideType::FRAME_TIME},
+	{L"fps", ParamOverrideType::FPS},
 	{NULL, ParamOverrideType::INVALID} // End of list marker
 };
 class CommandListOperand :
@@ -1496,6 +1526,10 @@ public:
 	bool pre_finalised, post_finalised;
 	bool has_nested_else_if;
 	wstring section;
+
+	bool static_evaluated = false;
+	bool is_static = false;
+	float static_val = 0.0f;
 
 	// Commands cannot statically contain command lists, because the
 	// command may be optimised out and the command list freed while we are

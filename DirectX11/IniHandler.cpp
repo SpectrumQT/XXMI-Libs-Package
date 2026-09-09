@@ -70,6 +70,7 @@ static Section RegularSections[] = {
 	{L"Hunting", false},
 	{L"Logging", false},
 	{L"System", false},
+	{L"Input", false},
 	{L"Device", false},
 	{L"Rendering", false},
 	{L"Loader", false},
@@ -216,6 +217,7 @@ struct IniSection {
 typedef std::map<wstring, IniSection, WStringInsensitiveLess> IniSections;
 
 IniSections ini_sections;
+std::unordered_set<wstring> recursive_includes;
 
 // Returns an iterator to the first element in a set that does not begin with
 // prefix in a case insensitive way. Combined with set::lower_bound, this can
@@ -238,21 +240,15 @@ static IniSections::iterator prefix_upper_bound(IniSections &sections, wstring &
 // eyes may be focussed elsewhere and may miss the notification message[s].
 static bool ini_warned = false;
 #define IniWarning(fmt, ...) do { \
-	if (G->gShowWarnings) { \
-		ini_warned = true; \
-		LogOverlay(LOG_WARNING, fmt, __VA_ARGS__); \
-	} \
+	ini_warned = true; \
+	LogOverlay(LOG_WARNING, fmt, __VA_ARGS__); \
 } while (0)
 #define IniWarningW(fmt, ...) do { \
-	if (G->gShowWarnings) { \
-		ini_warned = true; \
-		LogOverlayW(LOG_WARNING, fmt, __VA_ARGS__); \
-	} \
+	ini_warned = true; \
+	LogOverlayW(LOG_WARNING, fmt, __VA_ARGS__); \
 } while (0)
 #define IniWarningBeep() do { \
-	if (G->gShowWarnings) { \
-		ini_warned = true; \
-	} \
+	ini_warned = true; \
 } while (0)
 
 static void emit_ini_warning_tone()
@@ -260,7 +256,13 @@ static void emit_ini_warning_tone()
 	if (!ini_warned)
 		return;
 	ini_warned = false;
-	BeepFailure();
+	if (G->gShowWarnings)
+		BeepFailure();
+}
+
+inline wchar_t ascii_tolower(wchar_t c)
+{
+	return (c >= L'A' && c <= L'Z') ? c + (L'a' - L'A') : c;
 }
 
 static bool get_namespaced_section_name(const wstring *section, const wstring *ini_namespace, wstring *ret)
@@ -284,10 +286,12 @@ bool get_namespaced_section_name_lower(const wstring *section, const wstring *in
 	return rc;
 }
 
-wstring get_namespaced_var_name_lower(const wstring var, const wstring *ini_namespace)
+wstring get_namespaced_var_name_lower(const wstring& low_name, const wstring* ini_namespace)
 {
-	wstring ret = wstring(L"$\\") + *ini_namespace + wstring(L"\\") + var.substr(1);
-	std::transform(ret.begin(), ret.end(), ret.begin(), ::towlower);
+	wstring ret = L"$\\" + *ini_namespace + L'\\';
+	auto namespace_begin = ret.begin() + 2;  // Skip "$\\"
+	std::transform(namespace_begin, namespace_begin + ini_namespace->size(), namespace_begin, ::towlower);
+	ret.append(low_name, 1, wstring::npos);
 	return ret;
 }
 
@@ -1163,7 +1167,7 @@ T GetIniValue(
 
 inline bool ConvertExpressionToFloat(float expr, float& out) noexcept
 {
-	// Preserve the evaluated IEEE-754 value, including NaN and ±infinity.
+	// Preserve the evaluated IEEE-754 value, including NaN and Â±infinity.
 	out = expr;
 	return true;
 }
@@ -1178,7 +1182,7 @@ bool ParseFloatValue(const wchar_t* section, const wchar_t* key, const wstring& 
 	{
 		if (errno == ERANGE)
 		{
-			// Treat floating-point overflow as ±infinity.
+			// Treat floating-point overflow as Â±infinity.
 			out = std::signbit(out) ? -std::numeric_limits<float>::infinity() : std::numeric_limits<float>::infinity();
 		}
 		return true;
@@ -1251,7 +1255,7 @@ int GetIniInt(const wchar_t* section, const wchar_t* key, int def, bool* found, 
 
 inline bool ConvertExpressionToBool(float expr, bool& out) noexcept
 {
-	// NaN is false; all other non-zero values (including ±infinity) are true.
+	// NaN is false; all other non-zero values (including Â±infinity) are true.
 	out = !std::isnan(expr) && expr != 0.0f;
 	return true;
 }
@@ -1511,7 +1515,8 @@ static void ParseIncludedIniFiles()
 	wstring namespace_path, rel_path, ini_path;
 	wchar_t migoto_path[MAX_PATH];
 	vector<pcre2_code*> exclude;
-	DWORD attrib;
+
+	recursive_includes.clear();
 
 	GetModuleFileName(migoto_handle, migoto_path, MAX_PATH);
 	wcsrchr(migoto_path, L'\\')[1] = 0;
@@ -1564,6 +1569,7 @@ static void ParseIncludedIniFiles()
 					ini_path = wstring(migoto_path) + rel_path;
 					ParseNamespacedIniFile(ini_path.c_str(), &rel_path);
 				} else if (!wcscmp(key->c_str(), L"include_recursive")) {
+					recursive_includes.insert(*val);
 					ParseIniFilesRecursive(migoto_path, rel_path, exclude);
 				} else if (!wcscmp(key->c_str(), L"exclude_recursive")) {
 					// Handled above
@@ -1577,12 +1583,22 @@ static void ParseIncludedIniFiles()
 	} while (!include_sections.empty());
 
 	free_globbing_vector(exclude);
+}
 
-	// User config is loaded very last to allow it to override all other
-	// ini files.
-	attrib = GetFileAttributes(G->user_config.c_str());
-	if (attrib != INVALID_FILE_ATTRIBUTES)
-		ParseNamespacedIniFile(G->user_config.c_str(), &G->user_config);
+static void ParsePersistentSettings()
+{
+	DWORD attrib = GetFileAttributes(G->user_config.c_str());
+	if (attrib == INVALID_FILE_ATTRIBUTES)
+		return;
+	ParseNamespacedIniFile(G->user_config.c_str(), &G->user_config);
+}
+
+bool starts_with_any(const std::wstring& str, const std::unordered_set<std::wstring>& prefixes)
+{
+	return std::any_of(prefixes.begin(), prefixes.end(),
+		[&](const std::wstring& prefix) {
+			return str.compare(0, prefix.size(), prefix) == 0;
+		});
 }
 
 static void RegisterPresetKeyBindings()
@@ -1614,12 +1630,16 @@ static void RegisterPresetKeyBindings()
 		delay = GetIniInt(id, L"delay", 0, NULL);
 		release_delay = GetIniInt(id, L"release_delay", 0, NULL);
 
+		// Only keys declared by INIs from "recursive_includes" paths should be disabled by "input_disable_mode = mods".
+		bool is_mod = starts_with_any(i->second.ini_path.empty() ? i->second.ini_namespace : i->second.ini_path, recursive_includes);
+		InputDisableScope input_disable_scope = is_mod ? InputDisableScope::MODS : InputDisableScope::ALL;
+
 		if (type == KeyOverrideType::CYCLE) {
 			shared_ptr<KeyOverrideCycle> cycle_preset = make_shared<KeyOverrideCycle>();
 			shared_ptr<KeyOverrideCycleBack> cycle_back = make_shared<KeyOverrideCycleBack>(cycle_preset);
 			preset = cycle_preset;
 			for (wstring key : back)
-				RegisterKeyBinding(L"Back", key.c_str(), cycle_back, 0, delay, release_delay);
+				RegisterKeyBinding(L"Back", key.c_str(), cycle_back, 0, delay, release_delay, input_disable_scope);
 		} else {
 			preset = make_shared<KeyOverride>(type);
 		}
@@ -1627,7 +1647,7 @@ static void RegisterPresetKeyBindings()
 		preset->ParseIniSection(id);
 
 		for (wstring key : keys)
-			RegisterKeyBinding(L"Key", key.c_str(), preset, 0, delay, release_delay);
+			RegisterKeyBinding(L"Key", key.c_str(), preset, 0, delay, release_delay, input_disable_scope);
 	}
 }
 
@@ -2044,6 +2064,7 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		}
 	}
 
+	custom_resource->override_color_space = GetIniEnumClass(section_name, L"color_space", CustomColorSpace::DEFAULT, NULL, CustomColorSpaceNames);
 	custom_resource->override_width = GetIniInt(section_name, L"width", -1, NULL);
 	custom_resource->override_height = GetIniInt(section_name, L"height", -1, NULL);
 	custom_resource->override_depth = GetIniInt(section_name, L"depth", -1, NULL);
@@ -2285,29 +2306,13 @@ static void ParseCommandList(const wchar_t *id,
 		}
 
 		if (entry->ini_namespace == G->user_config && !G->user_config.empty()) {
-			// Invalid command, but it is in the user config, which may happen
-			// if the user recently uninstalled/upgraded/etc a mod. We will flag
-			// the user config to be updated at the next save, but won't do this
-			// immediately just in case. Inform the user of what is happening.
 			if (!G->user_config_dirty) {
-				LogOverlay(LOG_WARNING,
-					"NOTICE: Unknown user settings will be removed from d3dx_user.ini\n"
-					" This is normal if you recently removed/changed any mods\n"
-					" Press %S to update the config now, or %S to reset all settings to default\n"
-					" The first unrecognised entry was: \"%S\"\n",
-					user_friendly_ini_key_binding(L"Hunting", L"reload_config").c_str(),
-					user_friendly_ini_key_binding(L"Hunting", L"wipe_user_config").c_str(),
-					raw_line->c_str());
 				// Once the [Constants] command list has finished running the
 				// low bit will be cleared to ensure that loading the user config
 				// itself cannot mark the user config as dirty. Set the second
 				// bit to indicate that it should be updated regardless:
 				G->user_config_dirty |= 2;
 			}
-			// There might be a lot of entries if a large mod was just
-			// uninstalled, so we only show the first bad setting on the
-			// overlay and log all other invalid settings to the log file:
-			LogInfoW(L"WARNING: Unrecognised entry in %ls: %ls\n", G->user_config.c_str(), raw_line->c_str());
 			continue;
 		}
 
@@ -2349,11 +2354,10 @@ CommandListVariable* RegisterGlobalVariable(wstring& name, float* fval, Variable
 static void ParseConstantsSection()
 {
 	VariableFlags flags;
-	IniSectionVector *section = NULL;
-	IniSectionVector::iterator entry, next;
-	wstring *key, *val, name;
-	const wchar_t *name_pos;
-	const wstring *ini_namespace;
+	IniSectionVector* section = NULL;
+	wstring* key, * val, name;
+	const wchar_t* name_pos;
+	const wstring* ini_namespace;
 
 	// The naming on this one is historical - [Constants] used to define
 	// iniParams that couldn't change, then later we allowed them to be
@@ -2376,43 +2380,66 @@ static void ParseConstantsSection()
 	command_list_globals.clear();
 	persistent_variables.clear();
 	GetIniSection(&section, L"Constants");
-	for (next = section->begin(), entry = next; entry < section->end(); entry = next) {
-		next++;
-		key = &entry->first;
-		val = &entry->second;
-		ini_namespace = &entry->ini_namespace;
 
-		// The variable name will either be in the key if this line
+	// Process Globals while Compacting the Vector in-place.
+	//
+	// Previously each Global was Removed with vector::erase(), which
+	// Shifted every Following IniLine and therefore repeatedly Assigned
+	// it's Four WStrings. Instead, move each Non-Global Entry down once and
+	// Re:Size the Vector after the Pass.
+	size_t write_index = 0;
+
+	for (size_t read_index = 0; read_index < section->size(); ++read_index)
+	{
+		IniLine& entry = (*section)[read_index];
+
+		key = &entry.first;
+		val = &entry.second;
+		ini_namespace = &entry.ini_namespace;
+
+		// The Variable Name will either be in the Key if this Line
 		// also includes an assignment, or in raw_line if it does not:
 		if (!key->empty())
 			name = *key;
 		else
-			name = entry->raw_line;
+			name = entry.raw_line;
 
-		// Convert variable name to lower case since ini files are
-		// supposed to be case insensitive:
-		std::transform(name.begin(), name.end(), name.begin(), ::towlower);
+		// Convert Variable Name to Lower Case since Ini Files are
+		// supposed to be Case Insensitive:
+		for (wchar_t& c : name)
+			c = ascii_tolower(c);
 
-		// Globals do not support pre/post since they are declarations
-		// with static initialisers where pre/post doesn't make sense
-		// (and [Constants] doesn't support them as yet either)
+		// Globals do not Support Pre/Post since they are Declarations
+		// with Static Initialisers where Pre/Post doesn't make sense
+		// (and [Constants] doesn't Support them as yet either)
 
-		flags = parse_enum_option_string_prefix<const wchar_t *, VariableFlags>
+		flags = parse_enum_option_string_prefix<const wchar_t*, VariableFlags>
 			(VariableFlagNames, name.c_str(), &name_pos);
+
 		if (!(flags & VariableFlags::GLOBAL))
+		{
+			// Keep Non-Global Entries in their Original Order.
+			// Move instead of Copy so the WStrings are Transferred
+			// without Allocating/Copying their Contents.
+			if (write_index != read_index)
+				(*section)[write_index] = std::move(entry);
+
+			++write_index;
 			continue;
+		}
+
 		name = name_pos;
 
 		if (!valid_variable_name(name)) {
-			IniWarningW(L"Illegal global variable name: \"%ls\"\n - [Constants] @ [%ls]\n", name.c_str(), ini_namespace->c_str());
+			IniWarningW(L"Illegal Global Variable Name: \"%ls\"\n - [Constants] @ [%ls]\n", name.c_str(), ini_namespace->c_str());
 			continue;
 		}
 
 		if (!ini_namespace->empty())
 			name = get_namespaced_var_name_lower(name, ini_namespace);
 
-		// Initialisation is optional and deferred until the command list is run.
-		// If the initialiser is present and simple.
+		// Initialisation is Optional and Deferred until the Command List is Run.
+		// If the Initialiser is Present and Simple.
 		float fval = 0.0f;
 		if (!val->empty())
 		{
@@ -2425,10 +2452,12 @@ static void ParseConstantsSection()
 			continue;
 		}
 
-		// Remove this line from the ini section data structures so the
-		// command list won't consider it in the 2nd pass:
-		next = section->erase(entry);
+		// Global Entries are Intentionally not Copied into the Compacted
+		// Vector, so they will not be Processed during the Second Pass.
 	}
+
+	// Remove the Trailing Entries left behind by the Compacting Pass.
+	section->erase(section->begin() + write_index, section->end());
 }
 
 static wchar_t *true_false_overrule[] = {
@@ -4316,6 +4345,12 @@ void FlagConfigReload(HackerDevice *device, void *private_data)
 	G->gWipeUserConfig = !!private_data;
 }
 
+void ToggleInput(HackerDevice *device, void *private_data)
+{
+	G->disable_input = !G->disable_input;
+	LogOverlayW(LOG_INFO, L"> %ls %ls key bindings\n", G->disable_input ? L"Disabled" : L"Enabled", lookup_enum_name(InputDisableScopeNames, G->input_disable_scope));
+}
+
 static void ToggleFullScreen(HackerDevice *device, void *private_data)
 {
 	// SCREEN_FULLSCREEN has several options now, so to preserve the
@@ -4394,8 +4429,6 @@ void LoadConfigFile()
 	wchar_t iniFile[MAX_PATH], logFilename[MAX_PATH];
 	wchar_t setting[MAX_PATH];
 
-	G->gInitialized = true;
-
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 
 	if (!GetModuleFileName(migoto_handle, iniFile, MAX_PATH))
@@ -4410,30 +4443,76 @@ void LoadConfigFile()
 	// so that there is no question what settings we are using.
 
 	// [Logging]
-	// Not using the helper function for this one since logging isn't enabled yet
-	if (GetPrivateProfileInt(L"Logging", L"calls", 1, iniFile))
+
+	gLogVerbosity = LogVerbosity::INVALID;
+
+	// GetPrivateProfileString is used because we need to initialize LogFile before using GetIni* helpers.
+	static wchar_t log_level[MAX_PATH] = { 0 };
+	GetPrivateProfileString(L"Logging", L"log_level", L"", log_level, MAX_PATH, iniFile);
+	bool log_level_specified = log_level[0] != L'\0';
+
+	bool init_log_file = false;
+	if (log_level_specified)
+	{
+		// New: `log_level` takes precedence over legacy options.
+		gLogVerbosity = lookup_enum_val(LogVerbosityNames, static_cast<const wchar_t*>(log_level), LogVerbosity::INVALID);
+		if (gLogVerbosity != LogVerbosity::INVALID)
+		{
+			init_log_file = gLogVerbosity != LogVerbosity::DISABLED;
+		}
+	}
+
+	if (gLogVerbosity == LogVerbosity::INVALID)
+	{
+		// Handle legacy `calls` option.
+		bool log_calls = GetPrivateProfileInt(L"Logging", L"calls", 0, iniFile);
+		if (log_calls)
+		{
+			init_log_file = true;  // `calls` option historically toggles logging.
+			gLogVerbosity = LogVerbosity::INFO;
+		}
+
+		// Handle legacy `debug` option.
+		bool log_debug = GetPrivateProfileInt(L"Logging", L"debug", 0, iniFile);
+		if (log_debug && log_calls)  // `debug` option historically relies on `calls = 1` set.
+		{
+			gLogVerbosity = LogVerbosity::DEBUG;
+		}
+	}
+
+	if (init_log_file)
 	{
 		if (!LogFile)
 			LogFile = _wfsopen(logFilename, L"w", _SH_DENYNO);
-		LogInfo("\nD3D11 DLL starting init - v %s - %s\n", VER_FILE_VERSION_STR, LogTime().c_str());
+
+		if (!LogFile)
+			gLogVerbosity = LogVerbosity::DISABLED;
+	}
+
+	if (gLogVerbosity == LogVerbosity::INVALID)
+		gLogVerbosity = LogVerbosity::DISABLED;
+
+	if (gLogVerbosity != LogVerbosity::DISABLED)
+	{
+		LogWarning("\nD3D11 DLL starting init - v %s - %s\n", VER_FILE_VERSION_STR, LogTime().c_str());
 
 		wchar_t our_path[MAX_PATH], exe_path[MAX_PATH];
 		GetModuleFileName(migoto_handle, our_path, MAX_PATH);
 		GetModuleFileName(NULL, exe_path, MAX_PATH);
-		LogInfo("Game path: %S\n"
-			"3DMigoto path: %S\n\n",
-			exe_path, our_path);
+
+		LogWarning("Game path: %S\n", exe_path);
+		LogWarning("3DMigoto path: %S\n\n", our_path);
 
 		LogInfoW(L"----------- " INI_FILENAME L" settings -----------\n");
+
+		LogInfo("[Logging]\n");
+		LogInfoW(L"  log_level=%ls\n", lookup_enum_name(LogVerbosityNames, gLogVerbosity));
 	}
-	LogInfo("[Logging]\n");
-	LogInfo("  calls=1\n");
+
+	gLogDebug = gLogVerbosity == LogVerbosity::DEBUG;
 
 	ParseIniFile(iniFile);
 	InsertBuiltInIniSections();
-
-	G->gLogInput = GetIniBool(L"Logging", L"input", false, NULL);
-	gLogDebug = GetIniBool(L"Logging", L"debug", false, NULL);
 
 	// Unbuffered logging to remove need for fflush calls, and r/w access to make it easy
 	// to open active files.
@@ -4474,10 +4553,12 @@ void LoadConfigFile()
 
 	G->gShowWarnings = GetIniBool(L"Logging", L"show_warnings", true, NULL);
 
+	// [Include]
+	LogInfo("[Include]\n");
+
 	// Allows to delay DLL initialization by given ms count
 	G->gDllInitializationDelay = GetIniInt(L"System", L"dll_initialization_delay", 0, NULL);
 
-	// [Include]
 	// If enabled, prevents loading of includes during initialization
 	G->gSkipEarlyIncludesLoad = GetIniBool(L"System", L"skip_early_includes_load", true, NULL);
 
@@ -4489,6 +4570,8 @@ void LoadConfigFile()
 
 	if (G->gConfigInitialized || !G->gSkipEarlyIncludesLoad) {
 		ParseIncludedIniFiles();
+		// User config is loaded very last to allow it to override all other ini files.
+		ParsePersistentSettings();
 	}
 
 	// [System]
@@ -4510,11 +4593,14 @@ void LoadConfigFile()
 	// TODO: Enable this by default if wider testing goes well:
 	G->check_foreground_window = GetIniBool(L"System", L"check_foreground_window", false, NULL);
 
-	// Allows to change interval between persistent vars autosaving to d3dx_user.ini (any negative number to disables it)
+	// Allows to change interval between persistent vars autosaving to d3dx_user.ini (any negative number to disable it)
 	G->gSettingsAutoSaveInterval = GetIniInt(L"System", L"settings_auto_save_interval", 60, NULL);
 	if (G->gSettingsAutoSaveInterval < 0) {
 		G->gSettingsAutoSaveInterval = 2147483647;
 	}
+
+	// Controls whether saved values of persistent variables should be cleared when source mods are no longer detected (disabled or removed).
+	G->auto_clear_persist_vars = GetIniBool(L"System", L"auto_clear_persist_vars", true, NULL);
 
 	// Allows to configure fallback screen resolution to be used as return for `window_width` and `window_height`
 	G->gFallbackScreenWidth = GetIniInt(L"System", L"screen_width", 1920, NULL);
@@ -4525,6 +4611,16 @@ void LoadConfigFile()
 	if (G->gFallbackScreenHeight < 480 || G->gFallbackScreenHeight > 8640) {
 		G->gFallbackScreenHeight = 1080;
 	}
+
+	G->gForceDetectColorSpace = GetIniBool(L"System", L"force_detect_color_space", false, NULL);
+
+	// [Input]
+	LogInfo("[Input]\n");
+	RegisterIniKeyBinding(L"Input", L"toggle_input", ToggleInput, NULL, 0, NULL);
+	bool disable_input_initialized = G->input_disable_scope != InputDisableScope::INVALID;
+	G->input_disable_scope = GetIniEnumClass(L"Input", L"input_disable_mode", InputDisableScope::MODS, NULL, InputDisableScopeNames);
+	if (!disable_input_initialized)
+		G->disable_input = !GetIniBool(L"Input", L"input", false, NULL);
 
 	// [Device] (DXGI parameters)
 	LogInfo("[Device]\n");
@@ -4794,48 +4890,53 @@ void LoadConfigFile()
 	emit_ini_warning_tone();
 }
 
-// This variant is called by the profile manager helper with the path to the
-// game's executable passed in. It doesn't need to parse most of the config,
-// only the [Profile] section and some of the logging. It uses a separate log
-// file from the main DLL.
-void LoadProfileManagerConfig(const wchar_t *config_dir)
+static void DetectUnknownPersistentSettings()
 {
-	wchar_t iniFile[MAX_PATH], logFilename[MAX_PATH];
+	if (unknown_variables.empty())
+		return;
 
-	G->gInitialized = true;
+	if (G->auto_clear_persist_vars)
+		G->unknown_persist_vars_count = unknown_variables.size();
 
-	if (wcscpy_s(iniFile, MAX_PATH, config_dir))
-		DoubleBeepExit();
-	wcsrchr(iniFile, L'\\')[1] = 0;
-	wcscpy(logFilename, iniFile);
-	wcscat(iniFile, INI_FILENAME);
-	wcscat(logFilename, L"d3d11_profile_log.txt");
+	const auto it = unknown_variables.begin();
 
-	// [Logging]
-	// Not using the helper function for this one since logging isn't enabled yet
-	if (GetPrivateProfileInt(L"Logging", L"calls", 1, iniFile))
+	const wchar_t* cleanup_message = G->auto_clear_persist_vars
+		? L" Automatic clean-up will remove them from d3dx_user.ini on next config reload\n"
+		L" To disable automatic clean-up, set \"auto_clear_persist_vars = 0\" inside d3dx.ini\n"
+		: L" Automatic clean-up is disabled, so they will stay in d3dx_user.ini\n"
+		L" To enable automatic clean-up, set \"auto_clear_persist_vars = 1\" inside d3dx.ini\n";
+
+	LogOverlayW(LOG_WARNING,
+		L"NOTICE: Detected %d unknown user settings in d3dx_user.ini\n"
+		L" This is normal if you removed/changed any mods\n"
+		L"%ls"
+		L" Press %ls to reload the config now, or %ls to reset all settings to default\n"
+		L" The first unrecognised entry was: \"%ls = %f\"\n",
+		G->unknown_persist_vars_count,
+		cleanup_message,
+		user_friendly_ini_key_binding(L"Hunting", L"reload_config").c_str(),
+		user_friendly_ini_key_binding(L"Hunting", L"wipe_user_config").c_str(),
+		it->first.c_str(),
+		it->second);
+
+	for (auto& entry : unknown_variables)
+		LogWarningW(L"Unrecognised persistent variable: %ls = %f\n", entry.first.c_str(), entry.second);
+}
+
+static void ClearUnknownPersistentSettings()
+{
+	if (unknown_variables.empty())
+		return;
+
+	if (G->auto_clear_persist_vars)
 	{
-		if (!LogFile)
-			LogFile = _wfsopen(logFilename, L"w", _SH_DENYNO);
-		LogInfo("\n3DMigoto profile helper starting init - v %s - %s\n\n", VER_FILE_VERSION_STR, LogTime().c_str());
-		LogInfoW(L"----------- " INI_FILENAME L" settings -----------\n");
+		if (G->unknown_persist_vars_count == unknown_variables.size())
+			unknown_variables.clear();
+
+		LogOverlayW(LOG_WARNING, L"> Cleared %d unknown user settings from d3dx_user.ini\n", G->unknown_persist_vars_count);
+
+		G->unknown_persist_vars_count = unknown_variables.size();
 	}
-	LogInfo("[Logging]\n");
-	LogInfo("  calls=1\n");
-
-	ParseIniFile(iniFile);
-
-	gLogDebug = GetIniBool(L"Logging", L"debug", false, NULL);
-
-	// Unbuffered logging to remove need for fflush calls, and r/w access to make it easy
-	// to open active files.
-	if (LogFile && GetIniBool(L"Logging", L"unbuffered", false, NULL))
-	{
-		int unbuffered = setvbuf(LogFile, NULL, _IONBF, 0);
-		LogInfo("    unbuffered return: %d\n", unbuffered);
-	}
-
-	LogInfo("\n");
 }
 
 void SavePersistentSettings()
@@ -4846,20 +4947,20 @@ void SavePersistentSettings()
 
 	if (!G->user_config_dirty)
 		return;
-	G->user_config_dirty = 0;
 
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 
 	// TODO: Ability to update existing file rather than overwriting:
 	//wfopen_ensuring_access(&f, G->user_config.c_str(), L"r+");
 	//if (!f)
+
 	wfopen_ensuring_access(&f, G->user_config.c_str(), L"w");
 	if (!f) {
-		LogInfo("Unable to save settings in %S\n", G->user_config.c_str());
+		LogWarning("Unable to save settings in %S\n", G->user_config.c_str());
 		return;
 	}
 
-	LogInfo("Saving user settings to %S\n", G->user_config.c_str());
+	LogWarning("Saving user settings to %S\n", G->user_config.c_str());
 
 	fputs("; AUTOMATICALLY GENERATED FILE - DO NOT EDIT\n"
 	      ";\n"
@@ -4871,7 +4972,15 @@ void SavePersistentSettings()
 	      "[Constants]\n", f);
 
 	for (auto global : persistent_variables)
+	{
 		fprintf_s(f, "%ls = %.9g\n", global->name.c_str(), global->fval);
+		unknown_variables.erase(global->name);
+	}
+
+	for (auto& entry : unknown_variables)
+		fprintf_s(f, "%ls = %.9g\n", entry.first.c_str(), entry.second);
+
+	G->user_config_dirty = 0;
 
 	fclose(f);
 
@@ -4883,7 +4992,11 @@ static void WipeUserConfig()
 	G->gWipeUserConfig = false;
 	G->user_config_dirty = 0;
 
+	unknown_variables.clear();
+
 	DeleteFile(G->user_config.c_str());
+
+	LogOverlayW(LOG_INFO, L"> Wiped user config file d3dx_user.ini\n");
 }
 
 static void MarkAllShadersDeferredUnprocessed()
@@ -4911,16 +5024,6 @@ void ReloadConfig(HackerDevice *device)
 
 	HackerContext *mHackerContext = device->GetHackerContext();
 
-	if (G->gWipeUserConfig)
-		WipeUserConfig();
-
-	SavePersistentSettings();
-
-	LogInfoW(L"Reloading " INI_FILENAME L" (EXPERIMENTAL)...\n");
-
-	G->gReloadConfigPending = false;
-	G->iniParamsReserved = 0;
-
 	// Lock the entire config reload as it touches many global structures
 	// that could potentially be accessed from other threads (e.g. deferred
 	// contexts) while we do this
@@ -4941,6 +5044,19 @@ void ReloadConfig(HackerDevice *device)
 	// many as possible inside LoadConfigFile() where they are set.
 	ClearKeyBindings();
 
+	LogWarningW(
+		L"\n\n"
+		L"------------------------------------------------------------------------------------------------------\n"
+		L" Reloading " INI_FILENAME L"...\n"
+		L"------------------------------------------------------------------------------------------------------\n"
+	);
+
+	if (G->gWipeUserConfig)
+		WipeUserConfig();
+
+	G->gReloadConfigPending = false;
+	G->iniParamsReserved = 0;
+
 	// Clear active command lists set, as the pointers in this set will
 	// become invalid as the config is reloaded:
 	command_lists_profiling.clear();
@@ -4949,7 +5065,13 @@ void ReloadConfig(HackerDevice *device)
 	// Reset the counters on the global parameter save area:
 	OverrideSave.Reset(device);
 
+	ClearUnknownPersistentSettings();
+
+	SavePersistentSettings();
+
 	LoadConfigFile();
+
+	DetectUnknownPersistentSettings();
 
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 

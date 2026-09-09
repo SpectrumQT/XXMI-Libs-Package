@@ -117,6 +117,7 @@ public:
 	bool last_state;
 	InputButton *button;
 	shared_ptr<InputListener> listener;
+	InputDisableScope disable_scope = InputDisableScope::INVALID;
 
 	InputAction(InputButton *button, shared_ptr<InputListener> listener);
 	virtual ~InputAction();
@@ -160,10 +161,10 @@ public:
 
 void RegisterKeyBinding(LPCWSTR iniKey, const wchar_t *keyName,
 		shared_ptr<InputListener> listener, int auto_repeat, int down_delay,
-		int up_delay);
+		int up_delay, InputDisableScope input_disable_scope = InputDisableScope::INVALID);
 bool RegisterIniKeyBinding(LPCWSTR app, LPCWSTR key,
 		InputCallback down_cb, InputCallback up_cb, int auto_repeat,
-		void *private_data);
+		void *private_data, InputDisableScope input_disable_scope = InputDisableScope::INVALID);
 wstring user_friendly_ini_key_binding(LPCWSTR app, LPCWSTR iniKey);
 
 // Clears all current key bindings in preparation for reloading the config.

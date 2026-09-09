@@ -4992,6 +4992,13 @@ void ReloadConfig(HackerDevice *device)
 	// contexts) while we do this
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 
+	// The background ShaderRegex worker reads the live ShaderRegex groups and
+	// other config globals directly. Wait for every queued and in-flight job
+	// to finish before we tear those structures down below - holding the
+	// critical section blocks any new jobs from being submitted, so this wait
+	// is bounded:
+	wait_for_shader_regex_jobs();
+
 	// Clears any notices currently displayed on the overlay. This ensures
 	// that any notices that haven't timed out yet (e.g. from a previous
 	// failed reload attempt) are removed so that the only messages

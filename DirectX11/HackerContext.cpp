@@ -610,29 +610,19 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 				}
 			}
 
-			// Build an immutable snapshot of every matching ShaderRegex group
-			// on the render thread so it is consistent with the config. Whether
-			// disassembly is needed is decided by the worker from the
-			// snapshot's patterns, so we don't need decompilation_required:
-			std::vector<ShaderRegexGroupSnapshot> snapshot;
-			build_shader_regex_group_snapshot(&orig_info->shaderModel, &snapshot, nullptr);
-
 			// Queue the job on the background worker. The worker first checks
 			// the on-disk cache, and only disassembles/matches/patches on a
-			// miss. Until it completes we keep using the original shader, so
-			// this draw call is not blocked:
+			// miss (reading the live ShaderRegex groups directly - config
+			// reload waits for all jobs to finish first). Until it completes
+			// we keep using the original shader, so this draw call is not
+			// blocked:
 			job = std::make_shared<ShaderRegexJob>();
 			job->hash = hash;
 			job->shader_type = shader_type;
 			job->shader_model = orig_info->shaderModel;
-			job->shader_regex_hash = shader_regex_hash;
-			job->shader_cache_path = G->SHADER_CACHE_PATH;
 			job->bytecode.assign(
 					(byte*)orig_info->byteCode->GetBufferPointer(),
 					(byte*)orig_info->byteCode->GetBufferPointer() + orig_info->byteCode->GetBufferSize());
-			job->patch_cb_offsets = G->patch_cb_offsets;
-			job->disassemble_undecipherable_custom_data = G->disassemble_undecipherable_custom_data;
-			job->groups = std::move(snapshot);
 
 			orig_info->shader_regex_job = job;
 			orig_info->shader_regex_job_state = ShaderRegexJobState::PROCESSING;
@@ -680,28 +670,16 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 				}
 			}
 
-			// Build an immutable snapshot of every matching ShaderRegex group
-			// on the render thread so it is consistent with the config:
-			std::vector<ShaderRegexGroupSnapshot> snapshot;
 			bool decompilation_required = false;
-			build_shader_regex_group_snapshot(&orig_info->shaderModel, &snapshot, &decompilation_required);
+
+			// Process ShaderRegex sections that don't require bytecode
+			// decompilation:
+			link_shader_regex_groups_without_patterns(shader_type, &orig_info->shaderModel, hash, &decompilation_required);
 
 			// Skip disassemble entirely if there are no matching ShaderRegex
 			// with Patterns found:
 			if (!decompilation_required) {
 				LogInfo("%S %016I64x disassembly skipped: no matching ShaderRegex with Patterns found for %s.\n", shader_type, hash, orig_info->shaderModel.c_str());
-
-				// Enable CommandList sections execution for the no-pattern groups:
-				std::vector<uint32_t> match_ids;
-				for (auto &group_snap : snapshot) {
-					shader_regex_group_index[group_snap.group_index]->link_command_lists_and_filter_index(hash);
-					match_ids.push_back(group_snap.group_index);
-				}
-				// We save the cache metadata even if we didn't match anything.
-				// That way we can skip checking for a match next time when we
-				// know there won't be any.
-				save_shader_regex_cache_meta(hash, shader_type, &match_ids, false, nullptr, nullptr);
-
 				orig_info->shader_regex_job_state = ShaderRegexJobState::PROCESSED;
 				goto out_drop;
 			}

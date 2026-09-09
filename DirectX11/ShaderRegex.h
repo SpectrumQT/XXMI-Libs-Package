@@ -28,8 +28,7 @@ enum class ShaderRegexJobState : uint8_t {
 	FAILED           // Analysis failed; no replacement until config reload.
 };
 
-// Forward declarations - full definitions at the bottom of this header:
-struct ShaderRegexGroupSnapshot;
+// Forward declaration - full definition at the bottom of this header:
 struct ShaderRegexJob;
 
 bool get_shader_model_from_bytecode(const void* data, size_t size, std::string* out_model);
@@ -73,8 +72,7 @@ struct ShaderBindings
 	std::array<ShaderResource, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> resources{};
 };
 
-void build_shader_regex_group_snapshot(const std::string *shader_model,
-		std::vector<ShaderRegexGroupSnapshot> *snapshot, bool *decompilation_required);
+void link_shader_regex_groups_without_patterns(const wchar_t* shader_type, std::string* shader_model, UINT64 hash, bool* decompilation_required);
 bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type, std::string *shader_model, UINT64 hash, std::wstring *tagline);
 ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type, vector<byte> *bytecode, std::wstring *tagline);
 void save_shader_regex_cache_bin(UINT64 hash, const wchar_t *shader_type, vector<byte> *bytecode);
@@ -85,6 +83,12 @@ bool unlink_shader_regex_command_lists_and_filter_index(UINT64 shader_hash);
 // Submit a shader to the background ShaderRegex worker. The caller keeps the
 // job alive and must wait for job->done before calling finalize_shader_regex_job.
 void submit_shader_regex_job(std::shared_ptr<ShaderRegexJob> job);
+
+// Block until every queued and in-flight background job has finished. Must be
+// called on the render thread (e.g. from config reload) before the worker's
+// inputs (shader_regex_groups / shader_regex_group_index / shader_regex_hash,
+// etc.) are torn down or rebuilt.
+void wait_for_shader_regex_jobs();
 
 // Called on the render thread (under the global lock) once job->done is true.
 // Links command lists for every matched group and writes the shader cache.
@@ -157,43 +161,19 @@ extern std::vector<ShaderRegexGroup*> shader_regex_group_index;
 // cached shader is still valid and to avoid discarding regex patched shaders:
 extern uint32_t shader_regex_hash;
 
-// Immutable snapshot of a single regex pattern, handed to the background worker
-// so that it never has to touch the config reloadable shader_regex_groups.
-// The worker recompiles the regex locally from this source string.
-struct ShaderRegexPatternSnapshot {
-	std::string pattern;
-	std::string replace;
-	bool do_replace = false;
-};
-
-// Immutable snapshot of a ShaderRegexGroup that matched the shader model.
-struct ShaderRegexGroupSnapshot {
-	uint32_t group_index = 0;     // index into shader_regex_group_index
-	std::wstring ini_section;
-	std::vector<ShaderRegexPatternSnapshot> patterns;
-	std::vector<std::string> declarations;
-	ShaderRegexTemps temp_regs;
-};
-
 // A background job that disassembles, regex matches/patches and reassembles a
 // single shader off the render thread. Owned by shared_ptr: created and
 // consumed on the render thread, executed by the worker thread.
+//
+// The worker reads the live shader_regex_groups / shader_regex_group_index /
+// shader_regex_hash / G globals directly - this is safe because config reload
+// calls wait_for_shader_regex_jobs() before tearing those down.
 struct ShaderRegexJob {
 	// Input (render thread -> worker):
 	UINT64 hash = 0;
 	std::wstring shader_type;
 	std::string shader_model;
 	std::vector<byte> bytecode;               // copy of the original bytecode
-	bool patch_cb_offsets = false;
-	bool disassemble_undecipherable_custom_data = true;
-	std::vector<ShaderRegexGroupSnapshot> groups;
-
-	// Snapshots of config values so the worker never reads globals that the
-	// render thread can reload. The cache directory is used for the on-disk
-	// cache check, and shader_regex_hash validates that a cache is still
-	// current:
-	std::wstring shader_cache_path;
-	uint32_t shader_regex_hash = 0;
 
 	// Worker -> render thread result. done is the synchronisation point: the
 	// worker writes all results before storing true (release), and the render

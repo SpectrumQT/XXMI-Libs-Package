@@ -2,8 +2,6 @@
 
 Pool indexing strategy controls how pool elements are accessed and assigned.
 
-## Static and dynamic indices
-
 ## Ring indexing
 
 Ring indexing treats the pool as a circular array.

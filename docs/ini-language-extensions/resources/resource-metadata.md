@@ -68,6 +68,31 @@ Returns the resource stride in bytes.
 $stride = ResourceFoo->Stride
 ```
 
+### `Format`
+
+Returns [DXGI_FORMAT](../expressions/literals.md/#dxgi_format-enum-literals) of resource (integer enum value).
+
+```ini
+$format = ResourceFoo->Format
+```
+
+### `Width`
+
+Returns width of **texture** resource (in [texels](https://en.wikipedia.org/wiki/Texel_(graphics))).
+
+```ini
+$width = ResourceTexture->Width
+```
+
+### `Height`
+
+Returns height of **texture** resource (in [texels](https://en.wikipedia.org/wiki/Texel_(graphics))).
+
+```ini
+$height = ResourceTexture->Height
+```
+
+
 ### `SourceStride`
 
 Returns the stride of the source resource used to populate the target **custom** resource.

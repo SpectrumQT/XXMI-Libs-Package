@@ -39,6 +39,8 @@ pool_size = 4 ; Index -1 maps to index 3, while index 4 wraps to index 0.
 pool_index_type = ring
 ```
 
+> Pool **defaults** to `ring` index, so `pool_index_type = ring` can be omitted.
+
 See [Ring Indexing](indexing.md/#ring-indexing) for more details.
 
 ### FIFO

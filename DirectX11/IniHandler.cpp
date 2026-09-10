@@ -2305,16 +2305,9 @@ static void ParseCommandList(const wchar_t *id,
 			continue;
 		}
 
-		if (entry->ini_namespace == G->user_config && !G->user_config.empty()) {
-			if (!G->user_config_dirty) {
-				// Once the [Constants] command list has finished running the
-				// low bit will be cleared to ensure that loading the user config
-				// itself cannot mark the user config as dirty. Set the second
-				// bit to indicate that it should be updated regardless:
-				G->user_config_dirty |= 2;
-			}
+		// Unknown d3dx_user.ini entries warning is handled by DetectUnknownPersistentSettings.
+		if (entry->ini_namespace == G->user_config && !G->user_config.empty())
 			continue;
-		}
 
 		IniWarningW(L"Unrecognised entry: %ls\n - [%ls] @ [%ls]\n", raw_line->c_str(), id, entry->ini_namespace.c_str());
 	}
@@ -4931,7 +4924,10 @@ static void ClearUnknownPersistentSettings()
 	if (G->auto_clear_persist_vars)
 	{
 		if (G->unknown_persist_vars_count == unknown_variables.size())
+		{
 			unknown_variables.clear();
+			G->user_config_dirty = true;
+		}
 
 		LogOverlayW(LOG_WARNING, L"> Cleared %d unknown user settings from d3dx_user.ini\n", G->unknown_persist_vars_count);
 
@@ -4980,7 +4976,7 @@ void SavePersistentSettings()
 	for (auto& entry : unknown_variables)
 		fprintf_s(f, "%ls = %.9g\n", entry.first.c_str(), entry.second);
 
-	G->user_config_dirty = 0;
+	G->user_config_dirty = false;
 
 	fclose(f);
 
@@ -4990,7 +4986,7 @@ void SavePersistentSettings()
 static void WipeUserConfig()
 {
 	G->gWipeUserConfig = false;
-	G->user_config_dirty = 0;
+	G->user_config_dirty = false;
 
 	unknown_variables.clear();
 

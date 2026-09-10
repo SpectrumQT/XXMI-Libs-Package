@@ -5637,7 +5637,7 @@ void VariableAssignment::run(CommandListState *state)
 	COMMAND_LIST_LOG(state, "  = %f\n", var->fval);
 
 	if (var->flags & VariableFlags::PERSIST)
-		G->user_config_dirty |= (var->fval != orig);
+		G->user_config_dirty = (var->fval != orig);
 }
 
 bool AssignmentCommand::optimise(HackerDevice *device)
@@ -8588,7 +8588,7 @@ void PoolVariableOperation::SetVariableValue(CommandListState* state, CommandLis
 	COMMAND_LIST_LOG(state, "  = %f\n", dst->fval);
 
 	if (dst->flags & VariableFlags::PERSIST)
-		G->user_config_dirty |= (dst->fval != orig);
+		G->user_config_dirty = (dst->fval != orig);
 }
 
 void PoolVariableOperation::SetAllPoolVariables(CommandListState* state, float value)

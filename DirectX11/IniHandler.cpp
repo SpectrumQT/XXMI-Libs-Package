@@ -4912,7 +4912,7 @@ static void DetectUnknownPersistentSettings()
 		L"%ls"
 		L" Press %ls to reload the config now, or %ls to reset all settings to default\n"
 		L" The first unrecognised entry was: \"%ls = %f\"\n",
-		G->unknown_persist_vars_count,
+		unknown_variables.size(),
 		cleanup_message,
 		user_friendly_ini_key_binding(L"Hunting", L"reload_config").c_str(),
 		user_friendly_ini_key_binding(L"Hunting", L"wipe_user_config").c_str(),

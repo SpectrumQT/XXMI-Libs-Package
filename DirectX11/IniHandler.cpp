@@ -4692,6 +4692,7 @@ void LoadConfigFile()
 	G->assemble_signature_comments = GetIniBool(L"Rendering", L"assemble_signature_comments", false, NULL);
 	G->disassemble_undecipherable_custom_data = GetIniBool(L"Rendering", L"disassemble_undecipherable_custom_data", false, NULL);
 	G->patch_cb_offsets = GetIniBool(L"Rendering", L"patch_assembly_cb_offsets", false, NULL);
+	G->shader_regex_background = GetIniBool(L"Rendering", L"shader_regex_background", false, NULL);
 	G->recursive_include = GetIniBoolOrInt(L"Rendering", L"recursive_include", false, NULL);
 
 	G->EXPORT_FIXED = GetIniBool(L"Rendering", L"export_fixed", false, NULL);
@@ -5004,14 +5005,16 @@ static void MarkAllShadersDeferredUnprocessed()
 	ShaderReloadMap::iterator i;
 
 	for (i = G->mReloadedShaders.begin(); i != G->mReloadedShaders.end(); i++) {
-		// Whenever we reload the config we clear the processed flag on
-		// all auto patched shaders to ensure that they will be
-		// re-patched using the current patterns in the d3dx.ini. This
-		// is separate from the deferred_replacement_candidate flag,
-		// which will be set in the shader reload routine for any
-		// shaders that have been removed from disk, and removed from
-		// any that are loaded from disk:
-		i->second.deferred_replacement_processed = false;
+		// Whenever we reload the config we reset the ShaderRegex job state on
+		// all auto patched shaders to ensure that they will be re-patched using
+		// the current patterns in the d3dx.ini. Any background job that is
+		// still in flight is simply dropped - its result would be stale, and a
+		// fresh job is queued the next time the shader is drawn. This is
+		// separate from the deferred_replacement_candidate flag, which will be
+		// set in the shader reload routine for any shaders that have been
+		// removed from disk, and removed from any that are loaded from disk:
+		i->second.shader_regex_job_state = ShaderRegexJobState::UNPROCESSED;
+		i->second.shader_regex_job.reset();
 	}
 
 	// TODO: If ShaderRegex hash is unchanged leave these shaders in place
@@ -5028,6 +5031,13 @@ void ReloadConfig(HackerDevice *device)
 	// that could potentially be accessed from other threads (e.g. deferred
 	// contexts) while we do this
 	EnterCriticalSectionPretty(&G->mCriticalSection);
+
+	// The background ShaderRegex worker reads the live ShaderRegex groups and
+	// other config globals directly. Wait for every queued and in-flight job
+	// to finish before we tear those structures down below - holding the
+	// critical section blocks any new jobs from being submitted, so this wait
+	// is bounded:
+	wait_for_shader_regex_jobs();
 
 	// Clears any notices currently displayed on the overlay. This ensures
 	// that any notices that haven't timed out yet (e.g. from a previous

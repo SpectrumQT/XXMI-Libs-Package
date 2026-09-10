@@ -124,7 +124,14 @@ struct OriginalShaderInfo
 	ID3D11DeviceChild* replacement;
 	bool found;
 	bool deferred_replacement_candidate;
-	bool deferred_replacement_processed;
+
+	// State of the deferred ShaderRegex background processing. The heavy
+	// disassembly/regex/reassembly work runs on a background thread while the
+	// original shader keeps being used; the replacement is bound only once the
+	// job completes (or a cache hit is found).
+	ShaderRegexJobState shader_regex_job_state = ShaderRegexJobState::UNPROCESSED;
+	std::shared_ptr<ShaderRegexJob> shader_regex_job;
+
 	std::wstring infoText;
 };
 
@@ -503,6 +510,13 @@ struct Globals
 	bool assemble_signature_comments;
 	bool disassemble_undecipherable_custom_data;
 	bool patch_cb_offsets;
+
+	// When true, ShaderRegex analysis runs on a background thread and the
+	// original shader keeps being used until the replacement is ready. When
+	// false (default) the analysis runs synchronously on the render thread,
+	// which may cause a hitch the first time a new shader is used.
+	bool shader_regex_background;
+
 	int recursive_include;
 	uint32_t ZBufferHashToInject;
 	DecompilerSettings decompiler_settings;
@@ -717,6 +731,7 @@ struct Globals
 		EXPORT_BINARY(false),
 		CACHE_SHADERS(false),
 		DumpUsage(false),
+		shader_regex_background(false),
 		ENABLE_TUNE(false),
 		gTuneStep(0.001f),
 

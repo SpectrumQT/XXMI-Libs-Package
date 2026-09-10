@@ -533,13 +533,11 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 	ShaderReloadMap::iterator orig_info_i;
 	OriginalShaderInfo *orig_info = NULL;
 	UINT num_instances = 0;
-	string asm_text;
-	bool patch_regex = false;
 	HRESULT hr;
 	unsigned i;
 	wstring tagline(L"//");
 	vector<byte> patched_bytecode;
-	vector<char> asm_vector;
+	std::shared_ptr<ShaderRegexJob> job;
 
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 
@@ -549,115 +547,204 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 		goto out_drop;
 	orig_info = &orig_info_i->second;
 
-	if (!orig_info->deferred_replacement_candidate || orig_info->deferred_replacement_processed)
+	if (!orig_info->deferred_replacement_candidate)
 		goto out_drop;
 
-	// Remember that we have analysed this one so we don't check it again
-	// (until config reload) regardless of whether we patch it or not:
-	orig_info->deferred_replacement_processed = true;
-
-	switch (load_shader_regex_cache(hash, shader_type, &patched_bytecode, &tagline)) {
-	case ShaderRegexCache::NO_MATCH:
-		LogInfo("%S %016I64x has cached ShaderRegex miss\n", shader_type, hash);
-		goto out_drop;
-	case ShaderRegexCache::MATCH:
-		LogInfo("Loaded %S %016I64x command list from ShaderRegex cache\n", shader_type, hash);
-		goto out_drop;
-	case ShaderRegexCache::PATCH:
-		LogInfo("Loaded %S %016I64x bytecode from ShaderRegex cache\n", shader_type, hash);
-		break;
-	case ShaderRegexCache::NO_CACHE:
-		LogInfo("Performing deferred shader analysis on %S %016I64x...\n", shader_type, hash);
-
-		// Detect shader model
-		auto it = G->mShaderModelCache.find(hash);
-		if (it != G->mShaderModelCache.end()) {
-			orig_info->shaderModel = it->second.shaderModel;
-			LogInfo("%S %016I64x shader model %s is loaded from cache.\n", shader_type, hash, orig_info->shaderModel.c_str());
-		}
-		else {
-			if (orig_info->shaderModel == "bin") {
-				// Get shader model from bytecode.
-				if (!get_shader_model_from_bytecode(orig_info->byteCode->GetBufferPointer(), orig_info->byteCode->GetBufferSize(), &orig_info->shaderModel)) {
-					LogInfo("%S %016I64x shader model detection from bytecode failed.\n", shader_type, hash);
-					goto out_drop;
-				}
-				// Store shader model in cache.
-				G->mShaderModelCache.emplace(hash, ShaderModelCacheEntry{ orig_info->shaderModel });
-				LogInfo("%S %016I64x shader model %s detected from bytecode.\n", shader_type, hash, orig_info->shaderModel.c_str());
-			}
-		}
-
-		bool decompilation_required = false;
-
-		// Process ShaderRegex sections that don't require bytecode decompilation.
-		link_shader_regex_groups_without_patterns(shader_type, &orig_info->shaderModel, hash, &decompilation_required);
-
-		// Skip disassemble entirely if there are no matching ShaderRegex with Patterns found.
-		if (!decompilation_required) {
-			LogInfo("%S %016I64x disassembly skipped: no matching ShaderRegex with Patterns found for %s.\n", shader_type, hash, orig_info->shaderModel.c_str());
+	// 1) A background job was submitted for this shader - check if it has
+	// finished. Until it does we keep using the original shader, so a new
+	// shader never blocks the render thread:
+	if (orig_info->shader_regex_job_state == ShaderRegexJobState::PROCESSING) {
+		job = orig_info->shader_regex_job;
+		if (!job || !job->done.load()) {
+			// Still analysing in the background - keep using the original shader:
 			goto out_drop;
 		}
 
-		// Disassemble shader bytecode.
-		asm_text = BinaryToAsmText(
-			orig_info->byteCode->GetBufferPointer(),
-			orig_info->byteCode->GetBufferSize(),
-			G->patch_cb_offsets,
-			G->disassemble_undecipherable_custom_data);
+		// Drop our reference to the job now that it has finished - it holds
+		// copies of the bytecode and patched assembly that we no longer need.
+		// The local `job` shared_ptr keeps it alive for the rest of this call:
+		orig_info->shader_regex_job.reset();
 
-		if (asm_text.empty())
-			goto out_drop;
+		// The analysis is done. Finalize on the render thread: link the
+		// command lists, write the cache and, if the shader was patched, hand
+		// back the replacement bytecode so we can create and bind it below:
+		if (finalize_shader_regex_job(job.get(), hash, shader_type, &patched_bytecode, &tagline)) {
+			orig_info->shader_regex_job_state = ShaderRegexJobState::PROCESSED;
 
-		asm_text = BinaryToAsmText(orig_info->byteCode->GetBufferPointer(),
-				orig_info->byteCode->GetBufferSize(),
-				G->patch_cb_offsets,
-				G->disassemble_undecipherable_custom_data);
-		if (asm_text.empty())
-			goto out_drop;
-
-		// Apply patches from ShaderRegex with Patterns (and Templates).
-		try {
-			patch_regex = apply_shader_regex_groups(&asm_text, shader_type, &orig_info->shaderModel, hash, &tagline);
-		} catch (...) {
-			LogInfo("    *** Exception while patching shader\n");
-			goto out_drop;
-		}
-
-		if (!patch_regex) {
-			LogInfo("Patch did not apply\n");
-			goto out_drop;
-		}
-
-		// No longer logging this since we can output to ShaderFixes
-		// via hunting if marking_actions = regex, or it could be
-		// disassembled from the regex cache with cmd_Decompiler
-		// LogInfo("Patched Shader:\n%s\n", asm_text.c_str());
-
-		asm_vector.assign(asm_text.begin(), asm_text.end());
-
-		try {
-			vector<AssemblerParseError> parse_errors;
-			hr = AssembleFluganWithSignatureParsing(&asm_vector, &patched_bytecode, &parse_errors);
-			if (FAILED(hr)) {
-				LogInfo("    *** Assembling patched shader failed\n");
-				goto out_drop;
-			}
 			// Parse errors are currently being treated as non-fatal on
 			// creation time replacement and ShaderRegex for backwards
-			// compatibility (live shader reload is fatal).
-			for (auto &parse_error : parse_errors)
+			// compatibility (live shader reload is fatal):
+			for (auto &msg : job->parse_error_messages)
 				LogOverlayW(LOG_NOTICE, L"%016I64x-%ls %ls: %S\n",
-						hash, shader_type, tagline.c_str(), parse_error.what());
-		} catch (const exception &e) {
-			LogOverlayW(LOG_WARNING, L"Error assembling ShaderRegex patched %016I64x-%ls\n%ls\n%S\n",
-					hash, shader_type, tagline.c_str(), e.what());
+						hash, shader_type, tagline.c_str(), msg.c_str());
+		} else {
+			orig_info->shader_regex_job_state = job->failed
+				? ShaderRegexJobState::FAILED : ShaderRegexJobState::PROCESSED;
+			goto out_drop;
+		}
+	}
+	// 2) Not processed yet. In background mode we hand everything (including
+	// the on-disk cache check) to the worker so the render thread does no file
+	// I/O and never blocks on a new shader:
+	else if (orig_info->shader_regex_job_state == ShaderRegexJobState::UNPROCESSED) {
+		if (G->shader_regex_background) {
+			LogInfo("Performing deferred shader analysis on %S %016I64x...\n", shader_type, hash);
+
+			// Detect shader model
+			auto it = G->mShaderModelCache.find(hash);
+			if (it != G->mShaderModelCache.end()) {
+				orig_info->shaderModel = it->second.shaderModel;
+				LogInfo("%S %016I64x shader model %s is loaded from cache.\n", shader_type, hash, orig_info->shaderModel.c_str());
+			}
+			else {
+				if (orig_info->shaderModel == "bin") {
+					// Get shader model from bytecode.
+					if (!get_shader_model_from_bytecode(orig_info->byteCode->GetBufferPointer(), orig_info->byteCode->GetBufferSize(), &orig_info->shaderModel)) {
+						LogInfo("%S %016I64x shader model detection from bytecode failed.\n", shader_type, hash);
+						orig_info->shader_regex_job_state = ShaderRegexJobState::FAILED;
+						goto out_drop;
+					}
+					// Store shader model in cache.
+					G->mShaderModelCache.emplace(hash, ShaderModelCacheEntry{ orig_info->shaderModel });
+					LogInfo("%S %016I64x shader model %s detected from bytecode.\n", shader_type, hash, orig_info->shaderModel.c_str());
+				}
+			}
+
+			// Queue the job on the background worker. The worker first checks
+			// the on-disk cache, and only disassembles/matches/patches on a
+			// miss (reading the live ShaderRegex groups directly - config
+			// reload waits for all jobs to finish first). Until it completes
+			// we keep using the original shader, so this draw call is not
+			// blocked:
+			job = std::make_shared<ShaderRegexJob>();
+			job->hash = hash;
+			job->shader_type = shader_type;
+			job->shader_model = orig_info->shaderModel;
+			job->bytecode.assign(
+					(byte*)orig_info->byteCode->GetBufferPointer(),
+					(byte*)orig_info->byteCode->GetBufferPointer() + orig_info->byteCode->GetBufferSize());
+
+			orig_info->shader_regex_job = job;
+			orig_info->shader_regex_job_state = ShaderRegexJobState::PROCESSING;
+			submit_shader_regex_job(std::move(job));
+			LogInfo("%S %016I64x queued for background ShaderRegex analysis\n", shader_type, hash);
 			goto out_drop;
 		}
 
-		save_shader_regex_cache_bin(hash, shader_type, &patched_bytecode);
-	}
+		// Legacy synchronous path (shader_regex_background = 0) - cache check
+		// and analysis all happen on the render thread. This blocks the render
+		// thread, but replaces the shader in the very draw call that first uses it:
+		switch (load_shader_regex_cache(hash, shader_type, &patched_bytecode, &tagline)) {
+		case ShaderRegexCache::NO_MATCH:
+			LogInfo("%S %016I64x has cached ShaderRegex miss\n", shader_type, hash);
+			orig_info->shader_regex_job_state = ShaderRegexJobState::PROCESSED;
+			goto out_drop;
+		case ShaderRegexCache::MATCH:
+			LogInfo("Loaded %S %016I64x command list from ShaderRegex cache\n", shader_type, hash);
+			orig_info->shader_regex_job_state = ShaderRegexJobState::PROCESSED;
+			goto out_drop;
+		case ShaderRegexCache::PATCH:
+			LogInfo("Loaded %S %016I64x bytecode from ShaderRegex cache\n", shader_type, hash);
+			orig_info->shader_regex_job_state = ShaderRegexJobState::PROCESSED;
+			break;
+		case ShaderRegexCache::NO_CACHE:
+			LogInfo("Performing deferred shader analysis on %S %016I64x...\n", shader_type, hash);
 
+			// Detect shader model
+			auto it = G->mShaderModelCache.find(hash);
+			if (it != G->mShaderModelCache.end()) {
+				orig_info->shaderModel = it->second.shaderModel;
+				LogInfo("%S %016I64x shader model %s is loaded from cache.\n", shader_type, hash, orig_info->shaderModel.c_str());
+			}
+			else {
+				if (orig_info->shaderModel == "bin") {
+					// Get shader model from bytecode.
+					if (!get_shader_model_from_bytecode(orig_info->byteCode->GetBufferPointer(), orig_info->byteCode->GetBufferSize(), &orig_info->shaderModel)) {
+						LogInfo("%S %016I64x shader model detection from bytecode failed.\n", shader_type, hash);
+						orig_info->shader_regex_job_state = ShaderRegexJobState::FAILED;
+						goto out_drop;
+					}
+					// Store shader model in cache.
+					G->mShaderModelCache.emplace(hash, ShaderModelCacheEntry{ orig_info->shaderModel });
+					LogInfo("%S %016I64x shader model %s detected from bytecode.\n", shader_type, hash, orig_info->shaderModel.c_str());
+				}
+			}
+
+			bool decompilation_required = false;
+
+			// Process ShaderRegex sections that don't require bytecode
+			// decompilation:
+			link_shader_regex_groups_without_patterns(shader_type, &orig_info->shaderModel, hash, &decompilation_required);
+
+			// Skip disassemble entirely if there are no matching ShaderRegex
+			// with Patterns found:
+			if (!decompilation_required) {
+				LogInfo("%S %016I64x disassembly skipped: no matching ShaderRegex with Patterns found for %s.\n", shader_type, hash, orig_info->shaderModel.c_str());
+				orig_info->shader_regex_job_state = ShaderRegexJobState::PROCESSED;
+				goto out_drop;
+			}
+
+			// Legacy synchronous analysis:
+			{
+				string asm_text = BinaryToAsmText(
+						orig_info->byteCode->GetBufferPointer(),
+						orig_info->byteCode->GetBufferSize(),
+						G->patch_cb_offsets,
+						G->disassemble_undecipherable_custom_data);
+				if (asm_text.empty()) {
+					orig_info->shader_regex_job_state = ShaderRegexJobState::FAILED;
+					goto out_drop;
+				}
+
+				bool patch_regex = false;
+				try {
+					patch_regex = apply_shader_regex_groups(&asm_text, shader_type, &orig_info->shaderModel, hash, &tagline);
+				} catch (...) {
+					LogInfo("    *** Exception while patching shader\n");
+					orig_info->shader_regex_job_state = ShaderRegexJobState::FAILED;
+					goto out_drop;
+				}
+
+				if (!patch_regex) {
+					LogInfo("Patch did not apply\n");
+					orig_info->shader_regex_job_state = ShaderRegexJobState::PROCESSED;
+					goto out_drop;
+				}
+
+				vector<char> asm_vector(asm_text.begin(), asm_text.end());
+				try {
+					vector<AssemblerParseError> parse_errors;
+					hr = AssembleFluganWithSignatureParsing(&asm_vector, &patched_bytecode, &parse_errors);
+					if (FAILED(hr)) {
+						LogInfo("    *** Assembling patched shader failed\n");
+						orig_info->shader_regex_job_state = ShaderRegexJobState::FAILED;
+						goto out_drop;
+					}
+					// Parse errors are currently being treated as non-fatal on
+					// creation time replacement and ShaderRegex for backwards
+					// compatibility (live shader reload is fatal).
+					for (auto &parse_error : parse_errors)
+						LogOverlayW(LOG_NOTICE, L"%016I64x-%ls %ls: %S\n",
+								hash, shader_type, tagline.c_str(), parse_error.what());
+				} catch (const exception &e) {
+					LogOverlayW(LOG_WARNING, L"Error assembling ShaderRegex patched %016I64x-%ls\n%ls\n%S\n",
+							hash, shader_type, tagline.c_str(), e.what());
+					orig_info->shader_regex_job_state = ShaderRegexJobState::FAILED;
+					goto out_drop;
+				}
+
+				save_shader_regex_cache_bin(hash, shader_type, &patched_bytecode);
+				orig_info->shader_regex_job_state = ShaderRegexJobState::PROCESSED;
+			}
+			// Fall through to create and bind the replacement shader:
+		}
+	}
+	// 3) Already finalized or failed - nothing more to do this run:
+	else
+		goto out_drop;
+
+	// We have bytecode for a replacement shader - create it and bind it in
+	// time for this draw call:
 	hr = (mOrigDevice1->*CreateShader)(patched_bytecode.data(), patched_bytecode.size(),
 			orig_info->linkage, &patched_shader);
 	CleanupShaderMaps(patched_shader);

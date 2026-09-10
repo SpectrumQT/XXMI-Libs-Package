@@ -2974,6 +2974,15 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 		case ResourceCopyTargetEvaluationMode::RESOURCE_HEIGHT:
 			return texture_filter_target.GetResourceHeight(state);
 
+		case ResourceCopyTargetEvaluationMode::RESOURCE_ARRAY:
+			return texture_filter_target.GetResourceArray(state);
+
+		case ResourceCopyTargetEvaluationMode::RESOURCE_MIPS:
+			return texture_filter_target.GetResourceMips(state);
+
+		case ResourceCopyTargetEvaluationMode::RESOURCE_BIND_FLAGS:
+			return texture_filter_target.GetResourceBindFlags(state);
+
 		case ResourceCopyTargetEvaluationMode::RESOURCE_SIZE:
 			return texture_filter_target.GetResourceSize(state);
 
@@ -5814,6 +5823,17 @@ bool CommandListOperand::parse_ini_keywords(const wstring* operand, const wstrin
 
 		type = ParamOverrideType::VALUE;
 	}
+	else if (operand->size() >= 18 && !wcsncmp(operand->c_str(), L"d3d11_bind_", 11))
+	{
+		CustomResourceBindFlags flags = lookup_enum_val<const wchar_t*, CustomResourceBindFlags>(
+			CustomResourceBindFlagNames, operand->c_str() + 11, CustomResourceBindFlags::INVALID);
+
+		if (flags == CustomResourceBindFlags::INVALID)
+			return false;
+
+		val = (float)flags;
+		type = ParamOverrideType::VALUE;
+	}
 	else
 	{
 		type = lookup_enum_val<const wchar_t*, ParamOverrideType>(ParamOverrideTypeNames, operand->c_str(), ParamOverrideType::INVALID);
@@ -7907,6 +7927,9 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 		{ L"->stride",         8, ResourceCopyTargetEvaluationMode::RESOURCE_STRIDE },
 		{ L"->format",         8, ResourceCopyTargetEvaluationMode::RESOURCE_FORMAT },
 		{ L"->height",         8, ResourceCopyTargetEvaluationMode::RESOURCE_HEIGHT },
+		{ L"->array",          7, ResourceCopyTargetEvaluationMode::RESOURCE_ARRAY },
+		{ L"->mips",           6, ResourceCopyTargetEvaluationMode::RESOURCE_MIPS },
+		{ L"->bind_flags",     12, ResourceCopyTargetEvaluationMode::RESOURCE_BIND_FLAGS },
 		{ L"->region",         8, ResourceCopyTargetEvaluationMode::RESOURCE_REGION, {{
 			MemberArg::Type::Unsigned, // Byte Offset 
 			MemberArg::Type::Unsigned  // Byte Size 
@@ -10083,6 +10106,188 @@ float ResourceCopyTarget::GetResourceHeight(CommandListState* state)
 		ret = ResourcePropertyResult::RESOURCE_NOT_FOUND;
 	} else {
 		ret = GetResourceExtent(resource, 1);
+		resource->Release();
+	}
+
+	if (view)
+		view->Release();
+
+	return ret;
+}
+
+// Returns the array dimension of a texture resource, or NOT_A_TEXTURE for buffers.
+// Uses the resource description, so for texture arrays / mip-level SRVs this is the full resource ArraySize, not the view's.
+float ResourceCopyTarget::GetResourceArray(CommandListState* state)
+{
+	if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
+		CustomResource* custom_resource = GetCustomResource(state);
+		if (custom_resource) {
+			if (custom_resource->override_array != 0)
+				return (float)custom_resource->override_array;
+		} else {
+			// GetResource()'s CUSTOM_RESOURCE branch dereferences without null check,
+			// so bail out for an unassigned pool resource.
+			return ResourcePropertyResult::RESOURCE_NOT_FOUND;
+		}
+	}
+
+	ID3D11View* view = nullptr;
+	UINT stride = 0, offset = 0, buf_size = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+
+	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, &buf_size);
+
+	float ret = ResourcePropertyResult::UNKNOWN;
+
+	if (!resource) {
+		ret = ResourcePropertyResult::RESOURCE_NOT_FOUND;
+	} else {
+		D3D11_RESOURCE_DIMENSION dimension;
+		resource->GetType(&dimension);
+
+		switch (dimension) {
+			case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
+				D3D11_TEXTURE1D_DESC desc;
+				static_cast<ID3D11Texture1D*>(resource)->GetDesc(&desc);
+				ret = (float)desc.ArraySize;
+				break;
+			}
+			case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
+				D3D11_TEXTURE2D_DESC desc;
+				static_cast<ID3D11Texture2D*>(resource)->GetDesc(&desc);
+				ret = (float)desc.ArraySize;
+				break;
+			}
+		}
+
+		if (ret == ResourcePropertyResult::UNKNOWN) {
+			ret = ResourcePropertyResult::NOT_A_TEXTURE;
+		}
+
+		resource->Release();
+	}
+
+	if (view)
+		view->Release();
+
+	return ret;
+}
+
+// Returns the mipmap level count of a texture resource, or NOT_A_TEXTURE for buffers.
+// Uses the resource description, so for mip-level SRVs this is the full resource MipLevels, not the view's.
+float ResourceCopyTarget::GetResourceMips(CommandListState* state)
+{
+	if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
+		CustomResource* custom_resource = GetCustomResource(state);
+		if (custom_resource) {
+			if (custom_resource->override_mips != 0)
+				return (float)custom_resource->override_mips;
+		} else {
+			// GetResource()'s CUSTOM_RESOURCE branch dereferences without null check,
+			// so bail out for an unassigned pool resource.
+			return ResourcePropertyResult::RESOURCE_NOT_FOUND;
+		}
+	}
+
+	ID3D11View* view = nullptr;
+	UINT stride = 0, offset = 0, buf_size = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+
+	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, &buf_size);
+
+	float ret = ResourcePropertyResult::UNKNOWN;
+
+	if (!resource) {
+		ret = ResourcePropertyResult::RESOURCE_NOT_FOUND;
+	} else {
+		D3D11_RESOURCE_DIMENSION dimension;
+		resource->GetType(&dimension);
+
+		switch (dimension) {
+			case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
+				D3D11_TEXTURE1D_DESC desc;
+				static_cast<ID3D11Texture1D*>(resource)->GetDesc(&desc);
+				ret = (float)desc.MipLevels;
+				break;
+			}
+			case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
+				D3D11_TEXTURE2D_DESC desc;
+				static_cast<ID3D11Texture2D*>(resource)->GetDesc(&desc);
+				ret = (float)desc.MipLevels;
+				break;
+			}
+			case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
+				D3D11_TEXTURE3D_DESC desc;
+				static_cast<ID3D11Texture3D*>(resource)->GetDesc(&desc);
+				ret = (float)desc.MipLevels;
+				break;
+			}
+		}
+
+		if (ret == ResourcePropertyResult::UNKNOWN) {
+			ret = ResourcePropertyResult::NOT_A_TEXTURE;
+		}
+
+		resource->Release();
+	}
+
+	if (view)
+		view->Release();
+
+	return ret;
+}
+
+// Returns the D3D11_BIND_FLAGs of a resource.
+D3D11_BIND_FLAG ResourceCopyTarget::GetResourceBindFlags(CommandListState *state)
+{
+	if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
+		CustomResource* custom_resource = GetCustomResource(state);
+		if (custom_resource) {
+			return custom_resource->bind_flags;
+		}
+		// GetResource()'s CUSTOM_RESOURCE branch dereferences without null check,
+		// so bail out for an unassigned pool resource.
+		return D3D11_BIND_NONE;
+	}
+
+	ID3D11View* view = nullptr;
+	UINT stride = 0, offset = 0, buf_size = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+
+	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, &buf_size);
+
+	D3D11_BIND_FLAG ret = D3D11_BIND_NONE;
+
+	if (resource) {
+		D3D11_RESOURCE_DIMENSION dimension;
+		resource->GetType(&dimension);
+
+		switch (dimension) {
+			case D3D11_RESOURCE_DIMENSION_BUFFER: {
+				D3D11_BUFFER_DESC desc;
+				static_cast<ID3D11Buffer*>(resource)->GetDesc(&desc);
+				ret = (D3D11_BIND_FLAG)desc.BindFlags;
+				break;
+			}
+			case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
+				D3D11_TEXTURE1D_DESC desc;
+				static_cast<ID3D11Texture1D*>(resource)->GetDesc(&desc);
+				ret = (D3D11_BIND_FLAG)desc.BindFlags;
+				break;
+			}
+			case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
+				D3D11_TEXTURE2D_DESC desc;
+				static_cast<ID3D11Texture2D*>(resource)->GetDesc(&desc);
+				ret = (D3D11_BIND_FLAG)desc.BindFlags;
+				break;
+			}
+			case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
+				D3D11_TEXTURE3D_DESC desc;
+				static_cast<ID3D11Texture3D*>(resource)->GetDesc(&desc);
+				ret = (D3D11_BIND_FLAG)desc.BindFlags;
+				break;
+			}
+		}
 		resource->Release();
 	}
 

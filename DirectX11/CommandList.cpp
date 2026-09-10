@@ -7920,20 +7920,20 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 	}
 
 	static constexpr MemberInfo members[] = {
+		{ L"->mips",           6, ResourceCopyTargetEvaluationMode::RESOURCE_MIPS },
 		{ L"->size",           6, ResourceCopyTargetEvaluationMode::RESOURCE_SIZE },
+		{ L"->array",          7, ResourceCopyTargetEvaluationMode::RESOURCE_ARRAY },
 		{ L"->index",          7, ResourceCopyTargetEvaluationMode::POOL_INDEX },
 		{ L"->width",          7, ResourceCopyTargetEvaluationMode::RESOURCE_WIDTH },
 		{ L"->offset",         8, ResourceCopyTargetEvaluationMode::RESOURCE_OFFSET },
 		{ L"->stride",         8, ResourceCopyTargetEvaluationMode::RESOURCE_STRIDE },
 		{ L"->format",         8, ResourceCopyTargetEvaluationMode::RESOURCE_FORMAT },
 		{ L"->height",         8, ResourceCopyTargetEvaluationMode::RESOURCE_HEIGHT },
-		{ L"->array",          7, ResourceCopyTargetEvaluationMode::RESOURCE_ARRAY },
-		{ L"->mips",           6, ResourceCopyTargetEvaluationMode::RESOURCE_MIPS },
-		{ L"->bind_flags",     12, ResourceCopyTargetEvaluationMode::RESOURCE_BIND_FLAGS },
 		{ L"->region",         8, ResourceCopyTargetEvaluationMode::RESOURCE_REGION, {{
 			MemberArg::Type::Unsigned, // Byte Offset 
 			MemberArg::Type::Unsigned  // Byte Size 
 		}} },
+		{ L"->bind_flags",     12, ResourceCopyTargetEvaluationMode::RESOURCE_BIND_FLAGS },
 		{ L"->hashregion",    12, ResourceCopyTargetEvaluationMode::RESOURCE_REGION_HASH, {{
 			MemberArg::Type::Unsigned, // Byte Offset 
 			MemberArg::Type::Unsigned  // Byte Size 
@@ -10132,10 +10132,7 @@ float ResourceCopyTarget::GetResourceArray(CommandListState* state)
 	}
 
 	ID3D11View* view = nullptr;
-	UINT stride = 0, offset = 0, buf_size = 0;
-	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-
-	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, &buf_size);
+	ID3D11Resource* resource = GetResource(state, &view, nullptr, nullptr, nullptr, nullptr);
 
 	float ret = ResourcePropertyResult::UNKNOWN;
 
@@ -10190,10 +10187,7 @@ float ResourceCopyTarget::GetResourceMips(CommandListState* state)
 	}
 
 	ID3D11View* view = nullptr;
-	UINT stride = 0, offset = 0, buf_size = 0;
-	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-
-	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, &buf_size);
+	ID3D11Resource* resource = GetResource(state, &view, nullptr, nullptr, nullptr, nullptr);
 
 	float ret = ResourcePropertyResult::UNKNOWN;
 
@@ -10251,10 +10245,7 @@ D3D11_BIND_FLAG ResourceCopyTarget::GetResourceBindFlags(CommandListState *state
 	}
 
 	ID3D11View* view = nullptr;
-	UINT stride = 0, offset = 0, buf_size = 0;
-	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-
-	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, &buf_size);
+	ID3D11Resource* resource = GetResource(state, &view, nullptr, nullptr, nullptr, nullptr);
 
 	D3D11_BIND_FLAG ret = D3D11_BIND_NONE;
 

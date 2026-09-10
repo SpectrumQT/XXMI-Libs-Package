@@ -4620,7 +4620,7 @@ void LoadConfigFile()
 	bool disable_input_initialized = G->input_disable_scope != InputDisableScope::INVALID;
 	G->input_disable_scope = GetIniEnumClass(L"Input", L"input_disable_mode", InputDisableScope::MODS, NULL, InputDisableScopeNames);
 	if (!disable_input_initialized)
-		G->disable_input = !GetIniBool(L"Input", L"input", false, NULL);
+		G->disable_input = !GetIniBool(L"Input", L"input", true, NULL);
 
 	// [Device] (DXGI parameters)
 	LogInfo("[Device]\n");

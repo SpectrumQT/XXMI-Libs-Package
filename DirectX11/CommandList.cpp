@@ -10252,13 +10252,13 @@ D3D11_BIND_FLAG ResourceCopyTarget::GetResourceBindFlags(CommandListState *state
 		}
 		// GetResource()'s CUSTOM_RESOURCE branch dereferences without null check,
 		// so bail out for an unassigned pool resource.
-		return D3D11_BIND_NONE;
+		return (D3D11_BIND_FLAG)0;
 	}
 
 	ID3D11View* view = nullptr;
 	ID3D11Resource* resource = GetResource(state, &view, nullptr, nullptr, nullptr, nullptr);
 
-	D3D11_BIND_FLAG ret = D3D11_BIND_NONE;
+	D3D11_BIND_FLAG ret = (D3D11_BIND_FLAG)0;
 
 	if (resource) {
 		D3D11_RESOURCE_DIMENSION dimension;

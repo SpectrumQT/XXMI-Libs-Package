@@ -258,7 +258,8 @@ void HackerSwapChain::RunFrameActions()
 	if (G->gConfigInitialized) {
 		// Autosave persistent variables every gSettingsAutoSaveInterval seconds
 		if (G->gTime - G->gSettingsSaveTime > G->gSettingsAutoSaveInterval) {
-			SavePersistentSettings();
+			if (SavePersistentSettings())
+				SaveUnknownPersistentSettings();
 			//LogOverlay(LOG_INFO, "Saved Persistent Variables\n");
 		}
 	}

@@ -2305,7 +2305,7 @@ static void ParseCommandList(const wchar_t *id,
 			continue;
 		}
 
-		// Unknown d3dx_user.ini entries warning is handled by DetectUnknownPersistentSettings.
+		// Unknown d3dx_user.ini entries warning is handled by ShowUnknownSettingsNotification.
 		if (entry->ini_namespace == G->user_config && !G->user_config.empty())
 			continue;
 
@@ -4593,7 +4593,7 @@ void LoadConfigFile()
 	}
 
 	// Controls whether saved values of persistent variables should be cleared when source mods are no longer detected (disabled or removed).
-	G->auto_clear_persist_vars = GetIniBool(L"System", L"auto_clear_persist_vars", true, NULL);
+	G->clear_unknown_settings = GetIniBool(L"System", L"clear_unknown_settings", true, NULL);
 
 	// Allows to configure fallback screen resolution to be used as return for `window_width` and `window_height`
 	G->gFallbackScreenWidth = GetIniInt(L"System", L"screen_width", 1920, NULL);
@@ -4883,26 +4883,44 @@ void LoadConfigFile()
 	emit_ini_warning_tone();
 }
 
-static void DetectUnknownPersistentSettings()
+static void ResetUnknownSettingsCache()
+{
+	unknown_variables.clear();
+	G->last_unknown_settings_hash = G->current_unknown_settings_hash;
+	G->current_unknown_settings_hash = 0;
+}
 
 void RegisterUnknownSetting(const wchar_t* name, const float value)
 {
 	unknown_variables[name] = value;
 }
+
+uint32_t HashUnknownSettings()
+{
+	uint32_t hash = 0;
+
+	for (const auto& entry : unknown_variables)
+	{
+		hash = crc32c_hw(hash, entry.first.data(), entry.first.size() * sizeof(wchar_t));
+		hash = crc32c_hw(hash, &entry.second, sizeof(entry.second));
+	}
+
+	return hash;
+}
+
+// Report unknown persistent variables found during the most recent config load.
+static void ShowUnknownSettingsNotification()
 {
 	if (unknown_variables.empty())
 		return;
 
-	if (G->auto_clear_persist_vars)
-		G->unknown_persist_vars_count = unknown_variables.size();
-
 	const auto it = unknown_variables.begin();
 
-	const wchar_t* cleanup_message = G->auto_clear_persist_vars
-		? L" Automatic clean-up will remove them from d3dx_user.ini on next config reload\n"
-		L" To disable automatic clean-up, set \"auto_clear_persist_vars = 0\" inside d3dx.ini\n"
-		: L" Automatic clean-up is disabled, so they will stay in d3dx_user.ini\n"
-		L" To enable automatic clean-up, set \"auto_clear_persist_vars = 1\" inside d3dx.ini\n";
+	const wchar_t* cleanup_message = G->clear_unknown_settings
+		? L" Unknown settings clean-up will remove them from d3dx_user.ini on next config reload\n"
+		L" To disable unknown settings clean-up, set \"clear_unknown_settings = 0\" inside d3dx.ini and restart the game\n"
+		: L" Unknown settings clean-up is disabled, so they will stay in d3dx_user.ini\n"
+		L" To enable unknown settings clean-up, set \"clear_unknown_settings = 1\" inside d3dx.ini and restart the game\n";
 
 	LogOverlayW(LOG_WARNING,
 		L"NOTICE: Detected %d unknown user settings in d3dx_user.ini\n"
@@ -4921,33 +4939,16 @@ void RegisterUnknownSetting(const wchar_t* name, const float value)
 		LogWarningW(L"Unrecognised persistent variable: %ls = %f\n", entry.first.c_str(), entry.second);
 }
 
-static void ClearUnknownPersistentSettings()
+// Save the currently known persistent variables to d3dx_user.ini.
+// Unknown variables are handled separately by HandleUnknownPersistentSettings():
+// they are discovered by LoadConfigFile() after this function runs and may be
+// appended back to the file separately.
+bool SavePersistentSettings(bool force)
 {
-	if (unknown_variables.empty())
-		return;
-
-	if (G->auto_clear_persist_vars)
-	{
-		if (G->unknown_persist_vars_count == unknown_variables.size())
-		{
-			unknown_variables.clear();
-			G->user_config_dirty = true;
-		}
-
-		LogOverlayW(LOG_WARNING, L"> Cleared %d unknown user settings from d3dx_user.ini\n", G->unknown_persist_vars_count);
-
-		G->unknown_persist_vars_count = unknown_variables.size();
-	}
-}
-
-void SavePersistentSettings()
-{
-	FILE *f;
-
 	G->gSettingsSaveTime = G->gTime;
 
-	if (!G->user_config_dirty)
-		return;
+	if (!G->user_config_dirty && !force)
+		return false;
 
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 
@@ -4955,13 +4956,16 @@ void SavePersistentSettings()
 	//wfopen_ensuring_access(&f, G->user_config.c_str(), L"r+");
 	//if (!f)
 
+	FILE* f;
 	wfopen_ensuring_access(&f, G->user_config.c_str(), L"w");
-	if (!f) {
+	if (!f)
+	{
 		LogWarning("Unable to save settings in %S\n", G->user_config.c_str());
-		return;
+		setlocale(LC_CTYPE, G->gDefaultLocale.c_str());
+		return false;
 	}
 
-	LogWarning("Saving user settings to %S\n", G->user_config.c_str());
+	LogInfo("Saving user settings to %S\n", G->user_config.c_str());
 
 	fputs("; AUTOMATICALLY GENERATED FILE - DO NOT EDIT\n"
 	      ";\n"
@@ -4973,27 +4977,108 @@ void SavePersistentSettings()
 	      "[Constants]\n", f);
 
 	for (auto global : persistent_variables)
-	{
 		fprintf_s(f, "%ls = %.9g\n", global->name.c_str(), global->fval);
-		unknown_variables.erase(global->name);
-	}
-
-	for (auto& entry : unknown_variables)
-		fprintf_s(f, "%ls = %.9g\n", entry.first.c_str(), entry.second);
 
 	G->user_config_dirty = false;
 
 	fclose(f);
 
 	setlocale(LC_CTYPE, G->gDefaultLocale.c_str());
+
+	return true;
 }
 
+// Append unknown persistent variables to the user config. This is safe because
+// SavePersistentSettings() rewrites the file before every config reload, so
+// anything appended here is temporary: it will disappear on the next reload
+// unless HandleUnknownPersistentSettings() appends it again.
+bool SaveUnknownPersistentSettings()
+{
+	if (unknown_variables.empty())
+		return false;
+
+	setlocale(LC_CTYPE, "en_US.UTF-8");
+
+	FILE* f;
+	wfopen_ensuring_access(&f, G->user_config.c_str(), L"a");
+	if (!f)
+	{
+		LogWarning("Unable to save unknown settings in %S\n", G->user_config.c_str());
+		setlocale(LC_CTYPE, G->gDefaultLocale.c_str());
+		return false;
+	}
+
+	LogInfo("Saving unknown user settings to %S\n", G->user_config.c_str());
+
+	for (auto& entry : unknown_variables)
+		fprintf_s(f, "%ls = %.9g\n", entry.first.c_str(), entry.second);
+
+	fclose(f);
+
+	setlocale(LC_CTYPE, G->gDefaultLocale.c_str());
+
+	return true;
+}
+
+// Handle unknown persistent variables discovered by LoadConfigFile().
+//
+// If clear_unknown_settings is disabled, unknown variables are always appended
+// to d3dx_user.ini so they are permanently preserved across config reloads.
+//
+// If clear_unknown_settings is enabled, unknown variables are given one reload
+// grace period: they are appended to d3dx_user.ini when first encountered, so
+// they can become recognised after the next reload. If they are still unknown
+// on that next reload, they are considered stale and are removed instead.
+static void HandleUnknownPersistentSettings()
+{
+	if (unknown_variables.empty())
+		return;
+
+	if (!G->clear_unknown_settings)
+	{
+		// Cleanup is disabled: keep unknown settings permanently.
+
+		// Write d3dx_user.ini only if unknown settings changed since last config reload.
+		if (G->current_unknown_settings_hash != G->last_unknown_settings_hash)
+		{
+			// Write current persistent variables to d3dx_user.ini (purge all unknowns).
+			SavePersistentSettings(true);
+			// Write unknowns to d3dx_user.ini.
+			SaveUnknownPersistentSettings();
+		}
+		ShowUnknownSettingsNotification();
+		return;
+	}
+
+	// If the unknown settings have remained unchanged across a reload,
+	// consider them stale and remove them.
+	if (G->current_unknown_settings_hash == G->last_unknown_settings_hash)
+	{
+		LogOverlayW(LOG_WARNING, L"> Cleared %d unknown user settings from d3dx_user.ini\n", unknown_variables.size());
+		unknown_variables.clear();
+		// Write current persistent variables to d3dx_user.ini (purge all unknowns).
+		SavePersistentSettings(true);
+	}
+	else
+	{
+		// First time we've seen these unknown settings: do nothing.
+		// Before config reload we've already saved them to d3dx_user.ini.
+		// This way they get a chance to become recognised again.
+	}
+
+	ShowUnknownSettingsNotification();
+}
+
+// Delete the entire persistent user config, including any unknown variables
+// retained from previous config loads.
 static void WipeUserConfig()
 {
 	G->gWipeUserConfig = false;
 	G->user_config_dirty = false;
 
 	unknown_variables.clear();
+	G->current_unknown_settings_hash = 0;
+	G->last_unknown_settings_hash = 0;
 
 	DeleteFile(G->user_config.c_str());
 
@@ -5025,62 +5110,67 @@ void ReloadConfig(HackerDevice *device)
 
 	HackerContext *mHackerContext = device->GetHackerContext();
 
-	// Lock the entire config reload as it touches many global structures
-	// that could potentially be accessed from other threads (e.g. deferred
-	// contexts) while we do this
-	EnterCriticalSectionPretty(&G->mCriticalSection);
+	{
+		// Serialize config reload against other threads that may access the global
+		// configuration state. ReloadConfig() replaces/clears many global structures,
+		// so they must not be observed in a partially reloaded state.
+		CriticalSectionGuard(&G->mCriticalSection);
 
-	// Clears any notices currently displayed on the overlay. This ensures
-	// that any notices that haven't timed out yet (e.g. from a previous
-	// failed reload attempt) are removed so that the only messages
-	// displayed will be relevant to the current reload attempt.
-	//
-	// The shader reload is separate and will also attempt to clear old
-	// notices - ClearNotices() itself will ensure that only the first one
-	// of these actually takes effect in the current frame.
-	ClearNotices();
+		// Clears any notices currently displayed on the overlay. This ensures
+		// that any notices that haven't timed out yet (e.g. from a previous
+		// failed reload attempt) are removed so that the only messages
+		// displayed will be relevant to the current reload attempt.
+		//
+		// The shader reload is separate and will also attempt to clear old
+		// notices - ClearNotices() itself will ensure that only the first one
+		// of these actually takes effect in the current frame.
+		ClearNotices();
 
-	// Clear the key bindings. There may be other things that need to be
-	// cleared as well, but for the sake of clarity I'd rather clear as
-	// many as possible inside LoadConfigFile() where they are set.
-	ClearKeyBindings();
+		// Clear the key bindings. There may be other things that need to be
+		// cleared as well, but for the sake of clarity I'd rather clear as
+		// many as possible inside LoadConfigFile() where they are set.
+		ClearKeyBindings();
 
-	LogWarningW(
-		L"\n\n"
-		L"------------------------------------------------------------------------------------------------------\n"
-		L" Reloading " INI_FILENAME L"...\n"
-		L"------------------------------------------------------------------------------------------------------\n"
-	);
+		LogWarningW(
+			L"\n\n"
+			L"------------------------------------------------------------------------------------------------------\n"
+			L" Reloading " INI_FILENAME L"...\n"
+			L"------------------------------------------------------------------------------------------------------\n"
+		);
 
-	if (G->gWipeUserConfig)
-		WipeUserConfig();
+		if (G->gWipeUserConfig)
+			WipeUserConfig();
 
-	G->gReloadConfigPending = false;
-	G->iniParamsReserved = 0;
+		G->gReloadConfigPending = false;
+		G->iniParamsReserved = 0;
 
-	// Clear active command lists set, as the pointers in this set will
-	// become invalid as the config is reloaded:
-	command_lists_profiling.clear();
-	command_lists_cmd_profiling.clear();
+		// Clear active command lists set, as the pointers in this set will
+		// become invalid as the config is reloaded:
+		command_lists_profiling.clear();
+		command_lists_cmd_profiling.clear();
 
-	// Reset the counters on the global parameter save area:
-	OverrideSave.Reset(device);
+		// Reset the counters on the global parameter save area:
+		OverrideSave.Reset(device);
 
-	ClearUnknownPersistentSettings();
+		// Save both currently known and unknown persistent variables to d3dx_user.ini.
+		// Result is loaded back by LoadConfigFile() as final step of includes parsing.
+		if (SavePersistentSettings())
+			SaveUnknownPersistentSettings();
 
-	SavePersistentSettings();
+		// Reset unknown variables map, so LoadConfigFile() could detect them from scratch.
+		ResetUnknownSettingsCache();
 
-	LoadConfigFile();
+		// Parse d3dx.ini and all includes.
+		LoadConfigFile();
 
-	DetectUnknownPersistentSettings();
+		G->current_unknown_settings_hash = HashUnknownSettings();
 
-	setlocale(LC_CTYPE, "en_US.UTF-8");
+		setlocale(LC_CTYPE, "en_US.UTF-8");
 
-	optimise_command_lists(device);
+		optimise_command_lists(device);
 
-	MarkAllShadersDeferredUnprocessed();
-
-	LeaveCriticalSection(&G->mCriticalSection);
+		MarkAllShadersDeferredUnprocessed();
+	}
 
 	// Execute the [Constants] command list in the immediate context to
 	// initialise iniParams and perform any other custom initialisation the
@@ -5102,6 +5192,15 @@ void ReloadConfig(HackerDevice *device)
 		// rather than continue to use it, issue a warning if the
 		// HackerContext doesn't exist.
 		LogOverlay(LOG_DIRE, "BUG: No HackerContext at ReloadConfig - please report this\n");
+	}
+
+	// Handle unknown persistent variables discovered by LoadConfigFile().
+	// This is done after [Constants] initialization so that the current reload
+	// has fully established which variables are recognised before deciding
+	// whether unknown variables should be retained or removed.
+	{
+		CriticalSectionGuard(&G->mCriticalSection);
+		HandleUnknownPersistentSettings();
 	}
 
 	setlocale(LC_CTYPE, G->gDefaultLocale.c_str());

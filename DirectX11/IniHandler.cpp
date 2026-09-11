@@ -4884,6 +4884,11 @@ void LoadConfigFile()
 }
 
 static void DetectUnknownPersistentSettings()
+
+void RegisterUnknownSetting(const wchar_t* name, const float value)
+{
+	unknown_variables[name] = value;
+}
 {
 	if (unknown_variables.empty())
 		return;

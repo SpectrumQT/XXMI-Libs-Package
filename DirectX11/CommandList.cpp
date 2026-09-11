@@ -5904,16 +5904,21 @@ bool ParseCommandListVariableAssignment(const wchar_t *section,
 
 	CommandListVariable* var = nullptr;
 
-	if (!args.GetVariable(var, false, CommandArgumentReader::PeekMode::Argument))
+	bool loading_user_config = *ini_namespace == G->user_config;
+
+	// Persistent user config may only assign variables that are still persistent.
+	// Treat variables that lost the "persist" flag since the previous config load
+	// as unknown so their stale values can be handled by HandleUnknownPersistentSettings().
+	if (!args.GetVariable(var, false, CommandArgumentReader::PeekMode::Argument)
+		|| (loading_user_config && !(var->flags & VariableFlags::PERSIST)))
 	{
 		// Remember unrecognized persistent variable.
-		// Used for `d3dx_user.ini` auto-clear disabling support.
-		if (*ini_namespace == G->user_config)
+		if (loading_user_config)
 		{
-			float out;
+			float value;
 			size_t len;
-			if (ParseFloatToken(*val, out, len))
-				unknown_variables[name] = out;
+			if (ParseFloatToken(*val, value, len))
+				RegisterUnknownSetting(name.c_str(), value);
 		}
 
 		// Report only "locked" variable error for now to avoid `d3dx_user.ini` error spam.
@@ -8551,14 +8556,31 @@ void LayoutElementOperation::run(CommandListState* state)
 
 #pragma region PoolVariableOperation
 
-CommandListCommand* parse_pool_variable_operation(const wchar_t *section, ResourceCopyTarget& dst, wstring *val, CommandList *command_list, const wstring *ini_namespace)
+CommandListCommand* parse_pool_variable_operation(
+	const wchar_t *section, ResourceCopyTarget& dst, wstring *val, CommandList *command_list, const wstring *ini_namespace, const wchar_t* key
+)
 {
-
 	//LogInfoW(L"parse_pool_variable_operation dst_type=%ls, dst_mode=%ls, val=%ls\n",
 	//	lookup_enum_name(ResourceCopyTargetTypeNames, dst.type), lookup_enum_name(ResourceCopyTargetEvaluationModeNames, dst.evaluation_mode), val->c_str());
 
-	if (!dst.custom_resource_pool)
+	bool loading_user_config = *ini_namespace == G->user_config;
+
+	// Persistent user config may only assign pool variables if pool still has persistent variables enabled.
+	// Treat variables of pool that lost "pool_persist_variables" option since the previous config load
+	// as unknown so their stale values can be handled by HandleUnknownPersistentSettings().
+	if (!dst.custom_resource_pool
+		|| (loading_user_config && !(dst.custom_resource_pool->variable_template->flags & VariableFlags::PERSIST)))
+	{
+		// Remember unrecognized persistent pool variable.
+		if (loading_user_config)
+		{
+			float value;
+			size_t len;
+			if (ParseFloatToken(*val, value, len))
+				RegisterUnknownSetting(key, value);
+		}
 		return false;
+	}
 
 	if (val->empty())
 		return false;
@@ -8692,28 +8714,17 @@ bool ParseCommandListResourceCopyTargetDirective(
 
 	if (!dst.ParseTarget(key, false, ini_namespace, command_list->scope))
 	{
-		if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::VARIABLE)
-		{
-			// Remember unrecognized persistent pool variable.
-			// Used for `d3dx_user.ini` auto-clear disabling support.
-			if (*ini_namespace == G->user_config)
-			{
-				float out;
-				size_t len;
-				if (ParseFloatToken(*val, out, len))
-					unknown_variables[key] = out;
-			}
-		}
-		return false;
+		if (dst.evaluation_mode != ResourceCopyTargetEvaluationMode::VARIABLE)
+			return false;
 	}
 
 	CommandListCommand* operation = nullptr;
 
-	if (dst.type == ResourceCopyTargetType::VARIABLE)
+	if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::VARIABLE)
 	{
 		// Pool Variable - Copy Exression Result To Pool Variable
 		// $PoolFoo[0] = $PoolBar[0] + $var + 1
-		operation = parse_pool_variable_operation(section, dst, val, command_list, ini_namespace);
+		operation = parse_pool_variable_operation(section, dst, val, command_list, ini_namespace, key);
 	}
 	else if (dst.evaluation_mode & ResourceCopyTargetEvaluationMode::LAYOUT_MASK)
 	{
@@ -8749,7 +8760,7 @@ bool ParseCommandListResourceCopyTargetDirective(
 				case ResourceCopyTargetType::VARIABLE: // PoolFoo[*] = $PoolBar[0]
 				case ResourceCopyTargetType::INVALID:  // PoolFoo[*] = $var
 					// Pool - Copy Variable To All Slots (`val` will be re-parsed as expression)
-					operation = parse_pool_variable_operation(section, dst, val, command_list, ini_namespace);
+					operation = parse_pool_variable_operation(section, dst, val, command_list, ini_namespace, key);
 					break;
 
 				default: // PoolFoo[*] = copy ResourceBar

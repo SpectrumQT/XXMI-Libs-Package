@@ -1021,6 +1021,229 @@ const wstring* GetIniWstring(const wchar_t* section, const wchar_t* key)
 	return &value_it->second;
 }
 
+const wstring* GetIniWstring(const IniSection* section, const wchar_t* key)
+{
+	if (!section)
+		return nullptr;
+
+	auto value_it = section->kv_map.find(key);
+	if (value_it == section->kv_map.end())
+		return nullptr;
+
+	return &value_it->second;
+}
+
+template<typename T, typename Parser, typename Logger>
+T GetIniValue(
+	const IniSection* section,
+	const wchar_t* section_name,
+	const wchar_t* key,
+	T def,
+	bool* found,
+	bool warn,
+	Parser&& parser,
+	Logger&& logger)
+{
+	SetFound(found, false);
+
+	const wstring* val = GetIniWstring(section, key);
+	if (!val)
+		return def;
+
+	if (val->empty())
+	{
+		if (warn)
+		{
+			IniWarningW(
+				L"Unable to parse %ls value for \"%ls\" from empty string\n"
+				L" - [%ls] @ [%ls]\n",
+				IniValueTypeName<T>::value, key,
+				section_name, section->ini_namespace.c_str());
+		}
+		return def;
+	}
+
+	T result{};
+	if (!parser(section_name, key, *val, result, warn, nullptr))
+		return def;
+
+	SetFound(found, true);
+
+	logger(key, result);
+
+	return result;
+}
+
+int GetIniString(const IniSection* section, const wchar_t* section_name,
+	const wchar_t* key, const wchar_t* def, wchar_t* ret, unsigned size)
+{
+	int rc;
+	bool found = false;
+
+	if (section) {
+		auto kv_pair = section->kv_map.find(key);
+		if (kv_pair != section->kv_map.end()) {
+			const std::wstring& val = kv_pair->second;
+
+			if (wcsncpy_s(ret, size, val.c_str(), _TRUNCATE)) {
+				IniWarningW(L"\"%ls=%ls\" too long\n",
+					key, val.c_str(), section_name);
+				rc = size - 1;
+			}
+			else {
+				rc = (int)wcslen(ret);
+			}
+
+			found = true;
+		}
+	}
+
+	if (!found) {
+		if (def) {
+			if (wcscpy_s(ret, size, def))
+				DoubleBeepExit();
+			else
+				rc = (int)wcslen(ret);
+		}
+		else {
+			ret[0] = L'\0';
+			rc = 0;
+		}
+	}
+
+	return rc;
+}
+
+bool GetIniString(const IniSection* section, const wchar_t* key,
+	const wchar_t* def, std::string* ret)
+{
+	std::wstring wret;
+	bool found = false;
+
+	if (!ret) {
+		LogInfo("BUG: Misuse of GetIniString()\n");
+		DoubleBeepExit();
+	}
+
+	const wstring* val = GetIniWstring(section, key);
+	if (val) {
+		wret = *val;
+		found = true;
+	}
+	else if (def) {
+		wret = def;
+	}
+	else {
+		wret = L"";
+	}
+
+	*ret = std::string(wret.begin(), wret.end());
+	return found;
+}
+
+int GetIniStringAndLog(const IniSection* section, const wchar_t* section_name,
+	const wchar_t* key, const wchar_t* def, wchar_t* ret, unsigned size)
+{
+	int rc = GetIniString(section, section_name, key, def, ret, size);
+
+	if (rc)
+		LogInfo("  %S=%S\n", key, ret);
+
+	return rc;
+}
+
+static bool GetIniStringAndLog(const IniSection* section,
+	const wchar_t* key, const wchar_t* def, std::string* ret)
+{
+	bool rc = GetIniString(section, key, def, ret);
+
+	if (rc)
+		LogInfo("  %S=%s\n", key, ret->c_str());
+
+	return rc;
+}
+
+template <class T1, class T>
+T GetIniEnumClass(const IniSection* section, const wchar_t* section_name,
+	const wchar_t* key, T def, bool* found,
+	struct EnumName_t<const wchar_t*, T>* enum_names)
+{
+	const wstring* val = GetIniWstring(section, key);
+	T ret = def;
+	bool tmp_found;
+
+	if (found)
+		*found = false;
+
+	if (val) {
+		wchar_t buffer[MAX_PATH];
+
+		if (wcsncpy_s(buffer, ARRAYSIZE(buffer), val->c_str(), _TRUNCATE)) {
+			IniWarningW(L"\"%ls=%ls\" too long\n",
+				key, val->c_str());
+			return ret;
+		}
+
+		ret = lookup_enum_val<const wchar_t*, T>(
+			enum_names, buffer, def, &tmp_found);
+
+		if (tmp_found) {
+			if (found)
+				*found = tmp_found;
+			LogInfo("  %S=%S\n", key, buffer);
+		}
+		else {
+			IniWarningW(L"Unknown Enum: %ls=%ls\n - [%ls]\n",
+				key, buffer, section_name);
+		}
+	}
+
+	return ret;
+}
+
+template <class T>
+T GetIniEnumClass(const IniSection* section, const wchar_t* section_name,
+	const wchar_t* key, T def, bool* found,
+	struct EnumName_t<const wchar_t*, T>* enum_names)
+{
+	return GetIniEnumClass<const wchar_t*, T>(
+		section, section_name, key, def, found, enum_names);
+}
+
+template <class T1, class T>
+T GetIniEnumClass(const IniSection* section, const wchar_t* section_name,
+	const wchar_t* key, T def, bool* found,
+	struct EnumName_t<const char*, T>* enum_names)
+{
+	const wstring* wval = GetIniWstring(section, key);
+	string val;
+	T ret = def;
+	bool tmp_found;
+
+	if (found)
+		*found = false;
+
+	if (wval)
+		val = string(wval->begin(), wval->end());
+	else
+		return ret;
+
+	ret = lookup_enum_val<const char*, T>(
+		enum_names, val.c_str(), def, &tmp_found);
+
+	if (tmp_found) {
+		if (found)
+			*found = tmp_found;
+		LogInfo("  %S=%s\n", key, val.c_str());
+	}
+	else {
+		IniWarningW(L"Unknown Enum: %ls=%S\n - [%ls]\n",
+			key, val.c_str(), section_name);
+	}
+
+	return ret;
+}
+
 inline std::wstring NormalizeString(const std::wstring& value)
 {
 	std::wstring normalized = value;
@@ -1201,6 +1424,13 @@ float GetIniFloat(const wchar_t* section, const wchar_t* key, float def, bool* f
 	return GetIniValue(section, key, def, found, true, ParseFloatValue, LogIniFloat);
 }
 
+float GetIniFloat(const IniSection* section, const wchar_t* section_name,
+	const wchar_t* key, float def, bool* found)
+{
+	return GetIniValue<float>(section, section_name, key, def, found, true,
+		ParseFloatValue, LogIniFloat);
+}
+
 inline bool ConvertExpressionToInt(float expr, int& out) noexcept
 {
 	// Saturate infinities and out-of-range values. Map NaN to zero.
@@ -1251,6 +1481,13 @@ inline void LogIniInt(const wchar_t* key, int value)
 int GetIniInt(const wchar_t* section, const wchar_t* key, int def, bool* found, bool warn)
 {
 	return GetIniValue<int>(section, key, def, found, warn, ParseIntValue, LogIniInt);
+}
+
+int GetIniInt(const IniSection* section, const wchar_t* section_name,
+	const wchar_t* key, int def, bool* found, bool warn)
+{
+	return GetIniValue<int>(section, section_name, key, def, found, warn,
+		ParseIntValue, LogIniInt);
 }
 
 inline bool ConvertExpressionToBool(float expr, bool& out) noexcept
@@ -2006,7 +2243,7 @@ static void ParseResourceInitialData(CustomResource *custom_resource, const wcha
 	}
 }
 
-static CustomResource* ParseResourceSection(const wchar_t* section_name, const wchar_t* resource_id_suffix)
+static CustomResource* ParseResourceSection(const wchar_t* section_name, const IniSection* section, const wchar_t* resource_id_suffix)
 {
 	wchar_t setting[MAX_PATH];
 
@@ -2027,9 +2264,9 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 	custom_resource->name = resource_id;
 	custom_resource->pool_index = -2;
 
-	custom_resource->max_copies_per_frame = GetIniInt(section_name, L"max_copies_per_frame", 0, NULL);
+	custom_resource->max_copies_per_frame = GetIniInt(section, section_name, L"max_copies_per_frame", 0, NULL, true);
 
-	if (GetIniStringAndLog(section_name, L"filename", 0, setting, MAX_PATH)) {
+	if (GetIniStringAndLog(section, section_name, L"filename", 0, setting, MAX_PATH)) {
 		// If this section was not in the main d3dx.ini, look
 		// for a file relative to the config it came from
 		// first, then try relative to the 3DMigoto directory:
@@ -2037,6 +2274,7 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		get_namespaced_section_path(section_name, &namespace_path);
 		bool found = false;
 		wchar_t path[MAX_PATH];
+
 		if (!namespace_path.empty()) {
 			GetModuleFileName(migoto_handle, path, MAX_PATH);
 			wcsrchr(path, L'\\')[1] = 0;
@@ -2045,17 +2283,19 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 			if (GetFileAttributes(path) != INVALID_FILE_ATTRIBUTES)
 				found = true;
 		}
+
 		if (!found) {
 			GetModuleFileName(migoto_handle, path, MAX_PATH);
 			wcsrchr(path, L'\\')[1] = 0;
 			wcscat(path, setting);
 		}
+
 		custom_resource->filename = path;
 	}
 
-	custom_resource->override_type = GetIniEnumClass(section_name, L"type", CustomResourceType::INVALID, NULL, CustomResourceTypeNames);
+	custom_resource->override_type = GetIniEnumClass(section, section_name, L"type", CustomResourceType::INVALID, NULL, CustomResourceTypeNames);
 
-	if (GetIniString(section_name, L"format", 0, setting, MAX_PATH)) {
+	if (GetIniString(section, section_name, L"format", 0, setting, MAX_PATH)) {
 		custom_resource->override_format = ParseFormatString(setting, true);
 		if (custom_resource->override_format == (DXGI_FORMAT)-1) {
 			IniWarningW(L"Unknown format \"%ls\"\n - [%ls]\n", setting, section_name);
@@ -2064,33 +2304,40 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		}
 	}
 
-	custom_resource->override_color_space = GetIniEnumClass(section_name, L"color_space", CustomColorSpace::DEFAULT, NULL, CustomColorSpaceNames);
-	custom_resource->override_width = GetIniInt(section_name, L"width", -1, NULL);
-	custom_resource->override_height = GetIniInt(section_name, L"height", -1, NULL);
-	custom_resource->override_depth = GetIniInt(section_name, L"depth", -1, NULL);
-	custom_resource->override_mips = GetIniInt(section_name, L"mips", -1, NULL);
-	custom_resource->override_array = GetIniInt(section_name, L"array", -1, NULL);
-	custom_resource->override_msaa = GetIniInt(section_name, L"msaa", -1, NULL);
-	custom_resource->override_msaa_quality = GetIniInt(section_name, L"msaa_quality", -1, NULL);
-	custom_resource->override_byte_width = GetIniInt(section_name, L"byte_width", -1, NULL);
-	custom_resource->override_stride = GetIniInt(section_name, L"stride", -1, NULL);
+	custom_resource->override_color_space = GetIniEnumClass(section, section_name, L"color_space", CustomColorSpace::DEFAULT, NULL, CustomColorSpaceNames);
+	custom_resource->override_width = GetIniInt(section, section_name, L"width", -1, NULL, true);
+	custom_resource->override_height = GetIniInt(section, section_name, L"height", -1, NULL, true);
+	custom_resource->override_depth = GetIniInt(section, section_name, L"depth", -1, NULL, true);
+	custom_resource->override_mips = GetIniInt(section, section_name, L"mips", -1, NULL, true);
+	custom_resource->override_array = GetIniInt(section, section_name, L"array", -1, NULL, true);
+	custom_resource->override_msaa = GetIniInt(section, section_name, L"msaa", -1, NULL, true);
+	custom_resource->override_msaa_quality = GetIniInt(section, section_name, L"msaa_quality", -1, NULL, true);
+	custom_resource->override_byte_width = GetIniInt(section, section_name, L"byte_width", -1, NULL, true);
+	custom_resource->override_stride = GetIniInt(section, section_name, L"stride", -1, NULL, true);
 
-	custom_resource->width_multiply = GetIniFloat(section_name, L"width_multiply", 1.0f, NULL);
-	custom_resource->height_multiply = GetIniFloat(section_name, L"height_multiply", 1.0f, NULL);
+	custom_resource->width_multiply = GetIniFloat(section, section_name, L"width_multiply", 1.0f, NULL);
+	custom_resource->height_multiply = GetIniFloat(section, section_name, L"height_multiply", 1.0f, NULL);
 
-	if (GetIniStringAndLog(section_name, L"bind_flags", 0, setting, MAX_PATH)) {
-		custom_resource->override_bind_flags = parse_enum_option_string<const wchar_t*, CustomResourceBindFlags, wchar_t*>
-			(CustomResourceBindFlagNames, setting, NULL);
+	if (GetIniStringAndLog(section, section_name, L"bind_flags", 0, setting, MAX_PATH)) {
+		custom_resource->override_bind_flags = parse_enum_option_string<const wchar_t*, CustomResourceBindFlags, wchar_t*>(CustomResourceBindFlagNames, setting, NULL);
 	}
 
-	if (GetIniStringAndLog(section_name, L"misc_flags", 0, setting, MAX_PATH)) {
-		custom_resource->override_misc_flags = parse_enum_option_string<const wchar_t*, ResourceMiscFlags, wchar_t*>
-			(ResourceMiscFlagNames, setting, NULL);
+	if (GetIniStringAndLog(section, section_name, L"misc_flags", 0, setting, MAX_PATH)) {
+		custom_resource->override_misc_flags = parse_enum_option_string<const wchar_t*, ResourceMiscFlags, wchar_t*>(ResourceMiscFlagNames, setting, NULL);
 	}
 
 	ParseResourceInitialData(custom_resource, section_name);
 
 	return custom_resource;
+}
+
+static CustomResource* ParseResourceSection(const wchar_t* section_name, const wchar_t* resource_id_suffix)
+{
+	auto section = ini_sections.find(section_name);
+	if (section == ini_sections.end())
+		return nullptr;
+
+	return ParseResourceSection(section_name, &section->second, resource_id_suffix);
 }
 
 static CustomResourcePool* ParseResourcePoolSection(const wchar_t* section_name)
@@ -2157,7 +2404,7 @@ static void ParseResourceSections()
 	IniSections::iterator upper = prefix_upper_bound(ini_sections, wstring(L"Pool"));
 
 	for (IniSections::iterator i = lower; i != upper; i++) {
-		wstring section_name = i->first;
+		const wstring& section_name = i->first;
 
 		LogInfoW(L"[%s]\n", section_name.c_str());
 
@@ -2168,11 +2415,11 @@ static void ParseResourceSections()
 	upper = prefix_upper_bound(ini_sections, wstring(L"Resource"));
 
 	for (IniSections::iterator i = lower; i != upper; i++) {
-		wstring section_name = i->first;
+		const wstring& section_name = i->first;
 
 		LogInfoW(L"[%s]\n", section_name.c_str());
 
-		ParseResourceSection(section_name.c_str(), nullptr);
+		ParseResourceSection(section_name.c_str(), &i->second, nullptr);
 	}
 }
 

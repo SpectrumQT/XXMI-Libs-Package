@@ -5814,7 +5814,7 @@ bool CommandListOperand::parse_scissor(const wstring* operand, const wstring* in
 
 bool CommandListOperand::parse_ini_keywords(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
 {
-	if (operand->size() >= 14 && !wcsncmp(operand->c_str(), L"dxgi_format_", 4))
+	if (operand->size() >= 14 && !wcsncmp(operand->c_str(), L"dxgi_format_", 12))
 	{
 		val = (float)ParseFormatString(operand->c_str(), false);
 

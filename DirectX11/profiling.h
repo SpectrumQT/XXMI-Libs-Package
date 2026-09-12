@@ -2,6 +2,7 @@
 
 #include <wrl.h>
 #include <string>
+#include <vector>
 
 namespace Profiling {
 	enum class Mode {
@@ -10,6 +11,9 @@ namespace Profiling {
 		TOP_COMMAND_LISTS,
 		TOP_COMMANDS,
 		CTO_WARNING,
+		COMMAND_LIST_VARIABLES,
+		CUSTOM_RESOURCES,
+		POOLS,
 
 		INVALID, // Must be last
 	};
@@ -98,4 +102,45 @@ namespace Profiling {
 	extern unsigned max_executions_per_frame_exceeded;
 	extern unsigned iniparams_updates;
 
+	// Values Viewer
+
+	// Variables
+
+	struct VariableColumn
+	{
+		int namespace_index = -1;
+		int scroll_offset = 0;
+	};
+
+	extern std::vector<VariableColumn> variable_columns;
+	extern int active_column;
+
+	// Pools
+
+	struct ResourcePoolColumn
+	{
+		int pool_index = -1;
+		int scroll_offset = 0;
+	};
+
+	extern std::vector<ResourcePoolColumn> resource_pool_columns;
+	extern int active_pool_column;
+
+	extern const int column_width;
+	extern const int visible_rows;
+
+	// Custom Resources
+
+	struct CustomResourceColumn
+	{
+		int namespace_index = -1;
+		int resource_index = 0;
+		int scroll_offset = 0;
+	};
+
+	extern std::vector<CustomResourceColumn> custom_resource_columns;
+	extern int active_custom_resource_column;
+
+	extern const int custom_resource_visible_rows;
+	extern const int custom_resource_metadata_rows;
 }

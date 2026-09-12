@@ -36,6 +36,14 @@ endif
 
 Resource attributes can be accessed using the `->` syntax.
 
+### `BindFlags`
+
+Returns [D3D11_BIND_FLAGs](../expressions/literals.md/#d3d11_bind_flags-enum-literals) of a resource.
+
+```ini
+$bind_flags = ResourceFoo->BindFlags
+```
+
 ### `Offset`
 
 Returns the byte offset of the currently configured buffer region.
@@ -76,6 +84,22 @@ Returns [DXGI_FORMAT](../expressions/literals.md/#dxgi_format-enum-literals) of 
 $format = ResourceFoo->Format
 ```
 
+### `Array`
+
+Returns the array dimension of **texture** resource.
+
+```ini
+$array = ResourceTexture->Array
+```
+
+### `Mips`
+
+Returns mipmap level count of **texture** resource.
+
+```ini
+$mips = ResourceTexture->Mips
+```
+
 ### `Width`
 
 Returns width of **texture** resource (in [texels](https://en.wikipedia.org/wiki/Texel_(graphics))).
@@ -91,7 +115,6 @@ Returns height of **texture** resource (in [texels](https://en.wikipedia.org/wik
 ```ini
 $height = ResourceTexture->Height
 ```
-
 
 ### `SourceStride`
 
@@ -141,3 +164,4 @@ Attribute getters return the following values when data retrieval fails:
 | `-1.0f` | `UNKNOWN` — all data sources returned `0`                 |
 | `-2.0f` | `RESOURCE_NOT_FOUND` — no buffer was found for the target |
 | `-3.0f` | `NOT_A_BUFFER` — the target is not a D3D11 buffer         |
+| `-4.0f` | `NOT_A_TEXTURE` — the target is not a texture resource    |

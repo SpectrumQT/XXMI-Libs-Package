@@ -4,4 +4,4 @@ Expressions are a fundamental part of INI syntax. **XXMI DLL** extends the expre
 
 - [Operators](operators.md) — additional operators, including bitwise and bitshift operators
 - [Functions](functions.md) — HLSL-style mathematical, bitwise, and procedural functions
-- [Literals](literals.md) — binary literals
+- [Literals](literals.md) — binary and enumeration literals

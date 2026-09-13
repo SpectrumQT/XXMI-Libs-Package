@@ -7956,12 +7956,12 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 			MemberArg::Type::Unsigned, // Byte Offset 
 			MemberArg::Type::Unsigned  // Byte Size 
 		}} },
-		{ L"->bindflags",     12, ResourceCopyTargetEvaluationMode::RESOURCE_BIND_FLAGS },
+		{ L"->bindflags",     11, ResourceCopyTargetEvaluationMode::RESOURCE_BIND_FLAGS },
+		{ L"->lastframe",     11, ResourceCopyTargetEvaluationMode::POOL_LAST_FRAME },
 		{ L"->hashregion",    12, ResourceCopyTargetEvaluationMode::RESOURCE_REGION_HASH, {{
 			MemberArg::Type::Unsigned, // Byte Offset 
 			MemberArg::Type::Unsigned  // Byte Size 
 		}} },
-		{ L"->lastframe",     13, ResourceCopyTargetEvaluationMode::POOL_LAST_FRAME },
 		{ L"->spatialhash",   13, ResourceCopyTargetEvaluationMode::RESOURCE_SPATIAL_HASH, {{
 			MemberArg::Type::Unsigned, // X Byte Offset 
 			MemberArg::Type::Unsigned, // Y Byte Offset 
@@ -10151,7 +10151,7 @@ float ResourceCopyTarget::GetResourceArray(CommandListState* state)
 	if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
 		CustomResource* custom_resource = GetCustomResource(state);
 		if (custom_resource) {
-			if (custom_resource->override_array != 0)
+			if (custom_resource->override_array != -1)
 				return (float)custom_resource->override_array;
 		} else {
 			// GetResource()'s CUSTOM_RESOURCE branch dereferences without null check,
@@ -10206,7 +10206,7 @@ float ResourceCopyTarget::GetResourceMips(CommandListState* state)
 	if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
 		CustomResource* custom_resource = GetCustomResource(state);
 		if (custom_resource) {
-			if (custom_resource->override_mips != 0)
+			if (custom_resource->override_mips != -1)
 				return (float)custom_resource->override_mips;
 		} else {
 			// GetResource()'s CUSTOM_RESOURCE branch dereferences without null check,

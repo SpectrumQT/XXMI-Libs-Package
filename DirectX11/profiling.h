@@ -83,6 +83,7 @@ namespace Profiling {
 	extern Overhead texture_handle_info_lookup_overhead;
 	extern Overhead textureoverride_lookup_overhead;
 	extern Overhead resource_pool_lookup_overhead;
+	extern Overhead texture_override_fuzzy_match_overhead;
 
 	extern unsigned resource_full_copies;
 	extern unsigned resource_reference_copies;

@@ -1723,10 +1723,24 @@ template <typename DescType>
 static void find_texture_overrides_for_desc(const DescType *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info)
 {
 	FuzzyTextureOverrides::iterator i;
+	Profiling::State profiling_state;
+	size_t matches_before = 0;
+
+	if (Profiling::mode == Profiling::Mode::SUMMARY) {
+		matches_before = matches->size();
+		Profiling::texture_override_fuzzy_match_overhead.count++;
+		Profiling::start(&profiling_state);
+	}
 
 	for (i = G->mFuzzyTextureOverrides.begin(); i != G->mFuzzyTextureOverrides.end(); i++) {
 		if ((*i)->matches(desc) && matches_draw_info((*i)->texture_override, call_info))
 			matches->push_back((*i)->texture_override);
+	}
+
+	if (Profiling::mode == Profiling::Mode::SUMMARY) {
+		Profiling::end(&profiling_state, &Profiling::texture_override_fuzzy_match_overhead);
+		if (matches->size() > matches_before)
+			Profiling::texture_override_fuzzy_match_overhead.hits++;
 	}
 }
 

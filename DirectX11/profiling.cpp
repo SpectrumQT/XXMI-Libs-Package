@@ -191,16 +191,11 @@ static std::wstring GetColumnHeader(int index)
 
 	std::wstring name = L"Select";
 
-	if (column.namespace_index >= 0 &&
-		column.namespace_index < namespace_list.size())
-	{
+	if (column.namespace_index >= 0 && column.namespace_index < namespace_list.size())
 		name = namespace_list[column.namespace_index];
-	}
 
 	if (index == Profiling::active_column)
-	{
 		return L"<" + name + L">";
-	}
 
 	return name;
 }
@@ -224,7 +219,6 @@ static void DrawVariables()
 
 			if (column.namespace_index >= 0)
 				counter = std::to_wstring(column.namespace_index + 1) + L"/" + std::to_wstring(namespace_list.size());
-
 			else
 				counter = L"0/" + std::to_wstring(namespace_list.size());
 		}
@@ -242,7 +236,6 @@ static void DrawVariables()
 	for (int c = 0; c < Profiling::variable_columns.size(); c++)
 	{
 		std::wstring header = TrimNamespace(GetColumnHeader(c), Profiling::column_width);
-
 		AddColumn(Profiling::text, header, Profiling::column_width);
 	}
 
@@ -261,19 +254,14 @@ static void DrawVariables()
 
 			std::wstring text;
 
-
 			if (column.namespace_index >= 0 && column.namespace_index < namespace_list.size())
 			{
 				auto& vars = variable_groups[namespace_list[column.namespace_index]];
-
-
 				int index = row + column.scroll_offset;
-
 
 				if (index < vars.size())
 				{
 					auto* var = vars[index];
-
 
 					text += L"$";
 					text += var->name;
@@ -281,7 +269,6 @@ static void DrawVariables()
 					text += std::to_wstring(var->variable->fval);
 				}
 			}
-
 
 			AddColumn(Profiling::text, text, Profiling::column_width
 			);
@@ -376,7 +363,6 @@ static void DrawResourcePools()
 	for (int c = 0; c < Profiling::resource_pool_columns.size(); c++)
 	{
 		std::wstring header =TrimNamespace(GetResourcePoolHeader(c), Profiling::column_width);
-
 		AddColumn(Profiling::text, header, Profiling::column_width);
 	}
 
@@ -629,7 +615,6 @@ static void GetResourceMetadata(
 	// ========================================================================
 
 	lines[0] = L"Name: " + GetLastPathComponent(resource->name);
-
 	lines[1] = L"FileName: " + GetPathAfterMods(resource->filename);
 
 
@@ -653,13 +638,9 @@ static void GetResourceMetadata(
 				D3D11_BUFFER_DESC desc;
 				static_cast<ID3D11Buffer*>(resource->resource)->GetDesc(&desc);
 
-				lines[3] =
-					L"Format: Unknown";
-
+				lines[3] = L"Format: Unknown";
 				lines[4] = L"ByteWidth: " + std::to_wstring(desc.ByteWidth);
-
 				lines[5] = L"Stride: " + std::to_wstring(resource->stride);
-
 				lines[6] = L"Bind: " + std::to_wstring(static_cast<unsigned>(resource->bind_flags));
 				lines[7] = L"Misc: " + std::to_wstring(static_cast<unsigned>(resource->misc_flags));
 				lines[8] = L"SourceStride: " + std::to_wstring(resource->source_stride);
@@ -673,7 +654,6 @@ static void GetResourceMetadata(
 				D3D11_TEXTURE1D_DESC desc;
 				static_cast<ID3D11Texture1D*>(resource->resource)->GetDesc(&desc);
 
-
 				lines[3] = L"Format: " + FormatToWString(desc.Format);
 				lines[4] = L"Size: " + std::to_wstring(desc.Width);
 				lines[5] = L"Mips: " + std::to_wstring(desc.MipLevels);
@@ -681,7 +661,6 @@ static void GetResourceMetadata(
 				lines[7] = L"Bind: " + std::to_wstring(static_cast<unsigned>(resource->bind_flags));
 				lines[8] = L"Misc: " + std::to_wstring(static_cast<unsigned>(resource->misc_flags));
 				lines[9] = L"SourceStride: " + std::to_wstring(resource->source_stride);
-
 
 				break;
 			}
@@ -692,7 +671,6 @@ static void GetResourceMetadata(
 				D3D11_TEXTURE2D_DESC desc;
 				static_cast<ID3D11Texture2D*>(resource->resource)->GetDesc(&desc);
 
-
 				lines[3] = L"Format: " + FormatToWString(desc.Format);
 				lines[4] = L"Size: " + std::to_wstring(desc.Width) + L"x" + std::to_wstring(desc.Height);
 				lines[5] = L"Mips: " + std::to_wstring(desc.MipLevels);
@@ -701,7 +679,6 @@ static void GetResourceMetadata(
 				lines[8] = L"Bind: " + std::to_wstring(static_cast<unsigned>(resource->bind_flags));
 				lines[9] = L"Misc: " + std::to_wstring(static_cast<unsigned>(resource->misc_flags));
 				lines[10] = L"SourceStride: " + std::to_wstring(resource->source_stride);
-
 
 				break;
 			}
@@ -712,14 +689,12 @@ static void GetResourceMetadata(
 				D3D11_TEXTURE3D_DESC desc;
 				static_cast<ID3D11Texture3D*>(resource->resource)->GetDesc(&desc);
 
-
 				lines[3] = L"Format: " + FormatToWString(desc.Format);
 				lines[4] = L"Size: " + std::to_wstring(desc.Width) + L"x" + std::to_wstring(desc.Height) + L"x" + std::to_wstring(desc.Depth);
 				lines[5] = L"Mips: " + std::to_wstring(desc.MipLevels);
 				lines[6] = L"Bind: " + std::to_wstring(static_cast<unsigned>(resource->bind_flags));
 				lines[7] = L"Misc: " + std::to_wstring(static_cast<unsigned>(resource->misc_flags));
 				lines[8] = L"SourceStride: " + std::to_wstring(resource->source_stride);
-
 
 				break;
 			}

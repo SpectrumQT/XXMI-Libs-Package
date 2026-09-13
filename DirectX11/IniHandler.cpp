@@ -5255,9 +5255,7 @@ void ReloadConfig(HackerDevice *device)
 		std::wstring ns = key.substr(2, lastSlash - 2);
 
 		if (ns.compare(0, 5, L"mods\\") == 0)
-		{
 			ns.erase(0, 5);
-		}
 
 		entry.var_namespace = ns;
 

@@ -1308,10 +1308,7 @@ static void AnalysePerf(HackerDevice *device, void *private_data)
 		selected_pool_column = &Profiling::resource_pool_columns[Profiling::active_pool_column];
 
 	if (Profiling::mode == Profiling::Mode::CUSTOM_RESOURCES)
-		selected_resource_column =
-		&Profiling::custom_resource_columns[
-			Profiling::active_custom_resource_column
-		];
+		selected_resource_column = &Profiling::custom_resource_columns[Profiling::active_custom_resource_column];
 
 	Profiling::text.clear();
 	Profiling::clear();
@@ -1338,16 +1335,10 @@ static void CycleViewerColumn(
 	{
 		Profiling::active_column++;
 
-		if (Profiling::active_column >=
-			Profiling::variable_columns.size())
-		{
+		if (Profiling::active_column >= Profiling::variable_columns.size())
 			Profiling::active_column = 0;
-		}
 
-		selected_column =
-			&Profiling::variable_columns[
-				Profiling::active_column
-			];
+		selected_column = &Profiling::variable_columns[Profiling::active_column];
 
 		break;
 	}
@@ -1356,11 +1347,8 @@ static void CycleViewerColumn(
 	{
 		Profiling::active_custom_resource_column++;
 
-		if (Profiling::active_custom_resource_column >=
-			Profiling::custom_resource_columns.size())
-		{
+		if (Profiling::active_custom_resource_column >= Profiling::custom_resource_columns.size())
 			Profiling::active_custom_resource_column = 0;
-		}
 
 		break;
 	}
@@ -1369,11 +1357,8 @@ static void CycleViewerColumn(
 	{
 		Profiling::active_pool_column++;
 
-		if (Profiling::active_pool_column >=
-			Profiling::resource_pool_columns.size())
-		{
+		if (Profiling::active_pool_column >= Profiling::resource_pool_columns.size())
 			Profiling::active_pool_column = 0;
-		}
 
 		break;
 	}
@@ -1394,18 +1379,12 @@ static void NextViewerNamespace(
 	{
 	case Profiling::Mode::COMMAND_LIST_VARIABLES:
 	{
-		auto& column =
-			Profiling::variable_columns[
-				Profiling::active_column
-			];
+		auto& column = Profiling::variable_columns[Profiling::active_column];
 
 		column.namespace_index++;
 
-		if (column.namespace_index >=
-			namespace_list.size())
-		{
+		if (column.namespace_index >= namespace_list.size())
 			column.namespace_index = -1;
-		}
 
 		column.scroll_offset = 0;
 
@@ -1414,18 +1393,12 @@ static void NextViewerNamespace(
 
 	case Profiling::Mode::CUSTOM_RESOURCES:
 	{
-		auto& column =
-			Profiling::custom_resource_columns[
-				Profiling::active_custom_resource_column
-			];
+		auto& column = Profiling::custom_resource_columns[Profiling::active_custom_resource_column];
 
 		column.namespace_index++;
 
-		if (column.namespace_index >=
-			custom_resource_namespace_list.size())
-		{
+		if (column.namespace_index >= custom_resource_namespace_list.size())
 			column.namespace_index = -1;
-		}
 
 		column.resource_index = 0;
 		column.scroll_offset = 0;
@@ -1435,18 +1408,12 @@ static void NextViewerNamespace(
 
 	case Profiling::Mode::POOLS:
 	{
-		auto& column =
-			Profiling::resource_pool_columns[
-				Profiling::active_pool_column
-			];
+		auto& column = Profiling::resource_pool_columns[Profiling::active_pool_column];
 
 		column.pool_index++;
 
-		if (column.pool_index >=
-			resource_pool_list.size())
-		{
+		if (column.pool_index >= resource_pool_list.size())
 			column.pool_index = -1;
-		}
 
 		column.scroll_offset = 0;
 
@@ -1469,18 +1436,12 @@ static void PreviousViewerNamespace(
 	{
 	case Profiling::Mode::COMMAND_LIST_VARIABLES:
 	{
-		auto& column =
-			Profiling::variable_columns[
-				Profiling::active_column
-			];
+		auto& column = Profiling::variable_columns[Profiling::active_column];
 
 		column.namespace_index--;
 
 		if (column.namespace_index < -1)
-		{
-			column.namespace_index =
-				(int)namespace_list.size() - 1;
-		}
+			column.namespace_index = (int)namespace_list.size() - 1;
 
 		column.scroll_offset = 0;
 
@@ -1489,18 +1450,12 @@ static void PreviousViewerNamespace(
 
 	case Profiling::Mode::CUSTOM_RESOURCES:
 	{
-		auto& column =
-			Profiling::custom_resource_columns[
-				Profiling::active_custom_resource_column
-			];
+		auto& column = Profiling::custom_resource_columns[Profiling::active_custom_resource_column];
 
 		column.namespace_index--;
 
 		if (column.namespace_index < -1)
-		{
-			column.namespace_index =
-				(int)custom_resource_namespace_list.size() - 1;
-		}
+			column.namespace_index = (int)custom_resource_namespace_list.size() - 1;
 
 		column.resource_index = 0;
 		column.scroll_offset = 0;
@@ -1510,18 +1465,12 @@ static void PreviousViewerNamespace(
 
 	case Profiling::Mode::POOLS:
 	{
-		auto& column =
-			Profiling::resource_pool_columns[
-				Profiling::active_pool_column
-			];
+		auto& column = Profiling::resource_pool_columns[Profiling::active_pool_column];
 
 		column.pool_index--;
 
 		if (column.pool_index < -1)
-		{
-			column.pool_index =
-				(int)resource_pool_list.size() - 1;
-		}
+			column.pool_index = (int)resource_pool_list.size() - 1;
 
 		column.scroll_offset = 0;
 
@@ -1544,27 +1493,17 @@ static void NextNamespaceElement(
 	{
 	case Profiling::Mode::COMMAND_LIST_VARIABLES:
 	{
-		auto& column =
-			Profiling::variable_columns[
-				Profiling::active_column
-			];
+		auto& column = Profiling::variable_columns[Profiling::active_column];
 
 		if (column.namespace_index == -1)
 			return;
 
-		auto& variables =
-			variable_groups[
-				namespace_list[
-					column.namespace_index
-				]
-			];
+		auto& variables = variable_groups[namespace_list[column.namespace_index]];
 
 		if (variables.size() <= Profiling::visible_rows)
 			return;
 
-		int max_scroll =
-			(int)variables.size() -
-			Profiling::visible_rows;
+		int max_scroll = (int)variables.size() - Profiling::visible_rows;
 
 		column.scroll_offset++;
 
@@ -1577,20 +1516,12 @@ static void NextNamespaceElement(
 
 	case Profiling::Mode::CUSTOM_RESOURCES:
 	{
-		auto& column =
-			Profiling::custom_resource_columns[
-				Profiling::active_custom_resource_column
-			];
+		auto& column = Profiling::custom_resource_columns[Profiling::active_custom_resource_column];
 
 		if (column.namespace_index == -1)
 			return;
 
-		auto& resources =
-			custom_resource_groups[
-				custom_resource_namespace_list[
-					column.namespace_index
-				]
-			];
+		auto& resources = custom_resource_groups[custom_resource_namespace_list[column.namespace_index]];
 
 		if (resources.empty())
 			return;
@@ -1600,32 +1531,17 @@ static void NextNamespaceElement(
 		 */
 		column.resource_index++;
 
-		if (column.resource_index >=
-			resources.size())
-		{
+		if (column.resource_index >= resources.size())
 			column.resource_index = 0;
-		}
-
 
 		/*
 		 * Keep selected Resource visible.
 		 */
-		if (column.resource_index >=
-			column.scroll_offset +
-			Profiling::custom_resource_visible_rows)
-		{
-			column.scroll_offset =
-				column.resource_index -
-				Profiling::custom_resource_visible_rows +
-				1;
-		}
+		if (column.resource_index >= column.scroll_offset + Profiling::custom_resource_visible_rows)
+			column.scroll_offset = column.resource_index - Profiling::custom_resource_visible_rows + 1;
 
-		if (column.resource_index <
-			column.scroll_offset)
-		{
-			column.scroll_offset =
-				column.resource_index;
-		}
+		if (column.resource_index < column.scroll_offset)
+			column.scroll_offset = column.resource_index;
 
 		break;
 	}
@@ -1633,30 +1549,17 @@ static void NextNamespaceElement(
 
 	case Profiling::Mode::POOLS:
 	{
-		auto& column =
-			Profiling::resource_pool_columns[
-				Profiling::active_pool_column
-			];
+		auto& column = Profiling::resource_pool_columns[Profiling::active_pool_column];
 
 		if (column.pool_index == -1)
 			return;
 
-		auto& pool =
-			customResourcePools[
-				resource_pool_list[
-					column.pool_index
-				]
-			];
+		auto& pool =customResourcePools[resource_pool_list[column.pool_index]];
 
-		if (pool.GetElements().size() <=
-			Profiling::visible_rows)
-		{
+		if (pool.GetElements().size() <= Profiling::visible_rows)
 			return;
-		}
 
-		int max_scroll =
-			(int)pool.GetElements().size() -
-			Profiling::visible_rows;
+		int max_scroll = (int)pool.GetElements().size() - Profiling::visible_rows;
 
 		column.scroll_offset++;
 
@@ -1683,27 +1586,17 @@ static void PreviousNamespaceElement(
 	{
 	case Profiling::Mode::COMMAND_LIST_VARIABLES:
 	{
-		auto& column =
-			Profiling::variable_columns[
-				Profiling::active_column
-			];
+		auto& column = Profiling::variable_columns[Profiling::active_column];
 
 		if (column.namespace_index == -1)
 			return;
 
-		auto& variables =
-			variable_groups[
-				namespace_list[
-					column.namespace_index
-				]
-			];
+		auto& variables =variable_groups[namespace_list[column.namespace_index]];
 
 		if (variables.size() <= Profiling::visible_rows)
 			return;
 
-		int max_scroll =
-			(int)variables.size() -
-			Profiling::visible_rows;
+		int max_scroll = (int)variables.size() - Profiling::visible_rows;
 
 		column.scroll_offset--;
 
@@ -1716,24 +1609,15 @@ static void PreviousNamespaceElement(
 
 	case Profiling::Mode::CUSTOM_RESOURCES:
 	{
-		auto& column =
-			Profiling::custom_resource_columns[
-				Profiling::active_custom_resource_column
-			];
+		auto& column = Profiling::custom_resource_columns[Profiling::active_custom_resource_column];
 
 		if (column.namespace_index == -1)
 			return;
 
-		auto& resources =
-			custom_resource_groups[
-				custom_resource_namespace_list[
-					column.namespace_index
-				]
-			];
+		auto& resources = custom_resource_groups[custom_resource_namespace_list[column.namespace_index]];
 
 		if (resources.empty())
 			return;
-
 
 		/*
 		 * Selected Resource
@@ -1741,31 +1625,16 @@ static void PreviousNamespaceElement(
 		column.resource_index--;
 
 		if (column.resource_index < 0)
-		{
-			column.resource_index =
-				(int)resources.size() - 1;
-		}
-
+			column.resource_index = (int)resources.size() - 1;
 
 		/*
 		 * Keep selected Resource visible.
 		 */
-		if (column.resource_index <
-			column.scroll_offset)
-		{
-			column.scroll_offset =
-				column.resource_index;
-		}
+		if (column.resource_index < column.scroll_offset)
+			column.scroll_offset = column.resource_index;
 
-		if (column.resource_index >=
-			column.scroll_offset +
-			Profiling::custom_resource_visible_rows)
-		{
-			column.scroll_offset =
-				column.resource_index -
-				Profiling::custom_resource_visible_rows +
-				1;
-		}
+		if (column.resource_index >= column.scroll_offset + Profiling::custom_resource_visible_rows)
+			column.scroll_offset = column.resource_index - Profiling::custom_resource_visible_rows + 1;
 
 		break;
 	}
@@ -1773,30 +1642,17 @@ static void PreviousNamespaceElement(
 
 	case Profiling::Mode::POOLS:
 	{
-		auto& column =
-			Profiling::resource_pool_columns[
-				Profiling::active_pool_column
-			];
+		auto& column = Profiling::resource_pool_columns[Profiling::active_pool_column];
 
 		if (column.pool_index == -1)
 			return;
 
-		auto& pool =
-			customResourcePools[
-				resource_pool_list[
-					column.pool_index
-				]
-			];
+		auto& pool = customResourcePools[resource_pool_list[column.pool_index]];
 
-		if (pool.GetElements().size() <=
-			Profiling::visible_rows)
-		{
+		if (pool.GetElements().size() <= Profiling::visible_rows)
 			return;
-		}
 
-		int max_scroll =
-			(int)pool.GetElements().size() -
-			Profiling::visible_rows;
+		int max_scroll = (int)pool.GetElements().size() - Profiling::visible_rows;
 
 		column.scroll_offset--;
 

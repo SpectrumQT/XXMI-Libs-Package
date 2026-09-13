@@ -428,8 +428,9 @@ struct Globals
 	bool gShowWarnings;
 	bool dump_all_profiles;
 
-	bool auto_clear_persist_vars;
-	uint32_t unknown_persist_vars_count;
+	bool clear_unknown_settings = true;
+	uint32_t current_unknown_settings_hash = 0;
+	uint32_t last_unknown_settings_hash = 0;
 
 	uint64_t ticks_at_launch;
 	uint64_t gSystemTickCount;
@@ -448,7 +449,7 @@ struct Globals
 	int load_library_redirect;
 
 	std::wstring user_config;
-	int user_config_dirty;
+	bool user_config_dirty;
 
 	EnableHooks enable_hooks;
 	
@@ -758,7 +759,7 @@ struct Globals
 		gReloadConfigPending(false),
 		gConfigInitialized(false),
 		gWipeUserConfig(false),
-		user_config_dirty(0),
+		user_config_dirty(false),
 		gShowWarnings(true),
 		gDllInitializationDelay(0),
 		gSettingsAutoSaveInterval(0),
@@ -768,8 +769,6 @@ struct Globals
 		gFallbackScreenHeight(0),
 		gForceDetectColorSpace(false),
 		dump_all_profiles(false),
-		auto_clear_persist_vars(true),
-		unknown_persist_vars_count(0),
 		gSystemTickCount(0),
 		gTime(0),
 		gFrameTime(0)

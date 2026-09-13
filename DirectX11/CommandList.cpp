@@ -25,7 +25,7 @@ CustomShaders customShaders;
 ExplicitCommandListSections explicitCommandListSections;
 CommandListVariables command_list_globals;
 std::vector<CommandListVariable*> persistent_variables;
-std::unordered_map<std::wstring, float> unknown_variables;
+std::map<std::wstring, float> unknown_variables;
 std::vector<CommandList*> registered_command_lists;
 std::unordered_set<CommandList*> command_lists_profiling;
 std::unordered_set<CommandListCommand*> command_lists_cmd_profiling;
@@ -2992,6 +2992,15 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 		case ResourceCopyTargetEvaluationMode::RESOURCE_HEIGHT:
 			return texture_filter_target.GetResourceHeight(state);
 
+		case ResourceCopyTargetEvaluationMode::RESOURCE_ARRAY:
+			return texture_filter_target.GetResourceArray(state);
+
+		case ResourceCopyTargetEvaluationMode::RESOURCE_MIPS:
+			return texture_filter_target.GetResourceMips(state);
+
+		case ResourceCopyTargetEvaluationMode::RESOURCE_BIND_FLAGS:
+			return texture_filter_target.GetResourceBindFlags(state);
+
 		case ResourceCopyTargetEvaluationMode::RESOURCE_SIZE:
 			return texture_filter_target.GetResourceSize(state);
 
@@ -4791,11 +4800,29 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 		// Variable
 		if (has_variable_prefix)
 		{
-			size_t len = FindVariableTokenEnd(remain, 1);
+			bool is_pool_variable_candidate = remain.size() >= 6 && wcsncmp(remain.c_str(), L"$pool", 5) == 0;
 
-			// Skip handling variable pool (e.g. `$PoolFoo[0]`).
-			if (len && len < remain.size() && remain[len] == L'[')
-				len = 0;
+			if (is_pool_variable_candidate)
+			{
+				// More loose pool variable identifier match with hyphens, brackets and UTF-8.
+				// Allows strings like `$Pool\path like\namespace\chars_UTF-8[$index]`.
+				size_t len_target = FindResourceCopyTargetTokenEnd(remain, 1);
+
+				if (len_target)
+				{
+					token = remain.substr(0, len_target);
+
+					// Parse pool variable.
+					if (operand->parse_target(&token, ini_namespace, scope))
+					{
+						LogDebugW(L"      ResourceCopyTarget: \"%ls\"\n", token.c_str());
+						pos += len_target;
+						goto import_operand;
+					}
+				}
+			}
+
+			size_t len = FindVariableTokenEnd(remain, 1);
 
 			if (len)
 			{
@@ -4807,9 +4834,9 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 					pos += len;
 					goto import_operand;
 				}
-
-				throw CommandListSyntaxError(L"Variable not recognized: " + remain, friendly_pos);
 			}
+
+			throw CommandListSyntaxError(L"Variable not recognized: " + remain, friendly_pos);
 		}
 
 		bool has_prefix = has_variable_prefix || remain[0] == L'@' || remain[0] == L'#';
@@ -5654,8 +5681,8 @@ void VariableAssignment::run(CommandListState *state)
 
 	COMMAND_LIST_LOG(state, "  = %f\n", var->fval);
 
-	if (var->flags & VariableFlags::PERSIST)
-		G->user_config_dirty |= (var->fval != orig);
+	if ((var->flags & VariableFlags::PERSIST) && var->fval != orig)
+		G->user_config_dirty = true;
 }
 
 bool AssignmentCommand::optimise(HackerDevice *device)
@@ -5823,13 +5850,24 @@ bool CommandListOperand::parse_scissor(const wstring* operand, const wstring* in
 
 bool CommandListOperand::parse_ini_keywords(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
 {
-	if (operand->size() >= 14 && !wcsncmp(operand->c_str(), L"dxgi_format_", 4))
+	if (operand->size() >= 14 && !wcsncmp(operand->c_str(), L"dxgi_format_", 12))
 	{
 		val = (float)ParseFormatString(operand->c_str(), false);
 
 		if (val == -1.0f)
 			return false;
 
+		type = ParamOverrideType::VALUE;
+	}
+	else if (operand->size() >= 18 && !wcsncmp(operand->c_str(), L"d3d11_bind_", 11))
+	{
+		CustomResourceBindFlags flags = lookup_enum_val<const wchar_t*, CustomResourceBindFlags>(
+			CustomResourceBindFlagNames, operand->c_str() + 11, CustomResourceBindFlags::INVALID);
+
+		if (flags == CustomResourceBindFlags::INVALID)
+			return false;
+
+		val = (float)flags;
 		type = ParamOverrideType::VALUE;
 	}
 	else
@@ -5922,16 +5960,21 @@ bool ParseCommandListVariableAssignment(const wchar_t *section,
 
 	CommandListVariable* var = nullptr;
 
-	if (!args.GetVariable(var, false, CommandArgumentReader::PeekMode::Argument))
+	bool loading_user_config = *ini_namespace == G->user_config;
+
+	// Persistent user config may only assign variables that are still persistent.
+	// Treat variables that lost the "persist" flag since the previous config load
+	// as unknown so their stale values can be handled by HandleUnknownPersistentSettings().
+	if (!args.GetVariable(var, false, CommandArgumentReader::PeekMode::Argument)
+		|| (loading_user_config && !(var->flags & VariableFlags::PERSIST)))
 	{
 		// Remember unrecognized persistent variable.
-		// Used for `d3dx_user.ini` auto-clear disabling support.
-		if (*ini_namespace == G->user_config)
+		if (loading_user_config)
 		{
-			float out;
+			float value;
 			size_t len;
-			if (ParseFloatToken(*val, out, len))
-				unknown_variables[name] = out;
+			if (ParseFloatToken(*val, value, len))
+				RegisterUnknownSetting(name.c_str(), value);
 		}
 
 		// Report only "locked" variable error for now to avoid `d3dx_user.ini` error spam.
@@ -7918,7 +7961,9 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 	}
 
 	static constexpr MemberInfo members[] = {
+		{ L"->mips",           6, ResourceCopyTargetEvaluationMode::RESOURCE_MIPS },
 		{ L"->size",           6, ResourceCopyTargetEvaluationMode::RESOURCE_SIZE },
+		{ L"->array",          7, ResourceCopyTargetEvaluationMode::RESOURCE_ARRAY },
 		{ L"->index",          7, ResourceCopyTargetEvaluationMode::POOL_INDEX },
 		{ L"->width",          7, ResourceCopyTargetEvaluationMode::RESOURCE_WIDTH },
 		{ L"->offset",         8, ResourceCopyTargetEvaluationMode::RESOURCE_OFFSET },
@@ -7929,11 +7974,12 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 			MemberArg::Type::Unsigned, // Byte Offset 
 			MemberArg::Type::Unsigned  // Byte Size 
 		}} },
+		{ L"->bindflags",     11, ResourceCopyTargetEvaluationMode::RESOURCE_BIND_FLAGS },
+		{ L"->lastframe",     11, ResourceCopyTargetEvaluationMode::POOL_LAST_FRAME },
 		{ L"->hashregion",    12, ResourceCopyTargetEvaluationMode::RESOURCE_REGION_HASH, {{
 			MemberArg::Type::Unsigned, // Byte Offset 
 			MemberArg::Type::Unsigned  // Byte Size 
 		}} },
-		{ L"->lastframe",   13, ResourceCopyTargetEvaluationMode::POOL_LAST_FRAME },
 		{ L"->spatialhash",   13, ResourceCopyTargetEvaluationMode::RESOURCE_SPATIAL_HASH, {{
 			MemberArg::Type::Unsigned, // X Byte Offset 
 			MemberArg::Type::Unsigned, // Y Byte Offset 
@@ -8569,14 +8615,31 @@ void LayoutElementOperation::run(CommandListState* state)
 
 #pragma region PoolVariableOperation
 
-CommandListCommand* parse_pool_variable_operation(const wchar_t *section, ResourceCopyTarget& dst, wstring *val, CommandList *command_list, const wstring *ini_namespace)
+CommandListCommand* parse_pool_variable_operation(
+	const wchar_t *section, ResourceCopyTarget& dst, wstring *val, CommandList *command_list, const wstring *ini_namespace, const wchar_t* key
+)
 {
-
 	//LogInfoW(L"parse_pool_variable_operation dst_type=%ls, dst_mode=%ls, val=%ls\n",
 	//	lookup_enum_name(ResourceCopyTargetTypeNames, dst.type), lookup_enum_name(ResourceCopyTargetEvaluationModeNames, dst.evaluation_mode), val->c_str());
 
-	if (!dst.custom_resource_pool)
+	bool loading_user_config = *ini_namespace == G->user_config;
+
+	// Persistent user config may only assign pool variables if pool still has persistent variables enabled.
+	// Treat variables of pool that lost "pool_persist_variables" option since the previous config load
+	// as unknown so their stale values can be handled by HandleUnknownPersistentSettings().
+	if (!dst.custom_resource_pool
+		|| (loading_user_config && !(dst.custom_resource_pool->variable_template->flags & VariableFlags::PERSIST)))
+	{
+		// Remember unrecognized persistent pool variable.
+		if (loading_user_config)
+		{
+			float value;
+			size_t len;
+			if (ParseFloatToken(*val, value, len))
+				RegisterUnknownSetting(key, value);
+		}
 		return false;
+	}
 
 	if (val->empty())
 		return false;
@@ -8605,8 +8668,8 @@ void PoolVariableOperation::SetVariableValue(CommandListState* state, CommandLis
 
 	COMMAND_LIST_LOG(state, "  = %f\n", dst->fval);
 
-	if (dst->flags & VariableFlags::PERSIST)
-		G->user_config_dirty |= (dst->fval != orig);
+	if ((dst->flags & VariableFlags::PERSIST) && dst->fval != orig)
+		G->user_config_dirty = true;
 }
 
 void PoolVariableOperation::SetAllPoolVariables(CommandListState* state, float value)
@@ -8710,28 +8773,17 @@ bool ParseCommandListResourceCopyTargetDirective(
 
 	if (!dst.ParseTarget(key, false, ini_namespace, command_list->scope))
 	{
-		if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::VARIABLE)
-		{
-			// Remember unrecognized persistent pool variable.
-			// Used for `d3dx_user.ini` auto-clear disabling support.
-			if (*ini_namespace == G->user_config)
-			{
-				float out;
-				size_t len;
-				if (ParseFloatToken(*val, out, len))
-					unknown_variables[key] = out;
-			}
-		}
-		return false;
+		if (dst.evaluation_mode != ResourceCopyTargetEvaluationMode::VARIABLE)
+			return false;
 	}
 
 	CommandListCommand* operation = nullptr;
 
-	if (dst.type == ResourceCopyTargetType::VARIABLE)
+	if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::VARIABLE)
 	{
 		// Pool Variable - Copy Exression Result To Pool Variable
 		// $PoolFoo[0] = $PoolBar[0] + $var + 1
-		operation = parse_pool_variable_operation(section, dst, val, command_list, ini_namespace);
+		operation = parse_pool_variable_operation(section, dst, val, command_list, ini_namespace, key);
 	}
 	else if (dst.evaluation_mode & ResourceCopyTargetEvaluationMode::LAYOUT_MASK)
 	{
@@ -8767,7 +8819,7 @@ bool ParseCommandListResourceCopyTargetDirective(
 				case ResourceCopyTargetType::VARIABLE: // PoolFoo[*] = $PoolBar[0]
 				case ResourceCopyTargetType::INVALID:  // PoolFoo[*] = $var
 					// Pool - Copy Variable To All Slots (`val` will be re-parsed as expression)
-					operation = parse_pool_variable_operation(section, dst, val, command_list, ini_namespace);
+					operation = parse_pool_variable_operation(section, dst, val, command_list, ini_namespace, key);
 					break;
 
 				default: // PoolFoo[*] = copy ResourceBar
@@ -10101,6 +10153,179 @@ float ResourceCopyTarget::GetResourceHeight(CommandListState* state)
 		ret = ResourcePropertyResult::RESOURCE_NOT_FOUND;
 	} else {
 		ret = GetResourceExtent(resource, 1);
+		resource->Release();
+	}
+
+	if (view)
+		view->Release();
+
+	return ret;
+}
+
+// Returns the array dimension of a texture resource, or NOT_A_TEXTURE for buffers.
+// Uses the resource description, so for texture arrays / mip-level SRVs this is the full resource ArraySize, not the view's.
+float ResourceCopyTarget::GetResourceArray(CommandListState* state)
+{
+	if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
+		CustomResource* custom_resource = GetCustomResource(state);
+		if (custom_resource) {
+			if (custom_resource->override_array != -1)
+				return (float)custom_resource->override_array;
+		} else {
+			// GetResource()'s CUSTOM_RESOURCE branch dereferences without null check,
+			// so bail out for an unassigned pool resource.
+			return ResourcePropertyResult::RESOURCE_NOT_FOUND;
+		}
+	}
+
+	ID3D11View* view = nullptr;
+	ID3D11Resource* resource = GetResource(state, &view, nullptr, nullptr, nullptr, nullptr);
+
+	float ret = ResourcePropertyResult::UNKNOWN;
+
+	if (!resource) {
+		ret = ResourcePropertyResult::RESOURCE_NOT_FOUND;
+	} else {
+		D3D11_RESOURCE_DIMENSION dimension;
+		resource->GetType(&dimension);
+
+		switch (dimension) {
+			case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
+				D3D11_TEXTURE1D_DESC desc;
+				static_cast<ID3D11Texture1D*>(resource)->GetDesc(&desc);
+				ret = (float)desc.ArraySize;
+				break;
+			}
+			case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
+				D3D11_TEXTURE2D_DESC desc;
+				static_cast<ID3D11Texture2D*>(resource)->GetDesc(&desc);
+				ret = (float)desc.ArraySize;
+				break;
+			}
+		}
+
+		if (ret == ResourcePropertyResult::UNKNOWN) {
+			ret = ResourcePropertyResult::NOT_A_TEXTURE;
+		}
+
+		resource->Release();
+	}
+
+	if (view)
+		view->Release();
+
+	return ret;
+}
+
+// Returns the mipmap level count of a texture resource, or NOT_A_TEXTURE for buffers.
+// Uses the resource description, so for mip-level SRVs this is the full resource MipLevels, not the view's.
+float ResourceCopyTarget::GetResourceMips(CommandListState* state)
+{
+	if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
+		CustomResource* custom_resource = GetCustomResource(state);
+		if (custom_resource) {
+			if (custom_resource->override_mips != -1)
+				return (float)custom_resource->override_mips;
+		} else {
+			// GetResource()'s CUSTOM_RESOURCE branch dereferences without null check,
+			// so bail out for an unassigned pool resource.
+			return ResourcePropertyResult::RESOURCE_NOT_FOUND;
+		}
+	}
+
+	ID3D11View* view = nullptr;
+	ID3D11Resource* resource = GetResource(state, &view, nullptr, nullptr, nullptr, nullptr);
+
+	float ret = ResourcePropertyResult::UNKNOWN;
+
+	if (!resource) {
+		ret = ResourcePropertyResult::RESOURCE_NOT_FOUND;
+	} else {
+		D3D11_RESOURCE_DIMENSION dimension;
+		resource->GetType(&dimension);
+
+		switch (dimension) {
+			case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
+				D3D11_TEXTURE1D_DESC desc;
+				static_cast<ID3D11Texture1D*>(resource)->GetDesc(&desc);
+				ret = (float)desc.MipLevels;
+				break;
+			}
+			case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
+				D3D11_TEXTURE2D_DESC desc;
+				static_cast<ID3D11Texture2D*>(resource)->GetDesc(&desc);
+				ret = (float)desc.MipLevels;
+				break;
+			}
+			case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
+				D3D11_TEXTURE3D_DESC desc;
+				static_cast<ID3D11Texture3D*>(resource)->GetDesc(&desc);
+				ret = (float)desc.MipLevels;
+				break;
+			}
+		}
+
+		if (ret == ResourcePropertyResult::UNKNOWN) {
+			ret = ResourcePropertyResult::NOT_A_TEXTURE;
+		}
+
+		resource->Release();
+	}
+
+	if (view)
+		view->Release();
+
+	return ret;
+}
+
+// Returns the D3D11_BIND_FLAGs of a resource.
+D3D11_BIND_FLAG ResourceCopyTarget::GetResourceBindFlags(CommandListState *state)
+{
+	if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
+		CustomResource* custom_resource = GetCustomResource(state);
+		if (custom_resource) {
+			return custom_resource->bind_flags;
+		}
+		// GetResource()'s CUSTOM_RESOURCE branch dereferences without null check,
+		// so bail out for an unassigned pool resource.
+		return (D3D11_BIND_FLAG)0;
+	}
+
+	ID3D11View* view = nullptr;
+	ID3D11Resource* resource = GetResource(state, &view, nullptr, nullptr, nullptr, nullptr);
+
+	D3D11_BIND_FLAG ret = (D3D11_BIND_FLAG)0;
+
+	if (resource) {
+		D3D11_RESOURCE_DIMENSION dimension;
+		resource->GetType(&dimension);
+
+		switch (dimension) {
+			case D3D11_RESOURCE_DIMENSION_BUFFER: {
+				D3D11_BUFFER_DESC desc;
+				static_cast<ID3D11Buffer*>(resource)->GetDesc(&desc);
+				ret = (D3D11_BIND_FLAG)desc.BindFlags;
+				break;
+			}
+			case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
+				D3D11_TEXTURE1D_DESC desc;
+				static_cast<ID3D11Texture1D*>(resource)->GetDesc(&desc);
+				ret = (D3D11_BIND_FLAG)desc.BindFlags;
+				break;
+			}
+			case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
+				D3D11_TEXTURE2D_DESC desc;
+				static_cast<ID3D11Texture2D*>(resource)->GetDesc(&desc);
+				ret = (D3D11_BIND_FLAG)desc.BindFlags;
+				break;
+			}
+			case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
+				D3D11_TEXTURE3D_DESC desc;
+				static_cast<ID3D11Texture3D*>(resource)->GetDesc(&desc);
+				ret = (D3D11_BIND_FLAG)desc.BindFlags;
+				break;
+			}
+		}
 		resource->Release();
 	}
 

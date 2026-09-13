@@ -204,3 +204,4 @@ $RECYCLE.BIN/
 #
 # There's a great collection of .gitignore templates here:
 # https://github.com/github/gitignore
+.idea/

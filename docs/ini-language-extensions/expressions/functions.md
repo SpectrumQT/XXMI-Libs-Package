@@ -47,11 +47,12 @@ Function behavior follows the corresponding HLSL functions where an equivalent e
 
 ### `random`
 
-`random($max)` generates a deterministic pseudo-random value. The argument is required and specifies the maximum magnitude of the generated result.
+`random($max)` generates a deterministic pseudo-random **floating-point (`float`) value**. The argument is required and specifies the maximum magnitude of the generated result.
 
-* For a positive `$max`, the result is in the range `[0, $max)`.
-* For a negative `$max`, the result is in the range `($max, 0]`.
+* For a positive `$max`, the result is in the range `[0.0f, $max)`.
+* For a negative `$max`, the result is in the range `($max, 0.0f]`.
 * The supplied maximum value is never returned.
+* `random(0)` returns `0.0f`.
 
 The generated value is based on a hash of the current frame number, system tick count, and an incrementing per-call counter. This allows multiple `random()` calls within the same frame to produce distinct values while remaining deterministic for the same execution state.
 

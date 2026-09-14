@@ -65,7 +65,7 @@ namespace Profiling {
 
 	// Custom Resources
 
-	std::vector<CustomResourceColumn> custom_resource_columns(6);
+	std::vector<CustomResourceColumn> custom_resource_columns(4);
 	int active_custom_resource_column = 0;
 
 	const int custom_resource_metadata_rows = 16;
@@ -867,6 +867,31 @@ static void DrawResources()
 	}
 }
 
+ID3D11Resource* Profiling::GetSelectedCustomResource()
+{
+	if (mode != Mode::CUSTOM_RESOURCES)
+		return nullptr;
+
+	if (active_custom_resource_column < 0 || active_custom_resource_column >= (int)custom_resource_columns.size())
+		return nullptr;
+
+	auto& column = custom_resource_columns[active_custom_resource_column];
+
+	if (column.namespace_index < 0 || column.namespace_index >= (int)custom_resource_namespace_list.size())
+		return nullptr;
+
+	auto& resources = custom_resource_groups[custom_resource_namespace_list[column.namespace_index]];
+
+	if (column.resource_index < 0 || column.resource_index >= (int)resources.size())
+		return nullptr;
+
+	auto* entry = resources[column.resource_index];
+
+	if (!entry || !entry->resource || entry->resource->is_null || !entry->resource->resource)
+		return nullptr;
+
+	return entry->resource->resource;
+}
 
 static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER freq, unsigned frames)
 {

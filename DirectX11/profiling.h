@@ -3,6 +3,7 @@
 #include <wrl.h>
 #include <string>
 #include <vector>
+#include <d3d11.h>
 
 namespace Profiling {
 	enum class Mode {
@@ -143,4 +144,6 @@ namespace Profiling {
 
 	extern const int custom_resource_visible_rows;
 	extern const int custom_resource_metadata_rows;
+
+	ID3D11Resource* GetSelectedCustomResource();
 }

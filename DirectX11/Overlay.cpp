@@ -189,6 +189,73 @@ Overlay::~Overlay()
 	mHackerDevice->Release();
 }
 
+HRESULT Overlay::UpdateProfilingTexture()
+{
+	ID3D11Resource* resource = Profiling::GetSelectedCustomResource();
+
+	if (resource == mProfilingTextureResource)
+		return mProfilingTextureSRV ? S_OK : E_FAIL;
+
+	mProfilingTextureSRV.Reset();
+	mProfilingTextureResource = nullptr;
+
+	if (!resource)
+		return S_FALSE;
+
+	D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+	resource->GetType(&dimension);
+
+	if (dimension != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+		return E_NOINTERFACE;
+
+	auto* texture = static_cast<ID3D11Texture2D*>(resource);
+	D3D11_TEXTURE2D_DESC desc;
+	texture->GetDesc(&desc);
+
+	if (!(desc.BindFlags & D3D11_BIND_SHADER_RESOURCE))
+		return E_ACCESSDENIED;
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+	srv_desc.Format = desc.Format;
+
+	if (desc.Format == DXGI_FORMAT_R32G32B32A32_TYPELESS)
+		srv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+
+	srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+	srv_desc.Texture2D.MostDetailedMip = 0;
+	srv_desc.Texture2D.MipLevels = desc.MipLevels;
+
+	HRESULT hr = mOrigDevice->CreateShaderResourceView(texture, &srv_desc, mProfilingTextureSRV.GetAddressOf());
+
+	if (FAILED(hr))
+		return hr;
+
+	mProfilingTextureResource = resource;
+	return S_OK;
+}
+
+void Overlay::DrawProfilingTexture(float x, float y)
+{
+	if (!mProfilingTextureSRV || !mProfilingTextureResource)
+		return;
+
+	auto* texture = static_cast<ID3D11Texture2D*>(mProfilingTextureResource);
+	D3D11_TEXTURE2D_DESC desc;
+	texture->GetDesc(&desc);
+
+	if (!desc.Width || !desc.Height)
+		return;
+
+	const float max_width = 512.0f;
+	const float max_height = 512.0f;
+
+	float width = (float)desc.Width;
+	float height = (float)desc.Height;
+	float scale = (std::min)(max_width / width, max_height / height);
+	scale = (std::min)(scale, 1.0f);
+
+	mSpriteBatch->Draw(mProfilingTextureSRV.Get(), DirectX::XMFLOAT2(x, y), nullptr, DirectX::Colors::White, 0.0f, DirectX::XMFLOAT2(0.0f, 0.0f), scale);
+}
 
 // -----------------------------------------------------------------------------
 
@@ -774,6 +841,10 @@ void Overlay::DrawProfiling(float *y)
 	DrawRectangle(0, *y, strSize.x + 3, strSize.y, 0, 0, 0, 0.75);
 
 	mFontProfiling->DrawString(mSpriteBatch.get(), Profiling::text.c_str(), Vector2(0, *y), DirectX::Colors::Goldenrod);
+
+	if (Profiling::mode == Profiling::Mode::CUSTOM_RESOURCES)
+		if (SUCCEEDED(UpdateProfilingTexture()))
+			DrawProfilingTexture((float)mResolution.x - 522.0f, 10.0f);
 }
 
 static void CreateInfoString(wchar_t* info)

@@ -885,4 +885,14 @@ TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resou
 void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 void InvalidateTextureOverrideCandidates();
 
+// Filter-index-only lookups for the texture filter operator. These find the
+// effective filter_index without building the full match list, using the same
+// selection order as the full finders (fuzzy matches win over exact hash
+// matches - see the TODO in process_texture_filter). any_match is set if any
+// override matched at all, so "matched but no filter_index" can be told apart
+// from "no match".
+const TextureOverride *find_texture_override_filter_index_for_resource(ID3D11Resource *resource, DrawCallInfo *call_info, bool *any_match);
+const TextureOverride *find_texture_override_filter_index_for_resource_fuzzy(ID3D11Resource *resource, DrawCallInfo *call_info, bool *any_match);
+const TextureOverride *find_texture_override_filter_index_from_fuzzy_matches(ID3D11Resource *resource, uint32_t region_hash, TextureOverrideFuzzyMatches *fuzzy_matches, DrawCallInfo *call_info, bool *any_match);
+
 void ClearRegionHashesGlobalCache();

@@ -178,7 +178,7 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 			    L"   Draw call overhead: %7.2fus/frame ~%ffps\n"
 			    L"  Command lists total: %7.2fus/frame ~%ffps\n"
 			    L"   Map/Unmap overhead: %7.2fus/frame ~%ffps\n"
-			    L"track_texture_updates: %7.2fus/frame ~%ffps\n"
+			    L"track_texture_updates: %7.2fus/frame ~%ffps (%u/%u hits/frame)\n"
 		        L"  track_region_hashes: %7.2fus/frame ~%ffps\n"
 			    L"  dump_usage overhead: %7.2fus/frame ~%ffps\n"
 			    L" ShaderRegex overhead: %7.2fus/frame ~%ffps\n"
@@ -201,6 +201,8 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 
 			    (float)hash_tracking_overhead.QuadPart / frames,
 			    60.0 * hash_tracking_overhead.QuadPart / collection_duration.QuadPart,
+			    Profiling::hash_tracking_overhead.hits / frames,
+			    Profiling::hash_tracking_overhead.count / frames,
 
 				(float)region_tracking_overhead.QuadPart / frames,
 				60.0 * region_tracking_overhead.QuadPart / collection_duration.QuadPart,
@@ -439,8 +441,7 @@ void Profiling::update_txt()
 
 void Profiling::clear()
 {
-	command_lists_profiling.clear();
-	command_lists_cmd_profiling.clear();
+	clear_command_list_profiling();
 	present_overhead.clear();
 	overlay_overhead.clear();
 	draw_overhead.clear();

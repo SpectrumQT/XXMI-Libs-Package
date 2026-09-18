@@ -2204,6 +2204,98 @@ static void ParseResourceSections()
 	}
 }
 
+static void trim_whitespace(wstring *str)
+{
+	size_t first = str->find_first_not_of(L" \t");
+	if (first == wstring::npos) {
+		str->clear();
+		return;
+	}
+	size_t last = str->find_last_not_of(L" \t");
+	*str = str->substr(first, last - first + 1);
+}
+
+// Rewrites compound assignments into plain ones so the expression parser
+// handles them without any new runtime code:
+//   $x += 1     ->  $x = ($x) + (1)
+//   x0 *= 2 + 3 ->  x0 = (x0) * (2 + 3)
+//   ++$x / $x++ ->  $x = ($x) + 1
+// A leading "pre " / "post " is kept on the key. Returns true if rewritten.
+static bool RewriteCompoundAssignment(wstring *key, wstring *val, const wstring *raw_line)
+{
+	// Two character operators first so "<<" isn't taken as "<":
+	static const wchar_t *compound_operators[] = {
+		L"**", L"//", L"<<", L">>", L"&&", L"||",
+		L"+", L"-", L"*", L"/", L"%", L"&", L"|", L"^",
+	};
+
+	wstring prefix, target, op, operand;
+
+	if (key->empty()) {
+		// No "=" on the line: ++$x / $x++ / --$x / $x--
+		if (!raw_line)
+			return false;
+		wstring line = *raw_line;
+		trim_whitespace(&line);
+		if (!line.compare(0, 5, L"post ")) {
+			prefix = L"post ";
+			line = line.substr(5);
+		} else if (!line.compare(0, 4, L"pre ")) {
+			prefix = L"pre ";
+			line = line.substr(4);
+		}
+		trim_whitespace(&line);
+		size_t len = line.size();
+		if (len < 3)
+			return false;
+		wstring head = line.substr(0, 2), tail = line.substr(len - 2);
+		if (head == L"++" || head == L"--") {
+			target = line.substr(2);
+			op = head.substr(0, 1);
+		} else if (tail == L"++" || tail == L"--") {
+			target = line.substr(0, len - 2);
+			op = tail.substr(0, 1);
+		} else {
+			return false;
+		}
+		operand = L"1";
+	} else {
+		if (val->empty())
+			return false;
+		for (const wchar_t *candidate : compound_operators) {
+			size_t len = wcslen(candidate);
+			if (key->size() > len && !key->compare(key->size() - len, len, candidate)) {
+				target = key->substr(0, key->size() - len);
+				op = candidate;
+				operand = L"(" + *val + L")";
+				break;
+			}
+		}
+		if (op.empty())
+			return false;
+	}
+
+	trim_whitespace(&target);
+	if (prefix.empty()) {
+		if (!target.compare(0, 5, L"post ")) {
+			prefix = L"post ";
+			target = target.substr(5);
+		} else if (!target.compare(0, 4, L"pre ")) {
+			prefix = L"pre ";
+			target = target.substr(4);
+		}
+		trim_whitespace(&target);
+	}
+
+	// Only variables, ini params and pool variables can be assigned this way:
+	if (target.empty() || (target[0] != L'$' && !iswalpha(target[0])))
+		return false;
+
+	*key = prefix + target;
+	*val = L"(" + target + L") " + op + L" " + operand;
+	return true;
+}
+
 static bool ParseCommandListLine(const wchar_t *ini_section,
 		const wchar_t *lhs, wstring *rhs, wstring *raw_line,
 		CommandList *command_list,
@@ -2314,6 +2406,10 @@ static void ParseCommandList(const wchar_t *id,
 			}
 		}
 
+		// $x += 1 and friends become plain assignments; the log keeps
+		// the line as written:
+		bool rewritten = RewriteCompoundAssignment(key, val, raw_line);
+
 		command_list = pre_command_list;
 		explicit_command_list = NULL;
 		key_ptr = key->c_str();
@@ -2329,6 +2425,8 @@ static void ParseCommandList(const wchar_t *id,
 		}
 
 		if (ParseCommandListLine(id, key_ptr, val, raw_line, command_list, explicit_command_list, pre_command_list, post_command_list, &entry->ini_namespace)) {
+			if (rewritten && !command_list->commands.empty())
+				command_list->commands.back()->ini_line = L"[" + wstring(id) + L"] " + *raw_line;
 			LogInfoW(L"  %ls\n", raw_line->c_str());
 			continue;
 		}

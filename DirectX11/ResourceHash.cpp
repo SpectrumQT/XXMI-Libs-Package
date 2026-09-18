@@ -1824,13 +1824,28 @@ void find_fuzzy_texture_overrides_for_resource(ID3D11Resource *resource, Texture
 	if (G->mFuzzyTextureOverrides.empty())
 		return;
 
-	TextureOverrideCandidates *candidates = get_texture_override_candidates(resource);
-	if (!candidates)
-		return find_texture_overrides_for_resource_desc(resource, matches, call_info);
+	Profiling::State profiling_state;
+	size_t matches_before = 0;
+	if (Profiling::mode == Profiling::Mode::SUMMARY) {
+		matches_before = matches->size();
+		Profiling::texture_override_candidates_lookup_overhead.count++;
+		Profiling::start(&profiling_state);
+	}
 
-	for (TextureOverride *to : candidates->fuzzy_matches) {
-		if (matches_draw_info(to, call_info))
-			matches->push_back(to);
+	TextureOverrideCandidates *candidates = get_texture_override_candidates(resource);
+	if (!candidates) {
+		find_texture_overrides_for_resource_desc(resource, matches, call_info);
+	} else {
+		for (TextureOverride *to : candidates->fuzzy_matches) {
+			if (matches_draw_info(to, call_info))
+				matches->push_back(to);
+		}
+	}
+
+	if (Profiling::mode == Profiling::Mode::SUMMARY) {
+		Profiling::end(&profiling_state, &Profiling::texture_override_candidates_lookup_overhead);
+		if (matches->size() > matches_before)
+			Profiling::texture_override_candidates_lookup_overhead.hits++;
 	}
 }
 
@@ -1919,6 +1934,14 @@ void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverri
 	if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
 		return;
 
+	Profiling::State profiling_state;
+	size_t matches_before = 0;
+	if (Profiling::mode == Profiling::Mode::SUMMARY) {
+		matches_before = matches->size();
+		Profiling::texture_override_candidates_lookup_overhead.count++;
+		Profiling::start(&profiling_state);
+	}
+
 	// Same order as the uncached path below:
 	TextureOverrideCandidates *candidates = get_texture_override_candidates(resource);
 	if (candidates) {
@@ -1931,6 +1954,12 @@ void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverri
 		for (TextureOverride *to : candidates->fuzzy_matches) {
 			if (matches_draw_info(to, call_info))
 				matches->push_back(to);
+		}
+
+		if (Profiling::mode == Profiling::Mode::SUMMARY) {
+			Profiling::end(&profiling_state, &Profiling::texture_override_candidates_lookup_overhead);
+			if (matches->size() > matches_before)
+				Profiling::texture_override_candidates_lookup_overhead.hits++;
 		}
 		return;
 	}
@@ -1945,6 +1974,12 @@ void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverri
 	//}
 
 	find_texture_overrides_for_resource_desc(resource, matches, call_info);
+
+	if (Profiling::mode == Profiling::Mode::SUMMARY) {
+		Profiling::end(&profiling_state, &Profiling::texture_override_candidates_lookup_overhead);
+		if (matches->size() > matches_before)
+			Profiling::texture_override_candidates_lookup_overhead.hits++;
+	}
 }
 
 bool TextureOverrideLess(const struct TextureOverride &lhs, const struct TextureOverride &rhs)

@@ -825,15 +825,19 @@ enum class ResourceCopyTargetEvaluationMode : uint32_t {
 	POOL_FULL_RANGE_RESOURCE = 0b00000000000001000000000000000000,
 	POOL_FULL_RANGE_VARIABLE = 0b00000000000010000000000000000000,
 	POOL_LAST_FRAME          = 0b00000000000100000000000000000000,
+	POOL_RANGE               = 0b00000000001000000000000000000000, // PoolFoo[$a:$b]
 
-	POOL_MASK                = 0b00000000000111111000000000000000,
+	POOL_MASK                = 0b00000000001111111000000000000000,
 
 	// VARIABLE
-	VARIABLE                 = 0b00000000001000000000000000000000,
+	VARIABLE                 = 0b00000000010000000000000000000000,
 
 	// LAYOUT
-	LAYOUT_ELEMENT_FORMAT    = 0b00000000010000000000000000000000,
-	LAYOUT_ELEMENT_OFFSET    = 0b00000000100000000000000000000000,
+	LAYOUT_ELEMENT_FORMAT    = 0b00000000100000000000000000000000,
+	LAYOUT_ELEMENT_OFFSET    = 0b00000001000000000000000000000000,
+
+	// PIPELINE SLOT
+	SLOT_RANGE               = 0b00000010000000000000000000000000, // ps-t[$a:$b]
 };
 SENSIBLE_ENUM(ResourceCopyTargetEvaluationMode);
 static EnumName_t<const wchar_t*, ResourceCopyTargetEvaluationMode> ResourceCopyTargetEvaluationModeNames[] = {
@@ -857,6 +861,8 @@ static EnumName_t<const wchar_t*, ResourceCopyTargetEvaluationMode> ResourceCopy
 	{L"PoolIndex", ResourceCopyTargetEvaluationMode::POOL_INDEX},
 	{L"PoolFullRangeResource", ResourceCopyTargetEvaluationMode::POOL_FULL_RANGE_RESOURCE},
 	{L"PoolFullRangeVariable", ResourceCopyTargetEvaluationMode::POOL_FULL_RANGE_VARIABLE},
+	{L"PoolRange", ResourceCopyTargetEvaluationMode::POOL_RANGE},
+	{L"SlotRange", ResourceCopyTargetEvaluationMode::SLOT_RANGE},
 
 	{L"Variable", ResourceCopyTargetEvaluationMode::VARIABLE},
 
@@ -994,9 +1000,32 @@ public:
 	CustomResourcePool* custom_resource_pool = nullptr;
 	std::unique_ptr<CommandListExpression> pool_dynamic_index_expression = nullptr;
 
+	// Pipeline slot given as an expression (ps-t[$i]); slot is resolved
+	// at runtime and must stay below max_slot:
+	std::unique_ptr<CommandListExpression> slot_expression = nullptr;
+	unsigned max_slot = 0;
+
+	// Inclusive bounds for SLOT_RANGE (ps-t[$a:$b]) and POOL_RANGE
+	// (PoolFoo[$a:$b]) targets. Null for a bare "ps-t" / "PoolFoo" side,
+	// which inherits the other side's bounds:
+	std::unique_ptr<CommandListExpression> range_start = nullptr;
+	std::unique_ptr<CommandListExpression> range_end = nullptr;
+
 	bool forbid_view_cache = false;
 
-	bool ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope, bool allow_custom = true);
+	// allow_range: accept ps-t[$a:$b] / PoolFoo[$a:$b] / bare ps-t targets,
+	// only meaningful for commands that iterate the range.
+	bool ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope, bool allow_custom = true, bool allow_range = false);
+	bool IsRange() const;
+
+	// Slot for this draw, or UINT_MAX (with a warning) if a dynamic slot
+	// expression is out of range:
+	unsigned ResolveSlot(CommandListState *state);
+	// Range bounds for this draw; false (with a warning) if invalid. Pool
+	// bounds may be negative or past the end, they wrap like PoolFoo[-1]:
+	bool ResolveRange(CommandListState *state, int *first, unsigned *count);
+	// Pool size or slot count, whichever bounds this target's range:
+	unsigned RangeLimit();
 
 	void SetCustomResource(CustomResource* resource);
 
@@ -1044,9 +1073,11 @@ public:
 	D3D11_BIND_FLAG BindFlags(CommandListState *state, D3D11_RESOURCE_MISC_FLAG *misc_flags=NULL);
 
 private:
+	bool _ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope, bool allow_custom);
 	IniParserResult ParseTargetPrefix(const wchar_t*& target, size_t& length);
 	IniParserResult ParseTargetMember(const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope);
-	IniParserResult ParseTargetPipelineSlot(const wchar_t*& target, size_t length, bool is_source);
+	IniParserResult ParseTargetPipelineSlot(const wchar_t*& target, size_t length, bool is_source, const wstring* ini_namespace, CommandListScope* scope);
+	IniParserResult ParseTargetSlotExpression(const wchar_t* text, size_t length, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetCustomResource(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetPool(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope, bool is_source);
 
@@ -1176,6 +1207,30 @@ public:
 };
 
 void merge_shader_resource_batches(CommandList *command_list);
+
+// "<stage>-t[$a:$b] = ref PoolFoo[$c:$d]" / "= ref ResourceFoo" / "= null" and
+// "PoolFoo[$c:$d] = ref <stage>-t[$a:$b]" for t, u and cb slots. Bounds are
+// evaluated per run and the whole range goes through one XXGet/Set call.
+class SlotRangeCopyOperation : public CommandListCommand {
+public:
+	ResourceCopyTarget src;
+	ResourceCopyTarget dst;
+	ResourceCopyOptions options = ResourceCopyOptions::INVALID;
+
+	~SlotRangeCopyOperation();
+
+	void run(CommandListState*) override;
+	bool optimise(HackerDevice *device) override;
+
+private:
+	// One cached view per slot for binds that need a view of the slot's
+	// type created for the source resource:
+	std::vector<ID3D11View*> cached_views;
+
+	void RunBind(CommandListState *state, unsigned first, unsigned count, int pool_first);
+	void RunFetch(CommandListState *state, unsigned first, unsigned count, int pool_first);
+	ID3D11View* ViewForSlot(CommandListState *state, unsigned index, ID3D11Resource *resource, ID3D11View *src_view);
+};
 
 class PoolCopyOperation : public CommandListCommand {
 public:
@@ -1830,7 +1885,7 @@ public:
 	template<typename T>
 	bool GetEnum(const EnumName_t<const wchar_t*, T>* names, T invalid, T* out);
 	bool GetVariable(CommandListVariable*& out, bool is_source, PeekMode mode = PeekMode::Token);
-	bool GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode = PeekMode::Token, bool validate = true);
+	bool GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode = PeekMode::Token, bool validate = true, bool allow_range = false);
 	bool GetFloat(float* out);
 	bool GetExpression(unique_ptr<CommandListExpression>* out);
 

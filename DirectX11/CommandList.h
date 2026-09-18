@@ -1113,6 +1113,11 @@ public:
 	ResourcePool resource_pool;
 	ID3D11View *cached_view;
 
+	// Set by ShaderResourceBindBatch while it runs this operation: the
+	// resolved view is handed back through here instead of being bound.
+	ID3D11View **deferred_view = nullptr;
+	bool *deferred_assign = nullptr;
+
 	ResourceCopyOperation();
 	~ResourceCopyOperation();
 
@@ -1120,7 +1125,40 @@ public:
 	void CopyResourceToPool(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size);
 
 	void run(CommandListState*) override;
+	// Used by ShaderResourceFetchBatch, which fetched the source itself:
+	void RunWithSource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view);
+
+private:
+	void SetOrDeferResource(CommandListState* state, ID3D11Resource* res, ID3D11View* view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_size);
 };
+
+// Adjacent resource copies between a contiguous range of shader resource
+// slots and custom resources, merged by the optimiser into a single
+// XXGet/SetShaderResources call. The operations still resolve their own
+// views and run in ini order, so duplicate slots and unless_null keep their
+// sequential meaning.
+class ShaderResourceBatch : public CommandListCommand {
+public:
+	wchar_t shader_type = L'\0';
+	unsigned first_slot = 0;
+	unsigned count = 0;
+	bool seed_with_current = false; // Bind only: some operation is unless_null
+	std::vector<std::shared_ptr<ResourceCopyOperation>> operations;
+};
+
+// "<stage>-tN = ref ResourceFoo" lines: one XXSetShaderResources
+class ShaderResourceBindBatch : public ShaderResourceBatch {
+public:
+	void run(CommandListState*) override;
+};
+
+// "ResourceFoo = ref <stage>-tN" lines: one XXGetShaderResources
+class ShaderResourceFetchBatch : public ShaderResourceBatch {
+public:
+	void run(CommandListState*) override;
+};
+
+void merge_shader_resource_batches(CommandList *command_list);
 
 class PoolCopyOperation : public CommandListCommand {
 public:

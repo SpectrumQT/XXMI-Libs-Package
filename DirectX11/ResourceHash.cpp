@@ -1719,6 +1719,121 @@ void find_texture_overrides_for_resource_by_hash_from_fuzzy_matches(ID3D11Resour
 	find_texture_overrides_by_hash_from_fuzzy_matches(hash, fuzzy_matches, matches, call_info);
 }
 
+// find_texture_overrides_for_desc without the draw context filter, for caching:
+template <typename DescType>
+static void collect_fuzzy_texture_overrides_for_desc(const DescType *desc, std::vector<TextureOverride*> *out)
+{
+	FuzzyTextureOverrides::iterator i;
+	Profiling::State profiling_state;
+
+	if (Profiling::mode == Profiling::Mode::SUMMARY) {
+		Profiling::texture_override_fuzzy_match_overhead.count++;
+		Profiling::start(&profiling_state);
+	}
+
+	for (i = G->mFuzzyTextureOverrides.begin(); i != G->mFuzzyTextureOverrides.end(); i++) {
+		if ((*i)->matches(desc))
+			out->push_back((*i)->texture_override);
+	}
+
+	if (Profiling::mode == Profiling::Mode::SUMMARY) {
+		Profiling::end(&profiling_state, &Profiling::texture_override_fuzzy_match_overhead);
+		if (!out->empty())
+			Profiling::texture_override_fuzzy_match_overhead.hits++;
+	}
+}
+
+static void collect_fuzzy_texture_overrides_for_resource(ID3D11Resource *resource, std::vector<TextureOverride*> *out)
+{
+	D3D11_RESOURCE_DIMENSION dimension;
+	resource->GetType(&dimension);
+	switch (dimension) {
+		case D3D11_RESOURCE_DIMENSION_BUFFER:
+		{
+			D3D11_BUFFER_DESC desc;
+			((ID3D11Buffer*)resource)->GetDesc(&desc);
+			return collect_fuzzy_texture_overrides_for_desc(&desc, out);
+		}
+		case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+		{
+			D3D11_TEXTURE1D_DESC desc;
+			((ID3D11Texture1D*)resource)->GetDesc(&desc);
+			return collect_fuzzy_texture_overrides_for_desc(&desc, out);
+		}
+		case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+		{
+			D3D11_TEXTURE2D_DESC desc;
+			((ID3D11Texture2D*)resource)->GetDesc(&desc);
+			return collect_fuzzy_texture_overrides_for_desc(&desc, out);
+		}
+		case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+		{
+			D3D11_TEXTURE3D_DESC desc;
+			((ID3D11Texture3D*)resource)->GetDesc(&desc);
+			return collect_fuzzy_texture_overrides_for_desc(&desc, out);
+		}
+	}
+}
+
+void InvalidateTextureOverrideCandidates()
+{
+	EnterCriticalSectionPretty(&G->mResourcesLock);
+
+	for (auto &entry : G->mResources) {
+		entry.second.texture_override_candidates_valid = false;
+		entry.second.texture_override_candidates.hash_matches = NULL;
+		entry.second.texture_override_candidates.fuzzy_matches.clear();
+	}
+
+	LeaveCriticalSection(&G->mResourcesLock);
+}
+
+TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource *resource)
+{
+	ResourceHandleInfo *handle_info = GetResourceHandleInfo(resource);
+	if (!handle_info)
+		return NULL;
+
+	TextureOverrideCandidates *candidates = &handle_info->texture_override_candidates;
+
+	if (!handle_info->texture_override_candidates_valid) {
+		if (!G->mFuzzyTextureOverrides.empty())
+			collect_fuzzy_texture_overrides_for_resource(resource, &candidates->fuzzy_matches);
+
+		handle_info->texture_override_candidates_valid = true;
+		handle_info->texture_override_hash = handle_info->hash + 1; // force rebuild below
+	}
+
+	if (handle_info->texture_override_hash != handle_info->hash) {
+		candidates->hash_matches = NULL;
+
+		if (handle_info->hash && !G->mTextureOverrideMap.empty()) {
+			TextureOverrideMap::iterator i = lookup_textureoverride(handle_info->hash);
+			if (i != G->mTextureOverrideMap.end())
+				candidates->hash_matches = &i->second;
+		}
+
+		handle_info->texture_override_hash = handle_info->hash;
+	}
+
+	return candidates;
+}
+
+void find_fuzzy_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info)
+{
+	if (G->mFuzzyTextureOverrides.empty())
+		return;
+
+	TextureOverrideCandidates *candidates = get_texture_override_candidates(resource);
+	if (!candidates)
+		return find_texture_overrides_for_resource_desc(resource, matches, call_info);
+
+	for (TextureOverride *to : candidates->fuzzy_matches) {
+		if (matches_draw_info(to, call_info))
+			matches->push_back(to);
+	}
+}
+
 template <typename DescType>
 static void find_texture_overrides_for_desc(const DescType *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info)
 {
@@ -1801,6 +1916,25 @@ void find_texture_overrides_for_resource_desc(ID3D11Resource* resource, TextureO
 
 void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info)
 {
+	if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
+		return;
+
+	// Same order as the uncached path below:
+	TextureOverrideCandidates *candidates = get_texture_override_candidates(resource);
+	if (candidates) {
+		if (candidates->hash_matches) {
+			for (TextureOverride &to : *candidates->hash_matches) {
+				if (matches_draw_info(&to, call_info))
+					matches->push_back(&to);
+			}
+		}
+		for (TextureOverride *to : candidates->fuzzy_matches) {
+			if (matches_draw_info(to, call_info))
+				matches->push_back(to);
+		}
+		return;
+	}
+
 	find_texture_overrides_for_resource_by_hash(resource, matches, call_info);
 
 	// Allow fuzzy matches to be processed even when exact matches exist

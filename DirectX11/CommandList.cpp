@@ -9984,7 +9984,7 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 			}
 
 			// Run Fuzzy Matching.
-			find_texture_overrides_for_resource_desc(resource, matches, state->call_info);
+			find_fuzzy_texture_overrides_for_resource(resource, matches, state->call_info);
 		}
 	}
 	else

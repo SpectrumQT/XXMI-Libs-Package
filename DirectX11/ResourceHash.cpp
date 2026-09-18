@@ -1819,15 +1819,52 @@ TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource *resou
 	return candidates;
 }
 
+// Per-draw memo (see TextureOverrideMemo): appends the memoised result to
+// matches and returns true if this resource was already looked up in this
+// draw. call_info is NULL outside of draw calls, where nothing is memoised.
+static bool texture_override_memo_lookup(DrawCallInfo *call_info, ID3D11Resource *resource, bool fuzzy_only, TextureOverrideMatches *matches)
+{
+	if (!call_info)
+		return false;
+
+	TextureOverrideMemo &memo = call_info->texture_override_memo;
+	for (unsigned i = 0; i < memo.count; i++) {
+		TextureOverrideMemo::Entry &entry = memo.entries[i];
+		if (entry.resource == resource && entry.fuzzy_only == fuzzy_only) {
+			matches->insert(matches->end(), entry.matches.begin(), entry.matches.end());
+			return true;
+		}
+	}
+	return false;
+}
+
+static void texture_override_memo_store(DrawCallInfo *call_info, ID3D11Resource *resource, bool fuzzy_only, TextureOverrideMatches *matches, size_t matches_before)
+{
+	if (!call_info)
+		return;
+
+	TextureOverrideMemo &memo = call_info->texture_override_memo;
+	if (memo.count >= TextureOverrideMemo::capacity)
+		return;
+
+	TextureOverrideMemo::Entry &entry = memo.entries[memo.count++];
+	resource->AddRef();
+	entry.resource = resource;
+	entry.fuzzy_only = fuzzy_only;
+	entry.matches.assign(matches->begin() + matches_before, matches->end());
+}
+
 void find_fuzzy_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info)
 {
 	if (G->mFuzzyTextureOverrides.empty())
 		return;
 
+	if (texture_override_memo_lookup(call_info, resource, true, matches))
+		return;
+
+	size_t matches_before = matches->size();
 	Profiling::State profiling_state;
-	size_t matches_before = 0;
 	if (Profiling::mode == Profiling::Mode::SUMMARY) {
-		matches_before = matches->size();
 		Profiling::texture_override_candidates_lookup_overhead.count++;
 		Profiling::start(&profiling_state);
 	}
@@ -1847,6 +1884,8 @@ void find_fuzzy_texture_overrides_for_resource(ID3D11Resource *resource, Texture
 		if (matches->size() > matches_before)
 			Profiling::texture_override_candidates_lookup_overhead.hits++;
 	}
+
+	texture_override_memo_store(call_info, resource, true, matches, matches_before);
 }
 
 template <typename DescType>
@@ -1934,10 +1973,12 @@ void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverri
 	if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
 		return;
 
+	if (texture_override_memo_lookup(call_info, resource, false, matches))
+		return;
+
+	size_t matches_before = matches->size();
 	Profiling::State profiling_state;
-	size_t matches_before = 0;
 	if (Profiling::mode == Profiling::Mode::SUMMARY) {
-		matches_before = matches->size();
 		Profiling::texture_override_candidates_lookup_overhead.count++;
 		Profiling::start(&profiling_state);
 	}
@@ -1955,31 +1996,26 @@ void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverri
 			if (matches_draw_info(to, call_info))
 				matches->push_back(to);
 		}
+	} else {
+		find_texture_overrides_for_resource_by_hash(resource, matches, call_info);
 
-		if (Profiling::mode == Profiling::Mode::SUMMARY) {
-			Profiling::end(&profiling_state, &Profiling::texture_override_candidates_lookup_overhead);
-			if (matches->size() > matches_before)
-				Profiling::texture_override_candidates_lookup_overhead.hits++;
-		}
-		return;
+		// Allow fuzzy matches to be processed even when exact matches exist
+		//if (!matches->empty()) {
+		//	// If we got a result it was matched by hash - that's an exact
+		//	// match and we don't process any fuzzy matches
+		//	return;
+		//}
+
+		find_texture_overrides_for_resource_desc(resource, matches, call_info);
 	}
-
-	find_texture_overrides_for_resource_by_hash(resource, matches, call_info);
-
-	// Allow fuzzy matches to be processed even when exact matches exist
-	//if (!matches->empty()) {
-	//	// If we got a result it was matched by hash - that's an exact
-	//	// match and we don't process any fuzzy matches
-	//	return;
-	//}
-
-	find_texture_overrides_for_resource_desc(resource, matches, call_info);
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY) {
 		Profiling::end(&profiling_state, &Profiling::texture_override_candidates_lookup_overhead);
 		if (matches->size() > matches_before)
 			Profiling::texture_override_candidates_lookup_overhead.hits++;
 	}
+
+	texture_override_memo_store(call_info, resource, false, matches, matches_before);
 }
 
 bool TextureOverrideLess(const struct TextureOverride &lhs, const struct TextureOverride &rhs)

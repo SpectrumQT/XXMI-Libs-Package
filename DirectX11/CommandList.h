@@ -725,6 +725,13 @@ private:
 typedef std::unordered_map<std::wstring, CustomResourcePool> CustomResourcePools;
 extern CustomResourcePools customResourcePools;
 
+// Bind flags of a custom resource referenced into another custom resource or
+// pool depend on where that destination is referenced in turn, which may be
+// parsed later (section parse order is arbitrary). Edges are collected while
+// parsing and resolved to a fixed point once every command list is parsed.
+void ClearDeferredBindFlags();
+void PropagateDeferredBindFlags();
+
 // Forward declaration since TextureOverride also contains a command list
 struct TextureOverride;
 

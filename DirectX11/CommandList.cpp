@@ -8316,27 +8316,37 @@ IniParserResult ResourceCopyTarget::ParseTargetPipelineSlot(const wchar_t*& targ
 
 	// Bare "ps-t" / "ps-u" / "ps-cb": a slot range whose bounds come from
 	// the other side of the assignment (ps-t = ref PoolFoo[0:9]).
-	if (evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE && (length == 4 || length == 5)
+	// Only matches when the suffix is *exactly* the keyword with nothing
+	// trailing (no slot digits) - anything else (e.g. "ps-t0") must fall
+	// through to the numeric slot parsing below.
+	if (evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE && length >= 4
 		&& is_shader_resource(target[0]) && target[1] == L's' && target[2] == L'-')
 	{
 		const wchar_t* suffix = target + 3;
-		if (length == 4 && suffix[0] == L't') {
+		size_t suffix_len = length - 3;
+		bool bare = false;
+
+		if (suffix_len == 1 && suffix[0] == L't') {
 			type = ResourceCopyTargetType::SHADER_RESOURCE;
 			max_slot = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
-		} else if (length == 4 && suffix[0] == L'u') {
+			bare = true;
+		} else if (suffix_len == 1 && suffix[0] == L'u') {
 			if (target[0] != L'p' && target[0] != L'c')
 				return IniParserResult::SYNTAX_ERROR;
 			type = ResourceCopyTargetType::UNORDERED_ACCESS_VIEW;
 			max_slot = D3D11_1_UAV_SLOT_COUNT;
-		} else if (length == 5 && suffix[0] == L'c' && suffix[1] == L'b') {
+			bare = true;
+		} else if (suffix_len == 2 && suffix[0] == L'c' && suffix[1] == L'b') {
 			type = ResourceCopyTargetType::CONSTANT_BUFFER;
 			max_slot = D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT;
-		} else {
-			return IniParserResult::TOKEN_NOT_FOUND;
+			bare = true;
 		}
-		shader_type = target[0];
-		evaluation_mode = ResourceCopyTargetEvaluationMode::SLOT_RANGE;
-		return IniParserResult::TOKEN_FOUND;
+
+		if (bare) {
+			shader_type = target[0];
+			evaluation_mode = ResourceCopyTargetEvaluationMode::SLOT_RANGE;
+			return IniParserResult::TOKEN_FOUND;
+		}
 	}
 
 	struct TargetInfo {

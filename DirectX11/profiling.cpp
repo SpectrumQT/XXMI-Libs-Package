@@ -315,6 +315,26 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 	);
 	Profiling::text += buf;
 
+	{
+		size_t tracked_resources;
+		EnterCriticalSectionPretty(&G->mResourcesLock);
+		tracked_resources = G->mResources.size();
+		LeaveCriticalSection(&G->mResourcesLock);
+
+		_snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE,
+				    L"\n"
+				    L"Resource tracking (diagnostic):\n"
+				    L"    G->mResources (all tracked resources): %Iu\n"
+				    L"     G->mTextureOverrideMap (hash entries): %Iu\n"
+				    L"       G->mFuzzyTextureOverrides (entries): %Iu\n"
+				    ,
+				    tracked_resources,
+				    G->mTextureOverrideMap.size(),
+				    G->mFuzzyTextureOverrides.size()
+		);
+		Profiling::text += buf;
+	}
+
 	if (G->implicit_post_checktextureoverride_used && !Profiling::cto_warning.empty())
 		Profiling::text += L"\nImplicit post checktextureoverrides were not optimised out\n";
 }

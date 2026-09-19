@@ -8181,11 +8181,73 @@ constexpr bool token_equals(const wchar_t* str, size_t len, const wchar_t* token
 	return len == token_len && wmemcmp(str, token, token_len) == 0;
 }
 
-IniParserResult ResourceCopyTarget::ParseTargetPipelineSlot(const wchar_t*& target, size_t length, bool is_source)
+// Slot given in brackets: ps-t[$i] (any slot type).
+IniParserResult ResourceCopyTarget::ParseTargetSlotExpression(const wchar_t* text, size_t length, const wstring* ini_namespace, CommandListScope* scope)
+{
+	struct SlotTypeInfo {
+		const wchar_t* keyword; // Follows the stage letter when has_stage
+		size_t len;
+		ResourceCopyTargetType type;
+		bool has_stage;
+		unsigned max_slot_count;
+	};
+
+	static constexpr SlotTypeInfo slot_types[] = {
+		{ L"o",    1, ResourceCopyTargetType::RENDER_TARGET,         false, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT            },
+		{ L"vb",   2, ResourceCopyTargetType::VERTEX_BUFFER,         false, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT         },
+		{ L"so",   2, ResourceCopyTargetType::STREAM_OUTPUT,         false, D3D11_SO_STREAM_COUNT                             },
+		{ L"s-t",  3, ResourceCopyTargetType::SHADER_RESOURCE,       true,  D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT      },
+		{ L"s-u",  3, ResourceCopyTargetType::UNORDERED_ACCESS_VIEW, true,  D3D11_1_UAV_SLOT_COUNT                            },
+		{ L"s-cb", 4, ResourceCopyTargetType::CONSTANT_BUFFER,       true,  D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT },
+	};
+
+	const wchar_t* open = wmemchr(text, L'[', length);
+	if (!open || text[length - 1] != L']')
+		return IniParserResult::TOKEN_NOT_FOUND;
+
+	size_t prefix_len = open - text;
+	const SlotTypeInfo* info = nullptr;
+	for (const auto& t : slot_types) {
+		if (t.has_stage) {
+			if (prefix_len == t.len + 1 && is_shader_resource(text[0]) && !wmemcmp(text + 1, t.keyword, t.len)) {
+				shader_type = text[0];
+				info = &t;
+				break;
+			}
+		} else if (prefix_len == t.len && !wmemcmp(text, t.keyword, t.len)) {
+			info = &t;
+			break;
+		}
+	}
+	if (!info)
+		return IniParserResult::TOKEN_NOT_FOUND;
+
+	if (info->type == ResourceCopyTargetType::UNORDERED_ACCESS_VIEW && shader_type != L'p' && shader_type != L'c')
+		return IniParserResult::SYNTAX_ERROR;
+
+	type = info->type;
+	max_slot = info->max_slot_count;
+
+	wstring inner(open + 1, text + length - 1);
+	slot_expression = std::make_unique<CommandListExpression>();
+	if (!slot_expression->parse(&inner, ini_namespace, scope)) {
+		slot_expression.reset();
+		return IniParserResult::SYNTAX_ERROR;
+	}
+	return IniParserResult::TOKEN_FOUND;
+}
+
+IniParserResult ResourceCopyTarget::ParseTargetPipelineSlot(const wchar_t*& target, size_t length, bool is_source, const wstring* ini_namespace, CommandListScope* scope)
 {
 	//LogInfo("ParseTargetPipelineSlot: target=%ls, length=%d, is_source=%d\n", target, length, is_source);
 
 	int ret, len;
+
+	if (length > 2 && target[length - 1] == L']') {
+		IniParserResult expression_ret = ParseTargetSlotExpression(target, length, ini_namespace, scope);
+		if (expression_ret != IniParserResult::TOKEN_NOT_FOUND)
+			return expression_ret;
+	}
 
 	struct TargetInfo {
 		const wchar_t* keyword;
@@ -8339,7 +8401,7 @@ bool ResourceCopyTarget::ParseTarget(const wchar_t *target, bool is_source, cons
 	}
 
 	// Parse the remainder as a pipeline slot (e.g. `vb0`, `this`, `null`).
-	ret = ParseTargetPipelineSlot(target, length, is_source);
+	ret = ParseTargetPipelineSlot(target, length, is_source, ini_namespace, scope);
 	//LogInfo("ParseTarget: %d at ParseTargetPipelineSlot\n", ret);
 	if (ret != IniParserResult::TOKEN_NOT_FOUND)
 		return ret == IniParserResult::TOKEN_FOUND;
@@ -8543,7 +8605,7 @@ static CommandListCommand* parse_layout_operation(
 	const wchar_t* section, ResourceCopyTarget& dst, wstring* val, CommandList* command_list, const wstring* ini_namespace
 )
 {
-	if (dst.type != ResourceCopyTargetType::VERTEX_BUFFER)
+	if (dst.type != ResourceCopyTargetType::VERTEX_BUFFER || dst.slot_expression)
 		return nullptr;
 
 	LayoutElementOperation* operation = new LayoutElementOperation();
@@ -9210,6 +9272,19 @@ CommandListVariable* ResourceCopyTarget::GetPoolVariable(CommandListState* state
 	);
 }
 
+unsigned ResourceCopyTarget::ResolveSlot(CommandListState *state)
+{
+	if (!slot_expression)
+		return slot;
+
+	float value = slot_expression->evaluate(state);
+	if (value < 0 || value >= (float)max_slot) {
+		LogOverlayW(LOG_WARNING, L"Slot index %f out of range for %lcs slot type (max %u)\n", value, shader_type, max_slot - 1);
+		return UINT_MAX;
+	}
+	return (unsigned)value;
+}
+
 ID3D11Resource *ResourceCopyTarget::GetResource(
 		CommandListState *state,
 		ID3D11View **view,   // Used by textures, render targets, depth/stencil buffers & UAVs
@@ -9232,6 +9307,11 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 	D3D11_BIND_FLAG bind_flags = (D3D11_BIND_FLAG)0;
 	D3D11_RESOURCE_MISC_FLAG misc_flags = (D3D11_RESOURCE_MISC_FLAG)0;
 	unsigned i;
+
+	// Shadows the member for the dynamic slot case (ps-t[$i]):
+	unsigned slot = ResolveSlot(state);
+	if (slot == UINT_MAX)
+		return NULL;
 
 	switch(type) {
 	case ResourceCopyTargetType::CONSTANT_BUFFER:
@@ -9543,6 +9623,11 @@ void ResourceCopyTarget::SetResource(
 	ID3D11UnorderedAccessView *unordered_view = NULL;
 	UINT uav_counter = -1; // TODO: Allow this to be set
 	int i;
+
+	// Shadows the member for the dynamic slot case (ps-t[$i]):
+	unsigned slot = ResolveSlot(state);
+	if (slot == UINT_MAX)
+		return;
 
 	switch(type) {
 	case ResourceCopyTargetType::CONSTANT_BUFFER:
@@ -12321,6 +12406,7 @@ static bool is_batchable_bind(const ResourceCopyOperation *op)
 	// binding any would change the meaning of e.g. a slot swap:
 	return op->dst.type == ResourceCopyTargetType::SHADER_RESOURCE
 		&& op->dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE
+		&& !op->dst.slot_expression
 		&& (op->src.type == ResourceCopyTargetType::CUSTOM_RESOURCE || op->src.type == ResourceCopyTargetType::EMPTY)
 		&& op->src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE;
 }
@@ -12329,6 +12415,7 @@ static bool is_batchable_fetch(const ResourceCopyOperation *op)
 {
 	return op->src.type == ResourceCopyTargetType::SHADER_RESOURCE
 		&& op->src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE
+		&& !op->src.slot_expression
 		&& op->dst.type == ResourceCopyTargetType::CUSTOM_RESOURCE
 		&& op->dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE;
 }

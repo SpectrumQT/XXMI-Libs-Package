@@ -9926,7 +9926,10 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 				}
 			}
 
-			// Run Fuzzy Matching.
+			// Run Fuzzy Matching. Fuzzy candidates depend on the resource
+			// description only, not on the region, so the per resource
+			// cache applies here too - but only its fuzzy list, hash matching
+			// was done above by region_hash.
 			find_fuzzy_texture_overrides_for_resource(resource, matches, state->call_info);
 		}
 	}

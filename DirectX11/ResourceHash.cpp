@@ -1791,6 +1791,13 @@ void InvalidateTextureOverrideCandidates()
 // Must be called with G->mCriticalSection held, and the returned candidates
 // read before releasing it: they are built and stored in ResourceHandleInfo
 // here, so concurrent draws on deferred contexts must not race on them.
+//
+// hash_matches is keyed on the whole-resource hash (handle_info->hash), so
+// it is only valid for lookups by that hash. Region hash lookups (a vertex
+// or index buffer shared by several meshes, see track_region_hashes) do
+// their own hash matching by region_hash and only use fuzzy_matches from
+// here, which depend on the resource description alone and are therefore
+// the same for every region of the buffer.
 TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource *resource)
 {
 	ResourceHandleInfo *handle_info = GetResourceHandleInfo(resource);
@@ -1822,6 +1829,9 @@ TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource *resou
 	return candidates;
 }
 
+// Fuzzy (match_*) matching only, from the per resource cache. Used by the
+// region hash path, which has already done its hash matching by region_hash
+// and must not use the cached whole-resource hash_matches.
 void find_fuzzy_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info)
 {
 	if (G->mFuzzyTextureOverrides.empty())
@@ -1975,6 +1985,12 @@ void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverri
 		return;
 	}
 
+	// No handle info to cache in. That is every resource not created through
+	// HackerDevice::Create*: 3DMigoto's own custom resources, the swap chain
+	// back buffer and shared resources (OpenSharedResource). They have no
+	// hash, but fuzzy matches (e.g. match_width on a copy of a game
+	// texture or on the back buffer) still apply, so run the original
+	// uncached lookup for them:
 	find_texture_overrides_for_resource_by_hash(resource, matches, call_info);
 
 	// Allow fuzzy matches to be processed even when exact matches exist

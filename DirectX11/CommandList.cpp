@@ -12249,7 +12249,7 @@ void ShaderResourceBindBatch::run(CommandListState *state)
 
 	COMMAND_LIST_LOG(state, "batched %lcs-t%u..%u {\n", shader_type, first_slot, first_slot + count - 1);
 
-	if (seed_with_current)
+	if (prefetch_current_bindings)
 		GetShaderResourcesBatch(state->mOrigContext1, shader_type, first_slot, count, views);
 
 	for (auto &op : operations) {
@@ -12343,7 +12343,7 @@ static const ResourceCopyTarget& slot_target(const ResourceCopyOperation *op, bo
 // bind / fetch batch and appends it to out. A range holding a single
 // operation is not worth a batch, that operation is appended as is.
 static void emit_slot_batch(const std::vector<std::shared_ptr<ResourceCopyOperation>> &run, bool bind,
-	unsigned first, unsigned last, bool seed_with_current, CommandList::Commands &out)
+	unsigned first, unsigned last, bool prefetch_current_bindings, CommandList::Commands &out)
 {
 	std::shared_ptr<ShaderResourceBatch> batch;
 	if (bind)
@@ -12367,7 +12367,7 @@ static void emit_slot_batch(const std::vector<std::shared_ptr<ResourceCopyOperat
 	batch->shader_type = slot_target(run[0].get(), bind).shader_type;
 	batch->first_slot = first;
 	batch->count = last - first + 1;
-	batch->seed_with_current = seed_with_current;
+	batch->prefetch_current_bindings = prefetch_current_bindings;
 	// Shown in the frame analysis log in place of the individual lines:
 	batch->ini_line = batch->operations[0]->ini_line + L" ... +" + std::to_wstring(batch->operations.size() - 1);
 	out.push_back(batch);
@@ -12383,24 +12383,24 @@ static void emit_slot_batch(const std::vector<std::shared_ptr<ResourceCopyOperat
 //
 // unless_null changes that for binds. A slot whose source turned out to be
 // null has to keep its current view, and the only way to know that view is
-// to XXGetShaderResources the range up front (seed_with_current). Since the
-// current bindings are read anyway, gaps cost nothing extra: the gap slots
-// are simply written back with the view they already had, and the whole run
-// becomes one batch spanning from the lowest to the highest slot.
+// to XXGetShaderResources the range up front (prefetch_current_bindings).
+// Since the current bindings are read anyway, gaps cost nothing extra: the
+// gap slots are simply written back with the view they already had, and the
+// whole run becomes one batch spanning from the lowest to the highest slot.
 static void emit_slot_batches(const std::vector<std::shared_ptr<ResourceCopyOperation>> &run, bool bind, CommandList::Commands &out)
 {
-	bool seed_with_current = false;
+	bool prefetch_current_bindings = false;
 	std::vector<unsigned> slots;
 
 	for (auto &op : run) {
 		slots.push_back(slot_target(op.get(), bind).slot);
 		if (bind && (op->options & ResourceCopyOptions::UNLESS_NULL))
-			seed_with_current = true;
+			prefetch_current_bindings = true;
 	}
 	std::sort(slots.begin(), slots.end());
 	slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
 
-	if (seed_with_current) {
+	if (prefetch_current_bindings) {
 		emit_slot_batch(run, bind, slots.front(), slots.back(), true, out);
 		return;
 	}

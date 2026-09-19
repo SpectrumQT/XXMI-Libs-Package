@@ -1157,7 +1157,7 @@ public:
 	// slots whose operation actually assigned something. Everything else
 	// (unless_null slots with a null source, gaps between slots) is written
 	// back as it was:
-	bool seed_with_current = false;
+	bool prefetch_current_bindings = false;
 	std::vector<std::shared_ptr<ResourceCopyOperation>> operations;
 };
 

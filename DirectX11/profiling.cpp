@@ -1,7 +1,8 @@
 #include "profiling.h"
 #include "globals.h"
-
 #include <algorithm>
+#include <numeric>
+#include <cwctype>
 
 void Profiling::Overhead::clear()
 {
@@ -70,6 +71,28 @@ namespace Profiling {
 
 	const int custom_resource_metadata_rows = 16;
 	const int custom_resource_visible_rows = visible_rows - custom_resource_metadata_rows - 1;
+
+	// Sorting
+
+	SortMode variable_sort_mode = SortMode::DEFAULT;
+	bool variable_sort_descending = false;
+
+	SortMode custom_resource_sort_mode = SortMode::DEFAULT;
+	bool custom_resource_sort_descending = false;
+
+	SortMode pool_sort_mode = SortMode::DEFAULT;
+	bool pool_sort_descending = false;
+
+	bool natural_sort = true;
+
+	// Cache Sorting
+	std::vector<int> Profiling::sorted_variable_indices;
+	std::vector<int> Profiling::sorted_custom_resource_indices;
+	std::vector<int> Profiling::sorted_pool_indices;
+
+	bool Profiling::variable_sort_cache_dirty = true;
+	bool Profiling::custom_resource_sort_cache_dirty = true;
+	bool Profiling::pool_sort_cache_dirty = true;
 }
 
 static LARGE_INTEGER profiling_start_time;
@@ -200,10 +223,249 @@ static std::wstring GetColumnHeader(int index)
 	return name;
 }
 
+void Profiling::NextSortMode(HackerDevice* device, void* private_dat)
+{
+	switch (mode)
+	{
+		case Mode::COMMAND_LIST_VARIABLES:
+			switch (variable_sort_mode)
+			{
+				case SortMode::DEFAULT:
+					variable_sort_mode = SortMode::NAME;
+					break;
+
+				case SortMode::NAME:
+					variable_sort_mode = SortMode::VALUE;
+					break;
+
+				case SortMode::VALUE:
+					variable_sort_mode = SortMode::DEFAULT;
+					break;
+			}
+
+			variable_sort_cache_dirty = true;
+			break;
+
+		case Mode::CUSTOM_RESOURCES:
+			switch (custom_resource_sort_mode)
+			{
+				case SortMode::DEFAULT:
+					custom_resource_sort_mode = SortMode::NAME;
+					break;
+
+				case SortMode::NAME:
+					custom_resource_sort_mode = SortMode::TYPE;
+					break;
+
+				case SortMode::TYPE:
+					custom_resource_sort_mode = SortMode::FORMAT;
+					break;
+
+				case SortMode::FORMAT:
+					custom_resource_sort_mode = SortMode::SIZE;
+					break;
+
+				case SortMode::SIZE:
+					custom_resource_sort_mode = SortMode::STRIDE;
+					break;
+
+				case SortMode::STRIDE:
+					custom_resource_sort_mode = SortMode::SUBSTANTIATED;
+					break;
+
+				case SortMode::SUBSTANTIATED:
+					custom_resource_sort_mode = SortMode::DEFAULT;
+					break;
+			}
+
+			custom_resource_sort_cache_dirty = true;
+			break;
+
+			case Mode::POOLS:
+				switch (pool_sort_mode)
+				{
+					case SortMode::DEFAULT:
+						pool_sort_mode = SortMode::TYPE;
+						break;
+
+					case SortMode::TYPE:
+						pool_sort_mode = SortMode::RESOURCE_ID;
+						break;
+
+					case SortMode::RESOURCE_ID:
+						pool_sort_mode = SortMode::VALUE;
+						break;
+
+					case SortMode::VALUE:
+						pool_sort_mode = SortMode::DEFAULT;
+						break;
+				}
+
+				pool_sort_cache_dirty = true;
+				break;
+
+			default:
+				break;
+	}
+}
+
+void Profiling::ToggleSortDirection(HackerDevice* device, void* private_dat)
+{
+	switch (mode)
+	{
+		case Mode::COMMAND_LIST_VARIABLES:
+			variable_sort_descending = !variable_sort_descending;
+			variable_sort_cache_dirty = true;
+			break;
+
+		case Mode::CUSTOM_RESOURCES:
+			custom_resource_sort_descending = !custom_resource_sort_descending;
+			custom_resource_sort_cache_dirty = true;
+			break;
+
+		case Mode::POOLS:
+			pool_sort_descending = !pool_sort_descending;
+			pool_sort_cache_dirty = true;
+			break;
+
+		default:
+			break;
+	}
+}
+
+void Profiling::ToggleNaturalSort(HackerDevice* device, void* private_dat){
+	Profiling::natural_sort = !Profiling::natural_sort;
+
+	Profiling::variable_sort_cache_dirty = true;
+	Profiling::custom_resource_sort_cache_dirty = true;
+}
+
+bool Profiling::NaturalSort(const std::wstring& lhs, const std::wstring& rhs)
+{
+	size_t i = 0;
+	size_t j = 0;
+
+	while (i < lhs.size() && j < rhs.size())
+	{
+		if (iswdigit(lhs[i]) && iswdigit(rhs[j]))
+		{
+			size_t lhs_start = i;
+			size_t rhs_start = j;
+
+			while (i < lhs.size() && iswdigit(lhs[i]))
+				i++;
+
+			while (j < rhs.size() && iswdigit(rhs[j]))
+				j++;
+
+			size_t lhs_nonzero = lhs_start;
+			size_t rhs_nonzero = rhs_start;
+
+			while (lhs_nonzero < i && lhs[lhs_nonzero] == L'0')
+				lhs_nonzero++;
+
+			while (rhs_nonzero < j && rhs[rhs_nonzero] == L'0')
+				rhs_nonzero++;
+
+			size_t lhs_digits = i - lhs_nonzero;
+			size_t rhs_digits = j - rhs_nonzero;
+
+			if (lhs_digits != rhs_digits)
+				return lhs_digits < rhs_digits;
+
+			for (size_t k = 0; k < lhs_digits; k++)
+			{
+				if (lhs[lhs_nonzero + k] != rhs[rhs_nonzero + k])
+					return lhs[lhs_nonzero + k] < rhs[rhs_nonzero + k];
+			}
+
+			continue;
+		}
+
+		wchar_t l = towlower(lhs[i]);
+		wchar_t r = towlower(rhs[j]);
+
+		if (l != r)
+			return l < r;
+
+		i++;
+		j++;
+	}
+
+	return lhs.size() < rhs.size();
+}
+
+static const std::vector<int>& GetSortedVariableIndices(const std::vector<VariableEntry*>& vars)
+{
+	if (!Profiling::variable_sort_cache_dirty && Profiling::sorted_variable_indices.size() == vars.size())
+		return Profiling::sorted_variable_indices;
+
+	auto& indices = Profiling::sorted_variable_indices;
+
+	indices.resize(vars.size());
+	std::iota(indices.begin(), indices.end(), 0);
+
+	if (Profiling::variable_sort_mode != Profiling::SortMode::DEFAULT)
+	{
+		std::stable_sort(indices.begin(), indices.end(), [&](int a, int b)
+			{
+				auto* lhs = vars[a];
+				auto* rhs = vars[b];
+
+				if (Profiling::variable_sort_mode == Profiling::SortMode::NAME)
+				{
+					if (Profiling::natural_sort)
+						return Profiling::variable_sort_descending ? Profiling::NaturalSort(rhs->name, lhs->name) : Profiling::NaturalSort(lhs->name, rhs->name);
+
+					return Profiling::variable_sort_descending ? rhs->name < lhs->name : lhs->name < rhs->name;
+				}
+
+				if (Profiling::variable_sort_mode == Profiling::SortMode::VALUE)
+					return Profiling::variable_sort_descending ? rhs->variable->fval < lhs->variable->fval : lhs->variable->fval < rhs->variable->fval;
+
+				return false;
+			});
+	}
+
+	Profiling::variable_sort_cache_dirty = false;
+	return indices;
+}
+
+std::wstring Profiling::SortModeToWString(SortMode mode)
+{
+	switch (mode)
+	{
+		case SortMode::DEFAULT:
+			return L"Default";
+		case SortMode::NAME:
+			return L"Name";
+		case SortMode::VALUE:
+			return L"Value";
+		case SortMode::TYPE:
+			return L"Type";
+		case SortMode::FORMAT:
+			return L"Format";
+		case SortMode::SIZE:
+			return L"Size";
+		case SortMode::STRIDE:
+			return L"Stride";
+		case SortMode::SUBSTANTIATED:
+			return L"Substantiated";
+		case SortMode::RESOURCE_ID:
+			return L"Resource ID";
+		}
+
+		return L"Unknown";
+}
+
+std::wstring Profiling::SortingHeader(SortMode mode, bool descending) {
+	return L"\nSorting Mode - " + Profiling::SortModeToWString(mode) + L" | Sort Direction - " + (descending ? L"Descending" : L"Ascending") +
+		   L" | Name Sorting Mode - " + (Profiling::natural_sort ? L"Natural" : L"Lexicographical") + L"\n";
+}
 
 static void DrawVariables()
 {
-	Profiling::text += L"\n\n";
+	Profiling::text += SortingHeader(Profiling::variable_sort_mode, Profiling::variable_sort_descending);
 
 	// ============================
 	// Namespace Counters
@@ -257,11 +519,12 @@ static void DrawVariables()
 			if (column.namespace_index >= 0 && column.namespace_index < namespace_list.size())
 			{
 				auto& vars = variable_groups[namespace_list[column.namespace_index]];
+				auto sorted_indices = GetSortedVariableIndices(vars);
 				int index = row + column.scroll_offset;
 
-				if (index < vars.size())
+				if (index >= 0 && index < sorted_indices.size())
 				{
-					auto* var = vars[index];
+					auto* var = vars[sorted_indices[index]];
 
 					text += L"$";
 					text += var->name;
@@ -327,10 +590,59 @@ static float GetResourceId(CustomResource* resource)
 	return EncodeFloat30((uint32_t)hash);
 }
 
+static const std::vector<int>& GetSortedPoolIndices(const std::vector<PoolElement>& elements)
+{
+	if (!Profiling::pool_sort_cache_dirty && Profiling::sorted_pool_indices.size() == elements.size())
+		return Profiling::sorted_pool_indices;
+
+	auto& indices = Profiling::sorted_pool_indices;
+
+	indices.resize(elements.size());
+	std::iota(indices.begin(), indices.end(), 0);
+
+	if (Profiling::pool_sort_mode != Profiling::SortMode::DEFAULT)
+	{
+		std::stable_sort(indices.begin(), indices.end(), [&](int a, int b)
+			{
+				const auto& lhs = elements[a];
+				const auto& rhs = elements[b];
+
+				switch (Profiling::pool_sort_mode)
+				{
+					case Profiling::SortMode::TYPE:
+					{
+						std::wstring l = GetPoolElementType(lhs);
+						std::wstring r = GetPoolElementType(rhs);
+						return Profiling::pool_sort_descending ? r < l : l < r;
+					}
+
+					case Profiling::SortMode::RESOURCE_ID:
+					{
+						float l = lhs.resource ? GetResourceId(lhs.resource) : 0.0f;
+						float r = rhs.resource ? GetResourceId(rhs.resource) : 0.0f;
+						return Profiling::pool_sort_descending ? r < l : l < r;
+					}
+
+					case Profiling::SortMode::VALUE:
+					{
+						float l = lhs.variable ? lhs.variable->fval : 0.0f;
+						float r = rhs.variable ? rhs.variable->fval : 0.0f;
+						return Profiling::pool_sort_descending ? r < l : l < r;
+					}
+
+					default:
+						return false;
+				}
+			});
+	}
+
+	Profiling::pool_sort_cache_dirty = false;
+	return indices;
+}
+
 static void DrawResourcePools()
 {
-	Profiling::text += L"\n\n";
-
+	Profiling::text += SortingHeader(Profiling::pool_sort_mode, Profiling::pool_sort_descending);
 
 	// ============================
 	// Pool Counters
@@ -386,15 +698,16 @@ static void DrawResourcePools()
 			{
 				auto& pool = customResourcePools[resource_pool_list[column.pool_index]];
 
-
+				auto& elements = pool.GetElements();
+				auto sorted_indices = GetSortedPoolIndices(elements);
 				int index = row + column.scroll_offset;
 
-
-				if (index < pool.GetElements().size())
+				if (index >= 0 && index < sorted_indices.size())
 				{
-					auto& element = pool.GetElements()[index];
+					int element_index = sorted_indices[index];
+					auto& element = elements[element_index];
 
-					text += std::to_wstring(index);
+					text += std::to_wstring(element_index);
 					text += L" ";
 
 					text += GetPoolElementType(element);
@@ -736,10 +1049,167 @@ static void GetResourceMetadata(
 }
 
 
+struct ResourceSortInfo
+{
+	std::wstring type;
+	std::wstring format;
+	uint64_t size = 0;
+	UINT stride = 0;
+	bool substantiated = false;
+};
+
+static ResourceSortInfo GetResourceSortInfo(const CustomResource* resource)
+{
+	ResourceSortInfo info;
+
+	if (!resource)
+		return info;
+
+	info.substantiated = resource->substantiated;
+
+	if (resource->resource)
+	{
+		ID3D11Resource* d3d_resource = resource->resource;
+		D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+		d3d_resource->GetType(&dimension);
+
+		info.type = GetActualResourceType(d3d_resource);
+
+		switch (dimension)
+		{
+		case D3D11_RESOURCE_DIMENSION_BUFFER:
+		{
+			D3D11_BUFFER_DESC desc;
+			static_cast<ID3D11Buffer*>(d3d_resource)->GetDesc(&desc);
+			info.size = desc.ByteWidth;
+			info.stride = resource->stride;
+			break;
+		}
+
+		case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+		{
+			D3D11_TEXTURE1D_DESC desc;
+			static_cast<ID3D11Texture1D*>(d3d_resource)->GetDesc(&desc);
+			info.format = FormatToWString(desc.Format);
+			info.size = desc.Width * (uint64_t)desc.ArraySize;
+			break;
+		}
+
+		case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+		{
+			D3D11_TEXTURE2D_DESC desc;
+			static_cast<ID3D11Texture2D*>(d3d_resource)->GetDesc(&desc);
+			info.format = FormatToWString(desc.Format);
+			info.size = desc.Width * (uint64_t)desc.Height * desc.ArraySize;
+			break;
+		}
+
+		case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+		{
+			D3D11_TEXTURE3D_DESC desc;
+			static_cast<ID3D11Texture3D*>(d3d_resource)->GetDesc(&desc);
+			info.format = FormatToWString(desc.Format);
+			info.size = desc.Width * (uint64_t)desc.Height * desc.Depth;
+			break;
+		}
+
+		default:
+			break;
+		}
+
+		return info;
+	}
+
+	info.type = CustomResourceTypeToWString(resource->override_type);
+	info.format = FormatToWString(resource->override_format);
+
+	if (resource->override_type == CustomResourceType::BUFFER || resource->override_type == CustomResourceType::STRUCTURED_BUFFER || resource->override_type == CustomResourceType::RAW_BUFFER)
+		info.size = resource->override_byte_width;
+	else
+		info.size = resource->override_width * (uint64_t)resource->override_height * resource->override_depth * resource->override_array;
+
+	info.stride = resource->override_stride;
+
+	return info;
+}
+
+static const std::vector<int>& GetSortedResourceIndices(const std::vector<CustomResourceEntry*>& resources)
+{
+	if (!Profiling::custom_resource_sort_cache_dirty && Profiling::sorted_custom_resource_indices.size() == resources.size())
+		return Profiling::sorted_custom_resource_indices;
+
+	auto& indices = Profiling::sorted_custom_resource_indices;
+
+	indices.resize(resources.size());
+	std::iota(indices.begin(), indices.end(), 0);
+
+	if (Profiling::custom_resource_sort_mode != Profiling::SortMode::DEFAULT)
+	{
+		std::stable_sort(indices.begin(), indices.end(), [&](int a, int b)
+			{
+				auto* lhs = resources[a]->resource;
+				auto* rhs = resources[b]->resource;
+
+				if (!lhs || !rhs)
+					return lhs != nullptr;
+
+				switch (Profiling::custom_resource_sort_mode)
+				{
+					case Profiling::SortMode::NAME:
+					{
+						const std::wstring lhs_name = GetLastPathComponent(resources[a]->name);
+						const std::wstring rhs_name = GetLastPathComponent(resources[b]->name);
+
+						if (Profiling::natural_sort)
+							return Profiling::custom_resource_sort_descending ? Profiling::NaturalSort(rhs_name, lhs_name) : Profiling::NaturalSort(lhs_name, rhs_name);
+
+						return Profiling::custom_resource_sort_descending ? rhs_name < lhs_name : lhs_name < rhs_name;
+					}
+
+					case Profiling::SortMode::TYPE:
+					{
+						ResourceSortInfo l = GetResourceSortInfo(lhs);
+						ResourceSortInfo r = GetResourceSortInfo(rhs);
+						return Profiling::custom_resource_sort_descending ? r.type < l.type : l.type < r.type;
+					}
+
+					case Profiling::SortMode::FORMAT:
+					{
+						ResourceSortInfo l = GetResourceSortInfo(lhs);
+						ResourceSortInfo r = GetResourceSortInfo(rhs);
+						return Profiling::custom_resource_sort_descending ? r.format < l.format : l.format < r.format;
+					}
+
+					case Profiling::SortMode::SIZE:
+					{
+						ResourceSortInfo l = GetResourceSortInfo(lhs);
+						ResourceSortInfo r = GetResourceSortInfo(rhs);
+						return Profiling::custom_resource_sort_descending ? r.size < l.size : l.size < r.size;
+					}
+
+					case Profiling::SortMode::STRIDE:
+					{
+						ResourceSortInfo l = GetResourceSortInfo(lhs);
+						ResourceSortInfo r = GetResourceSortInfo(rhs);
+						return Profiling::custom_resource_sort_descending ? r.stride < l.stride : l.stride < r.stride;
+					}
+
+					case Profiling::SortMode::SUBSTANTIATED:
+						return Profiling::custom_resource_sort_descending ? !lhs->substantiated && rhs->substantiated : lhs->substantiated && !rhs->substantiated;
+
+					default:
+						return false;
+				}
+			});
+	}
+
+	Profiling::custom_resource_sort_cache_dirty = false;
+	return indices;
+}
+
 static void DrawResources()
 {
-	Profiling::text += L"\n\n";
-
+	Profiling::text += SortingHeader(Profiling::custom_resource_sort_mode, Profiling::custom_resource_sort_descending);
 
 	// ========================================================================
 	// Namespace Counters
@@ -794,17 +1264,15 @@ static void DrawResources()
 			if (column.namespace_index >= 0 && column.namespace_index < custom_resource_namespace_list.size())
 			{
 				auto& resources = custom_resource_groups[custom_resource_namespace_list[column.namespace_index]];
-
-
+				auto sorted_indices = GetSortedResourceIndices(resources);
 				int index = row + column.scroll_offset;
 
-
-				if (index >= 0 && index < resources.size())
+				if (index >= 0 && index < sorted_indices.size())
 				{
-					CustomResourceEntry* entry = resources[index];
+					int resource_index = sorted_indices[index];
+					CustomResourceEntry* entry = resources[resource_index];
 
 					text = GetLastPathComponent(entry->name);
-
 
 					if (index == column.resource_index)
 						text = L"> " + text;
@@ -847,9 +1315,11 @@ static void DrawResources()
 				auto& resources = custom_resource_groups[custom_resource_namespace_list[column.namespace_index]];
 
 
-				if (column.resource_index >= 0 && column.resource_index < resources.size())
+				auto sorted_indices = GetSortedResourceIndices(resources);
+
+				if (column.resource_index >= 0 && column.resource_index < sorted_indices.size())
 				{
-					CustomResource* resource = resources[column.resource_index]->resource;
+					CustomResource* resource = resources[sorted_indices[column.resource_index]]->resource;
 
 					std::wstring lines[16];
 
@@ -881,11 +1351,12 @@ ID3D11Resource* Profiling::GetSelectedCustomResource()
 		return nullptr;
 
 	auto& resources = custom_resource_groups[custom_resource_namespace_list[column.namespace_index]];
+	auto sorted_indices = GetSortedResourceIndices(resources);
 
-	if (column.resource_index < 0 || column.resource_index >= (int)resources.size())
+	if (column.resource_index < 0 || column.resource_index >= (int)sorted_indices.size())
 		return nullptr;
 
-	auto* entry = resources[column.resource_index];
+	auto* entry = resources[sorted_indices[column.resource_index]];
 
 	if (!entry || !entry->resource || entry->resource->is_null || !entry->resource->resource)
 		return nullptr;

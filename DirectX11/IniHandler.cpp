@@ -5244,6 +5244,8 @@ void ReloadConfig(HackerDevice *device)
 	variable_groups.clear();
 	namespace_list.clear();
 
+	Profiling::variable_sort_cache_dirty = true;
+
 	for (auto& var : command_list_globals)
 	{
 		VariableEntry entry;
@@ -5276,6 +5278,8 @@ void ReloadConfig(HackerDevice *device)
 	customResourceList.clear();
 	custom_resource_groups.clear();
 	custom_resource_namespace_list.clear();
+
+	Profiling::custom_resource_sort_cache_dirty = true;
 
 	for (auto& resource : customResources)
 	{
@@ -5325,6 +5329,8 @@ void ReloadConfig(HackerDevice *device)
 	// Pools
 
 	resource_pool_list.clear();
+
+	Profiling::pool_sort_cache_dirty = true;
 
 	for (auto& pool : customResourcePools)
 	{

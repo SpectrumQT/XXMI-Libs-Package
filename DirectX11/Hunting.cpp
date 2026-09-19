@@ -1325,9 +1325,7 @@ static void FreezePerf(HackerDevice *device, void *private_data)
 		LogInfoW(L"%s", Profiling::text.c_str());
 }
 
-static void CycleViewerColumn(
-	HackerDevice* device,
-	void* private_data)
+static void CycleViewerColumn(HackerDevice* device, void* private_data)
 {
 	switch (Profiling::mode)
 	{
@@ -1371,9 +1369,7 @@ static void CycleViewerColumn(
 	Profiling::clear();
 }
 
-static void NextViewerNamespace(
-	HackerDevice* device,
-	void* private_data)
+static void NextViewerNamespace(HackerDevice* device, void* private_data)
 {
 	switch (Profiling::mode)
 	{
@@ -1428,9 +1424,7 @@ static void NextViewerNamespace(
 	Profiling::clear();
 }
 
-static void PreviousViewerNamespace(
-	HackerDevice* device,
-	void* private_data)
+static void PreviousViewerNamespace(HackerDevice* device, void* private_data)
 {
 	switch (Profiling::mode)
 	{
@@ -1485,9 +1479,7 @@ static void PreviousViewerNamespace(
 	Profiling::clear();
 }
 
-static void NextNamespaceElement(
-	HackerDevice* device,
-	void* private_data)
+static void NextNamespaceElement(HackerDevice* device, void* private_data)
 {
 	switch (Profiling::mode)
 	{
@@ -1578,9 +1570,7 @@ static void NextNamespaceElement(
 	Profiling::clear();
 }
 
-static void PreviousNamespaceElement(
-	HackerDevice* device,
-	void* private_data)
+static void PreviousNamespaceElement(HackerDevice* device, void* private_data)
 {
 	switch (Profiling::mode)
 	{
@@ -2344,6 +2334,9 @@ void ParseHuntingSection()
 	RegisterIniKeyBinding(L"Hunting", L"next_namespace_element", NextNamespaceElement, NULL, noRepeat, NULL);
 	RegisterIniKeyBinding(L"Hunting", L"previous_namespace_element", PreviousNamespaceElement, NULL, noRepeat, NULL);
 
+	RegisterIniKeyBinding(L"Hunting", L"next_sort_mode", Profiling::NextSortMode, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"toggle_sort_direction", Profiling::ToggleSortDirection, NULL, noRepeat, NULL);
+	RegisterIniKeyBinding(L"Hunting", L"toggle_natural_sort", Profiling::ToggleNaturalSort, NULL, noRepeat, NULL);
 
 	Profiling::interval = (INT64)(GetIniFloat(L"Hunting", L"monitor_performance_interval", 1.0f, NULL) * 1000000);
 

@@ -5,6 +5,8 @@
 #include <vector>
 #include <d3d11.h>
 
+class HackerDevice;
+
 namespace Profiling {
 	enum class Mode {
 		NONE = 0,
@@ -17,6 +19,19 @@ namespace Profiling {
 		POOLS,
 
 		INVALID, // Must be last
+	};
+
+	enum class SortMode
+	{
+		DEFAULT,
+		NAME,
+		VALUE,
+		TYPE,
+		FORMAT,
+		SIZE,
+		STRIDE,
+		SUBSTANTIATED,
+		RESOURCE_ID
 	};
 
 	class Overhead {
@@ -144,6 +159,37 @@ namespace Profiling {
 
 	extern const int custom_resource_visible_rows;
 	extern const int custom_resource_metadata_rows;
+
+	// Sorting
+
+	extern SortMode variable_sort_mode;
+	extern bool variable_sort_descending;
+
+	extern SortMode custom_resource_sort_mode;
+	extern bool custom_resource_sort_descending;
+
+	extern SortMode pool_sort_mode;
+	extern bool pool_sort_descending;
+
+	extern bool natural_sort;
+
+	// Cache Sorting
+	extern std::vector<int> sorted_variable_indices;
+	extern std::vector<int> sorted_custom_resource_indices;
+	extern std::vector<int> sorted_pool_indices;
+
+	extern bool variable_sort_cache_dirty;
+	extern bool custom_resource_sort_cache_dirty;
+	extern bool pool_sort_cache_dirty;
+
+	void NextSortMode(HackerDevice* device, void* private_dat);
+	void ToggleSortDirection(HackerDevice* device, void* private_dat);
+	void ToggleNaturalSort(HackerDevice* device, void* private_dat);
+
+	bool NaturalSort(const std::wstring& lhs, const std::wstring& rhs);
+
+	std::wstring SortModeToWString(SortMode mode);
+	std::wstring SortingHeader(SortMode mode, bool descending);
 
 	ID3D11Resource* GetSelectedCustomResource();
 }

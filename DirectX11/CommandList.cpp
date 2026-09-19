@@ -49,17 +49,30 @@ struct command_list_profiling_state {
 	LARGE_INTEGER saved_recursive_time;
 };
 
+// Command lists and commands register themselves in the profiling sets the
+// first time they run in a collection window. The generation counter lets
+// them notice a new window from a cheap compare instead of a set insert on
+// every execution, which at thousands of executions per frame was a
+// measurable chunk of the "Command lists total" it reports:
+static unsigned profiling_generation = 1;
+
+void clear_command_list_profiling()
+{
+	command_lists_profiling.clear();
+	command_lists_cmd_profiling.clear();
+	profiling_generation++;
+}
+
 static inline void profile_command_list_start(CommandList *command_list, CommandListState *state,
 		command_list_profiling_state *profiling_state)
 {
-	bool inserted;
-
 	if ((Profiling::mode != Profiling::Mode::SUMMARY)
 	 && (Profiling::mode != Profiling::Mode::TOP_COMMAND_LISTS))
 		return;
 
-	inserted = command_lists_profiling.insert(command_list).second;
-	if (inserted) {
+	if (command_list->profiling_generation != profiling_generation) {
+		command_list->profiling_generation = profiling_generation;
+		command_lists_profiling.insert(command_list);
 		command_list->time_spent_inclusive.QuadPart = 0;
 		command_list->time_spent_exclusive.QuadPart = 0;
 		command_list->executions = 0;
@@ -91,13 +104,12 @@ static inline void profile_command_list_end(CommandList *command_list, CommandLi
 static inline void profile_command_list_cmd_start(CommandListCommand *cmd,
 		command_list_profiling_state *profiling_state)
 {
-	bool inserted;
-
 	if (Profiling::mode != Profiling::Mode::TOP_COMMANDS)
 		return;
 
-	inserted = command_lists_cmd_profiling.insert(cmd).second;
-	if (inserted) {
+	if (cmd->profiling_generation != profiling_generation) {
+		cmd->profiling_generation = profiling_generation;
+		command_lists_cmd_profiling.insert(cmd);
 		cmd->pre_time_spent.QuadPart = 0;
 		cmd->post_time_spent.QuadPart = 0;
 		cmd->pre_executions = 0;

@@ -83,7 +83,12 @@ namespace Profiling {
 	extern Overhead texture_handle_info_lookup_overhead;
 	extern Overhead textureoverride_lookup_overhead;
 	extern Overhead resource_pool_lookup_overhead;
+	// Building a resource's cached candidate lists (rare: first sight of the
+	// resource, a hash change, or after config reload invalidates them):
 	extern Overhead texture_override_fuzzy_match_overhead;
+	// Looking up (and per-draw filtering) those already-cached candidates,
+	// which is what actually runs on most draw calls:
+	extern Overhead texture_override_candidates_lookup_overhead;
 
 	extern unsigned resource_full_copies;
 	extern unsigned resource_reference_copies;

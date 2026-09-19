@@ -3517,6 +3517,7 @@ static void ParseTextureOverrideSections()
 
 	G->mTextureOverrideMap.clear();
 	G->mFuzzyTextureOverrides.clear();
+	InvalidateTextureOverrideCandidates();
 
 	lower = ini_sections.lower_bound(wstring(L"TextureOverride"));
 	upper = prefix_upper_bound(ini_sections, wstring(L"TextureOverride"));

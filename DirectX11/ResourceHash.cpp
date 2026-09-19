@@ -1788,6 +1788,9 @@ void InvalidateTextureOverrideCandidates()
 	LeaveCriticalSection(&G->mResourcesLock);
 }
 
+// Must be called with G->mCriticalSection held, and the returned candidates
+// read before releasing it: they are built and stored in ResourceHandleInfo
+// here, so concurrent draws on deferred contexts must not race on them.
 TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource *resource)
 {
 	ResourceHandleInfo *handle_info = GetResourceHandleInfo(resource);
@@ -1832,15 +1835,18 @@ void find_fuzzy_texture_overrides_for_resource(ID3D11Resource *resource, Texture
 		Profiling::start(&profiling_state);
 	}
 
+	EnterCriticalSectionPretty(&G->mCriticalSection);
 	TextureOverrideCandidates *candidates = get_texture_override_candidates(resource);
-	if (!candidates) {
-		find_texture_overrides_for_resource_desc(resource, matches, call_info);
-	} else {
+	if (candidates) {
 		for (TextureOverride *to : candidates->fuzzy_matches) {
 			if (matches_draw_info(to, call_info))
 				matches->push_back(to);
 		}
 	}
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	if (!candidates)
+		find_texture_overrides_for_resource_desc(resource, matches, call_info);
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY) {
 		Profiling::end(&profiling_state, &Profiling::texture_override_candidates_lookup_overhead);
@@ -1943,6 +1949,7 @@ void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverri
 	}
 
 	// Same order as the uncached path below:
+	EnterCriticalSectionPretty(&G->mCriticalSection);
 	TextureOverrideCandidates *candidates = get_texture_override_candidates(resource);
 	if (candidates) {
 		if (candidates->hash_matches) {
@@ -1955,6 +1962,10 @@ void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverri
 			if (matches_draw_info(to, call_info))
 				matches->push_back(to);
 		}
+	}
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	if (candidates) {
 
 		if (Profiling::mode == Profiling::Mode::SUMMARY) {
 			Profiling::end(&profiling_state, &Profiling::texture_override_candidates_lookup_overhead);

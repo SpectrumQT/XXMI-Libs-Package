@@ -565,6 +565,9 @@ void optimise_command_lists(HackerDevice *device)
 		// nice if this sort of thing worked more generally.
 	} while (making_progress);
 
+	for (CommandList *command_list : registered_command_lists)
+		merge_shader_resource_batches(command_list);
+
 	Profiling::update_cto_warning(!ignore_cto_post);
 
 	LogInfo("Command List Optimiser finished after %ums\n", GetTickCount() - start);
@@ -12032,7 +12035,7 @@ void ResourceCopyOperation::CopyResourceToResource(
 			// this will make errors more obvious if we copy
 			// something that doesn't exist. This behaviour can be
 			// overridden with the unless_null keyword.
-			dst.SetResource(state, NULL, NULL, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
+			SetOrDeferResource(state, NULL, NULL, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
 		}
 		return;
 	}
@@ -12182,7 +12185,7 @@ void ResourceCopyOperation::CopyResourceToResource(
 		buf_dst_size = 0;
 	}
 
-	dst.SetResource(state, dst_resource, dst_view, stride, offset, format, buf_dst_size);
+	SetOrDeferResource(state, dst_resource, dst_view, stride, offset, format, buf_dst_size);
 
 	if (options & ResourceCopyOptions::SET_VIEWPORT)
 		SetViewportFromResource(state, dst_resource);
@@ -12222,12 +12225,40 @@ void ResourceCopyOperation::CopyResourceToPool(
 	dst.SetCustomResource(nullptr);
 }
 
+void ResourceCopyOperation::SetOrDeferResource(CommandListState *state,
+		ID3D11Resource *res, ID3D11View *view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_size)
+{
+	if (!deferred) {
+		dst.SetResource(state, res, view, stride, offset, format, buf_size);
+		return;
+	}
+
+	if (res)
+		res->AddRef();
+	if (view)
+		view->AddRef();
+	deferred->resource = res;
+	deferred->view = view;
+	deferred->offset = offset;
+	deferred->size = buf_size;
+	deferred->assigned = true;
+}
+
+void ResourceCopyOperation::RunWithSource(CommandListState *state, ID3D11Resource *src_resource, ID3D11View *src_view)
+{
+	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
+
+	// Same as run() for a pipeline slot source, which GetResource() returns
+	// without stride/offset/format/size:
+	CopyResourceToResource(state, src_resource, src_view, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
+}
+
 void ResourceCopyOperation::run(CommandListState *state)
 {
 	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
 
 	if (src.type == ResourceCopyTargetType::EMPTY) {
-		dst.SetResource(state, NULL, NULL, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
+		SetOrDeferResource(state, NULL, NULL, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
 		return;
 	}
 
@@ -12265,4 +12296,258 @@ void ResourceCopyOperation::run(CommandListState *state)
 }
 
 #pragma endregion ResourceCopyOperation
+
+
+#pragma region ShaderResourceBatches
+
+static void GetShaderResourcesBatch(ID3D11DeviceContext1 *context, wchar_t shader_type, UINT first, UINT count, ID3D11ShaderResourceView **views)
+{
+	switch (shader_type) {
+		case L'v': context->VSGetShaderResources(first, count, views); break;
+		case L'h': context->HSGetShaderResources(first, count, views); break;
+		case L'd': context->DSGetShaderResources(first, count, views); break;
+		case L'g': context->GSGetShaderResources(first, count, views); break;
+		case L'p': context->PSGetShaderResources(first, count, views); break;
+		case L'c': context->CSGetShaderResources(first, count, views); break;
+	}
+}
+
+static void SetShaderResourcesBatch(ID3D11DeviceContext1 *context, wchar_t shader_type, UINT first, UINT count, ID3D11ShaderResourceView *const *views)
+{
+	switch (shader_type) {
+		case L'v': context->VSSetShaderResources(first, count, views); break;
+		case L'h': context->HSSetShaderResources(first, count, views); break;
+		case L'd': context->DSSetShaderResources(first, count, views); break;
+		case L'g': context->GSSetShaderResources(first, count, views); break;
+		case L'p': context->PSSetShaderResources(first, count, views); break;
+		case L'c': context->CSSetShaderResources(first, count, views); break;
+	}
+}
+
+void ShaderResourceBindBatch::run(CommandListState *state)
+{
+	ID3D11ShaderResourceView *views[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+
+	COMMAND_LIST_LOG(state, "batched %lcs-t%u..%u {\n", shader_type, first_slot, first_slot + count - 1);
+
+	if (prefetch_current_bindings)
+		GetShaderResourcesBatch(state->mOrigContext1, shader_type, first_slot, count, views);
+
+	for (auto &op : operations) {
+		DeferredBinding binding;
+
+		op->deferred = &binding;
+		op->run(state);
+		op->deferred = NULL;
+
+		if (!binding.assigned)
+			continue; // unless_null with a null source keeps the current binding
+
+		// Only the view is bound to a t slot:
+		if (binding.resource)
+			binding.resource->Release();
+
+		unsigned i = op->dst.slot - first_slot;
+		if (views[i])
+			views[i]->Release();
+		views[i] = (ID3D11ShaderResourceView*)binding.view;
+	}
+
+	SetShaderResourcesBatch(state->mOrigContext1, shader_type, first_slot, count, views);
+
+	for (unsigned i = 0; i < count; i++) {
+		if (views[i])
+			views[i]->Release();
+	}
+
+	COMMAND_LIST_LOG(state, "%s\n", "}");
+}
+
+void ShaderResourceFetchBatch::run(CommandListState *state)
+{
+	ID3D11ShaderResourceView *views[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+
+	COMMAND_LIST_LOG(state, "batched %lcs-t%u..%u {\n", shader_type, first_slot, first_slot + count - 1);
+
+	GetShaderResourcesBatch(state->mOrigContext1, shader_type, first_slot, count, views);
+
+	for (auto &op : operations) {
+		ID3D11ShaderResourceView *view = views[op->src.slot - first_slot];
+		ID3D11Resource *resource = NULL;
+
+		if (view)
+			view->GetResource(&resource);
+
+		op->RunWithSource(state, resource, view);
+
+		if (resource)
+			resource->Release();
+	}
+
+	for (unsigned i = 0; i < count; i++) {
+		if (views[i])
+			views[i]->Release();
+	}
+
+	COMMAND_LIST_LOG(state, "%s\n", "}");
+}
+
+// Optimiser support: merge runs of adjacent slot binds / fetches. Copy
+// options don't matter: the operation still does its own copy / view
+// creation, only the final XXSetShaderResources is deferred to the batch.
+
+static bool is_batchable_bind(const ResourceCopyOperation *op)
+{
+	// Sources must not be pipeline slots, otherwise reading them all before
+	// binding any would change the meaning of e.g. a slot swap:
+	return op->dst.type == ResourceCopyTargetType::SHADER_RESOURCE
+		&& op->dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE
+		&& (op->src.type == ResourceCopyTargetType::CUSTOM_RESOURCE || op->src.type == ResourceCopyTargetType::EMPTY)
+		&& op->src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE;
+}
+
+static bool is_batchable_fetch(const ResourceCopyOperation *op)
+{
+	return op->src.type == ResourceCopyTargetType::SHADER_RESOURCE
+		&& op->src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE
+		&& op->dst.type == ResourceCopyTargetType::CUSTOM_RESOURCE
+		&& op->dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE;
+}
+
+// The slot side of a batchable operation: dst for binds, src for fetches.
+static const ResourceCopyTarget& slot_target(const ResourceCopyOperation *op, bool bind)
+{
+	return bind ? op->dst : op->src;
+}
+
+// Wraps the operations of a run that fall within [first, last] into a single
+// bind / fetch batch and appends it to out. A range holding a single
+// operation is not worth a batch, that operation is appended as is.
+static void emit_slot_batch(const std::vector<std::shared_ptr<ResourceCopyOperation>> &run, bool bind,
+	unsigned first, unsigned last, bool prefetch_current_bindings, CommandList::Commands &out)
+{
+	std::shared_ptr<ShaderResourceBatch> batch;
+	if (bind)
+		batch = std::make_shared<ShaderResourceBindBatch>();
+	else
+		batch = std::make_shared<ShaderResourceFetchBatch>();
+
+	// Operations keep their ini order within the batch, so a slot assigned
+	// twice takes the last value just like it would without batching:
+	for (auto &op : run) {
+		unsigned slot = slot_target(op.get(), bind).slot;
+		if (slot >= first && slot <= last)
+			batch->operations.push_back(op);
+	}
+
+	if (batch->operations.size() < 2) {
+		out.push_back(batch->operations[0]);
+		return;
+	}
+
+	batch->shader_type = slot_target(run[0].get(), bind).shader_type;
+	batch->first_slot = first;
+	batch->count = last - first + 1;
+	batch->prefetch_current_bindings = prefetch_current_bindings;
+	// Shown in the frame analysis log in place of the individual lines:
+	batch->ini_line = batch->operations[0]->ini_line + L" ... +" + std::to_wstring(batch->operations.size() - 1);
+	out.push_back(batch);
+}
+
+// Splits a run of same-stage, same-direction operations into batches and
+// appends them to out.
+//
+// A single XXSetShaderResources call always writes every slot in its range,
+// so a batch normally only covers slots the run actually assigns: the run is
+// split wherever the (sorted, unique) slot numbers have a gap, and each
+// contiguous range becomes its own batch.
+//
+// unless_null changes that for binds. A slot whose source turned out to be
+// null has to keep its current view, and the only way to know that view is
+// to XXGetShaderResources the range up front (prefetch_current_bindings).
+// Since the current bindings are read anyway, gaps cost nothing extra: the
+// gap slots are simply written back with the view they already had, and the
+// whole run becomes one batch spanning from the lowest to the highest slot.
+static void emit_slot_batches(const std::vector<std::shared_ptr<ResourceCopyOperation>> &run, bool bind, CommandList::Commands &out)
+{
+	bool prefetch_current_bindings = false;
+	std::vector<unsigned> slots;
+
+	for (auto &op : run) {
+		slots.push_back(slot_target(op.get(), bind).slot);
+		if (bind && (op->options & ResourceCopyOptions::UNLESS_NULL))
+			prefetch_current_bindings = true;
+	}
+	std::sort(slots.begin(), slots.end());
+	slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
+
+	if (prefetch_current_bindings) {
+		emit_slot_batch(run, bind, slots.front(), slots.back(), true, out);
+		return;
+	}
+
+	unsigned first = slots[0];
+	for (size_t i = 1; i < slots.size(); i++) {
+		if (slots[i] != slots[i - 1] + 1) {
+			emit_slot_batch(run, bind, first, slots[i - 1], false, out);
+			first = slots[i];
+		}
+	}
+	emit_slot_batch(run, bind, first, slots.back(), false, out);
+}
+
+// Optimiser pass: walks the command list once and replaces every run of two
+// or more adjacent batchable operations with bind / fetch batches. A run is
+// a maximal sequence of consecutive commands that are all batchable binds
+// or all batchable fetches for the same shader stage; any other command
+// (including a batchable one for another stage or direction) ends it. The
+// order of commands is preserved, batches take the place of their first
+// operation.
+void merge_shader_resource_batches(CommandList *command_list)
+{
+	CommandList::Commands out;
+	std::vector<std::shared_ptr<ResourceCopyOperation>> run;
+	bool run_is_bind = false;
+	wchar_t run_stage = L'\0';
+
+	// Ends the current run: a lone operation goes through unchanged, two or
+	// more are handed to emit_slot_batches.
+	auto flush = [&]() {
+		if (run.size() == 1)
+			out.push_back(run[0]);
+		else if (run.size() > 1)
+			emit_slot_batches(run, run_is_bind, out);
+		run.clear();
+	};
+
+	for (auto &command : command_list->commands) {
+		auto op = std::dynamic_pointer_cast<ResourceCopyOperation>(command);
+		bool bind = op && is_batchable_bind(op.get());
+		bool fetch = op && !bind && is_batchable_fetch(op.get());
+
+		if (!bind && !fetch) {
+			flush();
+			out.push_back(command);
+			continue;
+		}
+
+		wchar_t stage = slot_target(op.get(), bind).shader_type;
+		if (!run.empty() && (bind != run_is_bind || stage != run_stage))
+			flush();
+
+		run_is_bind = bind;
+		run_stage = stage;
+		run.push_back(op);
+	}
+	flush();
+
+	// Every batch replaces at least two commands, so a shorter list means
+	// something was merged:
+	if (out.size() != command_list->commands.size()) {
+		LogInfo("Merged %Iu slot operations into batches in [%S]\n", command_list->commands.size() - out.size(), command_list->ini_section.c_str());
+		command_list->commands = std::move(out);
+	}
+}
+
+#pragma endregion ShaderResourceBatches
 

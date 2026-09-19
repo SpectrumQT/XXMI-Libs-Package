@@ -644,6 +644,13 @@ struct PoolElement
 		Mixed,
 	};
 
+	enum class ResetType
+	{
+		All,
+		Resource,
+		Variable
+	};
+
 	Type type = Type::None;
 	CustomResource* resource = nullptr;      // Lifetime managed by global resource registry `customResources`.
 	CommandListVariable* variable = nullptr; // Lifetime managed by global variable registry `command_list_globals`.
@@ -685,7 +692,7 @@ public:
 	CustomResourcePool* ResolvePool();
 	void CopyMetadataFrom(const CustomResourcePool& other);
 
-	void ResetElements();
+	void ResetElements(PoolElement::ResetType reset_type = PoolElement::ResetType::All);
 	void ResetPool(bool reset_elements = true);
 
 private:
@@ -697,7 +704,7 @@ private:
 
 	void ResetResource(CustomResource* custom_resource);
 	void ResetVariable(CommandListVariable* variable);
-	void ResetElement(size_t pool_index);
+	void ResetElement(size_t pool_index, PoolElement::ResetType reset_type = PoolElement::ResetType::All);
 
 	void PostponeExpiration(PoolSlot& pool_slot, bool is_assignment);
 	void ExpireElements();

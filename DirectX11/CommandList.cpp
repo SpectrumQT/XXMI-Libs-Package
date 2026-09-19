@@ -7464,13 +7464,13 @@ void CustomResourcePool::CopyMetadataFrom(const CustomResourcePool& src)
 	Initialize(src.pool_size);
 }
 
-void CustomResourcePool::ResetElements()
+void CustomResourcePool::ResetElements(PoolElement::ResetType reset_type)
 {
 	if (source_pool)
-		return source_pool->ResetElements();
+		return source_pool->ResetElements(reset_type);
 
 	for (size_t i = 0; i < pool_size; ++i)
-		ResetElement(i);
+		ResetElement(i, reset_type);
 }
 
 void CustomResourcePool::ResetPool(bool reset_elements)
@@ -7596,25 +7596,49 @@ void CustomResourcePool::ResetVariable(CommandListVariable* variable)
 	variable->fval = variable_template->fval;
 }
 
-void CustomResourcePool::ResetElement(size_t pool_index)
+void CustomResourcePool::ResetElement(size_t pool_index, PoolElement::ResetType reset_type)
 {
 	PoolElement& element = elements[pool_index];
 	switch (element.type)
 	{
 	case PoolElement::Type::Resource:
-		ResetResource(element.resource);
-		break;
+		if (reset_type == PoolElement::ResetType::All || reset_type == PoolElement::ResetType::Resource)
+		{
+			ResetResource(element.resource);
+			element.type = PoolElement::Type::None;
+		}
+		return;
 
 	case PoolElement::Type::Variable:
-		ResetVariable(element.variable);
-		break;
+		if (reset_type == PoolElement::ResetType::All || reset_type == PoolElement::ResetType::Variable)
+		{
+			ResetVariable(element.variable);
+			element.type = PoolElement::Type::None;
+		}
+		return;
 
 	case PoolElement::Type::Mixed:
-		ResetResource(element.resource);
-		ResetVariable(element.variable);
-		break;
+		// For Mixed type we do not reset element type.
+		// As of now, it's only used for SwitchElementType, which is effectively disabled for Mixed type pools.
+		switch (reset_type) {
+		case PoolElement::ResetType::All:
+			ResetResource(element.resource);
+			ResetVariable(element.variable);
+			return;
+
+		case PoolElement::ResetType::Resource:
+			ResetResource(element.resource);
+			return;
+
+		case PoolElement::ResetType::Variable:
+			ResetVariable(element.variable);
+			return;
+		}
+		return;
+
+	case PoolElement::Type::None:
+		return;
 	}
-	element.type = PoolElement::Type::None;
 }
 
 void CustomResourcePool::PostponeExpiration(PoolSlot& pool_slot, bool is_assignment)

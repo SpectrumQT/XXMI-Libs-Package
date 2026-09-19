@@ -24,7 +24,15 @@ jobs:
       uses: microsoft/setup-msbuild@v2
       with:
         vs-version: '[17.0,18.0)'
-        
+            
+    - name: Generate version header
+      shell: pwsh
+      run: |
+        .\tools\generate-version.ps1 `
+          -VersionFile .\version.h `
+          -OutputFile .\version.generated.h `
+          -Tag "${{ github.ref_name }}"
+
     - name: Build solution
       run: msbuild StereoVisionHacks.sln -property:Configuration="Zip Release" -property:Platform=x64 -target:rebuild -verbosity:minimal
 

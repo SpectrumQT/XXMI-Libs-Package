@@ -5383,61 +5383,102 @@ static void log_syntax_tree(T token, const char *msg)
 
 #pragma region CommandListExpressions
 
+// Applies the operator precedence passes to a tokenised expression and
+// finalises it. Syntax errors propagate as CommandListSyntaxError, like
+// from tokenise(): the caller catches both and reports them against the
+// text it built the tokens from.
+static std::shared_ptr<CommandListEvaluatable> transform_expression(CommandListSyntaxTree &tree, uint32_t operator_mask)
+{
+	group_parenthesis(&tree);
+
+	if (operator_mask & OP_UNARY)
+		transform_operators_recursive(&tree, unary_operators, ARRAYSIZE(unary_operators), true, true);
+
+	if (operator_mask & OP_EXPONENT)
+		transform_operators_recursive(&tree, exponent_operators, ARRAYSIZE(exponent_operators), true, false);
+
+	if (operator_mask & OP_MULTIPLICATION)
+		transform_operators_recursive(&tree, multi_division_operators, ARRAYSIZE(multi_division_operators), false, false);
+
+	if (operator_mask & OP_ADD_SUBTRACT)
+		transform_operators_recursive(&tree, add_subtract_operators, ARRAYSIZE(add_subtract_operators), false, false);
+
+	if (operator_mask & OP_SHIFT)
+		transform_operators_recursive(&tree, shift_operators, ARRAYSIZE(shift_operators), false, false);
+
+	if (operator_mask & OP_RELATIONAL)
+		transform_operators_recursive(&tree, relational_operators, ARRAYSIZE(relational_operators), false, false);
+
+	if (operator_mask & OP_EQUALITY)
+		transform_operators_recursive(&tree, equality_operators, ARRAYSIZE(equality_operators), false, false);
+
+	if (operator_mask & OP_BITWISE_AND)
+		transform_operators_recursive(&tree, bitwise_and_operators, ARRAYSIZE(bitwise_and_operators), false, false);
+
+	if (operator_mask & OP_BITWISE_XOR)
+		transform_operators_recursive(&tree, bitwise_xor_operators, ARRAYSIZE(bitwise_xor_operators), false, false);
+
+	if (operator_mask & OP_BITWISE_OR)
+		transform_operators_recursive(&tree, bitwise_or_operators, ARRAYSIZE(bitwise_or_operators), false, false);
+
+	if (operator_mask & OP_AND)
+		transform_operators_recursive(&tree, and_operators, ARRAYSIZE(and_operators), false, false);
+
+	if (operator_mask & OP_OR)
+		transform_operators_recursive(&tree, or_operators, ARRAYSIZE(or_operators), false, false);
+
+	return tree.finalise();
+}
+
+static void log_expression_syntax_error(const wstring *expression, const CommandListSyntaxError &e)
+{
+	LogOverlay(LOG_WARNING_MONOSPACE,
+			"Syntax Error: %S\n"
+			"              %*s: %S\n",
+			expression->c_str(), (int)e.pos+1, "^", e.msg.c_str());
+}
+
 bool CommandListExpression::parse(const wstring *expression, const wstring *ini_namespace, CommandListScope *scope)
 {
 	CommandListSyntaxTree tree(0);
-
 	uint32_t operator_mask = 0;
 
 	try {
 		tokenise(expression, &tree, ini_namespace, scope, &operator_mask);
-
-		group_parenthesis(&tree);
-
-		if (operator_mask & OP_UNARY)
-			transform_operators_recursive(&tree, unary_operators, ARRAYSIZE(unary_operators), true, true);
-
-		if (operator_mask & OP_EXPONENT)
-			transform_operators_recursive(&tree, exponent_operators, ARRAYSIZE(exponent_operators), true, false);
-
-		if (operator_mask & OP_MULTIPLICATION)
-			transform_operators_recursive(&tree, multi_division_operators, ARRAYSIZE(multi_division_operators), false, false);
-
-		if (operator_mask & OP_ADD_SUBTRACT)
-			transform_operators_recursive(&tree, add_subtract_operators, ARRAYSIZE(add_subtract_operators), false, false);
-
-		if (operator_mask & OP_SHIFT)
-			transform_operators_recursive(&tree, shift_operators, ARRAYSIZE(shift_operators), false, false);
-
-		if (operator_mask & OP_RELATIONAL)
-			transform_operators_recursive(&tree, relational_operators, ARRAYSIZE(relational_operators), false, false);
-
-		if (operator_mask & OP_EQUALITY)
-			transform_operators_recursive(&tree, equality_operators, ARRAYSIZE(equality_operators), false, false);
-
-		if (operator_mask & OP_BITWISE_AND)
-			transform_operators_recursive(&tree, bitwise_and_operators, ARRAYSIZE(bitwise_and_operators), false, false);
-
-		if (operator_mask & OP_BITWISE_XOR)
-			transform_operators_recursive(&tree, bitwise_xor_operators, ARRAYSIZE(bitwise_xor_operators), false, false);
-
-		if (operator_mask & OP_BITWISE_OR)
-			transform_operators_recursive(&tree, bitwise_or_operators, ARRAYSIZE(bitwise_or_operators), false, false);
-
-		if (operator_mask & OP_AND)
-			transform_operators_recursive(&tree, and_operators, ARRAYSIZE(and_operators), false, false);
-
-		if (operator_mask & OP_OR)
-			transform_operators_recursive(&tree, or_operators, ARRAYSIZE(or_operators), false, false);
-
-		evaluatable = tree.finalise();
+		evaluatable = transform_expression(tree, operator_mask);
 		log_syntax_tree(evaluatable, "Final syntax tree:\n");
 		return true;
 	} catch (const CommandListSyntaxError &e) {
-		LogOverlay(LOG_WARNING_MONOSPACE,
-				"Syntax Error: %S\n"
-				"              %*s: %S\n",
-				expression->c_str(), (int)e.pos+1, "^", e.msg.c_str());
+		log_expression_syntax_error(expression, e);
+		return false;
+	}
+}
+
+bool CommandListExpression::parse_compound(const wstring *target, const wstring *op, const wstring *rhs, const wstring *ini_namespace, CommandListScope *scope)
+{
+	CommandListSyntaxTree tree(0);
+	uint32_t operator_mask = 0;
+
+	// "$x += 1" evaluates as "$x + (1)": the target becomes the left operand
+	// and the right hand side is parenthesised so it is evaluated as a
+	// whole. The target was validated by the assignment parser, so any
+	// syntax error is in the right hand side and is reported against it:
+	try {
+		tokenise(target, &tree, ini_namespace, scope, &operator_mask);
+
+		operator_mask |= GetOperatorMask(op->c_str(), op->size());
+		tree.tokens.emplace_back(make_shared<CommandListOperatorToken>(0, *op));
+		tree.tokens.emplace_back(make_shared<CommandListOperatorToken>(0, L"("));
+
+		tokenise(rhs, &tree, ini_namespace, scope, &operator_mask);
+
+		tree.tokens.emplace_back(make_shared<CommandListOperatorToken>(rhs->size(), L")"));
+
+		evaluatable = transform_expression(tree, operator_mask);
+		log_syntax_tree(evaluatable, "Final syntax tree:\n");
+		return true;
+	} catch (const CommandListSyntaxError &e) {
+		log_expression_syntax_error(rhs, e);
 		return false;
 	}
 }
@@ -5885,14 +5926,18 @@ bool CommandListOperand::parse_ini_keywords(const wstring* operand, const wstrin
 // w4 = res_width / res_height (set parameter to resolution width/height)
 bool ParseCommandListIniParamOverride(const wchar_t *section,
 		const wchar_t *key, wstring *val, CommandList *command_list,
-		const wstring *ini_namespace)
+		const wstring *ini_namespace, const wstring *compound_op)
 {
 	ParamOverride *param = new ParamOverride();
 
 	if (!ParseIniParamName(key, &param->param_idx, &param->param_component))
 		goto bail;
 
-	if (!param->expression.parse(val, ini_namespace, command_list->scope))
+	if (compound_op) {
+		wstring target = key;
+		if (!param->expression.parse_compound(&target, compound_op, val, ini_namespace, command_list->scope))
+			goto bail;
+	} else if (!param->expression.parse(val, ini_namespace, command_list->scope))
 		goto bail;
 
 	// Reserve space in IniParams for this variable:
@@ -5909,7 +5954,7 @@ bail:
 bool ParseCommandListVariableAssignment(const wchar_t *section,
 		const wchar_t *key, wstring *val, const wstring *raw_line,
 		CommandList *command_list, CommandList *pre_command_list, CommandList *post_command_list,
-		const wstring *ini_namespace)
+		const wstring *ini_namespace, const wstring *compound_op)
 {
 	wstring line = key;
 
@@ -5986,7 +6031,10 @@ bool ParseCommandListVariableAssignment(const wchar_t *section,
 
 	command->var = var;
 
-	if (!command->expression.parse(val, ini_namespace, command_list->scope))
+	if (compound_op) {
+		if (!command->expression.parse_compound(&name, compound_op, val, ini_namespace, command_list->scope))
+			goto bail;
+	} else if (!command->expression.parse(val, ini_namespace, command_list->scope))
 		goto bail;
 
 	command->ini_line = L"[" + wstring(section) + L"] " + line + L" = " + *val;
@@ -8771,7 +8819,8 @@ void LayoutElementOperation::run(CommandListState* state)
 #pragma region PoolVariableOperation
 
 CommandListCommand* parse_pool_variable_operation(
-	const wchar_t *section, ResourceCopyTarget& dst, wstring *val, CommandList *command_list, const wstring *ini_namespace, const wchar_t* key
+	const wchar_t *section, ResourceCopyTarget& dst, wstring *val, CommandList *command_list, const wstring *ini_namespace, const wchar_t* key,
+	const wstring *compound_op = NULL
 )
 {
 	//LogInfoW(L"parse_pool_variable_operation dst_type=%ls, dst_mode=%ls, val=%ls\n",
@@ -8801,7 +8850,11 @@ CommandListCommand* parse_pool_variable_operation(
 
 	PoolVariableOperation* command = new PoolVariableOperation();
 
-	if (!command->expression.parse(val, ini_namespace, command_list->scope))
+	if (compound_op) {
+		wstring target = key;
+		if (!command->expression.parse_compound(&target, compound_op, val, ini_namespace, command_list->scope))
+			goto bail;
+	} else if (!command->expression.parse(val, ini_namespace, command_list->scope))
 		goto bail;
 
 	command->dst = std::move(dst);
@@ -9019,6 +9072,115 @@ bool ParseCommandListResourceCopyTargetDirective(
 	return true;
 }
 
+#pragma region CompoundAssignment
+
+// Splits "$x +" / "1" (from "$x += 1") or "++$x" / "$x--" (a line without "=",
+// only seen in raw_line) into target, binary operator and right hand side.
+static bool split_compound_assignment(const wchar_t *key, const wstring *val, const wstring *raw_line,
+		wstring *target, wstring *op, wstring *rhs)
+{
+	// Longest first so "<<" is not taken as "<":
+	static const wchar_t *compound_operators[] = {
+		L"**", L"//", L"<<", L">>", L"&&", L"||",
+		L"+", L"-", L"*", L"/", L"%", L"&", L"|", L"^",
+	};
+
+	if (*key) {
+		// The ini reader split "$x += 1" at the "=", leaving the operator
+		// at the end of the key:
+		size_t key_len = wcslen(key);
+		for (const wchar_t *candidate : compound_operators) {
+			size_t len = wcslen(candidate);
+			if (key_len > len && !wcscmp(key + key_len - len, candidate)) {
+				target->assign(key, key_len - len);
+				*op = candidate;
+				*rhs = *val;
+				break;
+			}
+		}
+	} else if (raw_line) {
+		wstring line = *raw_line;
+		size_t len = line.size();
+		if (len < 3)
+			return false;
+		wstring head = line.substr(0, 2), tail = line.substr(len - 2);
+		if (head == L"++" || head == L"--") {
+			*target = line.substr(2);
+			*op = head.substr(0, 1);
+		} else if (tail == L"++" || tail == L"--") {
+			*target = line.substr(0, len - 2);
+			*op = tail.substr(0, 1);
+		} else {
+			return false;
+		}
+		*rhs = L"1";
+	}
+
+	if (op->empty() || rhs->empty())
+		return false;
+
+	// "$x +" keeps the space before the operator:
+	target->erase(target->find_last_not_of(L" \t") + 1);
+	return !target->empty();
+}
+
+// $x += 1, x0 *= 2, $PoolFoo[$i] |= 4 and every other binary operator, plus
+// ++$x / $x++ / --$x / $x--. The target's own assignment parser builds the
+// command, with the expression "target op (rhs)" assembled by
+// CommandListExpression::parse_compound.
+bool ParseCommandListCompoundAssignment(const wchar_t *section,
+		const wchar_t *key, wstring *val, const wstring *raw_line,
+		CommandList *command_list, CommandList *pre_command_list, CommandList *post_command_list,
+		const wstring *ini_namespace)
+{
+	wstring target, op, rhs, line;
+
+	// "post ++$x" has no "=", so the pre/post prefix is still on the line:
+	if (!*key && raw_line) {
+		line = *raw_line;
+		if (post_command_list && !line.compare(0, 5, L"post ")) {
+			line = line.substr(5);
+			command_list = post_command_list;
+		} else if (post_command_list && !line.compare(0, 4, L"pre ")) {
+			line = line.substr(4);
+		}
+		raw_line = &line;
+	}
+
+	if (!split_compound_assignment(key, val, raw_line, &target, &op, &rhs))
+		return false;
+
+	bool parsed;
+	if (target[0] == L'$' && target.back() == L']') {
+		// Pool variable: $PoolFoo[$i]. Same as in
+		// ParseCommandListResourceCopyTargetDirective, an unresolved pool
+		// variable still parses as VARIABLE and is left to
+		// parse_pool_variable_operation to reject or record:
+		ResourceCopyTarget dst;
+		if (!dst.ParseTarget(target.c_str(), false, ini_namespace, command_list->scope)
+			&& dst.evaluation_mode != ResourceCopyTargetEvaluationMode::VARIABLE)
+			return false;
+		CommandListCommand *operation = parse_pool_variable_operation(section, dst, &rhs, command_list, ini_namespace, target.c_str(), &op);
+		if (!operation)
+			return false;
+		command_list->commands.push_back(std::shared_ptr<CommandListCommand>(operation));
+		parsed = true;
+	} else if (target[0] == L'$') {
+		parsed = ParseCommandListVariableAssignment(section, target.c_str(), &rhs, NULL, command_list, pre_command_list, post_command_list, ini_namespace, &op);
+	} else {
+		parsed = ParseCommandListIniParamOverride(section, target.c_str(), &rhs, command_list, ini_namespace, &op);
+	}
+
+	if (!parsed)
+		return false;
+
+	// Frame analysis log shows the line as written ("$x +" + "= 1" when
+	// there is no raw line to take it from):
+	command_list->commands.back()->ini_line = L"[" + wstring(section) + L"] " + (raw_line ? *raw_line : wstring(key) + L"= " + *val);
+	return true;
+}
+
+#pragma endregion CompoundAssignment
 
 #pragma region ParseFlowControl
 

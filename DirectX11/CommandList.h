@@ -1484,6 +1484,7 @@ public:
 
 	// For VARIABLE type:
 	float *var_ftarget;
+	CommandListVariable *var;
 
 	// For texture filters:
 	ResourceCopyTarget texture_filter_target;
@@ -1499,6 +1500,7 @@ public:
 		param_component(NULL),
 		param_idx(0),
 		var_ftarget(NULL),
+		var(NULL),
 		scissor(0)
 	{}
 
@@ -1514,6 +1516,31 @@ public:
 	float evaluate(CommandListState *state, HackerDevice *device=NULL) override;
 	bool static_evaluate(float *ret, HackerDevice *device=NULL, bool evaluate_variables=false) override;
 	bool optimise(HackerDevice *device, std::shared_ptr<CommandListEvaluatable> *replacement) override;
+};
+
+// ++$x / $x++ / --$x / $x-- inside an expression. Tokenised as a single
+// operand so it binds tighter than any operator: evaluating it adds delta to
+// the variable and yields the new (prefix) or old (postfix) value. Has a
+// side effect, so it is never statically evaluated or optimised away.
+class CommandListIncrement :
+	public CommandListToken,
+	public CommandListOperandBase,
+	public CommandListEvaluatable {
+public:
+	CommandListVariable *var;
+	float delta;
+	bool postfix;
+
+	CommandListIncrement(size_t pos, wstring token, CommandListVariable *var, float delta, bool postfix) :
+		CommandListToken(pos, token),
+		var(var),
+		delta(delta),
+		postfix(postfix)
+	{}
+
+	float evaluate(CommandListState *state, HackerDevice *device=NULL) override;
+	bool static_evaluate(float *ret, HackerDevice *device=NULL, bool evaluate_variables=false) override { return false; }
+	bool optimise(HackerDevice *device, std::shared_ptr<CommandListEvaluatable> *replacement) override { return false; }
 };
 
 class CommandListExpression {

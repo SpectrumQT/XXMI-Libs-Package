@@ -3773,6 +3773,18 @@ float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device
 	return 0;
 }
 
+float CommandListIncrement::evaluate(CommandListState *state, HackerDevice *device)
+{
+	float orig = var->fval;
+
+	var->fval = orig + delta;
+
+	if (var->flags & VariableFlags::PERSIST)
+		G->user_config_dirty = true;
+
+	return postfix ? orig : var->fval;
+}
+
 bool CommandListOperand::static_evaluate(float *ret, HackerDevice *device, bool evaluate_variables)
 {
 	switch (type) {
@@ -4705,6 +4717,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 	size_t friendly_pos = 0;
 	int i;
 	bool last_was_operand = false;
+	float prefix_delta = 0; // ++$x / --$x: applies to the operand that follows
 
 	LogDebug("    Tokenising \"%S\"\n", expr.c_str());
 
@@ -4723,6 +4736,16 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 		remain = expr.substr(pos);
 
 		bool matched = false;
+
+		// Prefix increment / decrement, only when glued to a variable so
+		// "- -$x" and "$a - -$b" keep working:
+		if (remain.size() > 2 && (remain[0] == L'+' || remain[0] == L'-') && remain[1] == remain[0] && remain[2] == L'$')
+		{
+			prefix_delta = remain[0] == L'+' ? 1.0f : -1.0f;
+			LogDebug("      Prefix %s\n", prefix_delta > 0 ? "++" : "--");
+			pos += 2;
+			continue;
+		}
 
 		// Operators:
 		for (i = 0; i < ARRAYSIZE(operator_tokens); i++)
@@ -4929,7 +4952,29 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 
 import_operand:
 
-		tree->tokens.emplace_back(std::move(operand));
+		// Postfix increment / decrement glued to the operand ($x++):
+		float postfix_delta = 0;
+		if (pos + 1 < expr.size() && (expr[pos] == L'+' || expr[pos] == L'-') && expr[pos + 1] == expr[pos])
+			postfix_delta = expr[pos] == L'+' ? 1.0f : -1.0f;
+
+		if (prefix_delta != 0 || postfix_delta != 0)
+		{
+			if (operand->type != ParamOverrideType::VARIABLE || (prefix_delta != 0 && postfix_delta != 0))
+				throw CommandListSyntaxError(L"++ and -- can only be applied to a variable", friendly_pos);
+
+			bool postfix = postfix_delta != 0;
+			float delta = postfix ? postfix_delta : prefix_delta;
+			if (postfix)
+				pos += 2;
+			token = postfix ? token + (delta > 0 ? L"++" : L"--") : (delta > 0 ? L"++" : L"--") + token;
+			LogDebug("      Increment: \"%S\"\n", token.c_str());
+			tree->tokens.emplace_back(make_shared<CommandListIncrement>(friendly_pos, token, operand->var, delta, postfix));
+			prefix_delta = 0;
+		}
+		else
+		{
+			tree->tokens.emplace_back(std::move(operand));
+		}
 
 		if (last_was_operand)
 		{
@@ -5828,6 +5873,7 @@ bool CommandListOperand::parse_variable(const wstring* operand, const wstring* i
 		parse_command_list_var_name(*operand, ini_namespace, &var)) {
 		type = ParamOverrideType::VARIABLE;
 		var_ftarget = &var->fval;
+		this->var = var;
 		return operand_allowed_in_context(type, scope);
 	}
 	return false;

@@ -981,13 +981,25 @@ void MarkResourceHashContaminated(ID3D11Resource *dest, UINT DstSubresource,
 	UINT dstWidth = 1, dstHeight = 1, dstDepth = 1, dstMip = 0, dstIdx = 0, dstArraySize = 1;
 	bool partial = false;
 	ResourceInfoMap::iterator info_i;
+	D3D11_RESOURCE_DIMENSION dim;
 	Profiling::State profiling_state;
 
 	if (!dest)
 		return;
 
-	if (Profiling::mode == Profiling::Mode::SUMMARY)
+	if (Profiling::mode == Profiling::Mode::SUMMARY) {
+		Profiling::hash_tracking_overhead.count++;
 		Profiling::start(&profiling_state);
+	}
+
+	// Contamination is only tracked for 2D/3D textures (see
+	// supports_hash_tracking), but the bulk of the calls here are for
+	// buffers - constant buffers Mapped or UpdateSubresource'd on every
+	// draw. Ask the resource for its type up front so those bail before
+	// taking the locks and searching the resource map for nothing:
+	dest->GetType(&dim);
+	if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D && dim != D3D11_RESOURCE_DIMENSION_TEXTURE3D)
+		goto out_profile;
 
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 
@@ -1001,6 +1013,9 @@ void MarkResourceHashContaminated(ID3D11Resource *dest, UINT DstSubresource,
 	dstHash = dst_handle_info->orig_hash;
 	if (!dstHash)
 		goto out_unlock;
+
+	if (Profiling::mode == Profiling::Mode::SUMMARY)
+		Profiling::hash_tracking_overhead.hits++;
 
 	// Faster than catching an out_of_range exception from .at():
 	info_i = G->mResourceInfo.find(dstHash);
@@ -1091,6 +1106,7 @@ void MarkResourceHashContaminated(ID3D11Resource *dest, UINT DstSubresource,
 out_unlock:
 	LeaveCriticalSection(&G->mCriticalSection);
 
+out_profile:
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::end(&profiling_state, &Profiling::hash_tracking_overhead);
 }

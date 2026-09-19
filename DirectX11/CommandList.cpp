@@ -8105,7 +8105,10 @@ IniParserResult ResourceCopyTarget::ParseTargetPool(const wchar_t*& target, size
 		if (is_source)
 			return IniParserResult::SYNTAX_ERROR;
 		type = ResourceCopyTargetType::POOL;
-		evaluation_mode = ResourceCopyTargetEvaluationMode::POOL_FULL_RANGE;
+		if (evaluation_mode == ResourceCopyTargetEvaluationMode::VARIABLE)
+			evaluation_mode = ResourceCopyTargetEvaluationMode::POOL_FULL_RANGE_VARIABLE;
+		else
+			evaluation_mode = ResourceCopyTargetEvaluationMode::POOL_FULL_RANGE_RESOURCE;
 		return IniParserResult::TOKEN_FOUND;
 	}
 
@@ -8423,11 +8426,23 @@ void PoolCopyOperation::run(CommandListState* state)
 		return;
 
 	case ResourceCopyTargetType::EMPTY:
-		if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_FULL_RANGE)
-			dst.custom_resource_pool->ResetElements(); // Reset all pool elements.
-		else
-			dst.custom_resource_pool->ResetPool(false); // Reset pool index metadata and proxy state.
-		return;
+		switch (dst.evaluation_mode)
+		{
+		case ResourceCopyTargetEvaluationMode::POOL_FULL_RANGE_RESOURCE:
+			// Set all pool resourcers to null.
+			dst.custom_resource_pool->ResetElements(PoolElement::ResetType::Resource);
+			return;
+
+		case ResourceCopyTargetEvaluationMode::POOL_FULL_RANGE_VARIABLE:
+			// Set all pool variables to `pool_variable_default_value`.
+			dst.custom_resource_pool->ResetElements(PoolElement::ResetType::Variable);
+			return;
+
+		default:
+			// Reset pool index metadata and proxy state.
+			dst.custom_resource_pool->ResetPool(false);
+			return;
+		}
 	}
 }
 
@@ -8785,65 +8800,77 @@ bool ParseCommandListResourceCopyTargetDirective(
 
 	CommandListCommand* operation = nullptr;
 
-	if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::VARIABLE)
+	switch (dst.evaluation_mode)
 	{
-		// Pool Variable - Copy Exression Result To Pool Variable
-		// $PoolFoo[0] = $PoolBar[0] + $var + 1
-		operation = parse_pool_variable_operation(section, dst, val, command_list, ini_namespace, key);
-	}
-	else if (dst.evaluation_mode & ResourceCopyTargetEvaluationMode::LAYOUT_MASK)
-	{
+	case ResourceCopyTargetEvaluationMode::LAYOUT_ELEMENT_FORMAT:
+	case ResourceCopyTargetEvaluationMode::LAYOUT_ELEMENT_OFFSET:
 		// Vertex Buffer Layout Override
 		// vb0->ElementFormat(BLENDINDICES, 0) = R16G16B16A16_FLOAT
 		operation = parse_layout_operation(section, dst, val, command_list, ini_namespace);
-	}
-	else
-	{
+		break;
+
+	case ResourceCopyTargetEvaluationMode::VARIABLE:
+		// Pool Variable - Copy Exression Result To Pool Variable
+		// $PoolFoo[0] = $PoolBar[0] + $var + 1
+		operation = parse_pool_variable_operation(section, dst, val, command_list, ini_namespace, key);
+		break;
+
+	case ResourceCopyTargetEvaluationMode::POOL_FULL_RANGE_VARIABLE:
+		// Pool Full Range Variable Assignment - Copy SRC expression result to all pool variables.
+		// $PoolFoo[*] = $PoolBar[0] + $var + 1.23
+		if (val->size() != 4 || wcsncmp(val->c_str(), L"null", 4))
+		{
+			operation = parse_pool_variable_operation(section, dst, val, command_list, ini_namespace, key);
+			break;
+		}
+		// "null" intentionally falls through to be handled by src.type == ResourceCopyTargetType::EMPTY case.
+		[[fallthrough]];
+
+	default:
 		ResourceCopyOptions options = ResourceCopyOptions::INVALID;
 		ResourceCopyTarget src = ResourceCopyTarget();
 
 		if (!parse_resource_copy_target_source(section, *val, src, options, command_list, ini_namespace, key))
-			src.type = ResourceCopyTargetType::INVALID;
-
-		if (dst.type == ResourceCopyTargetType::POOL)
-		{
-			if (src.type == ResourceCopyTargetType::POOL      // PoolFoo = ref PoolBar
-				|| src.type == ResourceCopyTargetType::EMPTY) // PoolFoo = null
-			{
-				// Pool - Copy Pool To Pool (`ref` and `copy_desc`)
-				operation = parse_pool_copy_operation(section, dst, src, options, command_list, ini_namespace);
-			}
-			else if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_FULL_RANGE)
-			{
-				switch (src.type)
-				{
-				case ResourceCopyTargetType::EMPTY: // PoolFoo[*] = null
-					// Pool - Reset All Slots
-					operation = parse_pool_copy_operation(section, dst, src, options, command_list, ini_namespace);
-					break;
-
-				case ResourceCopyTargetType::VARIABLE: // PoolFoo[*] = $PoolBar[0]
-				case ResourceCopyTargetType::INVALID:  // PoolFoo[*] = $var
-					// Pool - Copy Variable To All Slots (`val` will be re-parsed as expression)
-					operation = parse_pool_variable_operation(section, dst, val, command_list, ini_namespace, key);
-					break;
-
-				default: // PoolFoo[*] = copy ResourceBar
-					// Pool - Copy Resource To All Slots
-					operation = parse_resource_copy_operation(section, dst, src, options, command_list, ini_namespace);
-				}
-			}
-		}
-		else if (src.type != ResourceCopyTargetType::INVALID)
-		{
-			// 1. Pool Resource - Copy Resource To Slot
-			// PoolFoo[0] = copy ResourceFoo
-			// 2. Resource - Copy Resource To Resource
-			// ResourceFoo = copy vb0
-			operation = parse_resource_copy_operation(section, dst, src, options, command_list, ini_namespace);
-		}
-		else {
 			return false;
+
+		switch (src.type)
+		{
+		case ResourceCopyTargetType::VARIABLE:
+			// = $PoolBar[0]
+			// Only legal when DST is VARIABLE or POOL_FULL_RANGE_VARIABLE, which are already handled above.
+			return false;
+
+		case ResourceCopyTargetType::POOL:
+			// = ref/copy PoolBar
+			if (dst.type != ResourceCopyTargetType::POOL)
+				return false;
+			// 1. Copy Pool to Pool (`ref` and `copy_desc`).
+			//  PoolFoo = ref/copy_desc PoolBar
+			operation = parse_pool_copy_operation(section, dst, src, options, command_list, ini_namespace);
+			break;
+
+		case ResourceCopyTargetType::EMPTY:
+			// = null
+			if (dst.type == ResourceCopyTargetType::POOL)
+				// 1. Copy NULL to Pool (reset pool proxy mode).
+				//   PoolFoo = null
+				// 2. Copy NULL to Pool Full Range Resource (assign NULL to all pool resources).
+				//   PoolFoo[*] = null
+				// 3. Copy NULL to Pool Full Range Variable (assign NULL to all pool resources).
+				//   $PoolFoo[*] = null
+				operation = parse_pool_copy_operation(section, dst, src, options, command_list, ini_namespace);
+			else
+				// Copy null to Resource (assign NULL to resource).
+				//   ResourceFoo = null
+				operation = parse_resource_copy_operation(section, dst, src, options, command_list, ini_namespace);
+			break;
+
+		default:
+			// 1. Pool Resource - Copy Resource To Slot
+			//   PoolFoo[0] = copy ResourceFoo
+			// 2. Resource - Copy Resource To Resource
+			//   ResourceFoo = copy vb0
+			operation = parse_resource_copy_operation(section, dst, src, options, command_list, ini_namespace);
 		}
 	}
 

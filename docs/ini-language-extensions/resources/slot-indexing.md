@@ -96,6 +96,10 @@ A plain `ref` (optionally with `unless_null` and `no_view_cache`) is the fast pa
 
 Any other copy type or option runs a regular single-slot copy per slot, exactly as the equivalent `ps-tN = copy ...` line would, and only the final bind call is shared. A `copy` into constant buffer slots binds each slot separately, since the copied region has to be bound with `XXSetConstantBuffers1`.
 
+### Frame Analysis Log
+
+The frame analysis log lists every slot of the range as the equivalent single-slot line, e.g. `ps-t3 = ref PoolFoo_3`, with the copy details nested under it for `copy` operations.
+
 ### Frame Analysis Dump
 
 `dump` accepts a slot range with explicit bounds and dumps each slot in turn. The slot number is appended to the dump file name.

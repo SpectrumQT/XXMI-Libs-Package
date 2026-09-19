@@ -51,6 +51,17 @@ PoolFoo[$index] = copy ResourceText ; Full Copy (expensive).
 
 > `ref` performs a reference copy by pointing to the underlying D3D resource, while `copy` creates a full copy of the underlying resource.
 
+## Pool Resource Ranges
+
+A range of pool elements can be bound to, or fetched from, a range of pipeline slots with a single operation:
+
+```ini
+ps-t[0:3] = ref PoolFoo[0:3]
+PoolFoo[0:3] = ref ps-t[0:3]
+```
+
+See [Slot Indexing → Slot Ranges](../resources/slot-indexing.md/#slot-ranges) for details.
+
 ## Pool Resource Usage
 
 Pool element resource can be used anywhere a custom resource is accepted.

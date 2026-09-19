@@ -1103,6 +1103,17 @@ static EnumName_t<const wchar_t *, ResourceCopyOptions> ResourceCopyOptionNames[
 // overwrite - instead of creating a new resource for a copy operation, overwrite the resource already assigned to the destination (if it exists and is compatible)
 
 
+// What a ResourceCopyOperation would have bound to its destination slot,
+// collected by a batch so several slots can be set with one call. The
+// references are owned by the batch.
+struct DeferredBinding {
+	ID3D11Resource *resource = nullptr;
+	ID3D11View *view = nullptr;
+	UINT offset = 0;   // Constant buffers only, in bytes
+	UINT size = 0;
+	bool assigned = false; // false: unless_null kept the current binding
+};
+
 class ResourceCopyOperation : public CommandListCommand {
 public:
 	ResourceCopyTarget src;
@@ -1114,9 +1125,8 @@ public:
 	ID3D11View *cached_view;
 
 	// Set by ShaderResourceBindBatch while it runs this operation: the
-	// resolved view is handed back through here instead of being bound.
-	ID3D11View **deferred_view = nullptr;
-	bool *deferred_assign = nullptr;
+	// resolved binding is handed back through here instead of being bound.
+	DeferredBinding *deferred = nullptr;
 
 	ResourceCopyOperation();
 	~ResourceCopyOperation();

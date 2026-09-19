@@ -12147,15 +12147,20 @@ void ResourceCopyOperation::CopyResourceToPool(
 void ResourceCopyOperation::SetOrDeferResource(CommandListState *state,
 		ID3D11Resource *res, ID3D11View *view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_size)
 {
-	if (!deferred_view) {
+	if (!deferred) {
 		dst.SetResource(state, res, view, stride, offset, format, buf_size);
 		return;
 	}
 
+	if (res)
+		res->AddRef();
 	if (view)
 		view->AddRef();
-	*deferred_view = view;
-	*deferred_assign = true;
+	deferred->resource = res;
+	deferred->view = view;
+	deferred->offset = offset;
+	deferred->size = buf_size;
+	deferred->assigned = true;
 }
 
 void ResourceCopyOperation::RunWithSource(CommandListState *state, ID3D11Resource *src_resource, ID3D11View *src_view)
@@ -12248,22 +12253,23 @@ void ShaderResourceBindBatch::run(CommandListState *state)
 		GetShaderResourcesBatch(state->mOrigContext1, shader_type, first_slot, count, views);
 
 	for (auto &op : operations) {
-		ID3D11View *view = NULL;
-		bool assign = false;
+		DeferredBinding binding;
 
-		op->deferred_view = &view;
-		op->deferred_assign = &assign;
+		op->deferred = &binding;
 		op->run(state);
-		op->deferred_view = NULL;
-		op->deferred_assign = NULL;
+		op->deferred = NULL;
 
-		if (!assign)
+		if (!binding.assigned)
 			continue; // unless_null with a null source keeps the current binding
+
+		// Only the view is bound to a t slot:
+		if (binding.resource)
+			binding.resource->Release();
 
 		unsigned i = op->dst.slot - first_slot;
 		if (views[i])
 			views[i]->Release();
-		views[i] = (ID3D11ShaderResourceView*)view;
+		views[i] = (ID3D11ShaderResourceView*)binding.view;
 	}
 
 	SetShaderResourcesBatch(state->mOrigContext1, shader_type, first_slot, count, views);
@@ -12305,11 +12311,9 @@ void ShaderResourceFetchBatch::run(CommandListState *state)
 	COMMAND_LIST_LOG(state, "%s\n", "}");
 }
 
-// Optimiser support: merge runs of adjacent slot binds / fetches.
-
-static const int BATCHABLE_OPTIONS = (int)ResourceCopyOptions::REFERENCE
-	| (int)ResourceCopyOptions::UNLESS_NULL
-	| (int)ResourceCopyOptions::NO_VIEW_CACHE;
+// Optimiser support: merge runs of adjacent slot binds / fetches. Copy
+// options don't matter: the operation still does its own copy / view
+// creation, only the final XXSetShaderResources is deferred to the batch.
 
 static bool is_batchable_bind(const ResourceCopyOperation *op)
 {
@@ -12318,8 +12322,7 @@ static bool is_batchable_bind(const ResourceCopyOperation *op)
 	return op->dst.type == ResourceCopyTargetType::SHADER_RESOURCE
 		&& op->dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE
 		&& (op->src.type == ResourceCopyTargetType::CUSTOM_RESOURCE || op->src.type == ResourceCopyTargetType::EMPTY)
-		&& op->src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE
-		&& !((int)op->options & ~BATCHABLE_OPTIONS);
+		&& op->src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE;
 }
 
 static bool is_batchable_fetch(const ResourceCopyOperation *op)
@@ -12327,8 +12330,7 @@ static bool is_batchable_fetch(const ResourceCopyOperation *op)
 	return op->src.type == ResourceCopyTargetType::SHADER_RESOURCE
 		&& op->src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE
 		&& op->dst.type == ResourceCopyTargetType::CUSTOM_RESOURCE
-		&& op->dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE
-		&& !((int)op->options & ~BATCHABLE_OPTIONS);
+		&& op->dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE;
 }
 
 // Splits a run of same-stage operations into batches, appending each batch

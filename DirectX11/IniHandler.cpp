@@ -2178,6 +2178,8 @@ static CustomResourcePool* ParseResourcePoolSection(const wchar_t* section_name)
 
 static void ParseResourceSections()
 {
+	// Edges point at entries of the maps cleared below:
+	ClearDeferredBindFlags();
 	customResourcePools.clear();
 	customResources.clear();
 
@@ -4902,6 +4904,10 @@ void LoadConfigFile()
 	G->post_clear_uav_float_command_list.clear();
 	ParseCommandList(L"ClearUnorderedAccessViewFloat", &G->clear_uav_float_command_list, &G->post_clear_uav_float_command_list, NULL);
 
+	// Every command list is parsed now, so bind flags can be resolved
+	// through chains of custom resource references:
+	PropagateDeferredBindFlags();
+
 	LogInfo("\n");
 
 	if (G->hide_cursor || G->SCREEN_UPSCALING)
@@ -5175,8 +5181,7 @@ void ReloadConfig(HackerDevice *device)
 
 		// Clear active command lists set, as the pointers in this set will
 		// become invalid as the config is reloaded:
-		command_lists_profiling.clear();
-		command_lists_cmd_profiling.clear();
+		clear_command_list_profiling();
 
 		// Reset the counters on the global parameter save area:
 		OverrideSave.Reset(device);

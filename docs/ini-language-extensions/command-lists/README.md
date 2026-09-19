@@ -115,3 +115,58 @@ CommandListC = ref CommandListA ; No-op
 ```
 
 The circular reference creation is avoided, leaving the already-established chain intact.
+
+## Slot Operation Batching
+
+The command list optimiser merges adjacent lines that bind or fetch shader resource slots (`t` slots) of the same shader stage into a single D3D11 call, such as `PSSetShaderResources` or `PSGetShaderResources`.
+
+For example:
+
+```ini
+ps-t0 = ref ResourceFoo
+ps-t1 = ref ResourceBar
+ps-t2 = ref PoolFoo[$index]
+ps-t3 = null
+```
+
+is executed as one `PSSetShaderResources` call covering `ps-t0`–`ps-t3`, and:
+
+```ini
+ResourceFoo = ref ps-t0
+ResourceBar = ref ps-t1
+```
+
+is executed as one `PSGetShaderResources` call.
+
+A line is batched when:
+
+* For binds, the destination is a `t` slot and the source is a custom resource, a pool resource, or `null`.
+* For fetches, the source is a `t` slot and the destination is a custom resource or a pool resource.
+
+Both `ref` and `copy` lines are batched, with any copy options. Each line still performs its own copy and creates its own view, only the final bind or fetch call is shared.
+
+A run of batched lines ends at any other line, at a line for a different shader stage, or when switching between binds and fetches. Slots do not need to be listed in order, but each batch covers a contiguous slot range, so a gap in the slot numbers splits the run into separate batches.
+
+> Binding a pipeline slot to another pipeline slot (`ps-t1 = ref ps-t0`) is never batched, since reading all sources before binding any of them would change the meaning of a slot swap.
+
+An `if`/`elif`/`else` chain is batched as well when every branch consists of exactly one such line for the same slot. The final `else` may be omitted, in which case the slot keeps its current binding when no condition matches:
+
+```ini
+ps-t0 = ref ResourceFoo
+if $variant == 1
+    ps-t1 = ref ResourceBarA
+elif $variant == 2
+    ps-t1 = ref ResourceBarB
+else
+    ps-t1 = ref ResourceBarC
+endif
+ps-t2 = ref ResourceBaz
+```
+
+Batching does not change the meaning of the lines. Sources are resolved in INI order, a slot bound twice within a batch takes the last value, and `unless_null` keeps the current binding for slots whose source is `null`. A batch using `unless_null` reads the current bindings first, so it may span gaps in the slot numbers while leaving the slots in between untouched.
+
+The optimiser logs the number of lines saved by batching to `d3d11_log.txt`:
+
+```
+Merged 3 slot operations into batches in [CommandListFoo]
+```

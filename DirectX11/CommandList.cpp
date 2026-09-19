@@ -13110,6 +13110,24 @@ bool SlotRangeCopyOperation::UsesSlotOps() const
 	return ((int)options & ~plain_ref) && src.type != ResourceCopyTargetType::EMPTY;
 }
 
+// Frame analysis log line per slot. Guarded so the name formatting isn't
+// paid for on every run:
+#define SLOT_RANGE_LOG(state, fmt, ...) \
+	do { \
+		if (G->analyse_frame) \
+			COMMAND_LIST_LOG(state, fmt, __VA_ARGS__); \
+	} while (0)
+
+// "ps-t3" for the frame analysis log:
+static std::string slot_log_name(const ResourceCopyTarget &target, unsigned slot)
+{
+	const char *kind = target.type == ResourceCopyTargetType::CONSTANT_BUFFER ? "cb"
+		: target.type == ResourceCopyTargetType::UNORDERED_ACCESS_VIEW ? "u" : "t";
+	char buf[16];
+	_snprintf_s(buf, sizeof(buf), _TRUNCATE, "%cs-%s%u", (char)target.shader_type, kind, slot);
+	return buf;
+}
+
 void SlotRangeCopyOperation::RunBind(CommandListState *state, unsigned first, unsigned count, int pool_first)
 {
 	ID3D11View *views[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
@@ -13118,6 +13136,7 @@ void SlotRangeCopyOperation::RunBind(CommandListState *state, unsigned first, un
 	UINT cb_sizes[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
 	bool is_cb = dst.type == ResourceCopyTargetType::CONSTANT_BUFFER;
 	bool use_slot_ops = UsesSlotOps();
+	const char *copy_type = (options & ResourceCopyOptions::COPY_MASK) ? "copy" : "ref";
 
 	if (options & ResourceCopyOptions::UNLESS_NULL) {
 		GetSlotRange(state, dst, first, count, views, buffers, cb_offsets, cb_sizes);
@@ -13147,11 +13166,16 @@ void SlotRangeCopyOperation::RunBind(CommandListState *state, unsigned first, un
 			DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 			DeferredBinding binding;
 
+			SLOT_RANGE_LOG(state, "  %s = %s %S\n", slot_log_name(dst, first + i).c_str(), copy_type, source ? source->name.c_str() : L"null");
+
 			op->src.SetCustomResource(source);
 			op->deferred = &binding;
-			// Same as ResourceCopyOperation::run() without the log line:
+			// Same as ResourceCopyOperation::run() without the log line;
+			// its own lines are nested under the one above:
 			resource = op->src.GetResource(state, &src_view, &stride, &offset, &format, &buf_src_size, (options & ResourceCopyOptions::REFERENCE) ? &op->dst : NULL);
+			state->extra_indent += 2;
 			op->CopyResourceToResource(state, resource, src_view, stride, offset, format, buf_src_size);
+			state->extra_indent -= 2;
 			op->deferred = NULL;
 			if (src_view)
 				src_view->Release();
@@ -13187,7 +13211,11 @@ void SlotRangeCopyOperation::RunBind(CommandListState *state, unsigned first, un
 		}
 
 		if (!resource) {
-			COMMAND_LIST_LOG(state, "  slot %u: source is NULL\n", first + i);
+			if (src.type == ResourceCopyTargetType::EMPTY)
+				SLOT_RANGE_LOG(state, "  %s = null\n", slot_log_name(dst, first + i).c_str());
+			else
+				SLOT_RANGE_LOG(state, "  %s = %s %S: source is NULL%s\n", slot_log_name(dst, first + i).c_str(), copy_type,
+					source ? source->name.c_str() : L"null", (options & ResourceCopyOptions::UNLESS_NULL) ? ", keeping current binding" : "");
 			if (options & ResourceCopyOptions::UNLESS_NULL)
 				continue; // keep the current binding fetched above
 			if (views[i]) views[i]->Release();
@@ -13197,6 +13225,8 @@ void SlotRangeCopyOperation::RunBind(CommandListState *state, unsigned first, un
 			cb_offsets[i] = cb_sizes[i] = 0;
 			continue;
 		}
+
+		SLOT_RANGE_LOG(state, "  %s = ref %S\n", slot_log_name(dst, first + i).c_str(), source->name.c_str());
 
 		// Same accounting as a single-slot "ref" copy (CopyResourceToResource):
 		Profiling::resource_reference_copies++;
@@ -13240,6 +13270,7 @@ void SlotRangeCopyOperation::RunFetch(CommandListState *state, unsigned first, u
 	UINT cb_sizes[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
 	bool is_cb = src.type == ResourceCopyTargetType::CONSTANT_BUFFER;
 	bool use_slot_ops = UsesSlotOps();
+	const char *copy_type = (options & ResourceCopyOptions::COPY_MASK) ? "copy" : "ref";
 
 	GetSlotRange(state, src, first, count, views, buffers, cb_offsets, cb_sizes);
 
@@ -13259,18 +13290,26 @@ void SlotRangeCopyOperation::RunFetch(CommandListState *state, unsigned first, u
 
 		if (use_slot_ops) {
 			// Same as ResourceCopyOperation::run() for a slot source, which
-			// GetResource() returns with only the cb region filled in:
+			// GetResource() returns with only the cb region filled in; its
+			// own lines are nested under this one:
 			ResourceCopyOperation *op = SlotOp(i, first + i);
+			SLOT_RANGE_LOG(state, "  %S = %s %s\n", element->name.c_str(), copy_type, slot_log_name(src, first + i).c_str());
 			op->dst.SetCustomResource(element);
+			state->extra_indent += 2;
 			op->CopyResourceToResource(state, resource, is_cb ? NULL : views[i], 0, is_cb ? cb_offsets[i] : 0, DXGI_FORMAT_UNKNOWN, is_cb ? cb_sizes[i] : 0);
+			state->extra_indent -= 2;
 			if (resource)
 				resource->Release();
 			continue;
 		}
 
-		if (!resource && (options & ResourceCopyOptions::UNLESS_NULL)) {
-			COMMAND_LIST_LOG(state, "  slot %u: source is NULL\n", first + i);
-			continue;
+		if (!resource) {
+			SLOT_RANGE_LOG(state, "  %S = ref %s: source is NULL%s\n", element->name.c_str(), slot_log_name(src, first + i).c_str(),
+				(options & ResourceCopyOptions::UNLESS_NULL) ? ", keeping current resource" : "");
+			if (options & ResourceCopyOptions::UNLESS_NULL)
+				continue;
+		} else {
+			SLOT_RANGE_LOG(state, "  %S = ref %s\n", element->name.c_str(), slot_log_name(src, first + i).c_str());
 		}
 
 		// Same accounting as a single-slot "ref" copy (CopyResourceToResource):
@@ -13334,7 +13373,6 @@ void SlotRangeCopyOperation::run(CommandListState *state)
 	}
 
 	unsigned first = (unsigned)slot_first;
-	COMMAND_LIST_LOG(state, "  %s %lcs slots %u..%u\n", bind ? "binding" : "fetching", slots.shader_type, first, first + count - 1);
 
 	if (bind)
 		RunBind(state, first, count, pool_first);

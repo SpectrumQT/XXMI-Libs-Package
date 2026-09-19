@@ -1684,18 +1684,6 @@ static uint32_t get_hash_for_resource(ID3D11Resource* resource)
 	return hash;
 }
 
-void find_texture_overrides_for_resource_by_hash(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info)
-{
-	if (G->mTextureOverrideMap.empty())
-		return;
-
-	uint32_t hash = get_hash_for_resource(resource);
-	if (!hash)
-		return;
-
-	find_texture_override_for_hash(hash, matches, call_info);
-}
-
 TextureOverrideFuzzyMatches* get_fuzzy_matches_by_draw_info(DrawCallInfo* call_info)
 {
 	if (call_info->IndexCount)
@@ -1871,9 +1859,6 @@ void find_fuzzy_texture_overrides_for_resource(ID3D11Resource *resource, Texture
 	}
 	LeaveCriticalSection(&G->mCriticalSection);
 
-	if (!candidates)
-		find_texture_overrides_for_resource_desc(resource, matches, call_info);
-
 	if (Profiling::mode == Profiling::Mode::SUMMARY) {
 		Profiling::end(&profiling_state, &Profiling::texture_override_candidates_lookup_overhead);
 		if (matches->size() > matches_before)
@@ -1925,42 +1910,6 @@ template void find_texture_overrides<D3D11_TEXTURE1D_DESC>(uint32_t hash, const 
 template void find_texture_overrides<D3D11_TEXTURE2D_DESC>(uint32_t hash, const D3D11_TEXTURE2D_DESC *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 template void find_texture_overrides<D3D11_TEXTURE3D_DESC>(uint32_t hash, const D3D11_TEXTURE3D_DESC *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 
-void find_texture_overrides_for_resource_desc(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info)
-{
-	D3D11_RESOURCE_DIMENSION dimension;
-	resource->GetType(&dimension);
-	switch (dimension) {
-		case D3D11_RESOURCE_DIMENSION_BUFFER:
-		{
-			ID3D11Buffer* buf = (ID3D11Buffer*)resource;
-			D3D11_BUFFER_DESC buf_desc;
-			buf->GetDesc(&buf_desc);
-			return find_texture_overrides_for_desc(&buf_desc, matches, call_info);
-		}
-		case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
-		{
-			ID3D11Texture1D* tex1d = (ID3D11Texture1D*)resource;
-			D3D11_TEXTURE1D_DESC tex1d_desc;
-			tex1d->GetDesc(&tex1d_desc);
-			return find_texture_overrides_for_desc(&tex1d_desc, matches, call_info);
-		}
-		case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
-		{
-			ID3D11Texture2D* tex2d = (ID3D11Texture2D*)resource;
-			D3D11_TEXTURE2D_DESC tex2d_desc;
-			tex2d->GetDesc(&tex2d_desc);
-			return find_texture_overrides_for_desc(&tex2d_desc, matches, call_info);
-		}
-		case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
-		{
-			ID3D11Texture3D* tex3d = (ID3D11Texture3D*)resource;
-			D3D11_TEXTURE3D_DESC tex3d_desc;
-			tex3d->GetDesc(&tex3d_desc);
-			return find_texture_overrides_for_desc(&tex3d_desc, matches, call_info);
-		}
-	}
-}
-
 void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info)
 {
 	if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
@@ -1974,7 +1923,9 @@ void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverri
 		Profiling::start(&profiling_state);
 	}
 
-	// Same order as the uncached path below:
+	// Hash matches first, then fuzzy matches, as the uncached lookup did.
+	// Resources without handle info (custom resources, back buffer, shared
+	// resources) have no candidates and match nothing:
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 	TextureOverrideCandidates *candidates = get_texture_override_candidates(resource);
 	if (candidates) {
@@ -1990,33 +1941,6 @@ void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverri
 		}
 	}
 	LeaveCriticalSection(&G->mCriticalSection);
-
-	if (candidates) {
-
-		if (Profiling::mode == Profiling::Mode::SUMMARY) {
-			Profiling::end(&profiling_state, &Profiling::texture_override_candidates_lookup_overhead);
-			if (matches->size() > matches_before)
-				Profiling::texture_override_candidates_lookup_overhead.hits++;
-		}
-		return;
-	}
-
-	// No handle info to cache in. That is every resource not created through
-	// HackerDevice::Create*: 3DMigoto's own custom resources, the swap chain
-	// back buffer and shared resources (OpenSharedResource). They have no
-	// hash, but fuzzy matches (e.g. match_width on a copy of a game
-	// texture or on the back buffer) still apply, so run the original
-	// uncached lookup for them:
-	find_texture_overrides_for_resource_by_hash(resource, matches, call_info);
-
-	// Allow fuzzy matches to be processed even when exact matches exist
-	//if (!matches->empty()) {
-	//	// If we got a result it was matched by hash - that's an exact
-	//	// match and we don't process any fuzzy matches
-	//	return;
-	//}
-
-	find_texture_overrides_for_resource_desc(resource, matches, call_info);
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY) {
 		Profiling::end(&profiling_state, &Profiling::texture_override_candidates_lookup_overhead);

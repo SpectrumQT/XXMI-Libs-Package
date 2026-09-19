@@ -1252,7 +1252,12 @@ private:
 	// One cached view per slot for binds that need a view of the slot's
 	// type created for the source resource:
 	std::vector<ID3D11View*> cached_views;
+	// Plain ref copies are done inline; anything else runs a regular
+	// single slot operation per slot and only shares the bind call:
+	std::vector<std::unique_ptr<ResourceCopyOperation>> slot_ops;
 
+	bool UsesSlotOps() const;
+	ResourceCopyOperation* SlotOp(unsigned index, unsigned slot);
 	void RunBind(CommandListState *state, unsigned first, unsigned count, int pool_first);
 	void RunFetch(CommandListState *state, unsigned first, unsigned count, int pool_first);
 	ID3D11View* ViewForSlot(CommandListState *state, unsigned index, ID3D11Resource *resource, ID3D11View *src_view);

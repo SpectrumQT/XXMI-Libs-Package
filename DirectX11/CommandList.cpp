@@ -12333,57 +12333,95 @@ static bool is_batchable_fetch(const ResourceCopyOperation *op)
 		&& op->dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE;
 }
 
-// Splits a run of same-stage operations into batches, appending each batch
-// (or a lone operation as is) to out. A bind batch that has to fetch the
-// current bindings anyway (unless_null) covers the whole slot span in one
-// call, with gap slots keeping their current view; otherwise the run is
-// split per contiguous slot range.
-static void emit_slot_batches(std::vector<std::shared_ptr<ResourceCopyOperation>> &run, bool bind, CommandList::Commands &out)
+// The slot side of a batchable operation: dst for binds, src for fetches.
+static const ResourceCopyTarget& slot_target(const ResourceCopyOperation *op, bool bind)
 {
-	bool seed = false;
-	std::vector<unsigned> slots;
+	return bind ? op->dst : op->src;
+}
+
+// Wraps the operations of a run that fall within [first, last] into a single
+// bind / fetch batch and appends it to out. A range holding a single
+// operation is not worth a batch, that operation is appended as is.
+static void emit_slot_batch(const std::vector<std::shared_ptr<ResourceCopyOperation>> &run, bool bind,
+	unsigned first, unsigned last, bool seed_with_current, CommandList::Commands &out)
+{
+	std::shared_ptr<ShaderResourceBatch> batch;
+	if (bind)
+		batch = std::make_shared<ShaderResourceBindBatch>();
+	else
+		batch = std::make_shared<ShaderResourceFetchBatch>();
+
+	// Operations keep their ini order within the batch, so a slot assigned
+	// twice takes the last value just like it would without batching:
 	for (auto &op : run) {
-		slots.push_back(bind ? op->dst.slot : op->src.slot);
+		unsigned slot = slot_target(op.get(), bind).slot;
+		if (slot >= first && slot <= last)
+			batch->operations.push_back(op);
+	}
+
+	if (batch->operations.size() < 2) {
+		out.push_back(batch->operations[0]);
+		return;
+	}
+
+	batch->shader_type = slot_target(run[0].get(), bind).shader_type;
+	batch->first_slot = first;
+	batch->count = last - first + 1;
+	batch->seed_with_current = seed_with_current;
+	// Shown in the frame analysis log in place of the individual lines:
+	batch->ini_line = batch->operations[0]->ini_line + L" ... +" + std::to_wstring(batch->operations.size() - 1);
+	out.push_back(batch);
+}
+
+// Splits a run of same-stage, same-direction operations into batches and
+// appends them to out.
+//
+// A single XXSetShaderResources call always writes every slot in its range,
+// so a batch normally only covers slots the run actually assigns: the run is
+// split wherever the (sorted, unique) slot numbers have a gap, and each
+// contiguous range becomes its own batch.
+//
+// unless_null changes that for binds. A slot whose source turned out to be
+// null has to keep its current view, and the only way to know that view is
+// to XXGetShaderResources the range up front (seed_with_current). Since the
+// current bindings are read anyway, gaps cost nothing extra: the gap slots
+// are simply written back with the view they already had, and the whole run
+// becomes one batch spanning from the lowest to the highest slot.
+static void emit_slot_batches(const std::vector<std::shared_ptr<ResourceCopyOperation>> &run, bool bind, CommandList::Commands &out)
+{
+	bool seed_with_current = false;
+	std::vector<unsigned> slots;
+
+	for (auto &op : run) {
+		slots.push_back(slot_target(op.get(), bind).slot);
 		if (bind && (op->options & ResourceCopyOptions::UNLESS_NULL))
-			seed = true;
+			seed_with_current = true;
 	}
 	std::sort(slots.begin(), slots.end());
 	slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
 
-	size_t range_start = 0;
-	for (size_t i = 1; i <= slots.size(); i++) {
-		if (i < slots.size() && (seed || slots[i] == slots[i - 1] + 1))
-			continue;
-
-		unsigned first = slots[range_start], last = slots[i - 1];
-		range_start = i;
-
-		std::shared_ptr<ShaderResourceBatch> batch;
-		if (bind)
-			batch = std::make_shared<ShaderResourceBindBatch>();
-		else
-			batch = std::make_shared<ShaderResourceFetchBatch>();
-		batch->shader_type = bind ? run[0]->dst.shader_type : run[0]->src.shader_type;
-		batch->first_slot = first;
-		batch->count = last - first + 1;
-		batch->seed_with_current = seed;
-
-		for (auto &op : run) {
-			unsigned slot = bind ? op->dst.slot : op->src.slot;
-			if (slot >= first && slot <= last)
-				batch->operations.push_back(op);
-		}
-
-		if (batch->operations.size() < 2) {
-			out.push_back(batch->operations[0]);
-			continue;
-		}
-
-		batch->ini_line = batch->operations[0]->ini_line + L" ... +" + std::to_wstring(batch->operations.size() - 1);
-		out.push_back(batch);
+	if (seed_with_current) {
+		emit_slot_batch(run, bind, slots.front(), slots.back(), true, out);
+		return;
 	}
+
+	unsigned first = slots[0];
+	for (size_t i = 1; i < slots.size(); i++) {
+		if (slots[i] != slots[i - 1] + 1) {
+			emit_slot_batch(run, bind, first, slots[i - 1], false, out);
+			first = slots[i];
+		}
+	}
+	emit_slot_batch(run, bind, first, slots.back(), false, out);
 }
 
+// Optimiser pass: walks the command list once and replaces every run of two
+// or more adjacent batchable operations with bind / fetch batches. A run is
+// a maximal sequence of consecutive commands that are all batchable binds
+// or all batchable fetches for the same shader stage; any other command
+// (including a batchable one for another stage or direction) ends it. The
+// order of commands is preserved, batches take the place of their first
+// operation.
 void merge_shader_resource_batches(CommandList *command_list)
 {
 	CommandList::Commands out;
@@ -12391,12 +12429,12 @@ void merge_shader_resource_batches(CommandList *command_list)
 	bool run_is_bind = false;
 	wchar_t run_stage = L'\0';
 
+	// Ends the current run: a lone operation goes through unchanged, two or
+	// more are handed to emit_slot_batches.
 	auto flush = [&]() {
-		if (run.empty())
-			return;
 		if (run.size() == 1)
 			out.push_back(run[0]);
-		else
+		else if (run.size() > 1)
 			emit_slot_batches(run, run_is_bind, out);
 		run.clear();
 	};
@@ -12412,7 +12450,7 @@ void merge_shader_resource_batches(CommandList *command_list)
 			continue;
 		}
 
-		wchar_t stage = bind ? op->dst.shader_type : op->src.shader_type;
+		wchar_t stage = slot_target(op.get(), bind).shader_type;
 		if (!run.empty() && (bind != run_is_bind || stage != run_stage))
 			flush();
 
@@ -12422,6 +12460,8 @@ void merge_shader_resource_batches(CommandList *command_list)
 	}
 	flush();
 
+	// Every batch replaces at least two commands, so a shorter list means
+	// something was merged:
 	if (out.size() != command_list->commands.size()) {
 		LogInfo("Merged %Iu slot operations into batches in [%S]\n", command_list->commands.size() - out.size(), command_list->ini_section.c_str());
 		command_list->commands = std::move(out);

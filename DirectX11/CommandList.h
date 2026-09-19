@@ -1152,7 +1152,12 @@ public:
 	wchar_t shader_type = L'\0';
 	unsigned first_slot = 0;
 	unsigned count = 0;
-	bool seed_with_current = false; // Bind only: some operation is unless_null
+	// Bind only: at least one operation is unless_null, so the batch reads
+	// the current bindings of its whole range first and only overwrites the
+	// slots whose operation actually assigned something. Everything else
+	// (unless_null slots with a null source, gaps between slots) is written
+	// back as it was:
+	bool seed_with_current = false;
 	std::vector<std::shared_ptr<ResourceCopyOperation>> operations;
 };
 

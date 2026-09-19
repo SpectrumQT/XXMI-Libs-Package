@@ -2050,15 +2050,11 @@ const TextureOverride *find_texture_override_filter_index_for_resource_fuzzy(ID3
 	return find_texture_override_filter_index_for_resource_desc(resource, call_info, any_match);
 }
 
-const TextureOverride *find_texture_override_filter_index_for_resource(ID3D11Resource *resource, DrawCallInfo *call_info, bool *any_match)
+// Exact-hash-match tail of the filter_index lookups: the fuzzy scan that runs
+// before this (see FindTextureFilterIndex) can skip the hashing entirely when
+// a fuzzy match wins, so this only handles the hash-dependent paths.
+const TextureOverride *find_texture_override_filter_index_for_resource_by_hash(ID3D11Resource *resource, DrawCallInfo *call_info, bool *any_match)
 {
-	// Fuzzy matches are appended to the full match list after exact hash
-	// matches, so they take priority over hash matches for filter_index. Scan
-	// them first - this usually lets us skip computing the resource hash.
-	const TextureOverride *best = find_texture_override_filter_index_for_resource_fuzzy(resource, call_info, any_match);
-	if (best)
-		return best;
-
 	if (G->mTextureOverrideMap.empty())
 		return NULL;
 

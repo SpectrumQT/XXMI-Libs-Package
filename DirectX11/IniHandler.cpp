@@ -2178,6 +2178,8 @@ static CustomResourcePool* ParseResourcePoolSection(const wchar_t* section_name)
 
 static void ParseResourceSections()
 {
+	// Edges point at entries of the maps cleared below:
+	ClearDeferredBindFlags();
 	customResourcePools.clear();
 	customResources.clear();
 
@@ -4900,6 +4902,10 @@ void LoadConfigFile()
 	G->clear_uav_float_command_list.clear();
 	G->post_clear_uav_float_command_list.clear();
 	ParseCommandList(L"ClearUnorderedAccessViewFloat", &G->clear_uav_float_command_list, &G->post_clear_uav_float_command_list, NULL);
+
+	// Every command list is parsed now, so bind flags can be resolved
+	// through chains of custom resource references:
+	PropagateDeferredBindFlags();
 
 	LogInfo("\n");
 

@@ -108,7 +108,17 @@ The frame analysis log lists every slot of the range as the equivalent single-sl
 dump = ps-t[0:3]
 ```
 
-Pool ranges and the bare `<stage>-t` form are not supported by `dump`. Other commands do not accept ranges.
+Pool ranges and the bare `<stage>-t` form are not supported by `dump`.
+
+### CheckTextureOverride
+
+`CheckTextureOverride` accepts a slot range with explicit bounds and checks each slot in turn, exactly as the equivalent single-slot lines would. Inside the matched `[TextureOverride*]` sections, `this` refers to the slot being checked.
+
+```ini
+CheckTextureOverride = ps-t[0:9]  ; Same as CheckTextureOverride = ps-t0 ... ps-t9
+```
+
+Pool ranges and the bare `<stage>-t` form are not supported by `CheckTextureOverride`. Other commands do not accept ranges.
 
 ### Performance
 

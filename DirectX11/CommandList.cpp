@@ -681,7 +681,13 @@ static bool ParseCheckTextureOverride(const wchar_t *section,
 	CheckTextureOverrideCommand *operation = new CheckTextureOverrideCommand();
 
 	// Parse value as consistent with texture filtering and resource copying
-	ret = operation->target.ParseTarget(val->c_str(), true, ini_namespace, pre_command_list->scope);
+	ret = operation->target.ParseTarget(val->c_str(), true, ini_namespace, pre_command_list->scope, true, true);
+	if (ret && (operation->target.evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_RANGE
+		|| (operation->target.IsRange() && !operation->target.range_start)))
+	{
+		LogOverlayW(LOG_WARNING, L"checktextureoverride supports slot ranges with explicit bounds only: %ls\n", val->c_str());
+		ret = false;
+	}
 	if (ret) {
 		// If the user indicated an explicit command list we will run the pre
 		// and post lists of the target list together.
@@ -1308,34 +1314,51 @@ bool ParseCommandListGeneralCommands(const wchar_t *section,
 
 #pragma region Commands
 
+static std::string slot_log_name(const ResourceCopyTarget &target, unsigned slot);
+
 void CheckTextureOverrideCommand::run(CommandListState *state)
 {
-	TextureOverrideMatches matches;
 	ResourceCopyTarget *saved_this = NULL;
 	bool saved_post;
 	unsigned i;
 
 	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
 
-	target.FindTextureOverrides(state, NULL, &matches);
+	// A slot range checks every slot in turn, as the equivalent single slot
+	// lines would. "this" refers to the slot being checked:
+	int first = (int)target.slot;
+	unsigned count = 1;
+	if (target.IsRange() && !target.ResolveRange(state, &first, &count))
+		return;
 
 	saved_this = state->this_target;
 	state->this_target = &target;
-	if (run_pre_and_post_together) {
-		saved_post = state->post;
-		state->post = false;
-		for (i = 0; i < matches.size(); i++)
-			_RunCommandList(&matches[i]->command_list, state);
-		state->post = true;
-		for (i = 0; i < matches.size(); i++)
-			_RunCommandList(&matches[i]->post_command_list, state);
-		state->post = saved_post;
-	} else {
-		for (i = 0; i < matches.size(); i++) {
-			if (state->post)
-				_RunCommandList(&matches[i]->post_command_list, state);
-			else
+	for (unsigned s = 0; s < count; s++) {
+		TextureOverrideMatches matches;
+
+		if (target.IsRange()) {
+			target.slot = (unsigned)first + s;
+			COMMAND_LIST_LOG(state, "  checktextureoverride = %s\n", slot_log_name(target, target.slot).c_str());
+		}
+
+		target.FindTextureOverrides(state, NULL, &matches);
+
+		if (run_pre_and_post_together) {
+			saved_post = state->post;
+			state->post = false;
+			for (i = 0; i < matches.size(); i++)
 				_RunCommandList(&matches[i]->command_list, state);
+			state->post = true;
+			for (i = 0; i < matches.size(); i++)
+				_RunCommandList(&matches[i]->post_command_list, state);
+			state->post = saved_post;
+		} else {
+			for (i = 0; i < matches.size(); i++) {
+				if (state->post)
+					_RunCommandList(&matches[i]->post_command_list, state);
+				else
+					_RunCommandList(&matches[i]->command_list, state);
+			}
 		}
 	}
 	state->this_target = saved_this;

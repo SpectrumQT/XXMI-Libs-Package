@@ -46,14 +46,17 @@ Selects slots `$first` through `$last`, inclusive. Both bounds are expressions e
 
 Ranges are supported for `t` and `cb` slots of every shader stage, and for `ps-u` and `cs-u` slots. The whole range is processed by a single D3D11 call, such as `PSSetShaderResources`, which is significantly cheaper than binding the slots one by one.
 
-A slot range can only be used in a `ref` copy (the `ref` keyword may be omitted) with a pool, a custom resource or `null` on the other side:
+A slot range is used in a resource copy with a pool, a custom resource or `null` on the other side:
 
 ```ini
-ps-t[0:9] = ref PoolFoo[0:9] ; Bind pool elements 0–9 to ps-t0–ps-t9
-PoolFoo[0:9] = ref ps-t[0:9] ; Fetch ps-t0–ps-t9 into pool elements 0–9
-ps-t[0:3] = ref ResourceFoo  ; Bind the same resource to ps-t0–ps-t3
-ps-t[0:3] = null             ; Unbind ps-t0–ps-t3
+ps-t[0:9] = ref PoolFoo[0:9]  ; Bind pool elements 0–9 to ps-t0–ps-t9
+PoolFoo[0:9] = ref ps-t[0:9]  ; Fetch ps-t0–ps-t9 into pool elements 0–9
+PoolFoo[0:9] = copy ps-t[0:9] ; Copy ps-t0–ps-t9 into pool elements 0–9
+ps-t[0:3] = ref ResourceFoo   ; Bind the same resource to ps-t0–ps-t3
+ps-t[0:3] = null              ; Unbind ps-t0–ps-t3
 ```
+
+When the copy type is omitted, the usual 3DMigoto rules apply: binding a custom resource to a slot is a `ref`, fetching a slot into a custom resource is a `copy`.
 
 Slot bounds are validated at runtime: `$first` must not be negative, `$last` must not be smaller than `$first`, and `$last` must be a valid slot number. An invalid range logs a warning and the operation is skipped.
 
@@ -84,12 +87,14 @@ When bounds are given on both sides, both ranges must have the same size.
 
 ### Copy Options
 
-Only `unless_null` and `no_view_cache` are supported with slot ranges. Any other copy option, including `copy`, is rejected when the INI is loaded.
+Slot ranges accept the same copy types and options as a single-slot copy, such as `copy`, `unless_null`, `no_view_cache`, `raw` or `resolve_msaa`.
 
 * `unless_null` — slots whose source is `null` keep their current binding, and pool elements whose source slot is empty are left untouched.
 * `no_view_cache` — views created for the range are released after each run instead of being cached per slot.
 
-When a pool element already holds a view of the slot's type, for example because it was fetched from a slot of the same type, that view is bound directly instead of creating a new one.
+A plain `ref` (optionally with `unless_null` and `no_view_cache`) is the fast path: the range only resolves views and issues one bind or fetch call. When a pool element already holds a view of the slot's type, for example because it was fetched from a slot of the same type, that view is bound directly instead of creating a new one.
+
+Any other copy type or option runs a regular single-slot copy per slot, exactly as the equivalent `ps-tN = copy ...` line would, and only the final bind call is shared. A `copy` into constant buffer slots binds each slot separately, since the copied region has to be bound with `XXSetConstantBuffers1`.
 
 ### Frame Analysis Dump
 

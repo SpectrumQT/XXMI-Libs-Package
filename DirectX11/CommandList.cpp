@@ -12644,6 +12644,7 @@ void merge_shader_resource_batches(CommandList *command_list)
 	std::vector<std::shared_ptr<ResourceCopyOperation>> run;
 	bool run_is_bind = false;
 	wchar_t run_stage = L'\0';
+	bool has_range = false;
 
 	auto flush = [&]() {
 		if (run.empty())
@@ -12663,6 +12664,8 @@ void merge_shader_resource_batches(CommandList *command_list)
 		if (!bind && !fetch) {
 			flush();
 			out.push_back(command);
+			if (!has_range && std::dynamic_pointer_cast<SlotRangeCopyOperation>(command))
+				has_range = true;
 			continue;
 		}
 
@@ -12679,6 +12682,10 @@ void merge_shader_resource_batches(CommandList *command_list)
 	if (out.size() != command_list->commands.size()) {
 		LogInfo("Merged %Iu slot operations into batches in [%S]\n", command_list->commands.size() - out.size(), command_list->ini_section.c_str());
 		command_list->commands = std::move(out);
+	} else if (has_range) {
+		// Already expressed as an explicit slot range: nothing to merge,
+		// but log it too so it shows up next to the batched sections:
+		LogInfo("Merged 0 slot operations into batches in [%S] (already using slot ranges)\n", command_list->ini_section.c_str());
 	}
 }
 
@@ -12901,6 +12908,9 @@ void SlotRangeCopyOperation::RunBind(CommandListState *state, unsigned first, un
 			continue;
 		}
 
+		// Same accounting as a single-slot "ref" copy (CopyResourceToResource):
+		Profiling::resource_reference_copies++;
+
 		if (is_cb) {
 			if (buffers[i])
 				buffers[i]->Release();
@@ -12956,6 +12966,10 @@ void SlotRangeCopyOperation::RunFetch(CommandListState *state, unsigned first, u
 			COMMAND_LIST_LOG(state, "  slot %u: source is NULL\n", first + i);
 			continue;
 		}
+
+		// Same accounting as a single-slot "ref" copy (CopyResourceToResource):
+		if (resource)
+			Profiling::resource_reference_copies++;
 
 		ResourceCopyTarget element;
 		element.type = ResourceCopyTargetType::CUSTOM_RESOURCE;

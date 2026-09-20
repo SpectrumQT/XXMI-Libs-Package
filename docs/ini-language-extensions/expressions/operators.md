@@ -61,13 +61,4 @@ Supported operators: `+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `<<=`, `>>=`, `
 
 The right-hand side is evaluated as a whole before the operator is applied. The target can be an INI variable, a pool variable or an IniParam, and the `pre` and `post` keywords are accepted.
 
-## Increment and Decrement Operators
-
-`++` and `--` add or subtract `1`. Prefix and postfix forms are equivalent, as both are statements rather than expressions:
-
-```ini
-$x++  ; $x = ($x) + 1
---$x  ; $x = ($x) - 1
-```
-
-Compound assignments, increments and decrements are parsed into the same expression as the equivalent plain assignment, so they have no runtime overhead. The frame analysis log shows the line as written.
+Compound assignments are parsed into the same expression as the equivalent plain assignment, so they have no runtime overhead. The frame analysis log shows the line as written.

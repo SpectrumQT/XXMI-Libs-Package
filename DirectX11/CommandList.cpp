@@ -9074,9 +9074,9 @@ bool ParseCommandListResourceCopyTargetDirective(
 
 #pragma region CompoundAssignment
 
-// Splits "$x +" / "1" (from "$x += 1") or "++$x" / "$x--" (a line without "=",
-// only seen in raw_line) into target, binary operator and right hand side.
-static bool split_compound_assignment(const wchar_t *key, const wstring *val, const wstring *raw_line,
+// Splits "$x +" / "1" (from "$x += 1") into target, binary operator and
+// right hand side.
+static bool split_compound_assignment(const wchar_t *key, const wstring *val,
 		wstring *target, wstring *op, wstring *rhs)
 {
 	// Longest first so "<<" is not taken as "<":
@@ -9085,35 +9085,17 @@ static bool split_compound_assignment(const wchar_t *key, const wstring *val, co
 		L"+", L"-", L"*", L"/", L"%", L"&", L"|", L"^",
 	};
 
-	if (*key) {
-		// The ini reader split "$x += 1" at the "=", leaving the operator
-		// at the end of the key:
-		size_t key_len = wcslen(key);
-		for (const wchar_t *candidate : compound_operators) {
-			size_t len = wcslen(candidate);
-			if (key_len > len && !wcscmp(key + key_len - len, candidate)) {
-				target->assign(key, key_len - len);
-				*op = candidate;
-				*rhs = *val;
-				break;
-			}
+	// The ini reader split "$x += 1" at the "=", leaving the operator at
+	// the end of the key:
+	size_t key_len = wcslen(key);
+	for (const wchar_t *candidate : compound_operators) {
+		size_t len = wcslen(candidate);
+		if (key_len > len && !wcscmp(key + key_len - len, candidate)) {
+			target->assign(key, key_len - len);
+			*op = candidate;
+			*rhs = *val;
+			break;
 		}
-	} else if (raw_line) {
-		wstring line = *raw_line;
-		size_t len = line.size();
-		if (len < 3)
-			return false;
-		wstring head = line.substr(0, 2), tail = line.substr(len - 2);
-		if (head == L"++" || head == L"--") {
-			*target = line.substr(2);
-			*op = head.substr(0, 1);
-		} else if (tail == L"++" || tail == L"--") {
-			*target = line.substr(0, len - 2);
-			*op = tail.substr(0, 1);
-		} else {
-			return false;
-		}
-		*rhs = L"1";
 	}
 
 	if (op->empty() || rhs->empty())
@@ -9124,30 +9106,17 @@ static bool split_compound_assignment(const wchar_t *key, const wstring *val, co
 	return !target->empty();
 }
 
-// $x += 1, x0 *= 2, $PoolFoo[$i] |= 4 and every other binary operator, plus
-// ++$x / $x++ / --$x / $x--. The target's own assignment parser builds the
-// command, with the expression "target op (rhs)" assembled by
-// CommandListExpression::parse_compound.
+// $x += 1, x0 *= 2, $PoolFoo[$i] |= 4 and every other binary operator. The
+// target's own assignment parser builds the command, with the expression
+// "target op (rhs)" assembled by CommandListExpression::parse_compound.
 bool ParseCommandListCompoundAssignment(const wchar_t *section,
 		const wchar_t *key, wstring *val, const wstring *raw_line,
 		CommandList *command_list, CommandList *pre_command_list, CommandList *post_command_list,
 		const wstring *ini_namespace)
 {
-	wstring target, op, rhs, line;
+	wstring target, op, rhs;
 
-	// "post ++$x" has no "=", so the pre/post prefix is still on the line:
-	if (!*key && raw_line) {
-		line = *raw_line;
-		if (post_command_list && !line.compare(0, 5, L"post ")) {
-			line = line.substr(5);
-			command_list = post_command_list;
-		} else if (post_command_list && !line.compare(0, 4, L"pre ")) {
-			line = line.substr(4);
-		}
-		raw_line = &line;
-	}
-
-	if (!split_compound_assignment(key, val, raw_line, &target, &op, &rhs))
+	if (!split_compound_assignment(key, val, &target, &op, &rhs))
 		return false;
 
 	bool parsed;

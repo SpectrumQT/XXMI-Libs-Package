@@ -556,11 +556,11 @@ STDMETHODIMP HackerSwapChain::Present(THIS_
 			if (G->overlay_buffer_hash_lifetime >= 0)
 				PurgeStaleVisitedBufferHashes(mHackerDevice);
 			if (G->mSelectedIndexBufferPos == INT_MAX) {
-				G->mSelectedIndexBufferPos = G->mVisitedIndexBuffers.size() - 1;
+				G->mSelectedIndexBufferPos = (int)G->mVisitedIndexBuffers.size() - 1;
 				G->mSelectedIndexBuffer = *std::prev(G->mVisitedIndexBuffers.end());
 			}
 			if (G->mSelectedVertexBufferPos == INT_MAX) {
-				G->mSelectedVertexBufferPos = G->mVisitedVertexBuffers.size() - 1;
+				G->mSelectedVertexBufferPos = (int)G->mVisitedVertexBuffers.size() - 1;
 				G->mSelectedVertexBuffer = *std::prev(G->mVisitedVertexBuffers.end());
 			}
 			if (G->gResetSelectedVertexBufferSlotId) {

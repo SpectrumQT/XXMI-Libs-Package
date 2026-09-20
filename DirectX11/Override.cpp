@@ -592,7 +592,6 @@ void OverrideTransition::ScheduleTransition(HackerDevice *wrapper,
 		int time, TransitionType transition_type)
 {
 	ULONGLONG now = GetTickCount64();
-	float current;
 	char buf[8];
 	OverrideParams::iterator i;
 	OverrideVars::iterator j;
@@ -659,7 +658,6 @@ void OverrideTransition::UpdateTransitions(HackerDevice *wrapper)
 	std::map<OverrideParam, OverrideTransitionParam>::iterator i;
 	std::map<CommandListVariable*, OverrideTransitionParam>::iterator j;
 	ULONGLONG now = GetTickCount64();
-	float val;
 
 	if (!params.empty()) {
 		LogDebugNoNL(" IniParams remapped to ");
@@ -726,8 +724,6 @@ float OverrideGlobalSaveParam::Reset()
 
 void OverrideGlobalSave::Reset(HackerDevice* wrapper)
 {
-	float val;
-
 	params.clear();
 	vars.clear();
 

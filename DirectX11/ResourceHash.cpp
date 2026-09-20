@@ -2318,7 +2318,7 @@ void RegionHashesCache::Invalidate(UINT start, UINT end)
 		return;
 
 	UINT end_page = (end - 1) / PAGE_SIZE;
-	end_page = min(end_page, page_versions.size() - 1);
+	end_page = min(end_page, (UINT)(page_versions.size() - 1));
 
 	if (start_page > end_page)
 		return;
@@ -2380,12 +2380,12 @@ void ResourceHandleInfo::SetDataCacheRegion(const void* src, size_t region_size,
 
 	// Cannot write partial region if cache not initialized.
 	if (!cached_data_size) {
-		LogInfo("SetDataCacheRegion Failed (not initialized): offset=%d, region_size=%d!\n", offset, region_size);
+		LogInfo("SetDataCacheRegion Failed (not initialized): offset=%u, region_size=%zu!\n", offset, region_size);
 		return;
 	}
 
 	if (offset > cached_data_size || region_size > cached_data_size - offset){
-		LogInfo("SetDataCacheRegion Failed (out of bounds): offset=%d, region_size=%d, dst_size=%d!\n", offset, region_size, cached_data_size);
+		LogInfo("SetDataCacheRegion Failed (out of bounds): offset=%u, region_size=%zu, dst_size=%zu!\n", offset, region_size, cached_data_size);
 		return;
 	}
 
@@ -2814,7 +2814,7 @@ uint32_t GetRegionHash(HackerContext* context, ID3D11Buffer* buffer, UINT offset
 	}
 
 	// Upper bound of requested region must stay within the buffer size.
-	UINT max_region_size = handle_info->cached_data_size - offset;
+	UINT max_region_size = (UINT)(handle_info->cached_data_size - offset);
 	if (size > max_region_size) {
 		size = max_region_size;
 	}

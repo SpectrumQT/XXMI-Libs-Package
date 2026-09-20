@@ -2026,7 +2026,7 @@ void CopySubresourceRegionCache(ID3D11Resource* pSrcResource, ID3D11Resource* pD
 
 		// If range is not specified, we must copy the entire src buffer.
 		if (!region_size)
-			region_size = src_info->cached_data_size;
+			region_size = (UINT)src_info->cached_data_size;
 
 		// Initialize new cache of dst size.
 		if (!dst_info->cached_data_size)

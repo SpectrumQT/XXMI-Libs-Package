@@ -3232,7 +3232,7 @@ static void parse_texture_override_common(const wchar_t *id, TextureOverride *ov
 	if (G->allow_buffer_resize) 
 	{
 		// Handle buffer resize aka vertex limit raise feature.
-		int override_vertex_count = GetIniInt(id, L"override_vertex_count", -1.0f, &found);
+		int override_vertex_count = GetIniInt(id, L"override_vertex_count", -1, &found);
 		if (override_vertex_count > 0) {
 			// Ensure that stride is specified.
 			int override_byte_stride = GetIniInt(id, L"override_byte_stride", -1, NULL);
@@ -3244,7 +3244,7 @@ static void parse_texture_override_common(const wchar_t *id, TextureOverride *ov
 			override->override_byte_width = override_byte_stride * override_vertex_count;
 
 			// Handle UAV resize
-			int uav_byte_stride = GetIniInt(id, L"uav_byte_stride", -1.0f, &found);
+			int uav_byte_stride = GetIniInt(id, L"uav_byte_stride", -1, &found);
 			if (uav_byte_stride > 0) {
 				// Use StructureByteStride override (useful when actual buffer stride is different from the one declared by a game)
 				override->override_num_elements = override_vertex_count * override_byte_stride / uav_byte_stride;

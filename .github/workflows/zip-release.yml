@@ -18,13 +18,10 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v2
-
-    - name: Add MSBuild for VS2022 to PATH
-      uses: microsoft/setup-msbuild@v2
+      uses: actions/checkout@v4
       with:
-        vs-version: '[17.0,18.0)'
-            
+        fetch-depth: 0
+
     - name: Generate version header
       shell: pwsh
       run: |
@@ -33,8 +30,18 @@ jobs:
           -OutputFile .\version.generated.h `
           -Tag "${{ github.ref_name }}"
 
+    - name: Add MSBuild for VS2022 to PATH
+      uses: microsoft/setup-msbuild@v2
+      with:
+        vs-version: '[17.0,18.0)'
+
     - name: Build solution
-      run: msbuild StereoVisionHacks.sln -property:Configuration="Zip Release" -property:Platform=x64 -target:rebuild -verbosity:minimal
+      run: >
+        msbuild StereoVisionHacks.sln
+        -property:Configuration="Zip Release"
+        -property:Platform=x64
+        -target:rebuild
+        -verbosity:minimal
 
     - name: Zip DLLs
       run: |

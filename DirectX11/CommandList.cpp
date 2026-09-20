@@ -2930,11 +2930,10 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 	{
 		case ResourceCopyTargetEvaluationMode::RESOURCE:
 		{
-			TextureOverrideMatches matches;
-			TextureOverrideMatches::reverse_iterator rit;
-			bool resource_found;
+			bool resource_found = false, match_found = false;
+			float filter_index;
 
-			texture_filter_target.FindTextureOverrides(state, &resource_found, &matches);
+			filter_index = texture_filter_target.FindTextureFilterIndex(state, &resource_found, &match_found);
 
 			// If there is no resource bound we want to return a special value that
 			// is distinct from simply not finding a texture override section. For
@@ -2952,20 +2951,16 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 				return -0.0f;
 
 			// A resource was bound, but no matching texture override was found:
-			if (matches.empty())
+			if (!match_found)
 				return 0.0f;
 
-			// If there are multiple matches, we want the filter_index with the
-			// highest priority, which will be the last in the list that has a
-			// filter index. In the future we may also want a namespaced version of
-			// this (and checktextureoverride) to limit the check to sections
-			// appearing in the same namespace or with a given prefix (but we don't
-			// want to do string processing on the namespace here - the candidates
-			// should already be narrowed down during ini parsing):
-			for (rit = matches.rbegin(); rit != matches.rend(); rit++) {
-				if ((*rit)->filter_index != FLT_MAX)
-					return (*rit)->filter_index;
-			}
+			// TODO: Because fuzzy matches are appended to the match list after
+			// exact hash matches, any fuzzy match's filter_index wins over every
+			// hash match's even if the hash match has a higher priority. We keep
+			// this behaviour for backwards compat, but ideally we'd just compare
+			// by priority (see ResourceCopyTarget::FindTextureFilterIndex).
+			if (filter_index != FLT_MAX)
+				return filter_index;
 
 			// No match had a filter_index, but there was at least one match:
 			return 1.0f;
@@ -10100,6 +10095,105 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 	resource->Release();
 	if (view)
 		view->Release();
+}
+
+// Like FindTextureOverrides, but only works out the effective filter_index
+// (the highest priority match that actually set one) without building the full
+// match list. Same selection order as process_texture_filter's old backwards
+// scan: fuzzy matches win over exact hash matches, then the highest priority
+// hash match / region hashing candidate that set a filter_index wins. Because
+// fuzzy matches are scanned first, the region / full resource hash only gets
+// computed when no fuzzy match sets a filter_index.
+// Returns FLT_MAX if no match set one, and sets resource_found / match_found so
+// the -0.0 / 0.0 / 1.0 fallbacks can be distinguished.
+float ResourceCopyTarget::FindTextureFilterIndex(CommandListState *state, bool *resource_found, bool *match_found)
+{
+	ID3D11View *view = NULL;
+	UINT stride = 0, offset = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+
+	ID3D11Resource* resource = GetResource(state, &view, &stride, &offset, &format, NULL);
+
+	if (resource_found)
+		*resource_found = !!resource;
+	if (match_found)
+		*match_found = false;
+
+	if (!resource)
+		return FLT_MAX;
+
+	const TextureOverride *best = NULL;
+	bool any_match = false;
+
+	// Fuzzy matches take priority over hash matches for filter_index (see the
+	// TODO in process_texture_filter), and because they match on the resource
+	// description they need neither the region hash nor the full resource hash.
+	// Scan them once up front so we can skip the hashing entirely whenever a
+	// fuzzy match sets a filter_index.
+	best = find_texture_override_filter_index_for_resource_fuzzy(resource, state->call_info, &any_match);
+
+	if (!best)
+	{
+		UINT region_offset = 0, region_size = 0;
+
+		// Region hashing is only applicable to vertex/index buffers where
+		// offsets define subregions of a shared resource.
+		if (G->track_region_hashes)
+		{
+			switch (this->type) {
+				case ResourceCopyTargetType::VERTEX_BUFFER:
+					region_offset = GetVertexBufferRegionOffset(stride, state->call_info, offset);
+					region_size = GetVertexBufferRegionSize(stride, state->call_info);
+					break;
+
+				case ResourceCopyTargetType::INDEX_BUFFER:
+					region_offset = GetIndexBufferRegionOffset(format, state->call_info, offset);
+					region_size = GetIndexBufferRegionSize(format, state->call_info);
+					break;
+			}
+		}
+
+		if (!region_size)
+		{
+			// Resource isn't index or vertex buffer, or region size cannot be
+			// computed. Fall back to exact hash matching by the full resource
+			// hash (fuzzy matching already ran above).
+			best = find_texture_override_filter_index_for_resource_by_hash(resource, state->call_info, &any_match);
+		}
+		else
+		{
+			// Prefilter TextureOverride sections from G->mTextureOverrideMap by call_info.
+			TextureOverrideFuzzyMatches* draw_info_matches = get_fuzzy_matches_by_draw_info(state->call_info);
+
+			if (draw_info_matches) {
+				Profiling::State profiling_state;
+				if (Profiling::mode == Profiling::Mode::SUMMARY)
+					Profiling::start(&profiling_state);
+
+				// Calculate region hash.
+				uint32_t region_hash = GetRegionHash(state->mHackerContext, (ID3D11Buffer*)resource, region_offset, region_size);
+
+				if (Profiling::mode == Profiling::Mode::SUMMARY)
+					Profiling::end(&profiling_state, &Profiling::region_tracking_overhead);
+
+				// Filter prefiltering results by hash, falling back to the full
+				// resource hash like FindTextureOverrides.
+				best = find_texture_override_filter_index_from_fuzzy_matches(resource, region_hash, draw_info_matches, state->call_info, &any_match);
+			}
+		}
+	}
+
+	if (match_found)
+		*match_found = any_match;
+
+	resource->Release();
+	if (view)
+		view->Release();
+
+	if (!best)
+		return FLT_MAX;
+
+	return best->filter_index;
 }
 
 float ResourceCopyTarget::GetResourceId(CommandListState* state)

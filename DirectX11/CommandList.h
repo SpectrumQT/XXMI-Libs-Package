@@ -1038,6 +1038,16 @@ public:
 			bool *resource_found,
 			TextureOverrideMatches *matches);
 
+	// Like FindTextureOverrides, but only finds the effective filter_index
+	// (the highest priority match that set one) without building the full
+	// match list; returns FLT_MAX if none of the matches set a filter_index.
+	// Scans fuzzy matches first (they take priority and need no hash), then
+	// falls back to region / full resource hash matching.
+	// Sets resource_found / match_found for the -0.0 / 0.0 / 1.0 fallbacks.
+	float FindTextureFilterIndex(CommandListState *state,
+			bool *resource_found,
+			bool *match_found);
+
 	float GetResourceId(CommandListState* state);
 	float GetPoolId();
 	float GetResourceStride(CommandListState* state);

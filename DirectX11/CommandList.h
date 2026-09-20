@@ -1521,6 +1521,9 @@ public:
 	std::shared_ptr<CommandListEvaluatable> evaluatable;
 
 	bool parse(const wstring *expression, const wstring *ini_namespace, CommandListScope *scope);
+	// Compound assignment: the expression "target op (rhs)", e.g. "$x + (1)"
+	// for "$x += 1", built from the tokens of both sides.
+	bool parse_compound(const wstring *target, const wstring *op, const wstring *rhs, const wstring *ini_namespace, CommandListScope *scope);
 	float evaluate(CommandListState *state, HackerDevice *device=NULL);
 	bool static_evaluate(float *ret, HackerDevice *device=NULL, bool evaluate_variables=false);
 	bool optimise(HackerDevice *device);
@@ -1796,8 +1799,12 @@ bool ParseCommandListGeneralCommands(const wchar_t *section,
 		const wstring *ini_namespace);
 bool ParseCommandListIniParamOverride(const wchar_t *section,
 		const wchar_t *key, wstring *val, CommandList *command_list,
-		const wstring *ini_namespace);
+		const wstring *ini_namespace, const wstring *compound_op = NULL);
 bool ParseCommandListVariableAssignment(const wchar_t *section,
+		const wchar_t *key, wstring *val, const wstring *raw_line,
+		CommandList *command_list, CommandList *pre_command_list, CommandList *post_command_list,
+		const wstring *ini_namespace, const wstring *compound_op = NULL);
+bool ParseCommandListCompoundAssignment(const wchar_t *section,
 		const wchar_t *key, wstring *val, const wstring *raw_line,
 		CommandList *command_list, CommandList *pre_command_list, CommandList *post_command_list,
 		const wstring *ini_namespace);

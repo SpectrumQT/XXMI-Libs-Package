@@ -2214,6 +2214,9 @@ static bool ParseCommandListLine(const wchar_t *ini_section,
 		CommandList *post_command_list,
 		const wstring *ini_namespace)
 {
+	if (ParseCommandListCompoundAssignment(ini_section, lhs, rhs, raw_line, command_list, pre_command_list, post_command_list, ini_namespace))
+		return true;
+
 	if (ParseCommandListVariableAssignment(ini_section, lhs, rhs, raw_line, command_list, pre_command_list, post_command_list, ini_namespace))
 		return true;
 

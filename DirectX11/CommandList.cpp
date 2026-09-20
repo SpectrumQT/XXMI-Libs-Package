@@ -12725,8 +12725,10 @@ ConditionalSlotBranch* ConditionalSlotCopyOperation::MatchingBranch(CommandListS
 void ConditionalSlotCopyOperation::run(CommandListState *state)
 {
 	ConditionalSlotBranch *branch = MatchingBranch(state);
-	if (!branch)
-		return; // leave the current binding
+	if (!branch) {
+		COMMAND_LIST_LOG(state, "%S: no branch taken, keeping the current binding\n", ini_line.c_str());
+		return;
+	}
 
 	// Hand our own deferred binding through to whichever branch's
 	// operation matched, and let it run with its own dst/src/options
@@ -12743,6 +12745,22 @@ void ConditionalSlotCopyOperation::RunWithSource(CommandListState *state, ID3D11
 	ConditionalSlotBranch *branch = MatchingBranch(state);
 	if (branch)
 		branch->op->RunWithSource(state, src_resource, src_view);
+	else
+		COMMAND_LIST_LOG(state, "%S: no branch taken\n", ini_line.c_str());
+}
+
+// Whether an expression reads pipeline state (ps-t0, ps-t0->Width, ...).
+// Inside a batch the binds of the run are deferred to its end, so such a
+// condition would see the bindings from before the run rather than the ones
+// the lines above it just made.
+static bool expression_reads_pipeline(CommandListEvaluatable *node)
+{
+	if (auto operand = dynamic_cast<CommandListOperand *>(node))
+		return operand->type == ParamOverrideType::TEXTURE;
+	if (auto op = dynamic_cast<CommandListOperator *>(node))
+		return (op->lhs && expression_reads_pipeline(op->lhs.get()))
+			|| (op->rhs && expression_reads_pipeline(op->rhs.get()));
+	return false;
 }
 
 // Walks a simple if/elif/else chain, checking that every reachable branch
@@ -12757,6 +12775,8 @@ static bool collect_conditional_slot_chain(IfCommand *if_cmd, bool bind, wchar_t
 	if (!if_cmd->true_commands_post->commands.empty() || !if_cmd->false_commands_post->commands.empty())
 		return false;
 	if (if_cmd->true_commands_pre->commands.size() != 1)
+		return false;
+	if (expression_reads_pipeline(if_cmd->expression.evaluatable.get()))
 		return false;
 
 	auto true_op = std::dynamic_pointer_cast<ResourceCopyOperation>(if_cmd->true_commands_pre->commands[0]);
@@ -12850,6 +12870,16 @@ static const ResourceCopyTarget& slot_target(const ResourceCopyOperation *op, bo
 	return bind ? op->dst : op->src;
 }
 
+// An operation that ends up outside any batch goes back into the list as it
+// was: for a folded if/elif/else chain that is the original IfCommand, so it
+// runs and logs exactly as before.
+static std::shared_ptr<CommandListCommand> unbatched(const std::shared_ptr<ResourceCopyOperation> &op)
+{
+	if (auto folded = std::dynamic_pointer_cast<ConditionalSlotCopyOperation>(op))
+		return folded->owning_if;
+	return op;
+}
+
 // Wraps the operations of a run that fall within [first, last] into a single
 // bind / fetch batch and appends it to out. A range holding a single
 // operation is not worth a batch, that operation is appended as is.
@@ -12871,7 +12901,7 @@ static void emit_slot_batch(const std::vector<std::shared_ptr<ResourceCopyOperat
 	}
 
 	if (batch->operations.size() < 2) {
-		out.push_back(batch->operations[0]);
+		out.push_back(unbatched(batch->operations[0]));
 		return;
 	}
 
@@ -12944,7 +12974,7 @@ void merge_shader_resource_batches(CommandList *command_list)
 	// more are handed to emit_slot_batches.
 	auto flush = [&]() {
 		if (run.size() == 1)
-			out.push_back(run[0]);
+			out.push_back(unbatched(run[0]));
 		else if (run.size() > 1)
 			emit_slot_batches(run, run_is_bind, out);
 		run.clear();

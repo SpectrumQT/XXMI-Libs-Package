@@ -1195,7 +1195,7 @@ public:
 
 	void run(CommandListState*) override;
 	// Used by ShaderResourceFetchBatch, which fetched the source itself:
-	void RunWithSource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view);
+	virtual void RunWithSource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view);
 
 private:
 	void SetOrDeferResource(CommandListState* state, ID3D11Resource* res, ID3D11View* view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_size);
@@ -1256,6 +1256,11 @@ public:
 	std::shared_ptr<CommandListCommand> owning_if;
 
 	void run(CommandListState*) override;
+	void RunWithSource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view) override;
+
+private:
+	// The branch whose condition holds, or NULL when no branch is taken:
+	ConditionalSlotBranch* MatchingBranch(CommandListState *state);
 };
 
 void merge_shader_resource_batches(CommandList *command_list);

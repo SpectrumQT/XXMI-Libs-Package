@@ -12713,22 +12713,36 @@ static bool is_batchable_fetch(const ResourceCopyOperation *op)
 		&& op->dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE;
 }
 
-void ConditionalSlotCopyOperation::run(CommandListState *state)
+ConditionalSlotBranch* ConditionalSlotCopyOperation::MatchingBranch(CommandListState *state)
 {
 	for (auto &branch : branches) {
-		if (branch.condition && !branch.condition->evaluate(state))
-			continue;
-		if (!branch.op)
-			return; // no branch taken: leave the current binding
-
-		// Hand our own deferred binding through to whichever branch's
-		// operation matched, and let it run with its own dst/src/options
-		// exactly as if it had run standalone:
-		branch.op->deferred = deferred;
-		branch.op->run(state);
-		branch.op->deferred = NULL;
-		return;
+		if (!branch.condition || branch.condition->evaluate(state))
+			return branch.op ? &branch : NULL; // NULL op: no branch taken
 	}
+	return NULL;
+}
+
+void ConditionalSlotCopyOperation::run(CommandListState *state)
+{
+	ConditionalSlotBranch *branch = MatchingBranch(state);
+	if (!branch)
+		return; // leave the current binding
+
+	// Hand our own deferred binding through to whichever branch's
+	// operation matched, and let it run with its own dst/src/options
+	// exactly as if it had run standalone:
+	branch->op->deferred = deferred;
+	branch->op->run(state);
+	branch->op->deferred = NULL;
+}
+
+// Fetch direction: ShaderResourceFetchBatch already read the slot and hands
+// its contents to whichever branch matched.
+void ConditionalSlotCopyOperation::RunWithSource(CommandListState *state, ID3D11Resource *src_resource, ID3D11View *src_view)
+{
+	ConditionalSlotBranch *branch = MatchingBranch(state);
+	if (branch)
+		branch->op->RunWithSource(state, src_resource, src_view);
 }
 
 // Walks a simple if/elif/else chain, checking that every reachable branch
@@ -12803,6 +12817,16 @@ static std::shared_ptr<ResourceCopyOperation> try_fold_conditional_slot_op(std::
 		return nullptr;
 
 	merged->bind = bind;
+
+	// A bind batch writes every slot in its range, so a slot this operation
+	// leaves alone (no branch taken, or an unless_null branch with a null
+	// source) has to be seeded with its current binding, same as a plain
+	// unless_null line asks for:
+	for (auto &branch : merged->branches) {
+		if (!branch.op || (branch.op->options & ResourceCopyOptions::UNLESS_NULL))
+			merged->options |= ResourceCopyOptions::UNLESS_NULL;
+	}
+
 	// Only the handful of scalar fields the optimiser's grouping logic
 	// reads: ResourceCopyTarget isn't copyable (it owns unique_ptr
 	// expressions), and merged->dst/src are never used for the real copy -

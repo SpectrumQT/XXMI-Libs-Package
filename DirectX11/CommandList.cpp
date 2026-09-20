@@ -13067,12 +13067,10 @@ void SlotRangeCopyOperation::RunBind(CommandListState *state, unsigned first, un
 	bool use_slot_ops = UsesSlotOps();
 	const char *copy_type = (options & ResourceCopyOptions::COPY_MASK) ? "copy" : "ref";
 
-	if (options & ResourceCopyOptions::UNLESS_NULL) {
+	// Slots kept by unless_null are rebound exactly as fetched, including a
+	// cb region the game bound with XXSetConstantBuffers1:
+	if (options & ResourceCopyOptions::UNLESS_NULL)
 		GetSlotRange(state, dst, first, count, views, buffers, cb_offsets, cb_sizes);
-		// Kept cb slots are rebound whole, like a plain ref would bind them:
-		std::fill_n(cb_offsets, count, 0u);
-		std::fill_n(cb_sizes, count, 0u);
-	}
 
 	// A single custom resource (ResourceFoo or PoolFoo[$i]) goes to every slot:
 	CustomResource *single_source = NULL;

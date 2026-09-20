@@ -12657,6 +12657,7 @@ static bool is_batchable_bind(const ResourceCopyOperation *op)
 	// binding any would change the meaning of e.g. a slot swap:
 	return op->dst.type == ResourceCopyTargetType::SHADER_RESOURCE
 		&& op->dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE
+		&& !op->dst.slot_expression
 		&& (op->src.type == ResourceCopyTargetType::CUSTOM_RESOURCE || op->src.type == ResourceCopyTargetType::EMPTY)
 		&& op->src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE;
 }
@@ -12665,6 +12666,7 @@ static bool is_batchable_fetch(const ResourceCopyOperation *op)
 {
 	return op->src.type == ResourceCopyTargetType::SHADER_RESOURCE
 		&& op->src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE
+		&& !op->src.slot_expression
 		&& op->dst.type == ResourceCopyTargetType::CUSTOM_RESOURCE
 		&& op->dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE;
 }

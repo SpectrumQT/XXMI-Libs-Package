@@ -39,6 +39,8 @@ namespace Profiling {
 		overhead->cpu.QuadPart += end_time.QuadPart - state->start_time.QuadPart;
 	}
 
+	extern Mode mode;
+
 	template<class T>
 	static inline typename T::iterator lookup_map(T &map, typename T::key_type key, Profiling::Overhead *overhead)
 	{

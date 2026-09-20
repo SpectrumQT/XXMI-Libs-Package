@@ -201,6 +201,7 @@ static void validate_lock(LockStack &locks_held, CRITICAL_SECTION *new_lock)
 	std::vector<std::pair<CRITICAL_SECTION*, bool>> issues;
 	std::vector<LockStack> other_sides;
 	bool reported = false;
+	lock_graph_node *new_lock_after;
 
 	// First lock taken in any thread cannot lead to a deadlock - only
 	// starvation if we are already in deadlock:
@@ -227,16 +228,16 @@ static void validate_lock(LockStack &locks_held, CRITICAL_SECTION *new_lock)
 
 	// Check if any of the currently held locks appear in the new lock's
 	// after list, indicating an AB-BA deadlock scenario.
-	auto &new_lock_after = lock_graph[new_lock];
+	new_lock_after = &lock_graph[new_lock];
 	for (auto info = locks_held.begin(); info < locks_held.end() - 1; info++) {
 		// Add the newly taken lock to each currently held lock's after
 		// list, along with all the other locks in this lock's after
 		// list since their order will have been constrained by taking
 		// this lock:
 		lock_graph[info->lock].insert(new_lock);
-		lock_graph[info->lock].insert(new_lock_after.begin(), new_lock_after.end());
+		lock_graph[info->lock].insert(new_lock_after->begin(), new_lock_after->end());
 
-		if (!reported && new_lock_after.count(info->lock)) {
+		if (!reported && new_lock_after->count(info->lock)) {
 			if (overlay_reported.count({new_lock, info->lock})) {
 				issues.push_back({info->lock, false});
 			} else {
@@ -297,7 +298,7 @@ out_unlock:
 }
 
 static void push_lock(LockStack &locks_held, CRITICAL_SECTION *new_lock, uintptr_t ret,
-		char *function = NULL, int line = 0)
+		const char *function = NULL, int line = 0)
 {
 	size_t stack_hash = 0;
 
@@ -355,7 +356,7 @@ static void EnterCriticalSectionHook(CRITICAL_SECTION *lock)
 	get_tls()->hooking_quirk_protection = false;
 }
 
-void _EnterCriticalSectionPretty(CRITICAL_SECTION *lock, char *function, int line)
+void _EnterCriticalSectionPretty(CRITICAL_SECTION *lock, const char *function, int line)
 {
 	if (!lock_dependency_checks_enabled)
 		return EnterCriticalSection(lock);
@@ -469,7 +470,7 @@ static void DeleteCriticalSectionHook(CRITICAL_SECTION *lock)
 	_DeleteCriticalSection(lock);
 }
 
-void _InitializeCriticalSectionPretty(CRITICAL_SECTION *lock, char *lock_name)
+void _InitializeCriticalSectionPretty(CRITICAL_SECTION *lock, const char *lock_name)
 {
 	InitializeCriticalSection(lock);
 	// NOTE: If we have been called from a global constructor, this may

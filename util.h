@@ -224,7 +224,7 @@ static int _autoicmp(const char *s1, const char *s2)
 // To use this function be sure to terminate an EnumName_t list with {NULL, 0}
 // as it cannot use ArraySize on passed in arrays.
 template <class T1, class T2>
-static T2 lookup_enum_val(struct EnumName_t<T1, T2> *enum_names, T1 name, T2 default, bool *found=NULL)
+static T2 lookup_enum_val(struct EnumName_t<T1, T2> *enum_names, T1 name, T2 def, bool *found=NULL)
 {
 	for (; enum_names->name; enum_names++) {
 		if (!_autoicmp(name, enum_names->name)) {
@@ -237,10 +237,10 @@ static T2 lookup_enum_val(struct EnumName_t<T1, T2> *enum_names, T1 name, T2 def
 	if (found)
 		*found = false;
 
-	return default;
+	return def;
 }
 template <class T1, class T2>
-static T2 lookup_enum_val(struct EnumName_t<T1, T2> *enum_names, T1 name, size_t len, T2 default, bool *found=NULL)
+static T2 lookup_enum_val(struct EnumName_t<T1, T2> *enum_names, T1 name, size_t len, T2 def, bool *found=NULL)
 {
 	for (; enum_names->name; enum_names++) {
 		if (!_wcsnicmp(name, enum_names->name, len)) {
@@ -253,7 +253,7 @@ static T2 lookup_enum_val(struct EnumName_t<T1, T2> *enum_names, T1 name, size_t
 	if (found)
 		*found = false;
 
-	return default;
+	return def;
 }
 template <class T1, class T2>
 static T1 lookup_enum_name(struct EnumName_t<T1, T2> *enum_names, T2 val)
@@ -402,7 +402,7 @@ static T2 parse_enum_option_string_prefix(struct EnumName_t<T1, T2> *enum_names,
 
 #if MIGOTO_DX == 11
 // http://msdn.microsoft.com/en-us/library/windows/desktop/bb173059(v=vs.85).aspx
-static char *DXGIFormats[] = {
+static const char *DXGIFormats[] = {
 	"UNKNOWN",
 	"R32G32B32A32_TYPELESS",
 	"R32G32B32A32_FLOAT",
@@ -521,7 +521,7 @@ static char *DXGIFormats[] = {
 	"B4G4R4A4_UNORM"
 };
 
-static char *TexFormatStr(unsigned int format)
+static const char *TexFormatStr(unsigned int format)
 {
 	if (format < sizeof(DXGIFormats) / sizeof(DXGIFormats[0]))
 		return DXGIFormats[format];
@@ -1085,7 +1085,7 @@ static std::map<int, char*> D3DFORMATS = {
 	{ 199, "BINARYBUFFER " }
 };
 
-static char *TexFormatStrDX9(D3DFORMAT format)
+static const char *TexFormatStrDX9(D3DFORMAT format)
 {
 	switch (format) {
 	case MAKEFOURCC('U', 'Y', 'V', 'Y'):

@@ -45,7 +45,7 @@ struct NVStereoSetting {
 	// force an update if we need to change them by e.g. adding a version
 	// number to the Comments setting).
 	bool allow_user_customise;
-	wchar_t *name;
+	const wchar_t *name;
 };
 
 static NVStereoSetting NVStereoSettingNames[] = {
@@ -474,7 +474,7 @@ static NVStereoSetting NVStereoSettingNames[] = {
 	// Omitting duplicate stereo settings I upstreamed to NPI
 };
 
-static wchar_t* lookup_setting_name(unsigned id)
+static const wchar_t* lookup_setting_name(unsigned id)
 {
 	for (int i = 0; i < ARRAYSIZE(NVStereoSettingNames); i++) {
 		if (NVStereoSettingNames[i].id == id) {
@@ -770,7 +770,7 @@ void _log_nv_profile(NvDRSSessionHandle session, NvDRSProfileHandle profile, NVD
 	NVDRS_APPLICATION *apps = NULL;
 	NVDRS_SETTING *settings = NULL;
 	unsigned len, dval = 0;
-	wchar_t *name;
+	const wchar_t *name;
 	bool internal;
 	NvU32 i;
 

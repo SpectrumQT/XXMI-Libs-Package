@@ -848,6 +848,7 @@ HRESULT __stdcall Hooked_CreateSwapChain(
 
 	HackerDevice *hackerDevice = NULL;
 	DXGI_SWAP_CHAIN_DESC origSwapChainDesc;
+	IDXGISwapChain *retChain;
 
 	hackerDevice = sort_out_swap_chain_device_mess(&pDevice);
 
@@ -862,7 +863,7 @@ HRESULT __stdcall Hooked_CreateSwapChain(
 		goto out_release;
 	}
 
-	IDXGISwapChain *retChain = ppSwapChain ? *ppSwapChain : nullptr;
+	retChain = ppSwapChain ? *ppSwapChain : nullptr;
 	LogInfo("  CreateSwapChain returned handle = %p\n", retChain);
 	analyse_iunknown(retChain);
 

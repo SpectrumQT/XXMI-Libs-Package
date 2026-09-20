@@ -196,7 +196,7 @@ public:
 
 	bool SetSourceCommandList(CommandList* source);
 	CommandList* ResolveCommandList();
-	bool CommandList::noop();
+	bool noop();
 
 	CommandList() :
 		post(false),
@@ -1954,11 +1954,11 @@ public:
 	CommandListExpression args[5];
 	ResourceCopyTarget indirect_buffer;
 
-	DrawCommand::DrawCommand() :
+	DrawCommand() :
 		type(DrawCommandType::INVALID)
 	{}
 
-	void do_indirect_draw_call(CommandListState *state, char *name,
+	void do_indirect_draw_call(CommandListState *state, const char *name,
 		void (__stdcall ID3D11DeviceContext::*IndirectDrawCall)(THIS_
 		ID3D11Buffer *pBufferForArgs,
 		UINT AlignedByteOffsetForArgs));

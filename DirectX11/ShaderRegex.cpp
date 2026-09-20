@@ -10,7 +10,7 @@ ShaderRegexGroups shader_regex_groups;
 std::vector<ShaderRegexGroup*> shader_regex_group_index;
 uint32_t shader_regex_hash;
 
-static void log_pcre2_error_nonl(int err, char *fmt, ...)
+static void log_pcre2_error_nonl(int err, const char *fmt, ...)
 {
 	PCRE2_UCHAR buf[120]; // doco says "120 code units is ample"
 	va_list ap;

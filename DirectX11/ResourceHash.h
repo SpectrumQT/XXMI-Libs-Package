@@ -723,7 +723,7 @@ static void LogDebugViewDesc(DescType *desc)
 // -----------------------------------------------------------------------------------------------
 
 // https://msdn.microsoft.com/en-us/library/windows/desktop/ff476202(v=vs.85).aspx
-static wchar_t *ResourceDimensions[] = {
+static const wchar_t *ResourceDimensions[] = {
 	L"UNKNOWN",
 	L"BUFFER",
 	L"TEXTURE1D",
@@ -732,13 +732,13 @@ static wchar_t *ResourceDimensions[] = {
 };
 
 // https://msdn.microsoft.com/en-us/library/windows/desktop/ff476259(v=vs.85).aspx
-static wchar_t *ResourceUsage[] = {
+static const wchar_t *ResourceUsage[] = {
 	L"DEFAULT",
 	L"IMMUTABLE",
 	L"DYNAMIC",
 	L"STAGING"
 };
-static wchar_t *TexResourceUsage(UINT usage)
+static const wchar_t *TexResourceUsage(UINT usage)
 {
 	if (usage < sizeof(ResourceUsage) / sizeof(ResourceUsage[0]))
 		return ResourceUsage[usage];

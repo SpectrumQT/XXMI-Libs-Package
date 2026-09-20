@@ -39,7 +39,7 @@
 
 struct IID_name {
 	IID iid;
-	char *name;
+	const char *name;
 };
 
 #define IID(name) { IID_##name, #name }
@@ -263,7 +263,7 @@ bool check_interface_supported(IUnknown *unknown, REFIID riid)
 	return !!_check_interface(unknown, riid);
 }
 
-static void check_interface(IUnknown *unknown, REFIID riid, char *iid_name, IUnknown *canonical)
+static void check_interface(IUnknown *unknown, REFIID riid, const char *iid_name, IUnknown *canonical)
 {
 	IUnknown *test = _check_interface(unknown, riid);
 	IUnknown *canonical_test;

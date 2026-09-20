@@ -39,7 +39,7 @@
 // ParseCommandList will terminate the program if it is called on a section not
 // listed here to make sure we never forget to update this.
 struct Section {
-	wchar_t *section;
+	const wchar_t *section;
 	bool prefix;
 };
 static Section CommandListSections[] = {
@@ -152,7 +152,7 @@ static const wchar_t* SectionPrefixFromList(const wchar_t *section, Section sect
 		}
 	}
 
-	return false;
+	return nullptr;
 }
 
 static const wchar_t* SectionPrefix(const wchar_t *section)
@@ -226,7 +226,7 @@ std::unordered_set<wstring> recursive_includes;
 // prefix in a case insensitive way. Combined with set::lower_bound, this can
 // be used to iterate over all elements in the sections set that begin with a
 // given prefix.
-static IniSections::iterator prefix_upper_bound(IniSections &sections, wstring &prefix)
+static IniSections::iterator prefix_upper_bound(IniSections &sections, const wstring &prefix)
 {
 	IniSections::iterator i;
 
@@ -731,7 +731,7 @@ static pcre2_code* glob_to_regex(wstring &pattern)
 	return regex;
 }
 
-static vector<pcre2_code*> globbing_vector_to_regex(vector<wstring> &globbing_patterns)
+static vector<pcre2_code*> globbing_vector_to_regex(const vector<wstring> &globbing_patterns)
 {
 	vector<pcre2_code*> ret;
 	pcre2_code *regex;
@@ -1346,10 +1346,10 @@ static int GetIniHexString(const wchar_t *section, const wchar_t *key, int def, 
 // VS2013 BUG WORKAROUND: Make sure this class has a unique type name!
 class EnumParseError: public exception {} enumParseError;
 
-static int ParseEnum(wchar_t *str, wchar_t *prefix, wchar_t *names[], int names_len, int first)
+static int ParseEnum(const wchar_t *str, const wchar_t *prefix, const wchar_t *names[], int names_len, int first)
 {
 	size_t prefix_len;
-	wchar_t *ptr = str;
+	const wchar_t *ptr = str;
 	int i;
 
 	if (prefix) {
@@ -1367,7 +1367,7 @@ static int ParseEnum(wchar_t *str, wchar_t *prefix, wchar_t *names[], int names_
 }
 
 static int GetIniEnum(const wchar_t *section, const wchar_t *key, int def, bool *found,
-		wchar_t *prefix, wchar_t *names[], int names_len, int first)
+		const wchar_t *prefix, const wchar_t *names[], int names_len, int first)
 {
 	wchar_t val[MAX_PATH];
 	int ret = def;
@@ -1480,7 +1480,7 @@ static int GetIniBoolOrInt(const wchar_t *section, const wchar_t *key, int def, 
 // backwards compatibility, integers will return the integer value (provided it
 // is within the range of the enum), otherwise the enum will be used.
 static int GetIniBoolIntOrEnum(const wchar_t *section, const wchar_t *key, int def, bool *found,
-		wchar_t *prefix, wchar_t *names[], int names_len, int first)
+		const wchar_t *prefix, const wchar_t *names[], int names_len, int first)
 {
 	int ret;
 	bool tmp_found;
@@ -1721,37 +1721,37 @@ static void ParsePresetOverrideSections()
 	}
 }
 
-static char* type_to_format(float type)
+static const char* type_to_format(float type)
 {
 	return "%f%n";
 }
 
-static char* type_to_format(unsigned int type)
+static const char* type_to_format(unsigned int type)
 {
 	return "%u%n";
 }
 
-static char* type_to_format(signed int type)
+static const char* type_to_format(signed int type)
 {
 	return "%i%n";
 }
 
-static char* type_to_format(unsigned short type)
+static const char* type_to_format(unsigned short type)
 {
 	return "%hu%n";
 }
 
-static char* type_to_format(signed short type)
+static const char* type_to_format(signed short type)
 {
 	return "%hi%n";
 }
 
-static char* type_to_format(unsigned char type)
+static const char* type_to_format(unsigned char type)
 {
 	return "%hhu%n";
 }
 
-static char* type_to_format(signed char type)
+static const char* type_to_format(signed char type)
 {
 	return "%hhi%n";
 }
@@ -2307,7 +2307,7 @@ static bool ParseCommandListLine(const wchar_t *ini_section,
 // part of the command list.
 static void ParseCommandList(const wchar_t *id,
 		CommandList *pre_command_list, CommandList *post_command_list,
-		wchar_t *whitelist[], bool register_command_lists=true)
+		const wchar_t *whitelist[], bool register_command_lists=true)
 {
 	IniSectionVector *section = NULL;
 	IniSectionVector::iterator entry;
@@ -2541,7 +2541,7 @@ static void ParseConstantsSection()
 	section->erase(section->begin() + write_index, section->end());
 }
 
-static wchar_t *true_false_overrule[] = {
+static const wchar_t *true_false_overrule[] = {
 	L"false", // GetIniBoolIntOrEnum will also accept 0/false/no/off
 	L"true", // GetIniBoolIntOrEnum will also accept 1/true/yes/on
 	L"overrule", // GetIniBoolIntOrEnum will also accept 2
@@ -2625,7 +2625,7 @@ static void warn_deprecated_shaderoverride_options(const wchar_t *id, ShaderOver
 
 // List of keys in [ShaderOverride] sections that are processed in this
 // function. Used by ParseCommandList to find any unrecognised lines.
-wchar_t *ShaderOverrideIniKeys[] = {
+const wchar_t *ShaderOverrideIniKeys[] = {
 	L"hash",
 	L"allow_duplicate_hash",
 	L"depth_filter",
@@ -2728,7 +2728,7 @@ static std::vector<std::string> split_string(const std::string *str, char sep)
 }
 
 template <typename T>
-static std::set<T> vec_to_set(std::vector<T> &v)
+static std::set<T> vec_to_set(const std::vector<T> &v)
 {
 	return std::set<T>(v.begin(), v.end());
 }
@@ -2750,7 +2750,7 @@ static uint32_t hash_ini_section(uint32_t hash, const wstring *sname)
 
 // List of keys in [ShaderRegex] sections that are processed in this
 // function. Used by ParseCommandList to find any unrecognised lines.
-wchar_t *ShaderRegexIniKeys[] = {
+const wchar_t *ShaderRegexIniKeys[] = {
 	L"shader_model",
 	L"temps",
 	L"filter_index",
@@ -3050,7 +3050,7 @@ static void ParseShaderRegexSections()
 
 // List of keys in [TextureOverride] sections that are processed in this
 // function. Used by ParseCommandList to find any unrecognised lines.
-wchar_t *TextureOverrideIniKeys[] = {
+const wchar_t *TextureOverrideIniKeys[] = {
 	L"hash",
 	L"format",
 	L"width",
@@ -3070,7 +3070,7 @@ wchar_t *TextureOverrideIniKeys[] = {
 	NULL
 };
 // List of keys for fuzzy matching that cannot be used together with hash:
-wchar_t *TextureOverrideFuzzyMatchesIniKeys[] = {
+const wchar_t *TextureOverrideFuzzyMatchesIniKeys[] = {
 	TEXTURE_OVERRIDE_FUZZY_MATCHES,
 	NULL
 };
@@ -3650,7 +3650,7 @@ static void ParseTextureOverrideSections()
 }
 
 // https://msdn.microsoft.com/en-us/library/windows/desktop/ff476088(v=vs.85).aspx
-static wchar_t *BlendOPs[] = {
+static const wchar_t *BlendOPs[] = {
 	L"",
 	L"ADD",
 	L"SUBTRACT",
@@ -3660,7 +3660,7 @@ static wchar_t *BlendOPs[] = {
 };
 
 // https://msdn.microsoft.com/en-us/library/windows/desktop/ff476086(v=vs.85).aspx
-static wchar_t *BlendFactors[] = {
+static const wchar_t *BlendFactors[] = {
 	L"",
 	L"ZERO",
 	L"ONE",
@@ -3847,14 +3847,14 @@ static void ParseBlendState(CustomShader *shader, const wchar_t *section)
 }
 
 // https://msdn.microsoft.com/en-us/library/windows/desktop/ff476113(v=vs.85).aspx
-static wchar_t *DepthWriteMasks[] = {
+static const wchar_t *DepthWriteMasks[] = {
 	L"ZERO",
 	L"ALL",
 };
 
 
 // https://msdn.microsoft.com/en-us/library/windows/desktop/ff476101(v=vs.85).aspx
-static wchar_t *ComparisonFuncs[] = {
+static const wchar_t *ComparisonFuncs[] = {
 	L"",
 	L"NEVER",
 	L"LESS",
@@ -3867,7 +3867,7 @@ static wchar_t *ComparisonFuncs[] = {
 };
 
 // https://msdn.microsoft.com/en-us/library/windows/desktop/ff476219(v=vs.85).aspx
-static wchar_t *StencilOps[] = {
+static const wchar_t *StencilOps[] = {
 	L"",
 	L"KEEP",
 	L"ZERO",
@@ -4001,7 +4001,7 @@ static void ParseDepthStencilState(CustomShader *shader, const wchar_t *section)
 }
 
 // https://msdn.microsoft.com/en-us/library/windows/desktop/ff476131(v=vs.85).aspx
-static wchar_t *FillModes[] = {
+static const wchar_t *FillModes[] = {
 	L"",
 	L"",
 	L"WIREFRAME",
@@ -4009,7 +4009,7 @@ static wchar_t *FillModes[] = {
 };
 
 // https://msdn.microsoft.com/en-us/library/windows/desktop/ff476108(v=vs.85).aspx
-static wchar_t *CullModes[] = {
+static const wchar_t *CullModes[] = {
 	L"",
 	L"NONE",
 	L"FRONT",
@@ -4017,7 +4017,7 @@ static wchar_t *CullModes[] = {
 };
 
 // Actually a bool
-static wchar_t *FrontDirection[] = {
+static const wchar_t *FrontDirection[] = {
 	L"Clockwise",
 	L"CounterClockwise",
 };
@@ -4098,7 +4098,7 @@ static void ParseRSState(CustomShader *shader, const wchar_t *section)
 }
 
 struct PrimitiveTopology {
-	wchar_t *name;
+	const wchar_t *name;
 	int val;
 };
 
@@ -4149,7 +4149,7 @@ static struct PrimitiveTopology PrimitiveTopologies[] = {
 
 static void ParseTopology(CustomShader *shader, const wchar_t *section)
 {
-	wchar_t *prefix = L"D3D11_PRIMITIVE_TOPOLOGY_";
+	const wchar_t *prefix = L"D3D11_PRIMITIVE_TOPOLOGY_";
 	size_t prefix_len;
 	wchar_t val[MAX_PATH];
 	wchar_t *ptr;
@@ -4235,7 +4235,7 @@ static void ParseSamplerState(CustomShader *shader, const wchar_t *section)
 
 // List of keys in [CustomShader] sections that are processed in this
 // function. Used by ParseCommandList to find any unrecognised lines.
-wchar_t *CustomShaderIniKeys[] = {
+const wchar_t *CustomShaderIniKeys[] = {
 	L"vs", L"hs", L"ds", L"gs", L"ps", L"cs",
 	L"max_executions_per_frame", L"flags",
 	// OM Blend State overrides:
@@ -4666,7 +4666,7 @@ void LoadConfigFile()
 
 	if (GetIniStringAndLog(L"System", L"hook", 0, setting, MAX_PATH))
 	{
-		G->enable_hooks = parse_enum_option_string<wchar_t *, EnableHooks>
+		G->enable_hooks = parse_enum_option_string<const wchar_t *, EnableHooks>
 			(EnableHooksNames, setting, NULL);
 
 		if (G->enable_hooks & EnableHooks::DEPRECATED)

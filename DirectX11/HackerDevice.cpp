@@ -17,7 +17,6 @@
 #include "FrameAnalysis.h"
 
 #include <D3Dcompiler.h>
-#include <codecvt>
 
 #include "log.h"
 #include "util.h"
@@ -752,8 +751,7 @@ static bool ReplaceHLSLShader(__in UINT64 hash, const wchar_t *pShaderType,
 			// Any HLSL compiled shaders are reloading candidates, if moved to ShaderFixes
 			pShaderModel = shaderModel;
 			pTimeStamp = ftWrite;
-			std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> utf8_to_utf16;
-			pHeaderLine = utf8_to_utf16.from_bytes(srcData, strchr(srcData, '\n'));
+			pHeaderLine = utf8_to_wstring(srcData, strchr(srcData, '\n'));
 
 			// Way too many obscure interractions in this function, using another
 			// temporary variable to not modify anything already here and reduce
@@ -882,8 +880,7 @@ static bool ReplaceASMShader(__in UINT64 hash, const wchar_t *pShaderType, const
 			// Any ASM shaders are reloading candidates, if moved to ShaderFixes
 			pShaderModel = shaderModel;
 			pTimeStamp = ftWrite;
-			std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> utf8_to_utf16;
-			pHeaderLine = utf8_to_utf16.from_bytes(asmTextBytes.data(), strchr(asmTextBytes.data(), '\n'));
+			pHeaderLine = utf8_to_wstring(asmTextBytes.data(), strchr(asmTextBytes.data(), '\n'));
 
 			vector<byte_t> byteCode(pBytecodeLength);
 			memcpy(byteCode.data(), pShaderBytecode, pBytecodeLength);

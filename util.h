@@ -157,6 +157,31 @@ static char *readStringParameter(wchar_t *val)
 	return start;
 }
 
+// UTF-8 -> UTF-16 using the Win32 API. Replaces std::wstring_convert, which
+// is deprecated since C++17 and removed in C++26. Invalid sequences become
+// U+FFFD instead of throwing. A null `last` means the whole string.
+static std::wstring utf8_to_wstring(const char *first, const char *last = nullptr)
+{
+	if (!first)
+		return std::wstring();
+	if (!last)
+		last = first + strlen(first);
+	if (last <= first)
+		return std::wstring();
+
+	int len = MultiByteToWideChar(CP_UTF8, 0, first, (int)(last - first), NULL, 0);
+	if (len <= 0)
+		return std::wstring();
+
+	std::wstring ret(len, L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, first, (int)(last - first), &ret[0], len);
+	return ret;
+}
+static std::wstring utf8_to_wstring(const std::string &str)
+{
+	return utf8_to_wstring(str.data(), str.data() + str.size());
+}
+
 static void BeepSuccess() 
 {
 	// High beep for success

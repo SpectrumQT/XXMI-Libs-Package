@@ -8,7 +8,6 @@
 #include <sstream>
 #include <memory>
 #include <pcre2.h>
-#include <codecvt>
 
 #include "log.h"
 #include "Globals.h"
@@ -661,13 +660,26 @@ static void ParseIniExcerpt(const wchar_t *excerpt)
 // it, make sure you delay calling it until after the log file has been opened!
 static void ParseNamespacedIniFile(const wchar_t *ini, const wstring *ini_namespace)
 {
-	wifstream f(ini, ios::in, _SH_DENYNO);
+	// Read the file as UTF-8 (text mode, as the wifstream was) and convert
+	// it up front rather than imbuing a wifstream with the deprecated
+	// <codecvt> facet.
+	FILE *f = _wfsopen(ini, L"rt", _SH_DENYNO);
 	if (!f) {
 		LogOverlay(LOG_WARNING, "  Error opening %S\n", ini);
 		return;
 	}
-	f.imbue(std::locale(f.getloc(), new std::codecvt_utf8<wchar_t, 0x10ffff, std::consume_header>));
-	ParseIniStream(&f, ini_namespace);
+	string bytes;
+	char buf[4096];
+	size_t n;
+	while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+		bytes.append(buf, n);
+	fclose(f);
+
+	// Skip a UTF-8 BOM if present (the old consume_header facet did this).
+	size_t start = (bytes.size() >= 3 && (unsigned char)bytes[0] == 0xEF && (unsigned char)bytes[1] == 0xBB && (unsigned char)bytes[2] == 0xBF) ? 3 : 0;
+
+	std::wistringstream stream(utf8_to_wstring(bytes.data() + start, bytes.data() + bytes.size()));
+	ParseIniStream(&stream, ini_namespace);
 }
 
 static void ParseIniFile(const wchar_t *ini)

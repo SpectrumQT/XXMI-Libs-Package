@@ -111,3 +111,8 @@ dump = ps-t[0:3]
 ```
 
 Pool ranges and the bare `<stage>-t` form are not supported by `dump`. Other commands do not accept ranges.
+
+## Examples
+
+* [Slot Range Capture](../examples/slot-range-capture.md) — save, rebind and restore a range of slots through a pool
+* [Slot Scan](../examples/slot-scan.md) — loop over slots with a dynamic slot index

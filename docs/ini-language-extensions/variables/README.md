@@ -42,3 +42,13 @@ $var = 1 ; No-op
 ```
 
 A locked variable is useful when a value should be initialized once and then treated as read-only.
+
+## Pool Variables
+
+Variables can also be stored in [pools](../pools/README.md) and accessed by index or key instead of by name:
+
+```ini
+$PoolFoo[$index] = $PoolFoo[$index] + 1
+```
+
+See [Pools → Variables](../pools/variables.md) for details.

@@ -13082,8 +13082,10 @@ void SlotRangeCopyOperation::RunBind(CommandListState *state, unsigned first, un
 		ID3D11View *src_view = NULL;
 		CustomResource *source = single_source;
 
+		// Range bounds are element indices on every pool type, so bypass
+		// fifo / spatial key lookup (use_ring_index):
 		if (src.type == ResourceCopyTargetType::POOL)
-			source = src.custom_resource_pool->GetResource((float)(pool_first + (int)i), false, false, false);
+			source = src.custom_resource_pool->GetResource((float)(pool_first + (int)i), false, true, false);
 
 		if (use_slot_ops) {
 			// Let a regular single slot operation do the copy, with the
@@ -13212,8 +13214,10 @@ void SlotRangeCopyOperation::RunFetch(CommandListState *state, unsigned first, u
 			views[i]->GetResource(&resource);
 		}
 
-		// GetResource(id, template_lookup, use_ring_index, is_assignment)
-		CustomResource *element = dst.custom_resource_pool->GetResource((float)(pool_first + (int)i), false, false, true);
+		// GetResource(id, template_lookup, use_ring_index, is_assignment).
+		// Range bounds are element indices on every pool type, so bypass
+		// fifo / spatial key lookup:
+		CustomResource *element = dst.custom_resource_pool->GetResource((float)(pool_first + (int)i), false, true, true);
 
 		if (use_slot_ops) {
 			// Same as ResourceCopyOperation::run() for a slot source, which

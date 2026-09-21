@@ -66,6 +66,8 @@ Slot bounds are validated at runtime: `$first` must not be negative, `$last` mus
 
 Pool bounds follow [Ring indexing](../pools/indexing.md/#ring-indexing) rules, so negative and overflowing indices wrap around the pool size. The range may not be larger than the pool.
 
+This holds for every index type: on a `fifo` or `spatial` pool the bounds are still element indices, not keys, so the range addresses the physical elements directly and bypasses key lookup. Element keys are not touched by a range operation. A fetch counts as an update of the elements it writes for [expiration](../pools/declaration.md/#element-expiration) purposes, like any assignment.
+
 A pool range is only valid on the other side of a slot range.
 
 ### Inheriting Bounds

@@ -17,4 +17,3 @@ A pool manages a fixed number of elements that can be accessed using different i
 
 - [Pool-Based Tracker](../examples/pool-based-tracker.md) — keep resource results from the last N frames using a Ring pool
 - [Per-Object State](../examples/per-object-state.md) — track per-object variables and resources with a FIFO pool and expiration
-- [Material Borrowing](../examples/material-borrowing.md) — keep the current and previous frame's posed mesh in a Ring pool

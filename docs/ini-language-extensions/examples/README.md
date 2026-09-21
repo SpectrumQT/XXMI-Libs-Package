@@ -10,5 +10,3 @@ Practical scripts that combine several INI language extensions.
 * [Command List Callbacks](command-list-callbacks.md) — expose hook points between namespaces with proxy command lists
 * [GPU Readback](gpu-readback.md) — read a value from a GPU resource with `store` without stalling every frame
 * [Constant Buffer Region](constant-buffer-region.md) — bind or copy part of a constant buffer with `->Region` and `->Offset`
-* [Accessory Mesh](accessory-mesh.md) — attach an extra skinned mesh to a character by drawing from a `->Region` of its vertex buffers
-* [Material Borrowing](material-borrowing.md) — redraw a component under another component's material from a captured `so0`, with a Ring pool for the previous frame

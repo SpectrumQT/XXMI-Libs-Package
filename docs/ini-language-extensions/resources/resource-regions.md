@@ -52,4 +52,4 @@ cs-cb0 = ref vs-cb0->Region($byte_offset, $byte_size)
 
 The same underlying buffer is referenced using the specified region without copying its contents.
 
-See [Constant Buffer Region](../examples/constant-buffer-region.md) and [Accessory Mesh](../examples/accessory-mesh.md) for practical examples.
+See [Constant Buffer Region](../examples/constant-buffer-region.md) for a practical example.

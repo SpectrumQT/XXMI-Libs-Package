@@ -152,6 +152,41 @@ extern CommandListVariables command_list_globals;
 extern std::vector<CommandListVariable*> persistent_variables;
 extern std::map<std::wstring, float> unknown_variables;
 
+// Values Viewer
+
+// Variables
+
+struct VariableEntry
+{
+    std::wstring name;
+    std::wstring var_namespace;
+
+    CommandListVariable* variable;
+};
+
+extern std::vector<VariableEntry> variableList;
+extern std::map<std::wstring, std::vector<VariableEntry*>> variable_groups;
+extern std::vector<std::wstring> namespace_list;
+
+// Custom Resources
+
+struct CustomResourceEntry
+{
+	std::wstring name;
+	std::wstring resource_namespace;
+
+	CustomResource* resource;
+};
+
+extern std::vector<CustomResourceEntry> customResourceList;
+extern std::map<std::wstring, std::vector<CustomResourceEntry*>> custom_resource_groups;
+extern std::vector<std::wstring> custom_resource_namespace_list;
+
+// Pools
+
+extern std::vector<std::wstring> resource_pool_list;
+
+
 // The scope object is used to declare local variables in a command list. The
 // multiple levels are to isolate variables declared inside if blocks from
 // being accessed in a parent or sibling scope, while allowing variables
@@ -697,6 +732,11 @@ public:
 
 	void ResetElements(PoolElement::ResetType reset_type = PoolElement::ResetType::All);
 	void ResetPool(bool reset_elements = true);
+
+	const std::vector<PoolElement>& GetElements() const
+	{
+		return elements;
+	}
 
 private:
 	void InitializeResource(size_t pool_index);

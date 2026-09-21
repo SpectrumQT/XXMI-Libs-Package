@@ -1,7 +1,8 @@
 #include "profiling.h"
 #include "globals.h"
-
 #include <algorithm>
+#include <numeric>
+#include <cwctype>
 
 void Profiling::Overhead::clear()
 {
@@ -49,6 +50,51 @@ namespace Profiling {
 	unsigned skipped_draw_calls;
 	unsigned max_executions_per_frame_exceeded;
 	unsigned iniparams_updates;
+
+	// Values Viewer
+
+	const int column_width = 40;
+	const int visible_rows = 61;
+
+	// Variables
+
+	std::vector<VariableColumn> variable_columns(6);
+	int active_column = 0;
+
+	// Pools
+
+	std::vector<ResourcePoolColumn> resource_pool_columns(6);
+	int active_pool_column = 0;
+
+	// Custom Resources
+
+	std::vector<CustomResourceColumn> custom_resource_columns(4);
+	int active_custom_resource_column = 0;
+
+	const int custom_resource_metadata_rows = 16;
+	const int custom_resource_visible_rows = visible_rows - custom_resource_metadata_rows - 1;
+
+	// Sorting
+
+	SortMode variable_sort_mode = SortMode::DEFAULT;
+	bool variable_sort_descending = false;
+
+	SortMode custom_resource_sort_mode = SortMode::DEFAULT;
+	bool custom_resource_sort_descending = false;
+
+	SortMode pool_sort_mode = SortMode::DEFAULT;
+	bool pool_sort_descending = false;
+
+	bool natural_sort = true;
+
+	// Cache Sorting
+	std::vector<int> Profiling::sorted_variable_indices;
+	std::vector<int> Profiling::sorted_custom_resource_indices;
+	std::vector<int> Profiling::sorted_pool_indices;
+
+	bool Profiling::variable_sort_cache_dirty = true;
+	bool Profiling::custom_resource_sort_cache_dirty = true;
+	bool Profiling::pool_sort_cache_dirty = true;
 }
 
 static LARGE_INTEGER profiling_start_time;
@@ -119,6 +165,1205 @@ void Profiling::update_cto_warning(bool warn)
 static void update_txt_cto_warning()
 {
 	Profiling::text += L" (post [TextureOverride] commands):\n" + Profiling::cto_warning;
+}
+
+// Values Viewer
+
+static std::wstring TrimNamespace(const std::wstring& name, int max_length)
+{
+	if (name.size() <= max_length)
+		return name;
+
+
+	std::wstring result = name;
+
+
+	while (result.size() > max_length)
+	{
+		size_t pos = result.find(L'\\');
+
+		if (pos == std::wstring::npos)
+			break;
+
+		result.erase(0, pos + 1);
+	}
+
+	if (result.size() > max_length)
+	{
+		result = result.substr(0, max_length - 3);
+		result += L"...";
+	}
+
+
+	return result;
+}
+
+static void AddColumn(std::wstring& output, std::wstring text, int width)
+{
+	output += text;
+
+	while (text.size() < width)
+	{
+		output += L" ";
+		text += L" ";
+	}
+}
+
+
+static std::wstring GetColumnHeader(int index)
+{
+	auto& column = Profiling::variable_columns[index];
+
+	std::wstring name = L"Select";
+
+	if (column.namespace_index >= 0 && column.namespace_index < namespace_list.size())
+		name = namespace_list[column.namespace_index];
+
+	if (index == Profiling::active_column)
+		return L"<" + name + L">";
+
+	return name;
+}
+
+void Profiling::NextSortMode(HackerDevice* device, void* private_dat)
+{
+	switch (mode)
+	{
+		case Mode::COMMAND_LIST_VARIABLES:
+			switch (variable_sort_mode)
+			{
+				case SortMode::DEFAULT:
+					variable_sort_mode = SortMode::NAME;
+					break;
+
+				case SortMode::NAME:
+					variable_sort_mode = SortMode::VALUE;
+					break;
+
+				case SortMode::VALUE:
+					variable_sort_mode = SortMode::DEFAULT;
+					break;
+			}
+
+			variable_sort_cache_dirty = true;
+			break;
+
+		case Mode::CUSTOM_RESOURCES:
+			switch (custom_resource_sort_mode)
+			{
+				case SortMode::DEFAULT:
+					custom_resource_sort_mode = SortMode::NAME;
+					break;
+
+				case SortMode::NAME:
+					custom_resource_sort_mode = SortMode::TYPE;
+					break;
+
+				case SortMode::TYPE:
+					custom_resource_sort_mode = SortMode::FORMAT;
+					break;
+
+				case SortMode::FORMAT:
+					custom_resource_sort_mode = SortMode::SIZE;
+					break;
+
+				case SortMode::SIZE:
+					custom_resource_sort_mode = SortMode::STRIDE;
+					break;
+
+				case SortMode::STRIDE:
+					custom_resource_sort_mode = SortMode::SUBSTANTIATED;
+					break;
+
+				case SortMode::SUBSTANTIATED:
+					custom_resource_sort_mode = SortMode::DEFAULT;
+					break;
+			}
+
+			custom_resource_sort_cache_dirty = true;
+			break;
+
+			case Mode::POOLS:
+				switch (pool_sort_mode)
+				{
+					case SortMode::DEFAULT:
+						pool_sort_mode = SortMode::TYPE;
+						break;
+
+					case SortMode::TYPE:
+						pool_sort_mode = SortMode::RESOURCE_ID;
+						break;
+
+					case SortMode::RESOURCE_ID:
+						pool_sort_mode = SortMode::VALUE;
+						break;
+
+					case SortMode::VALUE:
+						pool_sort_mode = SortMode::DEFAULT;
+						break;
+				}
+
+				pool_sort_cache_dirty = true;
+				break;
+
+			default:
+				break;
+	}
+}
+
+void Profiling::ToggleSortDirection(HackerDevice* device, void* private_dat)
+{
+	switch (mode)
+	{
+		case Mode::COMMAND_LIST_VARIABLES:
+			variable_sort_descending = !variable_sort_descending;
+			variable_sort_cache_dirty = true;
+			break;
+
+		case Mode::CUSTOM_RESOURCES:
+			custom_resource_sort_descending = !custom_resource_sort_descending;
+			custom_resource_sort_cache_dirty = true;
+			break;
+
+		case Mode::POOLS:
+			pool_sort_descending = !pool_sort_descending;
+			pool_sort_cache_dirty = true;
+			break;
+
+		default:
+			break;
+	}
+}
+
+void Profiling::ToggleNaturalSort(HackerDevice* device, void* private_dat){
+	Profiling::natural_sort = !Profiling::natural_sort;
+
+	Profiling::variable_sort_cache_dirty = true;
+	Profiling::custom_resource_sort_cache_dirty = true;
+}
+
+bool Profiling::NaturalSort(const std::wstring& lhs, const std::wstring& rhs)
+{
+	size_t i = 0;
+	size_t j = 0;
+
+	while (i < lhs.size() && j < rhs.size())
+	{
+		if (iswdigit(lhs[i]) && iswdigit(rhs[j]))
+		{
+			size_t lhs_start = i;
+			size_t rhs_start = j;
+
+			while (i < lhs.size() && iswdigit(lhs[i]))
+				i++;
+
+			while (j < rhs.size() && iswdigit(rhs[j]))
+				j++;
+
+			size_t lhs_nonzero = lhs_start;
+			size_t rhs_nonzero = rhs_start;
+
+			while (lhs_nonzero < i && lhs[lhs_nonzero] == L'0')
+				lhs_nonzero++;
+
+			while (rhs_nonzero < j && rhs[rhs_nonzero] == L'0')
+				rhs_nonzero++;
+
+			size_t lhs_digits = i - lhs_nonzero;
+			size_t rhs_digits = j - rhs_nonzero;
+
+			if (lhs_digits != rhs_digits)
+				return lhs_digits < rhs_digits;
+
+			for (size_t k = 0; k < lhs_digits; k++)
+			{
+				if (lhs[lhs_nonzero + k] != rhs[rhs_nonzero + k])
+					return lhs[lhs_nonzero + k] < rhs[rhs_nonzero + k];
+			}
+
+			continue;
+		}
+
+		wchar_t l = towlower(lhs[i]);
+		wchar_t r = towlower(rhs[j]);
+
+		if (l != r)
+			return l < r;
+
+		i++;
+		j++;
+	}
+
+	return lhs.size() < rhs.size();
+}
+
+static const std::vector<int>& GetSortedVariableIndices(const std::vector<VariableEntry*>& vars)
+{
+	if (!Profiling::variable_sort_cache_dirty && Profiling::sorted_variable_indices.size() == vars.size())
+		return Profiling::sorted_variable_indices;
+
+	auto& indices = Profiling::sorted_variable_indices;
+
+	indices.resize(vars.size());
+	std::iota(indices.begin(), indices.end(), 0);
+
+	if (Profiling::variable_sort_mode != Profiling::SortMode::DEFAULT)
+	{
+		std::stable_sort(indices.begin(), indices.end(), [&](int a, int b)
+			{
+				auto* lhs = vars[a];
+				auto* rhs = vars[b];
+
+				if (Profiling::variable_sort_mode == Profiling::SortMode::NAME)
+				{
+					if (Profiling::natural_sort)
+						return Profiling::variable_sort_descending ? Profiling::NaturalSort(rhs->name, lhs->name) : Profiling::NaturalSort(lhs->name, rhs->name);
+
+					return Profiling::variable_sort_descending ? rhs->name < lhs->name : lhs->name < rhs->name;
+				}
+
+				if (Profiling::variable_sort_mode == Profiling::SortMode::VALUE)
+					return Profiling::variable_sort_descending ? rhs->variable->fval < lhs->variable->fval : lhs->variable->fval < rhs->variable->fval;
+
+				return false;
+			});
+	}
+
+	Profiling::variable_sort_cache_dirty = false;
+	return indices;
+}
+
+std::wstring Profiling::SortModeToWString(SortMode mode)
+{
+	switch (mode)
+	{
+		case SortMode::DEFAULT:
+			return L"Default";
+		case SortMode::NAME:
+			return L"Name";
+		case SortMode::VALUE:
+			return L"Value";
+		case SortMode::TYPE:
+			return L"Type";
+		case SortMode::FORMAT:
+			return L"Format";
+		case SortMode::SIZE:
+			return L"Size";
+		case SortMode::STRIDE:
+			return L"Stride";
+		case SortMode::SUBSTANTIATED:
+			return L"Substantiated";
+		case SortMode::RESOURCE_ID:
+			return L"Resource ID";
+		}
+
+		return L"Unknown";
+}
+
+std::wstring Profiling::SortingHeader(SortMode mode, bool descending) {
+	return L"\nSorting Mode - " + Profiling::SortModeToWString(mode) + L" | Sort Direction - " + (descending ? L"Descending" : L"Ascending") +
+		   L" | Name Sorting Mode - " + (Profiling::natural_sort ? L"Natural" : L"Lexicographical") + L"\n";
+}
+
+static void DrawVariables()
+{
+	Profiling::text += SortingHeader(Profiling::variable_sort_mode, Profiling::variable_sort_descending);
+
+	// ============================
+	// Namespace Counters
+	// ============================
+
+	for (int c = 0; c < Profiling::variable_columns.size(); c++)
+	{
+		std::wstring counter;
+
+		if (c == Profiling::active_column)
+		{
+			auto& column = Profiling::variable_columns[c];
+
+			if (column.namespace_index >= 0)
+				counter = std::to_wstring(column.namespace_index + 1) + L"/" + std::to_wstring(namespace_list.size());
+			else
+				counter = L"0/" + std::to_wstring(namespace_list.size());
+		}
+
+		AddColumn(Profiling::text, counter, Profiling::column_width);
+	}
+
+	Profiling::text += L"\n";
+
+
+	// ============================
+	// Namespace Headers
+	// ============================
+
+	for (int c = 0; c < Profiling::variable_columns.size(); c++)
+	{
+		std::wstring header = TrimNamespace(GetColumnHeader(c), Profiling::column_width);
+		AddColumn(Profiling::text, header, Profiling::column_width);
+	}
+
+	Profiling::text += L"\n\n";
+
+
+	// ============================
+	// Variables
+	// ============================
+
+	for (int row = 0; row < Profiling::visible_rows; row++)
+	{
+		for (int c = 0; c < Profiling::variable_columns.size(); c++)
+		{
+			auto& column = Profiling::variable_columns[c];
+
+			std::wstring text;
+
+			if (column.namespace_index >= 0 && column.namespace_index < namespace_list.size())
+			{
+				auto& vars = variable_groups[namespace_list[column.namespace_index]];
+				auto sorted_indices = GetSortedVariableIndices(vars);
+				int index = row + column.scroll_offset;
+
+				if (index >= 0 && index < sorted_indices.size())
+				{
+					auto* var = vars[sorted_indices[index]];
+
+					text += L"$";
+					text += var->name;
+					text += L" = ";
+					text += std::to_wstring(var->variable->fval);
+				}
+			}
+
+			AddColumn(Profiling::text, text, Profiling::column_width
+			);
+		}
+
+		Profiling::text += L"\n";
+	}
+}
+
+// ============================
+// POOLS
+// ============================
+
+
+
+static std::wstring GetResourcePoolHeader(int index)
+{
+	auto& column = Profiling::resource_pool_columns[index];
+
+	std::wstring name = L"Select";
+
+	if (column.pool_index >= 0 && column.pool_index < resource_pool_list.size())
+		name = resource_pool_list[column.pool_index];
+
+	if (index == Profiling::active_pool_column)
+		return L"<" + name + L">";
+
+	return name;
+}
+
+static std::wstring GetPoolElementType(const PoolElement& element)
+{
+	switch (element.type)
+	{
+		case PoolElement::Type::Resource:
+			return L"Resource";
+
+		case PoolElement::Type::Variable:
+			return L"Variable";
+
+		case PoolElement::Type::Mixed:
+			return L"Mixed";
+
+		default:
+			return L"None";
+	}
+}
+
+static float GetResourceId(CustomResource* resource)
+{
+	if (!resource || resource->is_null || !resource->resource)
+		return 0.0f;
+
+	uint64_t hash = HashPointer(resource->resource);
+
+	return EncodeFloat30((uint32_t)hash);
+}
+
+static const std::vector<int>& GetSortedPoolIndices(const std::vector<PoolElement>& elements)
+{
+	if (!Profiling::pool_sort_cache_dirty && Profiling::sorted_pool_indices.size() == elements.size())
+		return Profiling::sorted_pool_indices;
+
+	auto& indices = Profiling::sorted_pool_indices;
+
+	indices.resize(elements.size());
+	std::iota(indices.begin(), indices.end(), 0);
+
+	if (Profiling::pool_sort_mode != Profiling::SortMode::DEFAULT)
+	{
+		std::stable_sort(indices.begin(), indices.end(), [&](int a, int b)
+			{
+				const auto& lhs = elements[a];
+				const auto& rhs = elements[b];
+
+				switch (Profiling::pool_sort_mode)
+				{
+					case Profiling::SortMode::TYPE:
+					{
+						std::wstring l = GetPoolElementType(lhs);
+						std::wstring r = GetPoolElementType(rhs);
+						return Profiling::pool_sort_descending ? r < l : l < r;
+					}
+
+					case Profiling::SortMode::RESOURCE_ID:
+					{
+						float l = lhs.resource ? GetResourceId(lhs.resource) : 0.0f;
+						float r = rhs.resource ? GetResourceId(rhs.resource) : 0.0f;
+						return Profiling::pool_sort_descending ? r < l : l < r;
+					}
+
+					case Profiling::SortMode::VALUE:
+					{
+						float l = lhs.variable ? lhs.variable->fval : 0.0f;
+						float r = rhs.variable ? rhs.variable->fval : 0.0f;
+						return Profiling::pool_sort_descending ? r < l : l < r;
+					}
+
+					default:
+						return false;
+				}
+			});
+	}
+
+	Profiling::pool_sort_cache_dirty = false;
+	return indices;
+}
+
+static void DrawResourcePools()
+{
+	Profiling::text += SortingHeader(Profiling::pool_sort_mode, Profiling::pool_sort_descending);
+
+	// ============================
+	// Pool Counters
+	// ============================
+
+	for (int c = 0; c < Profiling::resource_pool_columns.size(); c++)
+	{
+		std::wstring counter;
+
+		if (c == Profiling::active_pool_column)
+		{
+			auto& column = Profiling::resource_pool_columns[c];
+
+			if (column.pool_index >= 0)
+				counter =std::to_wstring(column.pool_index + 1) + L"/" + std::to_wstring(resource_pool_list.size());
+			else
+				counter = L"0/" + std::to_wstring(resource_pool_list.size());
+		}
+
+		AddColumn(Profiling::text, counter, Profiling::column_width);
+	}
+
+	Profiling::text += L"\n";
+
+
+	// ============================
+	// Pool Headers
+	// ============================
+
+	for (int c = 0; c < Profiling::resource_pool_columns.size(); c++)
+	{
+		std::wstring header =TrimNamespace(GetResourcePoolHeader(c), Profiling::column_width);
+		AddColumn(Profiling::text, header, Profiling::column_width);
+	}
+
+	Profiling::text += L"\n\n";
+
+
+	// ============================
+	// Pool Elements
+	// ============================
+
+	for (int row = 0; row < Profiling::visible_rows; row++)
+	{
+		for (int c = 0; c < Profiling::resource_pool_columns.size(); c++)
+		{
+			auto& column = Profiling::resource_pool_columns[c];
+
+			std::wstring text;
+
+
+			if (column.pool_index >= 0 && column.pool_index < resource_pool_list.size())
+			{
+				auto& pool = customResourcePools[resource_pool_list[column.pool_index]];
+
+				auto& elements = pool.GetElements();
+				auto sorted_indices = GetSortedPoolIndices(elements);
+				int index = row + column.scroll_offset;
+
+				if (index >= 0 && index < sorted_indices.size())
+				{
+					int element_index = sorted_indices[index];
+					auto& element = elements[element_index];
+
+					text += std::to_wstring(element_index);
+					text += L" ";
+
+					text += GetPoolElementType(element);
+
+
+					if (element.resource)
+					{
+						text += L" ";
+
+						float resource_id = GetResourceId(element.resource);
+
+						wchar_t buffer[64];
+						swprintf_s(buffer, _countof(buffer), L"%.*g", 9, resource_id);
+
+						text += (resource_id == 0.0 ? L"Null" : buffer);
+					}
+
+					if (element.variable)
+					{
+						text += L" ";
+						text += std::to_wstring(element.variable->fval);
+					}
+				}
+			}
+
+
+			AddColumn(Profiling::text, text, Profiling::column_width);
+		}
+
+		Profiling::text += L"\n";
+	}
+}
+
+// ============================
+// RESOURCES
+// ============================
+
+static std::wstring FormatToWString(DXGI_FORMAT format)
+{
+	if (format == DXGI_FORMAT_UNKNOWN || format == (DXGI_FORMAT)-1)
+		return L"Unknown";
+
+	const char* str = TexFormatStr(format);
+
+	if (!str)
+		return L"Unknown";
+
+	return std::wstring(str, str + strlen(str));
+}
+
+
+static std::wstring CustomResourceTypeToWString(
+	CustomResourceType type)
+{
+	switch (type)
+	{
+		case CustomResourceType::BUFFER:
+			return L"Buffer";
+
+		case CustomResourceType::STRUCTURED_BUFFER:
+			return L"StructuredBuffer";
+
+		case CustomResourceType::RAW_BUFFER:
+			return L"RawBuffer";
+
+		case CustomResourceType::TEXTURE1D:
+			return L"Texture1D";
+
+		case CustomResourceType::TEXTURE2D:
+			return L"Texture2D";
+
+		case CustomResourceType::TEXTURE3D:
+			return L"Texture3D";
+
+		case CustomResourceType::CUBE:
+			return L"Cube";
+
+		case CustomResourceType::INVALID:
+		default:
+			return L"Unknown";
+	}
+}
+
+
+static std::wstring GetActualResourceType(
+	ID3D11Resource* resource)
+{
+	if (!resource)
+		return L"Unknown";
+
+	D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+
+	resource->GetType(&dimension);
+
+	switch (dimension)
+	{
+		case D3D11_RESOURCE_DIMENSION_BUFFER:
+	{
+			D3D11_BUFFER_DESC desc;
+			static_cast<ID3D11Buffer*>(resource)->GetDesc(&desc);
+
+			if (desc.StructureByteStride != 0)
+				return L"StructuredBuffer";
+
+			if (desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS)
+				return L"RawBuffer";
+
+			return L"Buffer";
+	}
+
+		case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+			return L"Texture1D";
+
+		case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+			return L"Texture2D";
+
+		case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+			return L"Texture3D";
+
+		default:
+			return L"Unknown";
+	}
+}
+
+
+static std::wstring TrimText(const std::wstring& text, int max_length)
+{
+	if (max_length <= 0)
+		return L"";
+
+	if ((int)text.size() <= max_length)
+		return text;
+
+	if (max_length <= 3)
+		return text.substr(0, max_length);
+
+	return text.substr(0, max_length - 3) + L"...";
+}
+
+
+
+static std::wstring GetPathAfterMods(const std::wstring& path)
+{
+	static const std::wstring marker = L"mods\\";
+
+	std::wstring lower = path;
+
+	std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+
+	size_t pos = lower.find(marker);
+
+	if (pos == std::wstring::npos)
+		return path;
+
+	return path.substr(pos + marker.size());
+}
+
+
+static std::wstring GetLastPathComponent(
+	const std::wstring& path)
+{
+	size_t pos = path.find_last_of(L"\\/");
+
+	if (pos == std::wstring::npos)
+		return path;
+
+	return path.substr(pos + 1);
+}
+
+
+static std::wstring GetCustomResourceColumnHeader(int index)
+{
+	auto& column = Profiling::custom_resource_columns[index];
+
+	if (column.namespace_index < 0 || column.namespace_index >= (int)custom_resource_namespace_list.size())
+		return L"Select";
+
+	std::wstring name = custom_resource_namespace_list[column.namespace_index];
+
+	std::wstring lower = name;
+
+	std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+
+	const std::wstring mods_marker = L"mods\\";
+	const std::wstring source_prefix = L"source\\";
+
+	size_t mods_pos = lower.find(mods_marker);
+
+	if (mods_pos != std::wstring::npos)
+		name.erase(0, mods_pos + mods_marker.size());
+
+	else if (lower.compare(0,source_prefix.size(),source_prefix) == 0)
+		name.erase(0, source_prefix.size());
+
+	if (index == Profiling::active_custom_resource_column)
+		return L"<" + name + L">";
+
+	return name;
+}
+
+
+static void GetResourceMetadata(
+	const CustomResource* resource,
+	std::wstring lines[16])
+{
+	for (int i = 0; i < 16; i++)
+		lines[i].clear();
+
+	if (!resource)
+	{
+		lines[0] = L"Name: <none>";
+		return;
+	}
+
+
+	// ========================================================================
+	// Common Data
+	// ========================================================================
+
+	lines[0] = L"Name: " + GetLastPathComponent(resource->name);
+	lines[1] = L"FileName: " + GetPathAfterMods(resource->filename);
+
+
+	// ========================================================================
+	// Actual D3D11 Resource
+	// ========================================================================
+
+	if (resource->resource)
+	{
+		D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+
+		resource->resource->GetType(&dimension);
+
+		lines[2] = L"Type: " + GetActualResourceType(resource->resource);
+
+
+		switch (dimension)
+		{
+			case D3D11_RESOURCE_DIMENSION_BUFFER:
+			{
+				D3D11_BUFFER_DESC desc;
+				static_cast<ID3D11Buffer*>(resource->resource)->GetDesc(&desc);
+
+				lines[3] = L"Format: Unknown";
+				lines[4] = L"ByteWidth: " + std::to_wstring(desc.ByteWidth);
+				lines[5] = L"Stride: " + std::to_wstring(resource->stride);
+				lines[6] = L"Bind: " + std::to_wstring(static_cast<unsigned>(resource->bind_flags));
+				lines[7] = L"Misc: " + std::to_wstring(static_cast<unsigned>(resource->misc_flags));
+				lines[8] = L"SourceStride: " + std::to_wstring(resource->source_stride);
+
+				break;
+			}
+
+
+			case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+			{
+				D3D11_TEXTURE1D_DESC desc;
+				static_cast<ID3D11Texture1D*>(resource->resource)->GetDesc(&desc);
+
+				lines[3] = L"Format: " + FormatToWString(desc.Format);
+				lines[4] = L"Size: " + std::to_wstring(desc.Width);
+				lines[5] = L"Mips: " + std::to_wstring(desc.MipLevels);
+				lines[6] = L"Array: " + std::to_wstring(desc.ArraySize);
+				lines[7] = L"Bind: " + std::to_wstring(static_cast<unsigned>(resource->bind_flags));
+				lines[8] = L"Misc: " + std::to_wstring(static_cast<unsigned>(resource->misc_flags));
+				lines[9] = L"SourceStride: " + std::to_wstring(resource->source_stride);
+
+				break;
+			}
+
+
+			case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+			{
+				D3D11_TEXTURE2D_DESC desc;
+				static_cast<ID3D11Texture2D*>(resource->resource)->GetDesc(&desc);
+
+				lines[3] = L"Format: " + FormatToWString(desc.Format);
+				lines[4] = L"Size: " + std::to_wstring(desc.Width) + L"x" + std::to_wstring(desc.Height);
+				lines[5] = L"Mips: " + std::to_wstring(desc.MipLevels);
+				lines[6] = L"Array: " + std::to_wstring(desc.ArraySize);
+				lines[7] = L"MSAA: " + std::to_wstring(desc.SampleDesc.Count) + L"/" + std::to_wstring(desc.SampleDesc.Quality);
+				lines[8] = L"Bind: " + std::to_wstring(static_cast<unsigned>(resource->bind_flags));
+				lines[9] = L"Misc: " + std::to_wstring(static_cast<unsigned>(resource->misc_flags));
+				lines[10] = L"SourceStride: " + std::to_wstring(resource->source_stride);
+
+				break;
+			}
+
+
+			case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+			{
+				D3D11_TEXTURE3D_DESC desc;
+				static_cast<ID3D11Texture3D*>(resource->resource)->GetDesc(&desc);
+
+				lines[3] = L"Format: " + FormatToWString(desc.Format);
+				lines[4] = L"Size: " + std::to_wstring(desc.Width) + L"x" + std::to_wstring(desc.Height) + L"x" + std::to_wstring(desc.Depth);
+				lines[5] = L"Mips: " + std::to_wstring(desc.MipLevels);
+				lines[6] = L"Bind: " + std::to_wstring(static_cast<unsigned>(resource->bind_flags));
+				lines[7] = L"Misc: " + std::to_wstring(static_cast<unsigned>(resource->misc_flags));
+				lines[8] = L"SourceStride: " + std::to_wstring(resource->source_stride);
+
+				break;
+			}
+
+
+			default:
+				lines[3] = L"Format: Unknown";
+				break;
+		}
+	}
+	else
+	{
+		// ====================================================================
+		// Resource hasn't been Substantiated yet.
+		// Use the Description known from the Resource Declaration.
+		// ====================================================================
+
+		lines[2] = L"Type: " + CustomResourceTypeToWString(resource->override_type);
+		lines[3] = L"Format: " + FormatToWString(resource->override_format);
+		lines[4] = L"Width: " + std::to_wstring(resource->override_width);
+		lines[5] = L"Height: " + std::to_wstring(resource->override_height);
+		lines[6] = L"Depth: " + std::to_wstring(resource->override_depth);
+		lines[7] = L"Mips: " + std::to_wstring(resource->override_mips);
+		lines[8] = L"Array: " + std::to_wstring(resource->override_array);
+		lines[9] = L"MSAA: " + std::to_wstring(resource->override_msaa) + L"/" + std::to_wstring(resource->override_msaa_quality);
+		lines[10] = L"ByteWidth: " + std::to_wstring(resource->override_byte_width);
+		lines[11] = L"Stride: " + std::to_wstring(resource->override_stride);
+		lines[12] = L"Bind: " + std::to_wstring(static_cast<unsigned>(resource->override_bind_flags));
+		lines[13] = L"Misc: " + std::to_wstring(static_cast<unsigned>(resource->override_misc_flags));
+		lines[14] = L"SourceStride: " + std::to_wstring(resource->source_stride);
+	}
+
+
+	// ========================================================================
+	// Runtime state
+	// ========================================================================
+
+	lines[15] = L"Substantiated: " + std::wstring(resource->substantiated ? L"true" : L"false");
+}
+
+
+struct ResourceSortInfo
+{
+	std::wstring type;
+	std::wstring format;
+	uint64_t size = 0;
+	UINT stride = 0;
+	bool substantiated = false;
+};
+
+static ResourceSortInfo GetResourceSortInfo(const CustomResource* resource)
+{
+	ResourceSortInfo info;
+
+	if (!resource)
+		return info;
+
+	info.substantiated = resource->substantiated;
+
+	if (resource->resource)
+	{
+		ID3D11Resource* d3d_resource = resource->resource;
+		D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+		d3d_resource->GetType(&dimension);
+
+		info.type = GetActualResourceType(d3d_resource);
+
+		switch (dimension)
+		{
+		case D3D11_RESOURCE_DIMENSION_BUFFER:
+		{
+			D3D11_BUFFER_DESC desc;
+			static_cast<ID3D11Buffer*>(d3d_resource)->GetDesc(&desc);
+			info.size = desc.ByteWidth;
+			info.stride = resource->stride;
+			break;
+		}
+
+		case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+		{
+			D3D11_TEXTURE1D_DESC desc;
+			static_cast<ID3D11Texture1D*>(d3d_resource)->GetDesc(&desc);
+			info.format = FormatToWString(desc.Format);
+			info.size = desc.Width * (uint64_t)desc.ArraySize;
+			break;
+		}
+
+		case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+		{
+			D3D11_TEXTURE2D_DESC desc;
+			static_cast<ID3D11Texture2D*>(d3d_resource)->GetDesc(&desc);
+			info.format = FormatToWString(desc.Format);
+			info.size = desc.Width * (uint64_t)desc.Height * desc.ArraySize;
+			break;
+		}
+
+		case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+		{
+			D3D11_TEXTURE3D_DESC desc;
+			static_cast<ID3D11Texture3D*>(d3d_resource)->GetDesc(&desc);
+			info.format = FormatToWString(desc.Format);
+			info.size = desc.Width * (uint64_t)desc.Height * desc.Depth;
+			break;
+		}
+
+		default:
+			break;
+		}
+
+		return info;
+	}
+
+	info.type = CustomResourceTypeToWString(resource->override_type);
+	info.format = FormatToWString(resource->override_format);
+
+	if (resource->override_type == CustomResourceType::BUFFER || resource->override_type == CustomResourceType::STRUCTURED_BUFFER || resource->override_type == CustomResourceType::RAW_BUFFER)
+		info.size = resource->override_byte_width;
+	else
+		info.size = resource->override_width * (uint64_t)resource->override_height * resource->override_depth * resource->override_array;
+
+	info.stride = resource->override_stride;
+
+	return info;
+}
+
+static const std::vector<int>& GetSortedResourceIndices(const std::vector<CustomResourceEntry*>& resources)
+{
+	if (!Profiling::custom_resource_sort_cache_dirty && Profiling::sorted_custom_resource_indices.size() == resources.size())
+		return Profiling::sorted_custom_resource_indices;
+
+	auto& indices = Profiling::sorted_custom_resource_indices;
+
+	indices.resize(resources.size());
+	std::iota(indices.begin(), indices.end(), 0);
+
+	if (Profiling::custom_resource_sort_mode != Profiling::SortMode::DEFAULT)
+	{
+		std::stable_sort(indices.begin(), indices.end(), [&](int a, int b)
+			{
+				auto* lhs = resources[a]->resource;
+				auto* rhs = resources[b]->resource;
+
+				if (!lhs || !rhs)
+					return lhs != nullptr;
+
+				switch (Profiling::custom_resource_sort_mode)
+				{
+					case Profiling::SortMode::NAME:
+					{
+						const std::wstring lhs_name = GetLastPathComponent(resources[a]->name);
+						const std::wstring rhs_name = GetLastPathComponent(resources[b]->name);
+
+						if (Profiling::natural_sort)
+							return Profiling::custom_resource_sort_descending ? Profiling::NaturalSort(rhs_name, lhs_name) : Profiling::NaturalSort(lhs_name, rhs_name);
+
+						return Profiling::custom_resource_sort_descending ? rhs_name < lhs_name : lhs_name < rhs_name;
+					}
+
+					case Profiling::SortMode::TYPE:
+					{
+						ResourceSortInfo l = GetResourceSortInfo(lhs);
+						ResourceSortInfo r = GetResourceSortInfo(rhs);
+						return Profiling::custom_resource_sort_descending ? r.type < l.type : l.type < r.type;
+					}
+
+					case Profiling::SortMode::FORMAT:
+					{
+						ResourceSortInfo l = GetResourceSortInfo(lhs);
+						ResourceSortInfo r = GetResourceSortInfo(rhs);
+						return Profiling::custom_resource_sort_descending ? r.format < l.format : l.format < r.format;
+					}
+
+					case Profiling::SortMode::SIZE:
+					{
+						ResourceSortInfo l = GetResourceSortInfo(lhs);
+						ResourceSortInfo r = GetResourceSortInfo(rhs);
+						return Profiling::custom_resource_sort_descending ? r.size < l.size : l.size < r.size;
+					}
+
+					case Profiling::SortMode::STRIDE:
+					{
+						ResourceSortInfo l = GetResourceSortInfo(lhs);
+						ResourceSortInfo r = GetResourceSortInfo(rhs);
+						return Profiling::custom_resource_sort_descending ? r.stride < l.stride : l.stride < r.stride;
+					}
+
+					case Profiling::SortMode::SUBSTANTIATED:
+						return Profiling::custom_resource_sort_descending ? !lhs->substantiated && rhs->substantiated : lhs->substantiated && !rhs->substantiated;
+
+					default:
+						return false;
+				}
+			});
+	}
+
+	Profiling::custom_resource_sort_cache_dirty = false;
+	return indices;
+}
+
+static void DrawResources()
+{
+	Profiling::text += SortingHeader(Profiling::custom_resource_sort_mode, Profiling::custom_resource_sort_descending);
+
+	// ========================================================================
+	// Namespace Counters
+	// ========================================================================
+
+	for (int c = 0; c < Profiling::custom_resource_columns.size(); c++)
+	{
+		std::wstring counter;
+
+
+		if (c == Profiling::active_custom_resource_column)
+		{
+			auto& column = Profiling::custom_resource_columns[c];
+
+
+			if (column.namespace_index >= 0 && column.namespace_index < custom_resource_namespace_list.size())
+				counter = std::to_wstring(column.namespace_index + 1) + L"/" + std::to_wstring(custom_resource_namespace_list.size());
+			else
+				counter = L"0/" + std::to_wstring(custom_resource_namespace_list.size());
+		}
+
+
+		AddColumn(Profiling::text, counter, Profiling::column_width);
+	}
+
+	Profiling::text += L"\n";
+
+
+	// ========================================================================
+	// Namespace Headers
+	// ========================================================================
+
+	for (int c = 0; c < Profiling::custom_resource_columns.size(); c++)
+		AddColumn(Profiling::text, TrimText(GetCustomResourceColumnHeader(c), Profiling::column_width), Profiling::column_width);
+
+	Profiling::text += L"\n";
+
+
+	// ========================================================================
+	// Resource List
+	// ========================================================================
+
+	for (int row = 0; row < Profiling::custom_resource_visible_rows; row++)
+	{
+		for (int c = 0; c < Profiling::custom_resource_columns.size(); c++)
+		{
+			auto& column = Profiling::custom_resource_columns[c];
+
+			std::wstring text;
+
+
+			if (column.namespace_index >= 0 && column.namespace_index < custom_resource_namespace_list.size())
+			{
+				auto& resources = custom_resource_groups[custom_resource_namespace_list[column.namespace_index]];
+				auto sorted_indices = GetSortedResourceIndices(resources);
+				int index = row + column.scroll_offset;
+
+				if (index >= 0 && index < sorted_indices.size())
+				{
+					int resource_index = sorted_indices[index];
+					CustomResourceEntry* entry = resources[resource_index];
+
+					text = GetLastPathComponent(entry->name);
+
+					if (index == column.resource_index)
+						text = L"> " + text;
+				}
+			}
+
+
+			AddColumn(Profiling::text, TrimText(text, Profiling::column_width), Profiling::column_width);
+		}
+
+		Profiling::text += L"\n";
+	}
+
+
+	// ========================================================================
+	// Separator
+	// ========================================================================
+
+	for (int c = 0; c < Profiling::custom_resource_columns.size(); c++)
+		AddColumn(Profiling::text, L"----------------------------------------", Profiling::column_width);
+
+	Profiling::text += L"\n";
+
+
+	// ========================================================================
+	// Selected Resource Metadata
+	// ========================================================================
+
+	for (int row = 0; row < Profiling::custom_resource_metadata_rows; row++)
+	{
+		for (int c = 0; c < Profiling::custom_resource_columns.size(); c++)
+		{
+			auto& column = Profiling::custom_resource_columns[c];
+
+			std::wstring text;
+
+
+			if (column.namespace_index >= 0 && column.namespace_index < custom_resource_namespace_list.size())
+			{
+				auto& resources = custom_resource_groups[custom_resource_namespace_list[column.namespace_index]];
+
+
+				auto sorted_indices = GetSortedResourceIndices(resources);
+
+				if (column.resource_index >= 0 && column.resource_index < sorted_indices.size())
+				{
+					CustomResource* resource = resources[sorted_indices[column.resource_index]]->resource;
+
+					std::wstring lines[16];
+
+					GetResourceMetadata(resource, lines);
+
+					text = lines[row];
+				}
+			}
+
+
+			AddColumn(Profiling::text, TrimText(text, Profiling::column_width), Profiling::column_width);
+		}
+
+		Profiling::text += L"\n";
+	}
+}
+
+ID3D11Resource* Profiling::GetSelectedCustomResource()
+{
+	if (mode != Mode::CUSTOM_RESOURCES)
+		return nullptr;
+
+	if (active_custom_resource_column < 0 || active_custom_resource_column >= (int)custom_resource_columns.size())
+		return nullptr;
+
+	auto& column = custom_resource_columns[active_custom_resource_column];
+
+	if (column.namespace_index < 0 || column.namespace_index >= (int)custom_resource_namespace_list.size())
+		return nullptr;
+
+	auto& resources = custom_resource_groups[custom_resource_namespace_list[column.namespace_index]];
+	auto sorted_indices = GetSortedResourceIndices(resources);
+
+	if (column.resource_index < 0 || column.resource_index >= (int)sorted_indices.size())
+		return nullptr;
+
+	auto* entry = resources[sorted_indices[column.resource_index]];
+
+	if (!entry || !entry->resource || entry->resource->is_null || !entry->resource->resource)
+		return nullptr;
+
+	return entry->resource->resource;
 }
 
 static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER freq, unsigned frames)
@@ -429,12 +1674,13 @@ void Profiling::update_txt()
 		return;
 
 	collection_duration.QuadPart = (end_time.QuadPart - profiling_start_time.QuadPart) * 1000000 / freq.QuadPart;
-	if (collection_duration.QuadPart < interval && !Profiling::text.empty())
+
+	if (collection_duration.QuadPart < ((Profiling::mode == Profiling::Mode::COMMAND_LIST_VARIABLES || Profiling::mode == Profiling::Mode::CUSTOM_RESOURCES || Profiling::mode == Profiling::Mode::POOLS) ? 0.1 : interval)
+		&& !Profiling::text.empty())
 		return;
 
 	if (frames && collection_duration.QuadPart) {
-		_snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE,
-				    L"Performance Monitor %.1ffps", frames * 1000000.0 / collection_duration.QuadPart);
+		_snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE, L"Performance Monitor %.1ffps", frames * 1000000.0 / collection_duration.QuadPart);
 		Profiling::text = buf;
 
 		switch (Profiling::mode) {
@@ -449,6 +1695,15 @@ void Profiling::update_txt()
 				break;
 			case Profiling::Mode::CTO_WARNING:
 				update_txt_cto_warning();
+				break;
+			case Profiling::Mode::COMMAND_LIST_VARIABLES:
+				DrawVariables();
+				break;
+			case Profiling::Mode::CUSTOM_RESOURCES:
+				DrawResources();
+				break;
+			case Profiling::Mode::POOLS:
+				DrawResourcePools();
 				break;
 		}
 	}

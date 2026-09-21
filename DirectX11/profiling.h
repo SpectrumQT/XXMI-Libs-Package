@@ -2,6 +2,10 @@
 
 #include <wrl.h>
 #include <string>
+#include <vector>
+#include <d3d11.h>
+
+class HackerDevice;
 
 namespace Profiling {
 	enum class Mode {
@@ -10,8 +14,24 @@ namespace Profiling {
 		TOP_COMMAND_LISTS,
 		TOP_COMMANDS,
 		CTO_WARNING,
+		COMMAND_LIST_VARIABLES,
+		CUSTOM_RESOURCES,
+		POOLS,
 
 		INVALID, // Must be last
+	};
+
+	enum class SortMode
+	{
+		DEFAULT,
+		NAME,
+		VALUE,
+		TYPE,
+		FORMAT,
+		SIZE,
+		STRIDE,
+		SUBSTANTIATED,
+		RESOURCE_ID
 	};
 
 	class Overhead {
@@ -104,4 +124,78 @@ namespace Profiling {
 	extern unsigned max_executions_per_frame_exceeded;
 	extern unsigned iniparams_updates;
 
+	// Values Viewer
+
+	// Variables
+
+	struct VariableColumn
+	{
+		int namespace_index = -1;
+		int scroll_offset = 0;
+	};
+
+	extern std::vector<VariableColumn> variable_columns;
+	extern int active_column;
+
+	// Pools
+
+	struct ResourcePoolColumn
+	{
+		int pool_index = -1;
+		int scroll_offset = 0;
+	};
+
+	extern std::vector<ResourcePoolColumn> resource_pool_columns;
+	extern int active_pool_column;
+
+	extern const int column_width;
+	extern const int visible_rows;
+
+	// Custom Resources
+
+	struct CustomResourceColumn
+	{
+		int namespace_index = -1;
+		int resource_index = 0;
+		int scroll_offset = 0;
+	};
+
+	extern std::vector<CustomResourceColumn> custom_resource_columns;
+	extern int active_custom_resource_column;
+
+	extern const int custom_resource_visible_rows;
+	extern const int custom_resource_metadata_rows;
+
+	// Sorting
+
+	extern SortMode variable_sort_mode;
+	extern bool variable_sort_descending;
+
+	extern SortMode custom_resource_sort_mode;
+	extern bool custom_resource_sort_descending;
+
+	extern SortMode pool_sort_mode;
+	extern bool pool_sort_descending;
+
+	extern bool natural_sort;
+
+	// Cache Sorting
+	extern std::vector<int> sorted_variable_indices;
+	extern std::vector<int> sorted_custom_resource_indices;
+	extern std::vector<int> sorted_pool_indices;
+
+	extern bool variable_sort_cache_dirty;
+	extern bool custom_resource_sort_cache_dirty;
+	extern bool pool_sort_cache_dirty;
+
+	void NextSortMode(HackerDevice* device, void* private_dat);
+	void ToggleSortDirection(HackerDevice* device, void* private_dat);
+	void ToggleNaturalSort(HackerDevice* device, void* private_dat);
+
+	bool NaturalSort(const std::wstring& lhs, const std::wstring& rhs);
+
+	std::wstring SortModeToWString(SortMode mode);
+	std::wstring SortingHeader(SortMode mode, bool descending);
+
+	ID3D11Resource* GetSelectedCustomResource();
 }

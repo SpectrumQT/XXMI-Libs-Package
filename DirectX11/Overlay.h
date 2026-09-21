@@ -51,6 +51,12 @@ private:
 	std::unique_ptr<DirectX::PrimitiveBatch<DirectX::VertexPositionColor>> mPrimitiveBatch;
 	Microsoft::WRL::ComPtr<ID3D11InputLayout> mInputLayout;
 
+	Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> mProfilingTextureSRV;
+	ID3D11Resource* mProfilingTextureResource = nullptr;
+
+	HRESULT UpdateProfilingTexture();
+	void DrawProfilingTexture(float x, float y);
+
 	// These are all state that we save away before drawing the overlay and
 	// restore again afterwards. Basically everything that DirectTK
 	// SimpleSprite may clobber:

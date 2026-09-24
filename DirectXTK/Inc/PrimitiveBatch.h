@@ -1,12 +1,8 @@
 //--------------------------------------------------------------------------------------
 // File: PrimitiveBatch.h
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
-//
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
 // http://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
@@ -19,9 +15,11 @@
 #include <d3d11_1.h>
 #endif
 
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <utility>
-#include <stdint.h>
 
 
 namespace DirectX
@@ -33,8 +31,9 @@ namespace DirectX
         {
         protected:
             PrimitiveBatchBase(_In_ ID3D11DeviceContext* deviceContext, size_t maxIndices, size_t maxVertices, size_t vertexSize);
-            PrimitiveBatchBase(PrimitiveBatchBase&& moveFrom);
-            PrimitiveBatchBase& operator= (PrimitiveBatchBase&& moveFrom);
+
+            PrimitiveBatchBase(PrimitiveBatchBase&&) noexcept;
+            PrimitiveBatchBase& operator= (PrimitiveBatchBase&&) noexcept;
 
             PrimitiveBatchBase(PrimitiveBatchBase const&) = delete;
             PrimitiveBatchBase& operator= (PrimitiveBatchBase const&) = delete;
@@ -63,23 +62,19 @@ namespace DirectX
     template<typename TVertex>
     class PrimitiveBatch : public Internal::PrimitiveBatchBase
     {
-        static const size_t DefaultBatchSize = 2048;
+        static constexpr size_t DefaultBatchSize = 2048;
 
     public:
         explicit PrimitiveBatch(_In_ ID3D11DeviceContext* deviceContext, size_t maxIndices = DefaultBatchSize * 3, size_t maxVertices = DefaultBatchSize)
-          : PrimitiveBatchBase(deviceContext, maxIndices, maxVertices, sizeof(TVertex))
-        { }
-
-        PrimitiveBatch(PrimitiveBatch&& moveFrom)
-          : PrimitiveBatchBase(std::move(moveFrom))
-        { }
-
-        PrimitiveBatch& operator= (PrimitiveBatch&& moveFrom)
+            : PrimitiveBatchBase(deviceContext, maxIndices, maxVertices, sizeof(TVertex))
         {
-            PrimitiveBatchBase::operator=(std::move(moveFrom));
-            return *this;
         }
 
+        PrimitiveBatch(PrimitiveBatch&&) = default;
+        PrimitiveBatch& operator= (PrimitiveBatch&&) = default;
+
+        PrimitiveBatch(PrimitiveBatch const&) = delete;
+        PrimitiveBatch& operator= (PrimitiveBatch const&) = delete;
 
         // Similar to the D3D9 API DrawPrimitiveUP.
         void Draw(D3D11_PRIMITIVE_TOPOLOGY topology, _In_reads_(vertexCount) TVertex const* vertices, size_t vertexCount)

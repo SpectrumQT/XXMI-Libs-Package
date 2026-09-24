@@ -1,12 +1,8 @@
 //--------------------------------------------------------------------------------------
 // File: EffectFactory.cpp
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
-//
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
 // http://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
@@ -22,41 +18,85 @@
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
 
+namespace
+{
+    template<typename T>
+    void SetMaterialProperties(_In_ T* effect, const EffectFactory::EffectInfo& info)
+    {
+        effect->EnableDefaultLighting();
+
+        effect->SetAlpha(info.alpha);
+
+        // Most DirectX Tool Kit effects do not have an ambient material color.
+
+        XMVECTOR color = XMLoadFloat3(&info.diffuseColor);
+        effect->SetDiffuseColor(color);
+
+        if (info.specularColor.x != 0 || info.specularColor.y != 0 || info.specularColor.z != 0)
+        {
+            color = XMLoadFloat3(&info.specularColor);
+            effect->SetSpecularColor(color);
+            effect->SetSpecularPower(info.specularPower);
+        }
+        else
+        {
+            effect->DisableSpecular();
+        }
+
+        if (info.emissiveColor.x != 0 || info.emissiveColor.y != 0 || info.emissiveColor.z != 0)
+        {
+            color = XMLoadFloat3(&info.emissiveColor);
+            effect->SetEmissiveColor(color);
+        }
+
+        if (info.biasedVertexNormals)
+        {
+            effect->SetBiasedVertexNormals(true);
+        }
+    }
+}
+
 // Internal EffectFactory implementation class. Only one of these helpers is allocated
 // per D3D device, even if there are multiple public facing EffectFactory instances.
 class EffectFactory::Impl
 {
 public:
-    Impl(_In_ ID3D11Device* device)
-      : mPath{},
-        device(device),
+    explicit Impl(_In_ ID3D11Device* device)
+        : mPath{},
+        mDevice(device),
         mSharing(true),
         mUseNormalMapEffect(true),
         mForceSRGB(false)
-    {}
+    {
+        if (device->GetFeatureLevel() < D3D_FEATURE_LEVEL_10_0)
+        {
+            mUseNormalMapEffect = false;
+        }
+    }
 
-    std::shared_ptr<IEffect> CreateEffect( _In_ IEffectFactory* factory, _In_ const IEffectFactory::EffectInfo& info, _In_opt_ ID3D11DeviceContext* deviceContext );
-    void CreateTexture( _In_z_ const wchar_t* texture, _In_opt_ ID3D11DeviceContext* deviceContext, _Outptr_ ID3D11ShaderResourceView** textureView );
+    std::shared_ptr<IEffect> CreateEffect(_In_ IEffectFactory* factory, _In_ const IEffectFactory::EffectInfo& info, _In_opt_ ID3D11DeviceContext* deviceContext);
+    void CreateTexture(_In_z_ const wchar_t* texture, _In_opt_ ID3D11DeviceContext* deviceContext, _Outptr_ ID3D11ShaderResourceView** textureView);
 
     void ReleaseCache();
-    void SetSharing( bool enabled ) { mSharing = enabled; }
-    void EnableNormalMapEffect( bool enabled ) { mUseNormalMapEffect = enabled; }
-    void EnableForceSRGB(bool forceSRGB) { mForceSRGB = forceSRGB; }
+    void SetSharing(bool enabled) noexcept { mSharing = enabled; }
+    void EnableNormalMapEffect(bool enabled) noexcept { mUseNormalMapEffect = enabled; }
+    void EnableForceSRGB(bool forceSRGB) noexcept { mForceSRGB = forceSRGB; }
 
     static SharedResourcePool<ID3D11Device*, Impl> instancePool;
 
     wchar_t mPath[MAX_PATH];
 
-private:
-    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11Device> mDevice;
 
-    typedef std::map< std::wstring, std::shared_ptr<IEffect> > EffectCache;
-    typedef std::map< std::wstring, ComPtr<ID3D11ShaderResourceView> > TextureCache;
+private:
+    using EffectCache = std::map< std::wstring, std::shared_ptr<IEffect> >;
+    using TextureCache = std::map< std::wstring, ComPtr<ID3D11ShaderResourceView> >;
 
     EffectCache  mEffectCache;
     EffectCache  mEffectCacheSkinning;
     EffectCache  mEffectCacheDualTexture;
     EffectCache  mEffectNormalMap;
+    EffectCache  mEffectNormalMapSkinned;
     TextureCache mTextureCache;
 
     bool mSharing;
@@ -76,65 +116,92 @@ std::shared_ptr<IEffect> EffectFactory::Impl::CreateEffect(IEffectFactory* facto
 {
     if (info.enableSkinning)
     {
-        // SkinnedEffect
-        if (mSharing && info.name && *info.name)
+        if (info.enableNormalMaps && mUseNormalMapEffect)
         {
-            auto it = mEffectCacheSkinning.find(info.name);
-            if (mSharing && it != mEffectCacheSkinning.end())
+            // SkinnedNormalMapEffect
+            if (mSharing && info.name && *info.name)
             {
-                return it->second;
+                auto it = mEffectNormalMapSkinned.find(info.name);
+                if (mSharing && it != mEffectNormalMapSkinned.end())
+                {
+                    return it->second;
+                }
             }
-        }
 
-        auto effect = std::make_shared<SkinnedEffect>(device.Get());
+            auto effect = std::make_shared<SkinnedNormalMapEffect>(mDevice.Get());
 
-        effect->EnableDefaultLighting();
+            SetMaterialProperties(effect.get(), info);
 
-        effect->SetAlpha(info.alpha);
+            if (info.diffuseTexture && *info.diffuseTexture)
+            {
+                ComPtr<ID3D11ShaderResourceView> srv;
 
-        // Skinned Effect does not have an ambient material color, or per-vertex color support
+                factory->CreateTexture(info.diffuseTexture, deviceContext, srv.GetAddressOf());
 
-        XMVECTOR color = XMLoadFloat3(&info.diffuseColor);
-        effect->SetDiffuseColor(color);
+                effect->SetTexture(srv.Get());
+            }
 
-        if (info.specularColor.x != 0 || info.specularColor.y != 0 || info.specularColor.z != 0)
-        {
-            color = XMLoadFloat3(&info.specularColor);
-            effect->SetSpecularColor(color);
-            effect->SetSpecularPower(info.specularPower);
+            if (info.specularTexture && *info.specularTexture)
+            {
+                ComPtr<ID3D11ShaderResourceView> srv;
+
+                factory->CreateTexture(info.specularTexture, deviceContext, srv.GetAddressOf());
+
+                effect->SetSpecularTexture(srv.Get());
+            }
+
+            if (info.normalTexture && *info.normalTexture)
+            {
+                ComPtr<ID3D11ShaderResourceView> srv;
+
+                factory->CreateTexture(info.normalTexture, deviceContext, srv.GetAddressOf());
+
+                effect->SetNormalTexture(srv.Get());
+            }
+
+            if (mSharing && info.name && *info.name)
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                EffectCache::value_type v(info.name, effect);
+                mEffectNormalMapSkinned.insert(v);
+            }
+
+            return std::move(effect);
         }
         else
         {
-            effect->DisableSpecular();
+            // SkinnedEffect
+            if (mSharing && info.name && *info.name)
+            {
+                auto it = mEffectCacheSkinning.find(info.name);
+                if (mSharing && it != mEffectCacheSkinning.end())
+                {
+                    return it->second;
+                }
+            }
+
+            auto effect = std::make_shared<SkinnedEffect>(mDevice.Get());
+
+            SetMaterialProperties(effect.get(), info);
+
+            if (info.diffuseTexture && *info.diffuseTexture)
+            {
+                ComPtr<ID3D11ShaderResourceView> srv;
+
+                factory->CreateTexture(info.diffuseTexture, deviceContext, srv.GetAddressOf());
+
+                effect->SetTexture(srv.Get());
+            }
+
+            if (mSharing && info.name && *info.name)
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                EffectCache::value_type v(info.name, effect);
+                mEffectCacheSkinning.insert(v);
+            }
+
+            return std::move(effect);
         }
-
-        if (info.emissiveColor.x != 0 || info.emissiveColor.y != 0 || info.emissiveColor.z != 0)
-        {
-            color = XMLoadFloat3(&info.emissiveColor);
-            effect->SetEmissiveColor(color);
-        }
-
-        if (info.diffuseTexture && *info.diffuseTexture)
-        {
-            ComPtr<ID3D11ShaderResourceView> srv;
-
-            factory->CreateTexture(info.diffuseTexture, deviceContext, srv.GetAddressOf());
-
-            effect->SetTexture(srv.Get());
-        }
-
-        if (info.biasedVertexNormals)
-        {
-            effect->SetBiasedVertexNormals(true);
-        }
-
-        if (mSharing && info.name && *info.name)
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            mEffectCacheSkinning.insert(EffectCache::value_type(info.name, effect));
-        }
-
-        return effect;
     }
     else if (info.enableDualTexture)
     {
@@ -148,7 +215,7 @@ std::shared_ptr<IEffect> EffectFactory::Impl::CreateEffect(IEffectFactory* facto
             }
         }
 
-        auto effect = std::make_shared<DualTextureEffect>(device.Get());
+        auto effect = std::make_shared<DualTextureEffect>(mDevice.Get());
 
         // Dual texture effect doesn't support lighting (usually it's lightmaps)
 
@@ -159,7 +226,7 @@ std::shared_ptr<IEffect> EffectFactory::Impl::CreateEffect(IEffectFactory* facto
             effect->SetVertexColorEnabled(true);
         }
 
-        XMVECTOR color = XMLoadFloat3(&info.diffuseColor);
+        const XMVECTOR color = XMLoadFloat3(&info.diffuseColor);
         effect->SetDiffuseColor(color);
 
         if (info.diffuseTexture && *info.diffuseTexture)
@@ -171,8 +238,17 @@ std::shared_ptr<IEffect> EffectFactory::Impl::CreateEffect(IEffectFactory* facto
             effect->SetTexture(srv.Get());
         }
 
-        if (info.specularTexture && *info.specularTexture)
+        if (info.emissiveTexture && *info.emissiveTexture)
         {
+            ComPtr<ID3D11ShaderResourceView> srv;
+
+            factory->CreateTexture(info.emissiveTexture, deviceContext, srv.GetAddressOf());
+
+            effect->SetTexture2(srv.Get());
+        }
+        else if (info.specularTexture && *info.specularTexture)
+        {
+            // If there's no emissive texture specified, use the specular texture as the second texture
             ComPtr<ID3D11ShaderResourceView> srv;
 
             factory->CreateTexture(info.specularTexture, deviceContext, srv.GetAddressOf());
@@ -183,10 +259,11 @@ std::shared_ptr<IEffect> EffectFactory::Impl::CreateEffect(IEffectFactory* facto
         if (mSharing && info.name && *info.name)
         {
             std::lock_guard<std::mutex> lock(mutex);
-            mEffectCacheDualTexture.insert(EffectCache::value_type(info.name, effect));
+            EffectCache::value_type v(info.name, effect);
+            mEffectCacheDualTexture.insert(v);
         }
 
-        return effect;
+        return std::move(effect);
     }
     else if (info.enableNormalMaps && mUseNormalMapEffect)
     {
@@ -200,37 +277,13 @@ std::shared_ptr<IEffect> EffectFactory::Impl::CreateEffect(IEffectFactory* facto
             }
         }
 
-        auto effect = std::make_shared<NormalMapEffect>(device.Get());
+        auto effect = std::make_shared<NormalMapEffect>(mDevice.Get());
 
-        effect->EnableDefaultLighting();
-
-        effect->SetAlpha(info.alpha);
+        SetMaterialProperties(effect.get(), info);
 
         if (info.perVertexColor)
         {
             effect->SetVertexColorEnabled(true);
-        }
-
-        // NormalMap Effect does not have an ambient material color
-
-        XMVECTOR color = XMLoadFloat3(&info.diffuseColor);
-        effect->SetDiffuseColor(color);
-
-        if (info.specularColor.x != 0 || info.specularColor.y != 0 || info.specularColor.z != 0)
-        {
-            color = XMLoadFloat3(&info.specularColor);
-            effect->SetSpecularColor(color);
-            effect->SetSpecularPower(info.specularPower);
-        }
-        else
-        {
-            effect->DisableSpecular();
-        }
-
-        if (info.emissiveColor.x != 0 || info.emissiveColor.y != 0 || info.emissiveColor.z != 0)
-        {
-            color = XMLoadFloat3(&info.emissiveColor);
-            effect->SetEmissiveColor(color);
         }
 
         if (info.diffuseTexture && *info.diffuseTexture)
@@ -260,18 +313,14 @@ std::shared_ptr<IEffect> EffectFactory::Impl::CreateEffect(IEffectFactory* facto
             effect->SetNormalTexture(srv.Get());
         }
 
-        if (info.biasedVertexNormals)
-        {
-            effect->SetBiasedVertexNormals(true);
-        }
-
         if (mSharing && info.name && *info.name)
         {
             std::lock_guard<std::mutex> lock(mutex);
-            mEffectNormalMap.insert(EffectCache::value_type(info.name, effect));
+            EffectCache::value_type v(info.name, effect);
+            mEffectNormalMap.insert(v);
         }
 
-        return effect;
+        return std::move(effect);
     }
     else
     {
@@ -285,38 +334,15 @@ std::shared_ptr<IEffect> EffectFactory::Impl::CreateEffect(IEffectFactory* facto
             }
         }
 
-        auto effect = std::make_shared<BasicEffect>(device.Get());
+        auto effect = std::make_shared<BasicEffect>(mDevice.Get());
 
-        effect->EnableDefaultLighting();
         effect->SetLightingEnabled(true);
 
-        effect->SetAlpha(info.alpha);
+        SetMaterialProperties(effect.get(), info);
 
         if (info.perVertexColor)
         {
             effect->SetVertexColorEnabled(true);
-        }
-
-        // Basic Effect does not have an ambient material color
-
-        XMVECTOR color = XMLoadFloat3(&info.diffuseColor);
-        effect->SetDiffuseColor(color);
-
-        if (info.specularColor.x != 0 || info.specularColor.y != 0 || info.specularColor.z != 0)
-        {
-            color = XMLoadFloat3(&info.specularColor);
-            effect->SetSpecularColor(color);
-            effect->SetSpecularPower(info.specularPower);
-        }
-        else
-        {
-            effect->DisableSpecular();
-        }
-
-        if (info.emissiveColor.x != 0 || info.emissiveColor.y != 0 || info.emissiveColor.z != 0)
-        {
-            color = XMLoadFloat3(&info.emissiveColor);
-            effect->SetEmissiveColor(color);
         }
 
         if (info.diffuseTexture && *info.diffuseTexture)
@@ -329,18 +355,14 @@ std::shared_ptr<IEffect> EffectFactory::Impl::CreateEffect(IEffectFactory* facto
             effect->SetTextureEnabled(true);
         }
 
-        if (info.biasedVertexNormals)
-        {
-            effect->SetBiasedVertexNormals(true);
-        }
-
         if (mSharing && info.name && *info.name)
         {
             std::lock_guard<std::mutex> lock(mutex);
-            mEffectCache.insert(EffectCache::value_type(info.name, effect));
+            EffectCache::value_type v(info.name, effect);
+            mEffectCache.insert(v);
         }
 
-        return effect;
+        return std::move(effect);
     }
 }
 
@@ -348,7 +370,7 @@ _Use_decl_annotations_
 void EffectFactory::Impl::CreateTexture(const wchar_t* name, ID3D11DeviceContext* deviceContext, ID3D11ShaderResourceView** textureView)
 {
     if (!name || !textureView)
-        throw std::exception("invalid arguments");
+        throw std::invalid_argument("name and textureView parameters can't be null");
 
 #if defined(_XBOX_ONE) && defined(_TITLE)
     UNREFERENCED_PARAMETER(deviceContext);
@@ -375,58 +397,63 @@ void EffectFactory::Impl::CreateTexture(const wchar_t* name, ID3D11DeviceContext
             wcscpy_s(fullName, name);
             if (!GetFileAttributesExW(fullName, GetFileExInfoStandard, &fileAttr))
             {
-                DebugTrace("EffectFactory could not find texture file '%ls'\n", name);
-                throw std::exception("CreateTexture");
+                DebugTrace("ERROR: EffectFactory could not find texture file '%ls'\n", name);
+                throw std::system_error(std::error_code(static_cast<int>(GetLastError()), std::system_category()), "EffectFactory::CreateTexture");
             }
         }
 
-        wchar_t ext[_MAX_EXT];
+        wchar_t ext[_MAX_EXT] = {};
         _wsplitpath_s(name, nullptr, 0, nullptr, 0, nullptr, 0, ext, _MAX_EXT);
+        const bool isdds = _wcsicmp(ext, L".dds") == 0;
 
-        if (_wcsicmp(ext, L".dds") == 0)
+        if (isdds)
         {
             HRESULT hr = CreateDDSTextureFromFileEx(
-                device.Get(), fullName, 0,
+                mDevice.Get(), fullName, 0,
                 D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, 0,
-                mForceSRGB, nullptr, textureView);
+                mForceSRGB ? DDS_LOADER_FORCE_SRGB : DDS_LOADER_DEFAULT, nullptr, textureView);
             if (FAILED(hr))
             {
-                DebugTrace("CreateDDSTextureFromFile failed (%08X) for '%ls'\n", hr, fullName);
-                throw std::exception("CreateDDSTextureFromFile");
+                DebugTrace("ERROR: CreateDDSTextureFromFile failed (%08X) for '%ls'\n",
+                    static_cast<unsigned int>(hr), fullName);
+                throw std::runtime_error("EffectFactory::CreateDDSTextureFromFile");
             }
         }
-#if !defined(_XBOX_ONE) || !defined(_TITLE)
+    #if !defined(_XBOX_ONE) || !defined(_TITLE)
         else if (deviceContext)
         {
             std::lock_guard<std::mutex> lock(mutex);
             HRESULT hr = CreateWICTextureFromFileEx(
-                device.Get(), deviceContext, fullName, 0,
+                mDevice.Get(), deviceContext, fullName, 0,
                 D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, 0,
                 mForceSRGB ? WIC_LOADER_FORCE_SRGB : WIC_LOADER_DEFAULT, nullptr, textureView);
             if (FAILED(hr))
             {
-                DebugTrace("CreateWICTextureFromFile failed (%08X) for '%ls'\n", hr, fullName);
-                throw std::exception("CreateWICTextureFromFile");
+                DebugTrace("ERROR: CreateWICTextureFromFile failed (%08X) for '%ls'\n",
+                    static_cast<unsigned int>(hr), fullName);
+                throw std::runtime_error("EffectFactory::CreateWICTextureFromFile");
             }
         }
-#endif
+    #endif
         else
         {
             HRESULT hr = CreateWICTextureFromFileEx(
-                device.Get(), fullName, 0,
+                mDevice.Get(), fullName, 0,
                 D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, 0,
                 mForceSRGB ? WIC_LOADER_FORCE_SRGB : WIC_LOADER_DEFAULT, nullptr, textureView);
             if (FAILED(hr))
             {
-                DebugTrace("CreateWICTextureFromFile failed (%08X) for '%ls'\n", hr, fullName);
-                throw std::exception("CreateWICTextureFromFile");
+                DebugTrace("ERROR: CreateWICTextureFromFile failed (%08X) for '%ls'\n",
+                    static_cast<unsigned int>(hr), fullName);
+                throw std::runtime_error("EffectFactory::CreateWICTextureFromFile");
             }
         }
 
         if (mSharing && *name && it == mTextureCache.end())
         {
             std::lock_guard<std::mutex> lock(mutex);
-            mTextureCache.insert(TextureCache::value_type(name, *textureView));
+            TextureCache::value_type v(name, *textureView);
+            mTextureCache.insert(v);
         }
     }
 }
@@ -438,6 +465,7 @@ void EffectFactory::Impl::ReleaseCache()
     mEffectCacheSkinning.clear();
     mEffectCacheDualTexture.clear();
     mEffectNormalMap.clear();
+    mEffectNormalMapSkinned.clear();
     mTextureCache.clear();
 }
 
@@ -452,21 +480,11 @@ EffectFactory::EffectFactory(_In_ ID3D11Device* device)
 {
 }
 
-EffectFactory::~EffectFactory()
-{
-}
 
+EffectFactory::EffectFactory(EffectFactory&&) noexcept = default;
+EffectFactory& EffectFactory::operator= (EffectFactory&&) noexcept = default;
+EffectFactory::~EffectFactory() = default;
 
-EffectFactory::EffectFactory(EffectFactory&& moveFrom)
-    : pImpl(std::move(moveFrom.pImpl))
-{
-}
-
-EffectFactory& EffectFactory::operator= (EffectFactory&& moveFrom)
-{
-    pImpl = std::move(moveFrom.pImpl);
-    return *this;
-}
 
 _Use_decl_annotations_
 std::shared_ptr<IEffect> EffectFactory::CreateEffect(const EffectInfo& info, ID3D11DeviceContext* deviceContext)
@@ -485,22 +503,22 @@ void EffectFactory::ReleaseCache()
     pImpl->ReleaseCache();
 }
 
-void EffectFactory::SetSharing(bool enabled)
+void EffectFactory::SetSharing(bool enabled) noexcept
 {
     pImpl->SetSharing(enabled);
 }
 
-void EffectFactory::EnableNormalMapEffect(bool enabled)
+void EffectFactory::EnableNormalMapEffect(bool enabled) noexcept
 {
-    pImpl->EnableNormalMapEffect( enabled );
+    pImpl->EnableNormalMapEffect(enabled);
 }
 
-void EffectFactory::EnableForceSRGB(bool forceSRGB)
+void EffectFactory::EnableForceSRGB(bool forceSRGB) noexcept
 {
-    pImpl->EnableForceSRGB( forceSRGB );
+    pImpl->EnableForceSRGB(forceSRGB);
 }
 
-void EffectFactory::SetDirectory(_In_opt_z_ const wchar_t* path)
+void EffectFactory::SetDirectory(_In_opt_z_ const wchar_t* path) noexcept
 {
     if (path && *path != 0)
     {
@@ -518,4 +536,9 @@ void EffectFactory::SetDirectory(_In_opt_z_ const wchar_t* path)
     }
     else
         *pImpl->mPath = 0;
+}
+
+ID3D11Device* EffectFactory::GetDevice() const noexcept
+{
+    return pImpl->mDevice.Get();
 }

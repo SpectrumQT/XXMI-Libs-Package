@@ -6381,6 +6381,17 @@ DirectX::WIC_LOADER_FLAGS CustomResource::GetWICFlags(wstring filename)
 	return DirectX::WIC_LOADER_FLAGS::WIC_LOADER_DEFAULT;
 }
 
+DirectX::DDS_LOADER_FLAGS CustomResource::GetDDSFlags()
+{
+	switch (override_color_space) {
+		case CustomColorSpace::LINEAR:
+		case CustomColorSpace::SRGB:
+			return (DirectX::DDS_LOADER_FLAGS) override_color_space;
+		default:
+			return DirectX::DDS_LOADER_FLAGS::DDS_LOADER_DEFAULT;
+	}
+}
+
 void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 {
 	wstring ext;
@@ -6423,15 +6434,15 @@ void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 	if (!_wcsicmp(ext.c_str(), L".dds")) {
 		LogInfoW(L"Loading custom resource %s as DDS, bind_flags=0x%03x\n", filename.c_str(), bind_flags);
 		hr = DirectX::CreateDDSTextureFromFileEx(mOrigDevice1,
-				filename.c_str(), 0,
-				D3D11_USAGE_DEFAULT, bind_flags, 0, misc_flags,
-				override_color_space == CustomColorSpace::SRGB, &resource, NULL, NULL);
+			filename.c_str(), 0,
+			D3D11_USAGE_DEFAULT, bind_flags, 0, misc_flags,
+			GetDDSFlags(), &resource, NULL, NULL);
 	} else {
 		LogInfoW(L"Loading custom resource %s as WIC, bind_flags=0x%03x\n", filename.c_str(), bind_flags);
 		hr = DirectX::CreateWICTextureFromFileEx(mOrigDevice1,
-				filename.c_str(), 0,
-				D3D11_USAGE_DEFAULT, bind_flags, 0, misc_flags,
-				GetWICFlags(filename), &resource, NULL);
+			filename.c_str(), 0,
+			D3D11_USAGE_DEFAULT, bind_flags, 0, misc_flags,
+			GetWICFlags(filename), &resource, NULL);
 	}
 	if (SUCCEEDED(hr)) {
 		device = mOrigDevice1;

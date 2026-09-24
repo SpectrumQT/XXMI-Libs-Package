@@ -1,21 +1,13 @@
 //--------------------------------------------------------------------------------------
 // File: PostProcess.h
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
-//
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
 // http://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #pragma once
-
-#if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
-#error Post-processing not supported for Windows Phone 8.x; requires Direct3D hardware Feature Level 10.0 or better
-#endif
 
 #if defined(_XBOX_ONE) && defined(_TITLE)
 #include <d3d11_x.h>
@@ -23,9 +15,10 @@
 #include <d3d11_1.h>
 #endif
 
-#include <DirectXMath.h>
 #include <memory>
 #include <functional>
+
+#include <DirectXMath.h>
 
 
 namespace DirectX
@@ -35,9 +28,18 @@ namespace DirectX
     class IPostProcess
     {
     public:
-        virtual ~IPostProcess() { }
+        virtual ~IPostProcess() = default;
 
-        virtual void __cdecl Process(_In_ ID3D11DeviceContext* deviceContext, _In_opt_ std::function<void __cdecl()> setCustomState = nullptr) = 0;
+        IPostProcess(const IPostProcess&) = delete;
+        IPostProcess& operator=(const IPostProcess&) = delete;
+
+        virtual void __cdecl Process(_In_ ID3D11DeviceContext* deviceContext,
+            _In_opt_ std::function<void __cdecl()> setCustomState = nullptr) = 0;
+
+    protected:
+        IPostProcess() = default;
+        IPostProcess(IPostProcess&&) = default;
+        IPostProcess& operator=(IPostProcess&&) = default;
     };
 
 
@@ -46,7 +48,7 @@ namespace DirectX
     class BasicPostProcess : public IPostProcess
     {
     public:
-        enum Effect
+        enum Effect : unsigned int
         {
             Copy,
             Monochrome,
@@ -60,16 +62,19 @@ namespace DirectX
         };
 
         explicit BasicPostProcess(_In_ ID3D11Device* device);
-        BasicPostProcess(BasicPostProcess&& moveFrom);
-        BasicPostProcess& operator= (BasicPostProcess&& moveFrom);
+
+        BasicPostProcess(BasicPostProcess&&) noexcept;
+        BasicPostProcess& operator= (BasicPostProcess&&) noexcept;
 
         BasicPostProcess(BasicPostProcess const&) = delete;
         BasicPostProcess& operator= (BasicPostProcess const&) = delete;
 
-        virtual ~BasicPostProcess();
+        ~BasicPostProcess() override;
 
         // IPostProcess methods.
-        void __cdecl Process(_In_ ID3D11DeviceContext* deviceContext, _In_opt_ std::function<void __cdecl()> setCustomState = nullptr) override;
+        void __cdecl Process(
+            _In_ ID3D11DeviceContext* deviceContext,
+            _In_opt_ std::function<void __cdecl()> setCustomState = nullptr) override;
 
         // Shader control
         void __cdecl SetEffect(Effect fx);
@@ -99,7 +104,7 @@ namespace DirectX
     class DualPostProcess : public IPostProcess
     {
     public:
-        enum Effect
+        enum Effect : unsigned int
         {
             Merge,
             BloomCombine,
@@ -107,16 +112,18 @@ namespace DirectX
         };
 
         explicit DualPostProcess(_In_ ID3D11Device* device);
-        DualPostProcess(DualPostProcess&& moveFrom);
-        DualPostProcess& operator= (DualPostProcess&& moveFrom);
+
+        DualPostProcess(DualPostProcess&&) noexcept;
+        DualPostProcess& operator= (DualPostProcess&&) noexcept;
 
         DualPostProcess(DualPostProcess const&) = delete;
         DualPostProcess& operator= (DualPostProcess const&) = delete;
 
-        virtual ~DualPostProcess();
+        ~DualPostProcess() override;
 
         // IPostProcess methods.
-        void __cdecl Process(_In_ ID3D11DeviceContext* deviceContext, _In_opt_ std::function<void __cdecl()> setCustomState = nullptr) override;
+        void __cdecl Process(_In_ ID3D11DeviceContext* deviceContext,
+            _In_opt_ std::function<void __cdecl()> setCustomState = nullptr) override;
 
         // Shader control
         void __cdecl SetEffect(Effect fx);
@@ -144,7 +151,8 @@ namespace DirectX
     class ToneMapPostProcess : public IPostProcess
     {
     public:
-        enum Operator           // Tone-mapping operator
+        // Tone-mapping operator
+        enum Operator : unsigned int
         {
             None,               // Pass-through
             Saturate,           // Clamp [0,1]
@@ -153,7 +161,8 @@ namespace DirectX
             Operator_Max
         };
 
-        enum TransferFunction   // Electro-Optical Transfer Function (EOTF)
+        // Electro-Optical Transfer Function (EOTF)
+        enum TransferFunction : unsigned int
         {
             Linear,             // Pass-through
             SRGB,               // sRGB (Rec.709 and approximate sRGB display curve)
@@ -161,36 +170,50 @@ namespace DirectX
             TransferFunction_Max
         };
 
+        // Color Rotation Transform for HDR10
+        enum ColorPrimaryRotation : unsigned int
+        {
+            HDTV_to_UHDTV,       // Rec.709 to Rec.2020
+            DCI_P3_D65_to_UHDTV, // DCI-P3-D65 (a.k.a Display P3 or P3D65) to Rec.2020
+            HDTV_to_DCI_P3_D65,  // Rec.709 to DCI-P3-D65 (a.k.a Display P3 or P3D65)
+        };
+
         explicit ToneMapPostProcess(_In_ ID3D11Device* device);
-        ToneMapPostProcess(ToneMapPostProcess&& moveFrom);
-        ToneMapPostProcess& operator= (ToneMapPostProcess&& moveFrom);
+
+        ToneMapPostProcess(ToneMapPostProcess&&) noexcept;
+        ToneMapPostProcess& operator= (ToneMapPostProcess&&) noexcept;
 
         ToneMapPostProcess(ToneMapPostProcess const&) = delete;
         ToneMapPostProcess& operator= (ToneMapPostProcess const&) = delete;
 
-        virtual ~ToneMapPostProcess();
+        ~ToneMapPostProcess() override;
 
         // IPostProcess methods.
-        void __cdecl Process(_In_ ID3D11DeviceContext* deviceContext, _In_opt_ std::function<void __cdecl()> setCustomState = nullptr) override;
+        void __cdecl Process(_In_ ID3D11DeviceContext* deviceContext,
+            _In_opt_ std::function<void __cdecl()> setCustomState = nullptr) override;
 
         // Shader control
         void __cdecl SetOperator(Operator op);
 
         void __cdecl SetTransferFunction(TransferFunction func);
 
-        #if defined(_XBOX_ONE) && defined(_TITLE)
+    #if defined(_XBOX_ONE) && defined(_TITLE)
         // Uses Multiple Render Targets to generate both HDR10 and GameDVR SDR signals
         void __cdecl SetMRTOutput(bool value = true);
-        #endif
+    #endif
 
         // Properties
         void __cdecl SetHDRSourceTexture(_In_opt_ ID3D11ShaderResourceView* value);
 
+        // Sets the Color Rotation Transform for HDR10 signal output
+        void __cdecl SetColorRotation(ColorPrimaryRotation value);
+        void __cdecl SetColorRotation(CXMMATRIX value);
+
         // Sets exposure value for LDR tonemap operators
-        void SetExposure(float exposureValue);
+        void __cdecl SetExposure(float exposureValue);
 
         // Sets ST.2084 parameter for how bright white should be in nits
-        void SetST2084Parameter(float paperWhiteNits);
+        void __cdecl SetST2084Parameter(float paperWhiteNits);
 
     private:
         // Private implementation.

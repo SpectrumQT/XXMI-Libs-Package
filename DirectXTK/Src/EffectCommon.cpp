@@ -1,12 +1,8 @@
 //--------------------------------------------------------------------------------------
 // File: EffectCommon.cpp
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
-//
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
 // http://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
@@ -29,24 +25,26 @@ void XM_CALLCONV IEffectMatrices::SetMatrices(FXMMATRIX world, CXMMATRIX view, C
 
 
 // Constructor initializes default matrix values.
-EffectMatrices::EffectMatrices()
+EffectMatrices::EffectMatrices() noexcept
 {
-    world = XMMatrixIdentity();
-    view = XMMatrixIdentity();
-    projection = XMMatrixIdentity();
-    worldView = XMMatrixIdentity();
+    const XMMATRIX id = XMMatrixIdentity();
+    world = id;
+    view = id;
+    projection = id;
+    worldView = id;
 }
 
 
 // Lazily recomputes the combined world+view+projection matrix.
-_Use_decl_annotations_ void EffectMatrices::SetConstants(int& dirtyFlags, XMMATRIX& worldViewProjConstant)
+_Use_decl_annotations_
+void EffectMatrices::SetConstants(int& dirtyFlags, XMMATRIX& worldViewProjConstant)
 {
     if (dirtyFlags & EffectDirtyFlags::WorldViewProj)
     {
         worldView = XMMatrixMultiply(world, view);
 
         worldViewProjConstant = XMMatrixTranspose(XMMatrixMultiply(worldView, projection));
-                
+
         dirtyFlags &= ~EffectDirtyFlags::WorldViewProj;
         dirtyFlags |= EffectDirtyFlags::ConstantBuffer;
     }
@@ -54,7 +52,7 @@ _Use_decl_annotations_ void EffectMatrices::SetConstants(int& dirtyFlags, XMMATR
 
 
 // Constructor initializes default fog settings.
-EffectFog::EffectFog() :
+EffectFog::EffectFog() noexcept :
     enabled(false),
     start(0),
     end(1.f)
@@ -83,15 +81,17 @@ void XM_CALLCONV EffectFog::SetConstants(int& dirtyFlags, FXMMATRIX worldView, X
                 // Z value, then scale and offset according to the fog start/end distances.
                 // Because we only care about the Z component, the shader can do all this
                 // with a single dot product, using only the Z row of the world+view matrix.
-        
+
                 // _13, _23, _33, _43
-                XMVECTOR worldViewZ = XMVectorMergeXY(XMVectorMergeZW(worldView.r[0], worldView.r[2]),
-                                                      XMVectorMergeZW(worldView.r[1], worldView.r[3]));
+                const XMVECTOR worldViewZ = XMVectorMergeXY(
+                    XMVectorMergeZW(worldView.r[0], worldView.r[2]),
+                    XMVectorMergeZW(worldView.r[1], worldView.r[3]));
 
                 // 0, 0, 0, fogStart
-                XMVECTOR wOffset = XMVectorSwizzle<1, 2, 3, 0>(XMLoadFloat(&start));
+                const XMVECTOR wOffset = XMVectorSwizzle<1, 2, 3, 0>(XMLoadFloat(&start));
 
-                fogVectorConstant = (worldViewZ + wOffset) / (start - end);
+                // (worldViewZ + wOffset) / (start - end);
+                fogVectorConstant = XMVectorDivide(XMVectorAdd(worldViewZ, wOffset), XMVectorReplicate(start - end));
             }
 
             dirtyFlags &= ~(EffectDirtyFlags::FogVector | EffectDirtyFlags::FogEnable);
@@ -113,10 +113,10 @@ void XM_CALLCONV EffectFog::SetConstants(int& dirtyFlags, FXMMATRIX worldView, X
 
 
 // Constructor initializes default material color settings.
-EffectColor::EffectColor() :
+EffectColor::EffectColor() noexcept :
+    diffuseColor(g_XMOne),
     alpha(1.f)
 {
-    diffuseColor = g_XMOne;
 }
 
 
@@ -125,10 +125,10 @@ void EffectColor::SetConstants(_Inout_ int& dirtyFlags, _Inout_ XMVECTOR& diffus
 {
     if (dirtyFlags & EffectDirtyFlags::MaterialColor)
     {
-        XMVECTOR alphaVector = XMVectorReplicate(alpha);
+        const XMVECTOR alphaVector = XMVectorReplicate(alpha);
 
         // xyz = diffuse * alpha, w = alpha.
-        diffuseColorConstant = XMVectorSelect(alphaVector, diffuseColor * alphaVector, g_XMSelect1110);
+        diffuseColorConstant = XMVectorSelect(alphaVector, XMVectorMultiply(diffuseColor, alphaVector), g_XMSelect1110);
 
         dirtyFlags &= ~EffectDirtyFlags::MaterialColor;
         dirtyFlags |= EffectDirtyFlags::ConstantBuffer;
@@ -137,16 +137,17 @@ void EffectColor::SetConstants(_Inout_ int& dirtyFlags, _Inout_ XMVECTOR& diffus
 
 
 // Constructor initializes default light settings.
-EffectLights::EffectLights()
+EffectLights::EffectLights() noexcept :
+    emissiveColor{},
+    ambientLightColor{},
+    lightEnabled{},
+    lightDiffuseColor{},
+    lightSpecularColor{}
 {
-    emissiveColor = g_XMZero;
-    ambientLightColor = g_XMZero;
-
     for (int i = 0; i < MaxDirectionalLights; i++)
     {
         lightEnabled[i] = (i == 0);
         lightDiffuseColor[i] = g_XMOne;
-        lightSpecularColor[i] = g_XMZero;
     }
 }
 
@@ -161,14 +162,14 @@ _Use_decl_annotations_ void EffectLights::InitializeConstants(XMVECTOR& specular
 {
     static const XMVECTORF32 defaultSpecular = { { { 1, 1, 1, 16 } } };
     static const XMVECTORF32 defaultLightDirection = { { { 0, -1, 0, 0 } } };
-    
+
     specularColorAndPowerConstant = defaultSpecular;
 
     for (int i = 0; i < MaxDirectionalLights; i++)
     {
         lightDirectionConstant[i] = defaultLightDirection;
 
-        lightDiffuseConstant[i]  = lightEnabled[i] ? lightDiffuseColor[i]  : g_XMZero;
+        lightDiffuseConstant[i] = lightEnabled[i] ? lightDiffuseColor[i] : g_XMZero;
         lightSpecularConstant[i] = lightEnabled[i] ? lightSpecularColor[i] : g_XMZero;
     }
 }
@@ -188,7 +189,7 @@ _Use_decl_annotations_ void EffectLights::SetConstants(int& dirtyFlags, EffectMa
         {
             worldConstant = XMMatrixTranspose(matrices.world);
 
-            XMMATRIX worldInverse = XMMatrixInverse(nullptr, matrices.world);
+            const XMMATRIX worldInverse = XMMatrixInverse(nullptr, matrices.world);
 
             worldInverseTransposeConstant[0] = worldInverse.r[0];
             worldInverseTransposeConstant[1] = worldInverse.r[1];
@@ -202,7 +203,7 @@ _Use_decl_annotations_ void EffectLights::SetConstants(int& dirtyFlags, EffectMa
         if (dirtyFlags & EffectDirtyFlags::EyePosition)
         {
             XMMATRIX viewInverse = XMMatrixInverse(nullptr, matrices.view);
-        
+
             eyePositionConstant = viewInverse.r[3];
 
             dirtyFlags &= ~EffectDirtyFlags::EyePosition;
@@ -234,21 +235,22 @@ _Use_decl_annotations_ void EffectLights::SetConstants(int& dirtyFlags, EffectMa
     if (dirtyFlags & EffectDirtyFlags::MaterialColor)
     {
         XMVECTOR diffuse = diffuseColor;
-        XMVECTOR alphaVector = XMVectorReplicate(alpha);
+        const XMVECTOR alphaVector = XMVectorReplicate(alpha);
 
         if (lightingEnabled)
         {
             // Merge emissive and ambient light contributions.
-            emissiveColorConstant = (emissiveColor + ambientLightColor * diffuse) * alphaVector;
+            // (emissiveColor + ambientLightColor * diffuse) * alphaVector;
+            emissiveColorConstant = XMVectorMultiply(XMVectorMultiplyAdd(ambientLightColor, diffuse, emissiveColor), alphaVector);
         }
         else
         {
             // Merge diffuse and emissive light contributions.
-            diffuse += emissiveColor;
+            diffuse = XMVectorAdd(diffuse, emissiveColor);
         }
 
         // xyz = diffuse * alpha, w = alpha.
-        diffuseColorConstant = XMVectorSelect(alphaVector, diffuse * alphaVector, g_XMSelect1110);
+        diffuseColorConstant = XMVectorSelect(alphaVector, XMVectorMultiply(diffuse, alphaVector), g_XMSelect1110);
 
         dirtyFlags &= ~EffectDirtyFlags::MaterialColor;
         dirtyFlags |= EffectDirtyFlags::ConstantBuffer;
@@ -301,7 +303,7 @@ int XM_CALLCONV EffectLights::SetLightDiffuseColor(int whichLight, FXMVECTOR val
     if (lightEnabled[whichLight])
     {
         lightDiffuseConstant[whichLight] = value;
-        
+
         return EffectDirtyFlags::ConstantBuffer;
     }
 
@@ -325,7 +327,7 @@ int XM_CALLCONV EffectLights::SetLightSpecularColor(int whichLight, FXMVECTOR va
 
         return EffectDirtyFlags::ConstantBuffer;
     }
-    
+
     return 0;
 }
 
@@ -339,7 +341,7 @@ void EffectLights::ValidateLightIndex(int whichLight)
 {
     if (whichLight < 0 || whichLight >= MaxDirectionalLights)
     {
-        throw std::out_of_range("whichLight parameter out of range");
+        throw std::invalid_argument("whichLight parameter invalid");
     }
 }
 
@@ -387,14 +389,14 @@ void EffectLights::EnableDefaultLighting(_In_ IEffectLights* effect)
 ID3D11VertexShader* EffectDeviceResources::DemandCreateVertexShader(_Inout_ ComPtr<ID3D11VertexShader>& vertexShader, ShaderBytecode const& bytecode)
 {
     return DemandCreate(vertexShader, mMutex, [&](ID3D11VertexShader** pResult) -> HRESULT
-    {
-        HRESULT hr = mDevice->CreateVertexShader(bytecode.code, bytecode.length, nullptr, pResult);
+        {
+            HRESULT hr = mDevice->CreateVertexShader(bytecode.code, bytecode.length, nullptr, pResult);
 
-        if (SUCCEEDED(hr))
-            SetDebugObjectName(*pResult, "DirectXTK:Effect");
+            if (SUCCEEDED(hr))
+                SetDebugObjectName(*pResult, "DirectXTK:Effect");
 
-        return hr;
-    });
+            return hr;
+        });
 }
 
 
@@ -402,14 +404,14 @@ ID3D11VertexShader* EffectDeviceResources::DemandCreateVertexShader(_Inout_ ComP
 ID3D11PixelShader* EffectDeviceResources::DemandCreatePixelShader(_Inout_ ComPtr<ID3D11PixelShader>& pixelShader, ShaderBytecode const& bytecode)
 {
     return DemandCreate(pixelShader, mMutex, [&](ID3D11PixelShader** pResult) -> HRESULT
-    {
-        HRESULT hr = mDevice->CreatePixelShader(bytecode.code, bytecode.length, nullptr, pResult);
+        {
+            HRESULT hr = mDevice->CreatePixelShader(bytecode.code, bytecode.length, nullptr, pResult);
 
-        if (SUCCEEDED(hr))
-            SetDebugObjectName(*pResult, "DirectXTK:Effect");
+            if (SUCCEEDED(hr))
+                SetDebugObjectName(*pResult, "DirectXTK:Effect");
 
-        return hr;
-    });
+            return hr;
+        });
 }
 
 
@@ -417,35 +419,77 @@ ID3D11PixelShader* EffectDeviceResources::DemandCreatePixelShader(_Inout_ ComPtr
 ID3D11ShaderResourceView* EffectDeviceResources::GetDefaultTexture()
 {
     return DemandCreate(mDefaultTexture, mMutex, [&](ID3D11ShaderResourceView** pResult) -> HRESULT
-    {
-        static const uint32_t s_pixel = 0xffffffff;
-                
-        D3D11_SUBRESOURCE_DATA initData = { &s_pixel, sizeof(uint32_t), 0 };
-
-        D3D11_TEXTURE2D_DESC desc = {};
-        desc.Width = desc.Height = desc.MipLevels = desc.ArraySize = 1;
-        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        desc.SampleDesc.Count = 1;
-        desc.Usage = D3D11_USAGE_IMMUTABLE;
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-        ComPtr<ID3D11Texture2D> tex;
-        HRESULT hr = mDevice->CreateTexture2D( &desc, &initData, tex.GetAddressOf() );
-
-        if (SUCCEEDED(hr))
         {
-            SetDebugObjectName(tex.Get(), "DirectXTK:Effect");
+            static const uint32_t s_pixel = 0xffffffff;
 
-            D3D11_SHADER_RESOURCE_VIEW_DESC SRVDesc = {};
-            SRVDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-            SRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-            SRVDesc.Texture2D.MipLevels = 1;
+            D3D11_SUBRESOURCE_DATA initData = { &s_pixel, sizeof(uint32_t), 0 };
 
-            hr = mDevice->CreateShaderResourceView( tex.Get(), &SRVDesc, pResult );
+            D3D11_TEXTURE2D_DESC desc = {};
+            desc.Width = desc.Height = desc.MipLevels = desc.ArraySize = 1;
+            desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            desc.SampleDesc.Count = 1;
+            desc.Usage = D3D11_USAGE_IMMUTABLE;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+            ComPtr<ID3D11Texture2D> tex;
+            HRESULT hr = mDevice->CreateTexture2D(&desc, &initData, tex.GetAddressOf());
+
             if (SUCCEEDED(hr))
-                SetDebugObjectName(*pResult, "DirectXTK:Effect");
-        }
+            {
+                SetDebugObjectName(tex.Get(), "DirectXTK:Effect");
 
-        return hr;
-    });
+                D3D11_SHADER_RESOURCE_VIEW_DESC SRVDesc = {};
+                SRVDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                SRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+                SRVDesc.Texture2D.MipLevels = 1;
+
+                hr = mDevice->CreateShaderResourceView(tex.Get(), &SRVDesc, pResult);
+                if (SUCCEEDED(hr))
+                    SetDebugObjectName(*pResult, "DirectXTK:Effect");
+            }
+
+            return hr;
+        });
+}
+
+ID3D11ShaderResourceView* EffectDeviceResources::GetDefaultNormalTexture()
+{
+    return DemandCreate(mDefaultNormalTexture, mMutex, [&](ID3D11ShaderResourceView** pResult) -> HRESULT
+        {
+            static const uint16_t s_pixel = 0x7f7f;
+
+            D3D11_SUBRESOURCE_DATA initData = { &s_pixel, sizeof(uint16_t), 0 };
+
+            D3D11_TEXTURE2D_DESC desc = {};
+            desc.Width = desc.Height = desc.MipLevels = desc.ArraySize = 1;
+            desc.Format = DXGI_FORMAT_R8G8_UNORM;
+            desc.SampleDesc.Count = 1;
+            desc.Usage = D3D11_USAGE_IMMUTABLE;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+            ComPtr<ID3D11Texture2D> tex;
+            HRESULT hr = mDevice->CreateTexture2D(&desc, &initData, tex.GetAddressOf());
+
+            if (SUCCEEDED(hr))
+            {
+                SetDebugObjectName(tex.Get(), "DirectXTK:Effect");
+
+                D3D11_SHADER_RESOURCE_VIEW_DESC SRVDesc = {};
+                SRVDesc.Format = DXGI_FORMAT_R8G8_UNORM;
+                SRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+                SRVDesc.Texture2D.MipLevels = 1;
+
+                hr = mDevice->CreateShaderResourceView(tex.Get(), &SRVDesc, pResult);
+                if (SUCCEEDED(hr))
+                    SetDebugObjectName(*pResult, "DirectXTK:Effect");
+            }
+
+            return hr;
+        });
+}
+
+// Gets device feature level
+D3D_FEATURE_LEVEL EffectDeviceResources::GetDeviceFeatureLevel() const
+{
+    return mDevice->GetFeatureLevel();
 }

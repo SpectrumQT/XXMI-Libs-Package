@@ -9,6 +9,7 @@
 #include <DirectXMath.h>
 #include <util.h>
 #include <WICTextureLoader.h>
+#include <DDSTextureLoader.h>
 
 #include "DrawCallInfo.h"
 #include "ResourceHash.h"
@@ -456,9 +457,9 @@ static EnumName_t<const wchar_t *, CustomResourceType> CustomResourceTypeNames[]
 };
 
 enum class CustomColorSpace {
-	DEFAULT = DirectX::WIC_LOADER_FLAGS::WIC_LOADER_DEFAULT,
-	SRGB    = DirectX::WIC_LOADER_FLAGS::WIC_LOADER_FORCE_SRGB,
-	LINEAR  = DirectX::WIC_LOADER_FLAGS::WIC_LOADER_IGNORE_SRGB,
+	DEFAULT = 0,
+	SRGB    = 0x1,
+	LINEAR  = 0x2,
 };
 static EnumName_t<const wchar_t *, CustomColorSpace> CustomColorSpaceNames[] = {
 	{L"sRGB", CustomColorSpace::SRGB},
@@ -603,6 +604,7 @@ public:
 private:
 	bool HasPNGsRGBChunk(wstring filename);
 	DirectX::WIC_LOADER_FLAGS GetWICFlags(wstring filename);
+	DirectX::DDS_LOADER_FLAGS GetDDSFlags();
 	void LoadFromFile(ID3D11Device *mOrigDevice);
 	void LoadBufferFromFile(ID3D11Device *mOrigDevice);
 	void SubstantiateBuffer(ID3D11Device *mOrigDevice, void **buf, DWORD size);

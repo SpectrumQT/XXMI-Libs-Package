@@ -1,12 +1,7 @@
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
-//
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
 // http://go.microsoft.com/fwlink/?LinkId=248929
-// http://create.msdn.com/en-US/education/catalog/sample/stock_effects
 
 
 Texture2D<float4> Texture : register(t0);
@@ -41,21 +36,7 @@ cbuffer Parameters : register(b0)
 #include "Common.fxh"
 #include "Lighting.fxh"
 #include "Utilities.fxh"
-
-
-float3 Skin(inout VSInputNmTxWeights vin, float3 normal, uniform int boneCount)
-{
-    float4x3 skinning = 0;
-
-    [unroll]
-    for (int i = 0; i < boneCount; i++)
-    {
-        skinning += Bones[vin.Indices[i]] * vin.Weights[i];
-    }
-
-    vin.Position.xyz = mul(vin.Position, skinning);
-    return mul(normal, (float3x3)skinning);
-}
+#include "Skinning.fxh"
 
 
 // Vertex shader: vertex lighting, one bone.

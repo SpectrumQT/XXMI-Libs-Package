@@ -1,12 +1,10 @@
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
-// Copyright (c) Microsoft Corporation. All rights reserved.
-//
+// http://go.microsoft.com/fwlink/?LinkId=248926
 // http://go.microsoft.com/fwlink/?LinkId=248929
-// http://create.msdn.com/en-US/education/catalog/sample/stock_effects
+// http://go.microsoft.com/fwlink/?LinkID=615561
+
 
 struct CommonVSOutputPixelLighting
 {
@@ -128,14 +126,14 @@ float3 LightSurface(
     const float NdotV = saturate(dot(N, V));
 
     // Burley roughness bias
-    const float alpha = roughness * roughness;    
+    const float alpha = roughness * roughness;
 
     // Blend base colors
     const float3 c_diff = lerp(albedo, float3(0, 0, 0), metallic)       * ambientOcclusion;
     const float3 c_spec = lerp(kSpecularCoefficient, albedo, metallic)  * ambientOcclusion;
 
     // Output color
-    float3 acc_color = 0;                         
+    float3 acc_color = 0;
 
     // Accumulate light values
     for (int i = 0; i < numLights; i++)
@@ -153,7 +151,7 @@ float3 LightSurface(
 
         // Diffuse & specular factors
         float diffuse_factor = Diffuse_Burley(NdotL, NdotV, LdotH, roughness);
-        float3 specular      = Specular_BRDF(alpha, c_spec, NdotV, NdotL, LdotH, NdotH);
+        float3 specular = Specular_BRDF(alpha, c_spec, NdotV, NdotL, LdotH, NdotH);
 
         // Directional light
         acc_color += NdotL * lightColor[i] * (((c_diff * diffuse_factor) + specular));

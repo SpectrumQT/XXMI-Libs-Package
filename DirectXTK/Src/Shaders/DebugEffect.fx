@@ -1,9 +1,5 @@
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
-//
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
 // http://go.microsoft.com/fwlink/?LinkId=248929
 
@@ -78,6 +74,76 @@ VSOutputPixelLightingTx VSDebugVcBn(VSInputNmTxVc vin)
     vout.PositionPS = mul(vin.Position, WorldViewProj);
     vout.PositionWS = float4(mul(vin.Position, World).xyz, 1);
     vout.NormalWS = normalize(mul(normal, WorldInverseTranspose));
+    vout.Diffuse.rgb = vin.Color.rgb;
+    vout.Diffuse.a = vin.Color.a * Alpha;
+    vout.TexCoord = vin.TexCoord;
+
+    return vout;
+}
+
+
+// Vertex shader: instancing
+VSOutputPixelLightingTx VSDebugInst(VSInputNmTxInst vin)
+{
+    VSOutputPixelLightingTx vout;
+
+    CommonInstancing inst = ComputeCommonInstancing(vin.Position, vin.Normal, vin.Transform);
+
+    vout.PositionPS = mul(inst.Position, WorldViewProj);
+    vout.PositionWS = float4(mul(inst.Position, World).xyz, 1);
+    vout.NormalWS = normalize(mul(inst.Normal, WorldInverseTranspose));
+    vout.Diffuse = float4(1, 1, 1, Alpha);
+    vout.TexCoord = vin.TexCoord;
+
+    return vout;
+}
+
+VSOutputPixelLightingTx VSDebugBnInst(VSInputNmTxInst vin)
+{
+    VSOutputPixelLightingTx vout;
+
+    float3 normal = BiasX2(vin.Normal);
+
+    CommonInstancing inst = ComputeCommonInstancing(vin.Position, normal, vin.Transform);
+
+    vout.PositionPS = mul(inst.Position, WorldViewProj);
+    vout.PositionWS = float4(mul(inst.Position, World).xyz, 1);
+    vout.NormalWS = normalize(mul(inst.Normal, WorldInverseTranspose));
+    vout.Diffuse = float4(1, 1, 1, Alpha);
+    vout.TexCoord = vin.TexCoord;
+
+    return vout;
+}
+
+
+// Vertex shader: vertex color + instancing
+VSOutputPixelLightingTx VSDebugVcInst(VSInputNmTxVcInst vin)
+{
+    VSOutputPixelLightingTx vout;
+
+    CommonInstancing inst = ComputeCommonInstancing(vin.Position, vin.Normal, vin.Transform);
+
+    vout.PositionPS = mul(inst.Position, WorldViewProj);
+    vout.PositionWS = float4(mul(inst.Position, World).xyz, 1);
+    vout.NormalWS = normalize(mul(inst.Normal, WorldInverseTranspose));
+    vout.Diffuse.rgb = vin.Color.rgb;
+    vout.Diffuse.a = vin.Color.a * Alpha;
+    vout.TexCoord = vin.TexCoord;
+
+    return vout;
+}
+
+VSOutputPixelLightingTx VSDebugVcBnInst(VSInputNmTxVcInst vin)
+{
+    VSOutputPixelLightingTx vout;
+
+    float3 normal = BiasX2(vin.Normal);
+
+    CommonInstancing inst = ComputeCommonInstancing(vin.Position, normal, vin.Transform);
+
+    vout.PositionPS = mul(inst.Position, WorldViewProj);
+    vout.PositionWS = float4(mul(inst.Position, World).xyz, 1);
+    vout.NormalWS = normalize(mul(inst.Normal, WorldInverseTranspose));
     vout.Diffuse.rgb = vin.Color.rgb;
     vout.Diffuse.a = vin.Color.a * Alpha;
     vout.TexCoord = vin.TexCoord;

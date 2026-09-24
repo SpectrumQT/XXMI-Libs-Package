@@ -1,12 +1,7 @@
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
-//
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
 // http://go.microsoft.com/fwlink/?LinkId=248929
-// http://create.msdn.com/en-US/education/catalog/sample/stock_effects
 
 
 Texture2D<float4> Texture  : register(t0);
@@ -97,7 +92,7 @@ float4 PSDualTexture(PSInputTx2 pin) : SV_Target0
     float4 color = Texture.Sample(Sampler, pin.TexCoord);
     float4 overlay = Texture2.Sample(Sampler2, pin.TexCoord2);
 
-    color.rgb *= 2; 
+    color.rgb *= 2;
     color *= overlay * pin.Diffuse;
 
     ApplyFog(color, pin.Specular.w);
@@ -112,7 +107,7 @@ float4 PSDualTextureNoFog(PSInputTx2NoFog pin) : SV_Target0
     float4 color = Texture.Sample(Sampler, pin.TexCoord);
     float4 overlay = Texture2.Sample(Sampler2, pin.TexCoord2);
 
-    color.rgb *= 2; 
+    color.rgb *= 2;
     color *= overlay * pin.Diffuse;
 
     return color;

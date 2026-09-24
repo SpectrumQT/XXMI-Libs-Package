@@ -1,12 +1,8 @@
 //--------------------------------------------------------------------------------------
 // File: CommonStates.h
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
-//
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
 // http://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
@@ -28,8 +24,9 @@ namespace DirectX
     {
     public:
         explicit CommonStates(_In_ ID3D11Device* device);
-        CommonStates(CommonStates&& moveFrom);
-        CommonStates& operator= (CommonStates&& moveFrom);
+
+        CommonStates(CommonStates&&) noexcept;
+        CommonStates& operator= (CommonStates&&) noexcept;
 
         CommonStates(CommonStates const&) = delete;
         CommonStates& operator= (CommonStates const&) = delete;
@@ -46,6 +43,8 @@ namespace DirectX
         ID3D11DepthStencilState* __cdecl DepthNone() const;
         ID3D11DepthStencilState* __cdecl DepthDefault() const;
         ID3D11DepthStencilState* __cdecl DepthRead() const;
+        ID3D11DepthStencilState* __cdecl DepthReverseZ() const;
+        ID3D11DepthStencilState* __cdecl DepthReadReverseZ() const;
 
         // Rasterizer states.
         ID3D11RasterizerState* __cdecl CullNone() const;

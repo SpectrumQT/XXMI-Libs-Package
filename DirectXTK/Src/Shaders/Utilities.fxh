@@ -1,25 +1,23 @@
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
-// Copyright (c) Microsoft Corporation. All rights reserved.
-//
+// http://go.microsoft.com/fwlink/?LinkId=248926
 // http://go.microsoft.com/fwlink/?LinkId=248929
+// http://go.microsoft.com/fwlink/?LinkID=615561
 
 
 float3 BiasX2(float3 x)
 {
-   return 2.0f * x - 1.0f;
+    return 2.0f * x - 1.0f;
 }
 
 float3 BiasD2(float3 x)
 {
-   return 0.5f * x + 0.5f;
+    return 0.5f * x + 0.5f;
 }
 
 
-// Christian Schüler, "Normal Mapping without Precomputed Tangents", ShaderX 5, Chapter 2.6, pp. 131 – 140
+// Christian Schuler, "Normal Mapping without Precomputed Tangents", ShaderX 5, Chapter 2.6, pp. 131-140
 // See also follow-up blog post: http://www.thetenthplanet.de/archives/1180
 float3x3 CalculateTBN(float3 p, float3 n, float2 tex)
 {
@@ -39,6 +37,13 @@ float3 PeturbNormal(float3 localNormal, float3 position, float3 normal, float2 t
 {
     const float3x3 TBN = CalculateTBN(position, normal, texCoord);
     return normalize(mul(localNormal, TBN));
+}
+
+float3 TwoChannelNormalX2(float2 normal)
+{
+    float2 xy = 2.0f * normal - 1.0f;
+    float z = sqrt(1 - dot(xy, xy));
+    return float3(xy.x, xy.y, z);
 }
 
 
@@ -61,15 +66,6 @@ float3 SRGBToLinearEst(float3 srgb)
 
 // HDR10 Media Profile
 // https://en.wikipedia.org/wiki/High-dynamic-range_video#HDR10
-
-
-// Color rotation matrix to rotate Rec.709 color primaries into Rec.2020
-static const float3x3 from709to2020 =
-{
-    { 0.6274040f, 0.3292820f, 0.0433136f },
-    { 0.0690970f, 0.9195400f, 0.0113612f },
-    { 0.0163916f, 0.0880132f, 0.8955950f }
-};
 
 
 // Apply the ST.2084 curve to normalized linear values and outputs normalized non-linear values
@@ -105,4 +101,23 @@ float3 ToneMapACESFilmic(float3 x)
     float d = 0.59f;
     float e = 0.14f;
     return saturate((x*(a*x+b))/(x*(c*x+d)+e));
+}
+
+
+// Instancing
+struct CommonInstancing
+{
+    float4 Position;
+    float3 Normal;
+};
+
+
+CommonInstancing ComputeCommonInstancing(float4 position, float3 normal, float4x3 itransform)
+{
+    CommonInstancing vout;
+
+    vout.Position = float4(mul(position, itransform), position.w);
+    vout.Normal = mul(normal, (float3x3)itransform);
+
+    return vout;
 }

@@ -1,12 +1,9 @@
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
-// Copyright (c) Microsoft Corporation. All rights reserved.
-//
+// http://go.microsoft.com/fwlink/?LinkId=248926
 // http://go.microsoft.com/fwlink/?LinkId=248929
-// http://create.msdn.com/en-US/education/catalog/sample/stock_effects
+// http://go.microsoft.com/fwlink/?LinkID=615561
 
 
 // Vertex shader input structures.
@@ -61,6 +58,23 @@ struct VSInputNmTxVc
     float3 Normal   : NORMAL;
     float2 TexCoord : TEXCOORD0;
     float4 Color    : COLOR;
+};
+
+struct VSInputNmTxInst
+{
+    float4 Position    : SV_Position;
+    float3 Normal      : NORMAL;
+    float2 TexCoord    : TEXCOORD0;
+    float4x3 Transform : InstMatrix;
+};
+
+struct VSInputNmTxVcInst
+{
+    float4 Position    : SV_Position;
+    float3 Normal      : NORMAL;
+    float2 TexCoord    : TEXCOORD0;
+    float4 Color       : COLOR;
+    float4x3 Transform : InstMatrix;
 };
 
 struct VSInputTx2

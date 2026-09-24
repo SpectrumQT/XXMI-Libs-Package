@@ -7,12 +7,8 @@
 // a full-featured DDS file reader, writer, and texture processing pipeline see
 // the 'Texconv' sample and the 'DirectXTex' library.
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
-//
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
 // http://go.microsoft.com/fwlink/?LinkId=248926
 // http://go.microsoft.com/fwlink/?LinkId=248929
@@ -26,18 +22,29 @@
 #include <d3d11_1.h>
 #endif
 
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 
 
 namespace DirectX
 {
-    enum DDS_ALPHA_MODE
+#ifndef DDS_ALPHA_MODE_DEFINED
+#define DDS_ALPHA_MODE_DEFINED
+    enum DDS_ALPHA_MODE : uint32_t
     {
-        DDS_ALPHA_MODE_UNKNOWN       = 0,
-        DDS_ALPHA_MODE_STRAIGHT      = 1,
+        DDS_ALPHA_MODE_UNKNOWN = 0,
+        DDS_ALPHA_MODE_STRAIGHT = 1,
         DDS_ALPHA_MODE_PREMULTIPLIED = 2,
-        DDS_ALPHA_MODE_OPAQUE        = 3,
-        DDS_ALPHA_MODE_CUSTOM        = 4,
+        DDS_ALPHA_MODE_OPAQUE = 3,
+        DDS_ALPHA_MODE_CUSTOM = 4,
+    };
+#endif
+
+    enum DDS_LOADER_FLAGS : uint32_t
+    {
+        DDS_LOADER_DEFAULT = 0,
+        DDS_LOADER_FORCE_SRGB = 0x1,
+        DDS_LOADER_IGNORE_SRGB = 0x2,
     };
 
     // Standard version
@@ -48,7 +55,7 @@ namespace DirectX
         _Outptr_opt_ ID3D11Resource** texture,
         _Outptr_opt_ ID3D11ShaderResourceView** textureView,
         _In_ size_t maxsize = 0,
-        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr);
+        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr) noexcept;
 
     HRESULT __cdecl CreateDDSTextureFromFile(
         _In_ ID3D11Device* d3dDevice,
@@ -56,7 +63,7 @@ namespace DirectX
         _Outptr_opt_ ID3D11Resource** texture,
         _Outptr_opt_ ID3D11ShaderResourceView** textureView,
         _In_ size_t maxsize = 0,
-        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr);
+        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr) noexcept;
 
     // Standard version with optional auto-gen mipmap support
     HRESULT __cdecl CreateDDSTextureFromMemory(
@@ -72,7 +79,7 @@ namespace DirectX
         _Outptr_opt_ ID3D11Resource** texture,
         _Outptr_opt_ ID3D11ShaderResourceView** textureView,
         _In_ size_t maxsize = 0,
-        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr);
+        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr) noexcept;
 
     HRESULT __cdecl CreateDDSTextureFromFile(
     #if defined(_XBOX_ONE) && defined(_TITLE)
@@ -86,7 +93,7 @@ namespace DirectX
         _Outptr_opt_ ID3D11Resource** texture,
         _Outptr_opt_ ID3D11ShaderResourceView** textureView,
         _In_ size_t maxsize = 0,
-        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr);
+        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr) noexcept;
 
     // Extended version
     HRESULT __cdecl CreateDDSTextureFromMemoryEx(
@@ -98,10 +105,10 @@ namespace DirectX
         _In_ unsigned int bindFlags,
         _In_ unsigned int cpuAccessFlags,
         _In_ unsigned int miscFlags,
-        _In_ bool forceSRGB,
+        _In_ DDS_LOADER_FLAGS loadFlags,
         _Outptr_opt_ ID3D11Resource** texture,
         _Outptr_opt_ ID3D11ShaderResourceView** textureView,
-        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr);
+        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr) noexcept;
 
     HRESULT __cdecl CreateDDSTextureFromFileEx(
         _In_ ID3D11Device* d3dDevice,
@@ -111,10 +118,10 @@ namespace DirectX
         _In_ unsigned int bindFlags,
         _In_ unsigned int cpuAccessFlags,
         _In_ unsigned int miscFlags,
-        _In_ bool forceSRGB,
+        _In_ DDS_LOADER_FLAGS loadFlags,
         _Outptr_opt_ ID3D11Resource** texture,
         _Outptr_opt_ ID3D11ShaderResourceView** textureView,
-        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr);
+        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr) noexcept;
 
     // Extended version with optional auto-gen mipmap support
     HRESULT __cdecl CreateDDSTextureFromMemoryEx(
@@ -132,10 +139,10 @@ namespace DirectX
         _In_ unsigned int bindFlags,
         _In_ unsigned int cpuAccessFlags,
         _In_ unsigned int miscFlags,
-        _In_ bool forceSRGB,
+        _In_ DDS_LOADER_FLAGS loadFlags,
         _Outptr_opt_ ID3D11Resource** texture,
         _Outptr_opt_ ID3D11ShaderResourceView** textureView,
-        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr);
+        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr) noexcept;
 
     HRESULT __cdecl CreateDDSTextureFromFileEx(
     #if defined(_XBOX_ONE) && defined(_TITLE)
@@ -151,8 +158,19 @@ namespace DirectX
         _In_ unsigned int bindFlags,
         _In_ unsigned int cpuAccessFlags,
         _In_ unsigned int miscFlags,
-        _In_ bool forceSRGB,
+        _In_ DDS_LOADER_FLAGS loadFlags,
         _Outptr_opt_ ID3D11Resource** texture,
         _Outptr_opt_ ID3D11ShaderResourceView** textureView,
-        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr);
+        _Out_opt_ DDS_ALPHA_MODE* alphaMode = nullptr) noexcept;
+
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-dynamic-exception-spec"
+#endif
+
+    DEFINE_ENUM_FLAG_OPERATORS(DDS_LOADER_FLAGS);
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 }

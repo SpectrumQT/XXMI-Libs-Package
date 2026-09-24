@@ -1,12 +1,9 @@
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
-// Copyright (c) Microsoft Corporation. All rights reserved.
-//
+// http://go.microsoft.com/fwlink/?LinkId=248926
 // http://go.microsoft.com/fwlink/?LinkId=248929
-// http://create.msdn.com/en-US/education/catalog/sample/stock_effects
+// http://go.microsoft.com/fwlink/?LinkID=615561
 
 
 float ComputeFogFactor(float4 position)
@@ -39,12 +36,12 @@ struct CommonVSOutput
 CommonVSOutput ComputeCommonVSOutput(float4 position)
 {
     CommonVSOutput vout;
-    
+
     vout.Pos_ps = mul(position, WorldViewProj);
     vout.Diffuse = DiffuseColor;
     vout.Specular = 0;
     vout.FogFactor = ComputeFogFactor(position);
-    
+
     return vout;
 }
 

@@ -1,12 +1,8 @@
 //--------------------------------------------------------------------------------------
 // File: BasicPostProcess.cpp
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
-//
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
 // http://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
@@ -14,11 +10,11 @@
 #include "pch.h"
 #include "PostProcess.h"
 
-#include "AlignedNew.h"
+#include "BufferHelpers.h"
 #include "CommonStates.h"
-#include "ConstantBuffer.h"
-#include "DemandCreate.h"
 #include "DirectXHelpers.h"
+#include "AlignedNew.h"
+#include "DemandCreate.h"
 #include "SharedResourcePool.h"
 
 using namespace DirectX;
@@ -27,13 +23,13 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
-    const int c_MaxSamples = 16;
+    constexpr int c_MaxSamples = 16;
 
-    const int Dirty_ConstantBuffer  = 0x01;
-    const int Dirty_Parameters      = 0x02;
+    constexpr int Dirty_ConstantBuffer = 0x01;
+    constexpr int Dirty_Parameters = 0x02;
 
     // Constant buffer layout. Must match the shader!
-    __declspec(align(16)) struct PostProcessConstants
+    XM_ALIGNED_STRUCT(16) PostProcessConstants
     {
         XMVECTOR sampleOffsets[c_MaxSamples];
         XMVECTOR sampleWeights[c_MaxSamples];
@@ -42,42 +38,40 @@ namespace
     static_assert((sizeof(PostProcessConstants) % 16) == 0, "CB size not padded correctly");
 
     // 2-parameter Gaussian distribution given standard deviation (rho)
-    inline float GaussianDistribution(float x, float y, float rho)
+    inline float GaussianDistribution(float x, float y, float rho) noexcept
     {
         return expf(-(x * x + y * y) / (2 * rho * rho)) / sqrtf(2 * XM_PI * rho * rho);
     }
 }
 
+#pragma region Shaders
 // Include the precompiled shader code.
 namespace
 {
 #if defined(_XBOX_ONE) && defined(_TITLE)
-    #include "Shaders/Compiled/XboxOnePostProcess_VSQuad.inc"
+#include "XboxOnePostProcess_VSQuad.inc"
 
-    #include "Shaders/Compiled/XboxOnePostProcess_PSCopy.inc"
-    #include "Shaders/Compiled/XboxOnePostProcess_PSMonochrome.inc"
-    #include "Shaders/Compiled/XboxOnePostProcess_PSSepia.inc"
-    #include "Shaders/Compiled/XboxOnePostProcess_PSDownScale2x2.inc"
-    #include "Shaders/Compiled/XboxOnePostProcess_PSDownScale4x4.inc"
-    #include "Shaders/Compiled/XboxOnePostProcess_PSGaussianBlur5x5.inc"
-    #include "Shaders/Compiled/XboxOnePostProcess_PSBloomExtract.inc"
-    #include "Shaders/Compiled/XboxOnePostProcess_PSBloomBlur.inc"
+#include "XboxOnePostProcess_PSCopy.inc"
+#include "XboxOnePostProcess_PSMonochrome.inc"
+#include "XboxOnePostProcess_PSSepia.inc"
+#include "XboxOnePostProcess_PSDownScale2x2.inc"
+#include "XboxOnePostProcess_PSDownScale4x4.inc"
+#include "XboxOnePostProcess_PSGaussianBlur5x5.inc"
+#include "XboxOnePostProcess_PSBloomExtract.inc"
+#include "XboxOnePostProcess_PSBloomBlur.inc"
 #else
-    #include "Shaders/Compiled/PostProcess_VSQuad.inc"
+#include "PostProcess_VSQuad.inc"
 
-    #include "Shaders/Compiled/PostProcess_PSCopy.inc"
-    #include "Shaders/Compiled/PostProcess_PSMonochrome.inc"
-    #include "Shaders/Compiled/PostProcess_PSSepia.inc"
-    #include "Shaders/Compiled/PostProcess_PSDownScale2x2.inc"
-    #include "Shaders/Compiled/PostProcess_PSDownScale4x4.inc"
-    #include "Shaders/Compiled/PostProcess_PSGaussianBlur5x5.inc"
-    #include "Shaders/Compiled/PostProcess_PSBloomExtract.inc"
-    #include "Shaders/Compiled/PostProcess_PSBloomBlur.inc"
+#include "PostProcess_PSCopy.inc"
+#include "PostProcess_PSMonochrome.inc"
+#include "PostProcess_PSSepia.inc"
+#include "PostProcess_PSDownScale2x2.inc"
+#include "PostProcess_PSDownScale4x4.inc"
+#include "PostProcess_PSGaussianBlur5x5.inc"
+#include "PostProcess_PSBloomExtract.inc"
+#include "PostProcess_PSBloomBlur.inc"
 #endif
-}
 
-namespace
-{
     struct ShaderBytecode
     {
         void const* code;
@@ -96,7 +90,7 @@ namespace
         { PostProcess_PSBloomBlur,              sizeof(PostProcess_PSBloomBlur) },
     };
 
-    static_assert(_countof(pixelShaders) == BasicPostProcess::Effect_Max, "array/max mismatch");
+    static_assert(static_cast<unsigned int>(std::size(pixelShaders)) == BasicPostProcess::Effect_Max, "array/max mismatch");
 
     // Factory for lazily instantiating shaders.
     class DeviceResources
@@ -104,38 +98,41 @@ namespace
     public:
         DeviceResources(_In_ ID3D11Device* device)
             : stateObjects(device),
-            mDevice(device)
+            mDevice(device),
+            mVertexShader{},
+            mPixelShaders{},
+            mMutex{}
         { }
 
         // Gets or lazily creates the vertex shader.
         ID3D11VertexShader* GetVertexShader()
         {
             return DemandCreate(mVertexShader, mMutex, [&](ID3D11VertexShader** pResult) -> HRESULT
-            {
-                HRESULT hr = mDevice->CreateVertexShader(PostProcess_VSQuad, sizeof(PostProcess_VSQuad), nullptr, pResult);
+                {
+                    HRESULT hr = mDevice->CreateVertexShader(PostProcess_VSQuad, sizeof(PostProcess_VSQuad), nullptr, pResult);
 
-                if (SUCCEEDED(hr))
-                    SetDebugObjectName(*pResult, "BasicPostProcess");
+                    if (SUCCEEDED(hr))
+                        SetDebugObjectName(*pResult, "BasicPostProcess");
 
-                return hr;
-            });
+                    return hr;
+                });
         }
 
         // Gets or lazily creates the specified pixel shader.
-        ID3D11PixelShader* GetPixelShader(int shaderIndex)
+        ID3D11PixelShader* GetPixelShader(unsigned int shaderIndex)
         {
-            assert(shaderIndex >= 0 && shaderIndex < BasicPostProcess::Effect_Max);
-            _Analysis_assume_(shaderIndex >= 0 && shaderIndex < BasicPostProcess::Effect_Max);
+            assert(shaderIndex < BasicPostProcess::Effect_Max);
+            _Analysis_assume_(shaderIndex < BasicPostProcess::Effect_Max);
 
             return DemandCreate(mPixelShaders[shaderIndex], mMutex, [&](ID3D11PixelShader** pResult) -> HRESULT
-            {
-                HRESULT hr = mDevice->CreatePixelShader(pixelShaders[shaderIndex].code, pixelShaders[shaderIndex].length, nullptr, pResult);
+                {
+                    HRESULT hr = mDevice->CreatePixelShader(pixelShaders[shaderIndex].code, pixelShaders[shaderIndex].length, nullptr, pResult);
 
-                if (SUCCEEDED(hr))
-                    SetDebugObjectName(*pResult, "BasicPostProcess");
+                    if (SUCCEEDED(hr))
+                        SetDebugObjectName(*pResult, "BasicPostProcess");
 
-                return hr;
-            });
+                    return hr;
+                });
         }
 
         CommonStates                stateObjects;
@@ -147,20 +144,22 @@ namespace
         std::mutex                  mMutex;
     };
 }
+#pragma endregion
+
 
 class BasicPostProcess::Impl : public AlignedNew<PostProcessConstants>
 {
 public:
-    Impl(_In_ ID3D11Device* device);
+    explicit Impl(_In_ ID3D11Device* device);
 
-    void Process(_In_ ID3D11DeviceContext* deviceContext, std::function<void __cdecl()>& setCustomState);
+    void Process(_In_ ID3D11DeviceContext* deviceContext, const std::function<void __cdecl()>& setCustomState);
 
-    void SetConstants(bool value = true) { mUseConstants = value; mDirtyFlags = INT_MAX; }
-    void SetDirtyFlag() { mDirtyFlags = INT_MAX; }
+    void SetConstants(bool value = true) noexcept { mUseConstants = value; mDirtyFlags = INT_MAX; }
+    void SetDirtyFlag() noexcept { mDirtyFlags = INT_MAX; }
 
     // Fields.
-    BasicPostProcess::Effect                fx;
     PostProcessConstants                    constants;
+    BasicPostProcess::Effect                fx;
     ComPtr<ID3D11ShaderResourceView>        texture;
     unsigned                                texWidth;
     unsigned                                texHeight;
@@ -194,7 +193,8 @@ SharedResourcePool<ID3D11Device*, DeviceResources> BasicPostProcess::Impl::devic
 
 // Constructor.
 BasicPostProcess::Impl::Impl(_In_ ID3D11Device* device)
-    : fx(BasicPostProcess::Copy),
+    : constants{},
+    fx(BasicPostProcess::Copy),
     texWidth(0),
     texHeight(0),
     guassianMultiplier(1.f),
@@ -205,18 +205,21 @@ BasicPostProcess::Impl::Impl(_In_ ID3D11Device* device)
     mUseConstants(false),
     mDirtyFlags(INT_MAX),
     mConstantBuffer(device),
-    mDeviceResources(deviceResourcesPool.DemandCreate(device)),
-    constants{}
+    mDeviceResources(deviceResourcesPool.DemandCreate(device))
 {
     if (device->GetFeatureLevel() < D3D_FEATURE_LEVEL_10_0)
     {
-        throw std::exception("BasicPostProcess requires Feature Level 10.0 or later");
+        throw std::runtime_error("BasicPostProcess requires Feature Level 10.0 or later");
     }
+
+    SetDebugObjectName(mConstantBuffer.GetBuffer(), "BasicPostProcess");
 }
 
 
 // Sets our state onto the D3D device.
-void BasicPostProcess::Impl::Process(_In_ ID3D11DeviceContext* deviceContext, std::function<void __cdecl()>& setCustomState)
+void BasicPostProcess::Impl::Process(
+    _In_ ID3D11DeviceContext* deviceContext,
+    const std::function<void __cdecl()>& setCustomState)
 {
     // Set the texture.
     ID3D11ShaderResourceView* textures[1] = { texture.Get() };
@@ -272,17 +275,17 @@ void BasicPostProcess::Impl::Process(_In_ ID3D11DeviceContext* deviceContext, st
             }
         }
 
-#if defined(_XBOX_ONE) && defined(_TITLE)
+    #if defined(_XBOX_ONE) && defined(_TITLE)
         void *grfxMemory;
         mConstantBuffer.SetData(deviceContext, constants, &grfxMemory);
 
-        Microsoft::WRL::ComPtr<ID3D11DeviceContextX> deviceContextX;
+        ComPtr<ID3D11DeviceContextX> deviceContextX;
         ThrowIfFailed(deviceContext->QueryInterface(IID_GRAPHICS_PPV_ARGS(deviceContextX.GetAddressOf())));
 
         auto buffer = mConstantBuffer.GetBuffer();
 
         deviceContextX->PSSetPlacementConstantBuffer(0, buffer, grfxMemory);
-#else
+    #else
         if (mDirtyFlags & Dirty_ConstantBuffer)
         {
             mDirtyFlags &= ~Dirty_ConstantBuffer;
@@ -293,7 +296,7 @@ void BasicPostProcess::Impl::Process(_In_ ID3D11DeviceContext* deviceContext, st
         auto buffer = mConstantBuffer.GetBuffer();
 
         deviceContext->PSSetConstantBuffers(0, 1, &buffer);
-#endif
+    #endif
     }
 
     if (setCustomState)
@@ -302,9 +305,10 @@ void BasicPostProcess::Impl::Process(_In_ ID3D11DeviceContext* deviceContext, st
     }
 
     // Draw quad.
-    deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    deviceContext->IASetInputLayout(nullptr);
+    deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    deviceContext->Draw(4, 0);
+    deviceContext->Draw(3, 0);
 }
 
 
@@ -312,13 +316,13 @@ void BasicPostProcess::Impl::DownScale2x2()
 {
     mUseConstants = true;
 
-    if ( !texWidth || !texHeight)
+    if (!texWidth || !texHeight)
     {
-        throw std::exception("Call SetSourceTexture before setting post-process effect");
+        throw std::logic_error("Call SetSourceTexture before setting post-process effect");
     }
 
-    float tu = 1.0f / float(texWidth);
-    float tv = 1.0f / float(texHeight);
+    const float tu = 1.0f / float(texWidth);
+    const float tv = 1.0f / float(texHeight);
 
     // Sample from the 4 surrounding points. Since the center point will be in the exact
     // center of 4 texels, a 0.5f offset is needed to specify a texel center.
@@ -332,7 +336,6 @@ void BasicPostProcess::Impl::DownScale2x2()
             ++ptr;
         }
     }
-
 }
 
 
@@ -342,11 +345,11 @@ void BasicPostProcess::Impl::DownScale4x4()
 
     if (!texWidth || !texHeight)
     {
-        throw std::exception("Call SetSourceTexture before setting post-process effect");
+        throw std::logic_error("Call SetSourceTexture before setting post-process effect");
     }
 
-    float tu = 1.0f / float(texWidth);
-    float tv = 1.0f / float(texHeight);
+    const float tu = 1.0f / float(texWidth);
+    const float tv = 1.0f / float(texHeight);
 
     // Sample from the 16 surrounding points. Since the center point will be in the
     // exact center of 16 texels, a 1.5f offset is needed to specify a texel center.
@@ -370,11 +373,11 @@ void BasicPostProcess::Impl::GaussianBlur5x5(float multiplier)
 
     if (!texWidth || !texHeight)
     {
-        throw std::exception("Call SetSourceTexture before setting post-process effect");
+        throw std::logic_error("Call SetSourceTexture before setting post-process effect");
     }
 
-    float tu = 1.0f / float(texWidth);
-    float tv = 1.0f / float(texHeight);
+    const float tu = 1.0f / float(texWidth);
+    const float tv = 1.0f / float(texHeight);
 
     float totalWeight = 0.0f;
     size_t index = 0;
@@ -388,7 +391,7 @@ void BasicPostProcess::Impl::GaussianBlur5x5(float multiplier)
             // create a kernel which approximates a 5x5 kernel using only 13
             // sample points instead of 25; this is necessary since 2.0 shaders
             // only support 16 texture grabs.
-            if (fabs(float(x)) + fabs(float(y)) > 2.0f)
+            if (fabsf(float(x)) + fabsf(float(y)) > 2.0f)
                 continue;
 
             // Get the unscaled Gaussian intensity for this offset
@@ -397,7 +400,7 @@ void BasicPostProcess::Impl::GaussianBlur5x5(float multiplier)
             offsets[index].z = 0.0f;
             offsets[index].w = 0.0f;
 
-            float g = GaussianDistribution(float(x), float(y), 1.0f);
+            const float g = GaussianDistribution(float(x), float(y), 1.0f);
             weights[index] = XMVectorReplicate(g);
 
             totalWeight += XMVectorGetX(weights[index]);
@@ -410,10 +413,12 @@ void BasicPostProcess::Impl::GaussianBlur5x5(float multiplier)
     // blur kernels add to 1.0f to ensure that the intensity of the image isn't
     // changed when the blur occurs. An optional multiplier variable is used to
     // add or remove image intensity during the blur.
+    const XMVECTOR vtw = XMVectorReplicate(totalWeight);
+    const XMVECTOR vm = XMVectorReplicate(multiplier);
     for (size_t i = 0; i < index; ++i)
     {
-        weights[i] /= totalWeight;
-        weights[i] *= multiplier;
+        weights[i] = XMVectorDivide(weights[i], vtw);
+        weights[i] = XMVectorMultiply(weights[i], vm);
     }
 }
 
@@ -424,7 +429,7 @@ void  BasicPostProcess::Impl::Bloom(bool horizontal, float size, float brightnes
 
     if (!texWidth || !texHeight)
     {
-        throw std::exception("Call SetSourceTexture before setting post-process effect");
+        throw std::logic_error("Call SetSourceTexture before setting post-process effect");
     }
 
     float tu = 0.f;
@@ -466,34 +471,20 @@ void  BasicPostProcess::Impl::Bloom(bool horizontal, float size, float brightnes
 
 // Public constructor.
 BasicPostProcess::BasicPostProcess(_In_ ID3D11Device* device)
-  : pImpl(new Impl(device))
+    : pImpl(std::make_unique<Impl>(device))
 {
 }
 
 
-// Move constructor.
-BasicPostProcess::BasicPostProcess(BasicPostProcess&& moveFrom)
-  : pImpl(std::move(moveFrom.pImpl))
-{
-}
-
-
-// Move assignment.
-BasicPostProcess& BasicPostProcess::operator= (BasicPostProcess&& moveFrom)
-{
-    pImpl = std::move(moveFrom.pImpl);
-    return *this;
-}
-
-
-// Public destructor.
-BasicPostProcess::~BasicPostProcess()
-{
-}
+BasicPostProcess::BasicPostProcess(BasicPostProcess&&) noexcept = default;
+BasicPostProcess& BasicPostProcess::operator= (BasicPostProcess&&) noexcept = default;
+BasicPostProcess::~BasicPostProcess() = default;
 
 
 // IPostProcess methods.
-void BasicPostProcess::Process(_In_ ID3D11DeviceContext* deviceContext, _In_opt_ std::function<void __cdecl()> setCustomState)
+void BasicPostProcess::Process(
+    _In_ ID3D11DeviceContext* deviceContext,
+    _In_opt_ std::function<void __cdecl()> setCustomState)
 {
     pImpl->Process(deviceContext, setCustomState);
 }
@@ -502,8 +493,8 @@ void BasicPostProcess::Process(_In_ ID3D11DeviceContext* deviceContext, _In_opt_
 // Shader control.
 void BasicPostProcess::SetEffect(Effect fx)
 {
-    if (fx < 0 || fx >= Effect_Max)
-        throw std::out_of_range("Effect not defined");
+    if (fx >= Effect_Max)
+        throw std::invalid_argument("Effect not defined");
 
     pImpl->fx = fx;
 
@@ -539,31 +530,34 @@ void BasicPostProcess::SetSourceTexture(_In_opt_ ID3D11ShaderResourceView* value
         switch (resType)
         {
         case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
-        {
-            ComPtr<ID3D11Texture1D> tex;
-            ThrowIfFailed(res.As(&tex));
+            {
+                ComPtr<ID3D11Texture1D> tex;
+                ThrowIfFailed(res.As(&tex));
 
-            D3D11_TEXTURE1D_DESC desc = {};
-            tex->GetDesc(&desc);
-            pImpl->texWidth = desc.Width;
-            pImpl->texHeight = 1;
-            break;
-        }
+                D3D11_TEXTURE1D_DESC desc = {};
+                tex->GetDesc(&desc);
+                pImpl->texWidth = desc.Width;
+                pImpl->texHeight = 1;
+                break;
+            }
 
         case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
-        {
-            ComPtr<ID3D11Texture2D> tex;
-            ThrowIfFailed(res.As(&tex));
+            {
+                ComPtr<ID3D11Texture2D> tex;
+                ThrowIfFailed(res.As(&tex));
 
-            D3D11_TEXTURE2D_DESC desc = {};
-            tex->GetDesc(&desc);
-            pImpl->texWidth = desc.Width;
-            pImpl->texHeight = desc.Height;
-            break;
-        }
+                D3D11_TEXTURE2D_DESC desc = {};
+                tex->GetDesc(&desc);
+                pImpl->texWidth = desc.Width;
+                pImpl->texHeight = desc.Height;
+                break;
+            }
 
+        case D3D11_RESOURCE_DIMENSION_UNKNOWN:
+        case D3D11_RESOURCE_DIMENSION_BUFFER:
+        case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
         default:
-            throw std::exception("Unsupported texture type");
+            throw std::invalid_argument("Unsupported texture type");
         }
     }
     else

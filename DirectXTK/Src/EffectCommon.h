@@ -1,12 +1,8 @@
 //--------------------------------------------------------------------------------------
 // File: EffectCommon.h
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
-//
-// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
 // http://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
@@ -16,10 +12,11 @@
 #include <memory>
 
 #include "Effects.h"
-#include "PlatformHelpers.h"
-#include "ConstantBuffer.h"
-#include "SharedResourcePool.h"
 #include "AlignedNew.h"
+#include "BufferHelpers.h"
+#include "DirectXHelpers.h"
+#include "PlatformHelpers.h"
+#include "SharedResourcePool.h"
 
 
 // BasicEffect, SkinnedEffect, et al, have many things in common, but also significant
@@ -33,21 +30,21 @@ namespace DirectX
     // Bitfield tracks which derived parameter values need to be recomputed.
     namespace EffectDirtyFlags
     {
-        const int ConstantBuffer        = 0x01;
-        const int WorldViewProj         = 0x02;
-        const int WorldInverseTranspose = 0x04;
-        const int EyePosition           = 0x08;
-        const int MaterialColor         = 0x10;
-        const int FogVector             = 0x20;
-        const int FogEnable             = 0x40;
-        const int AlphaTest             = 0x80;
+        constexpr int ConstantBuffer = 0x01;
+        constexpr int WorldViewProj = 0x02;
+        constexpr int WorldInverseTranspose = 0x04;
+        constexpr int EyePosition = 0x08;
+        constexpr int MaterialColor = 0x10;
+        constexpr int FogVector = 0x20;
+        constexpr int FogEnable = 0x40;
+        constexpr int AlphaTest = 0x80;
     }
 
 
     // Helper stores matrix parameter values, and computes derived matrices.
     struct EffectMatrices
     {
-        EffectMatrices();
+        EffectMatrices() noexcept;
 
         XMMATRIX world;
         XMMATRIX view;
@@ -61,7 +58,7 @@ namespace DirectX
     // Helper stores the current fog settings, and computes derived shader parameters.
     struct EffectFog
     {
-        EffectFog();
+        EffectFog() noexcept;
 
         bool enabled;
         float start;
@@ -74,7 +71,7 @@ namespace DirectX
     // Helper stores material color settings, and computes derived parameters for shaders that do not support realtime lighting.
     struct EffectColor
     {
-        EffectColor();
+        EffectColor() noexcept;
 
         XMVECTOR diffuseColor;
         float alpha;
@@ -86,9 +83,9 @@ namespace DirectX
     // Helper stores the current light settings, and computes derived shader parameters.
     struct EffectLights : public EffectColor
     {
-        EffectLights();
+        EffectLights() noexcept;
 
-        static const int MaxDirectionalLights = IEffectLights::MaxDirectionalLights;
+        static constexpr int MaxDirectionalLights = IEffectLights::MaxDirectionalLights;
 
 
         // Fields.
@@ -126,17 +123,21 @@ namespace DirectX
     class EffectDeviceResources
     {
     public:
-        EffectDeviceResources(_In_ ID3D11Device* device)
-          : mDevice(device)
-        { }
+        EffectDeviceResources(_In_ ID3D11Device* device) noexcept
+            : mDevice(device)
+        {
+        }
 
         ID3D11VertexShader* DemandCreateVertexShader(_Inout_ Microsoft::WRL::ComPtr<ID3D11VertexShader>& vertexShader, ShaderBytecode const& bytecode);
-        ID3D11PixelShader * DemandCreatePixelShader (_Inout_ Microsoft::WRL::ComPtr<ID3D11PixelShader> & pixelShader,  ShaderBytecode const& bytecode);
+        ID3D11PixelShader * DemandCreatePixelShader(_Inout_ Microsoft::WRL::ComPtr<ID3D11PixelShader> & pixelShader, ShaderBytecode const& bytecode);
         ID3D11ShaderResourceView* GetDefaultTexture();
+        ID3D11ShaderResourceView* GetDefaultNormalTexture();
+        D3D_FEATURE_LEVEL GetDeviceFeatureLevel() const;
 
     protected:
         Microsoft::WRL::ComPtr<ID3D11Device> mDevice;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> mDefaultTexture;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> mDefaultNormalTexture;
 
         std::mutex mMutex;
     };
@@ -149,13 +150,19 @@ namespace DirectX
     public:
         // Constructor.
         EffectBase(_In_ ID3D11Device* device)
-          : dirtyFlags(INT_MAX),
+            : constants{},
+            dirtyFlags(INT_MAX),
             mConstantBuffer(device),
-            mDeviceResources(deviceResourcesPool.DemandCreate(device)),
-            constants{}
+            mDeviceResources(deviceResourcesPool.DemandCreate(device))
         {
+            SetDebugObjectName(mConstantBuffer.GetBuffer(), "Effect");
         }
 
+        EffectBase(EffectBase&&) = default;
+        EffectBase& operator= (EffectBase&&) = default;
+
+        EffectBase(EffectBase const&) = delete;
+        EffectBase& operator= (EffectBase const&) = delete;
 
         // Fields.
         typename Traits::ConstantBufferType constants;
@@ -170,11 +177,12 @@ namespace DirectX
 
         // Helper looks up the bytecode for the specified vertex shader permutation.
         // Client code needs this in order to create matching input layouts.
-        void GetVertexShaderBytecode(int permutation, _Out_ void const** pShaderByteCode, _Out_ size_t* pByteCodeLength)
+        void GetVertexShaderBytecode(int permutation, _Out_ void const** pShaderByteCode, _Out_ size_t* pByteCodeLength) noexcept
         {
+            assert(pShaderByteCode != nullptr && pByteCodeLength != nullptr);
             assert(permutation >= 0 && permutation < Traits::ShaderPermutationCount);
             _Analysis_assume_(permutation >= 0 && permutation < Traits::ShaderPermutationCount);
-            int shaderIndex = VertexShaderIndices[permutation];
+            const int shaderIndex = VertexShaderIndices[permutation];
             assert(shaderIndex >= 0 && shaderIndex < Traits::VertexShaderCount);
             _Analysis_assume_(shaderIndex >= 0 && shaderIndex < Traits::VertexShaderCount);
 
@@ -195,7 +203,7 @@ namespace DirectX
             deviceContext->VSSetShader(vertexShader, nullptr, 0);
             deviceContext->PSSetShader(pixelShader, nullptr, 0);
 
-#if defined(_XBOX_ONE) && defined(_TITLE)
+        #if defined(_XBOX_ONE) && defined(_TITLE)
             void *grfxMemory;
             mConstantBuffer.SetData(deviceContext, constants, &grfxMemory);
 
@@ -206,12 +214,12 @@ namespace DirectX
 
             deviceContextX->VSSetPlacementConstantBuffer(0, buffer, grfxMemory);
             deviceContextX->PSSetPlacementConstantBuffer(0, buffer, grfxMemory);
-#else
-            // Make sure the constant buffer is up to date.
+        #else
+                    // Make sure the constant buffer is up to date.
             if (dirtyFlags & EffectDirtyFlags::ConstantBuffer)
             {
                 mConstantBuffer.SetData(deviceContext, constants);
-     
+
                 dirtyFlags &= ~EffectDirtyFlags::ConstantBuffer;
             }
 
@@ -220,12 +228,14 @@ namespace DirectX
 
             deviceContext->VSSetConstantBuffers(0, 1, &buffer);
             deviceContext->PSSetConstantBuffers(0, 1, &buffer);
-#endif
+        #endif
         }
 
 
-        // Helper returns the default texture.
+        // Helpers
         ID3D11ShaderResourceView* GetDefaultTexture() { return mDeviceResources->GetDefaultTexture(); }
+        ID3D11ShaderResourceView* GetDefaultNormalTexture() { return mDeviceResources->GetDefaultNormalTexture(); }
+        D3D_FEATURE_LEVEL GetDeviceFeatureLevel() const { return mDeviceResources->GetDeviceFeatureLevel(); }
 
 
     protected:
@@ -244,11 +254,13 @@ namespace DirectX
         class DeviceResources : protected EffectDeviceResources
         {
         public:
-            DeviceResources(_In_ ID3D11Device* device)
-              : EffectDeviceResources(device)
+            DeviceResources(_In_ ID3D11Device* device) noexcept
+                : EffectDeviceResources(device),
+                mVertexShaders{},
+                mPixelShaders{}
             { }
 
-        
+
             // Gets or lazily creates the specified vertex shader permutation.
             ID3D11VertexShader* GetVertexShader(int permutation)
             {
@@ -275,9 +287,10 @@ namespace DirectX
             }
 
 
-            // Gets or lazily creates the default texture
+            // Helpers
             ID3D11ShaderResourceView* GetDefaultTexture() { return EffectDeviceResources::GetDefaultTexture(); }
-
+            ID3D11ShaderResourceView* GetDefaultNormalTexture() { return EffectDeviceResources::GetDefaultNormalTexture(); }
+            D3D_FEATURE_LEVEL GetDeviceFeatureLevel() const { return EffectDeviceResources::GetDeviceFeatureLevel(); }
 
         private:
             Microsoft::WRL::ComPtr<ID3D11VertexShader> mVertexShaders[Traits::VertexShaderCount];

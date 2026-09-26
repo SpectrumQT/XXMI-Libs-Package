@@ -13214,6 +13214,16 @@ void SlotRangeCopyOperation::RunFetch(CommandListState *state, unsigned first, u
 			views[i]->GetResource(&resource);
 		}
 
+		// unless_null must leave the element exactly as it was, so bail
+		// before resolving it: GetResource() below is an assignment, which
+		// postpones the element's expiration and can lazily create its
+		// resource even though nothing is written to it.
+		if (!resource && (options & ResourceCopyOptions::UNLESS_NULL)) {
+			SLOT_RANGE_LOG(state, "  %S[%d] = %s %s: source is NULL, keeping current resource\n",
+				dst.custom_resource_pool->name.c_str(), pool_first + (int)i, copy_type, slot_log_name(src, first + i).c_str());
+			continue;
+		}
+
 		// GetResource(id, template_lookup, use_ring_index, is_assignment).
 		// Range bounds are element indices on every pool type, so bypass
 		// fifo / spatial key lookup:
@@ -13235,10 +13245,7 @@ void SlotRangeCopyOperation::RunFetch(CommandListState *state, unsigned first, u
 		}
 
 		if (!resource) {
-			SLOT_RANGE_LOG(state, "  %S = ref %s: source is NULL%s\n", element->name.c_str(), slot_log_name(src, first + i).c_str(),
-				(options & ResourceCopyOptions::UNLESS_NULL) ? ", keeping current resource" : "");
-			if (options & ResourceCopyOptions::UNLESS_NULL)
-				continue;
+			SLOT_RANGE_LOG(state, "  %S = ref %s: source is NULL\n", element->name.c_str(), slot_log_name(src, first + i).c_str());
 		} else {
 			SLOT_RANGE_LOG(state, "  %S = ref %s\n", element->name.c_str(), slot_log_name(src, first + i).c_str());
 		}

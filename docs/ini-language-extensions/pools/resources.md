@@ -51,6 +51,33 @@ PoolFoo[$index] = copy ResourceText ; Full Copy (expensive).
 
 > `ref` performs a reference copy by pointing to the underlying D3D resource, while `copy` creates a full copy of the underlying resource.
 
+> Assignment to a pool resource resets the variable of the same element unless `pool_element_type_switch_reset = 0` is set. See [Element Types](declaration.md/#element-types).
+
+## Pool Resource Ranges
+
+### Slot Ranges
+
+A range of pool elements can be bound to, or fetched from, a range of pipeline slots with a single operation:
+
+```ini
+ps-t[0:3] = ref PoolFoo[0:3]
+PoolFoo[0:3] = ref ps-t[0:3]
+```
+
+Pool range bounds are always element indices that wrap like [Ring](indexing.md/#ring-indexing) indices, whatever the pool's index type. On a `fifo` or `spatial` pool a range addresses the physical elements directly and bypasses key lookup, like the [full range operations](variables.md/#full-range-operations) do.
+
+See [Slot Indexing → Slot Ranges](../resources/slot-indexing.md/#slot-ranges) for details.
+
+### Full Range Reset
+
+`PoolFoo[*]` addresses the resources of **all** pool elements at once. It is only valid as the target of a `null` assignment:
+
+```ini
+PoolFoo[*] = null ; Set every pool resource to null.
+```
+
+Variables of the pool are left untouched, use `$PoolFoo[*] = null` to reset those. See [Variables → Full Range Operations](variables.md/#full-range-operations).
+
 ## Pool Resource Usage
 
 Pool element resource can be used anywhere a custom resource is accepted.

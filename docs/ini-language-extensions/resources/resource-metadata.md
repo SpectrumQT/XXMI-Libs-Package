@@ -139,6 +139,47 @@ $foo_stride = PoolFoo[0]->Stride       ; 4
 
 Pipeline slots, such as `vb0`, are not supported by `SourceStride`.
 
+### `HashRegion($byte_offset, $byte_size)`
+
+Returns a hash of the buffer contents in the specified region.
+
+* `$byte_offset` — byte offset of the region, relative to the currently configured [buffer region](resource-regions.md) of the target.
+* `$byte_size` — size of the region in bytes. A region past the end of the buffer is truncated.
+
+```ini
+$object_id = vs-cb1->HashRegion(0, 64) ; Hash of the first 64 bytes visible to the shader.
+```
+
+The value is a CRC32C of the data encoded as a 30-bit float, so it fits an INI variable and can be compared or used as a [FIFO pool](../pools/indexing.md/#fifo-indexing) key. It is derived from the data itself, unlike the [resource identity](#resource-identity), so equal data in different buffers produces the same hash.
+
+Hashing requires a CPU-side copy of the buffer contents. Set `track_region_hashes = 1` in the `[Rendering]` section to capture the data as the game writes it through `Map` or `UpdateSubresource`; the hash of a region is then computed once per data change. A buffer that is written on the GPU, or any buffer when `track_region_hashes` is disabled, has to be read back the first time it is hashed, which stalls the pipeline.
+
+```ini
+[Rendering]
+track_region_hashes = 1
+```
+
+For custom resources, the hash is only available with `track_region_hashes = 1` and when the data was captured from a pipeline slot (`ref` or `copy`). Other custom resources return an [error value](#error-values).
+
+> **Experimental:** `->HashRegion(...)` is experimental and its behavior may change. **Only CB regions** are really tested.
+
+### `SpatialHash($x, $y, $z, $cell_size)`
+
+Returns a **spatial hash** of a world position stored in the buffer: the position is quantized into a 4096×256×4096 grid of cells (X, Y, Z) and the cell coordinates are packed into a single value.
+
+* `$x`, `$y`, `$z` — offsets of the three position floats, in 32-bit elements, relative to the currently configured [buffer region](resource-regions.md) of the target.
+* `$cell_size` — size of a grid cell in world units.
+
+```ini
+$hash = vs-cb1->SpatialHash(12, 13, 14, 0.5) ; Position at floats 12-14 of the visible region, 0.5 unit cells.
+```
+
+Positions within the same cell produce the same hash, and positions in neighboring cells produce hashes that a [spatial pool](../pools/indexing.md/#spatial-indexing) can resolve to the same element. The grid wraps around along each axis, so positions `4096` cells apart on X or Z (`256` on Y) collide.
+
+The same data caching rules as for [`HashRegion`](#hashregionbyte_offset-byte_size) apply.
+
+> **Experimental:** `->SpatialHash(...)` is experimental and its behavior may change. **Only CB regions** are really tested.
+
 ### Performance
 
 Accessing `->` attributes from custom resources is extremely inexpensive, as the metadata is stored directly with the custom resource.

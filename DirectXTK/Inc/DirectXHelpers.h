@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #pragma once
@@ -15,9 +15,11 @@
 #include <d3d11_1.h>
 #endif
 
+#ifdef _MSC_VER
 #if !defined(NO_D3D11_DEBUG_NAME) && ( defined(_DEBUG) || defined(PROFILE) )
 #if !defined(_XBOX_ONE) || !defined(_TITLE)
 #pragma comment(lib,"dxguid.lib")
+#endif
 #endif
 #endif
 
@@ -30,6 +32,25 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+
+#ifndef DIRECTX_TOOLKIT_API
+#ifdef DIRECTX_TOOLKIT_EXPORT
+#ifdef __GNUC__
+#define DIRECTX_TOOLKIT_API __attribute__ ((dllexport))
+#else
+#define DIRECTX_TOOLKIT_API __declspec(dllexport)
+#endif
+#elif defined(DIRECTX_TOOLKIT_IMPORT)
+#ifdef __GNUC__
+#define DIRECTX_TOOLKIT_API __attribute__ ((dllimport))
+#else
+#define DIRECTX_TOOLKIT_API __declspec(dllimport)
+#endif
+#else
+#define DIRECTX_TOOLKIT_API
+#endif
+#endif
+
 
 //
 // The core Direct3D headers provide the following helper C++ classes
@@ -55,10 +76,13 @@
 
 namespace DirectX
 {
-    class IEffect;
+    inline namespace DX11
+    {
+        class IEffect;
+    }
 
     // simliar to std::lock_guard for exception-safe Direct3D resource locking
-    class MapGuard : public D3D11_MAPPED_SUBRESOURCE
+    class DIRECTX_TOOLKIT_API MapGuard : public D3D11_MAPPED_SUBRESOURCE
     {
     public:
         MapGuard(_In_ ID3D11DeviceContext* context,
@@ -75,8 +99,8 @@ namespace DirectX
             }
         }
 
-        MapGuard(MapGuard&&) = default;
-        MapGuard& operator= (MapGuard&&) = default;
+        MapGuard(MapGuard&&) = delete;
+        MapGuard& operator= (MapGuard&&) = delete;
 
         MapGuard(MapGuard const&) = delete;
         MapGuard& operator= (MapGuard const&) = delete;
@@ -85,6 +109,12 @@ namespace DirectX
         {
             mContext->Unmap(mResource, mSubresource);
         }
+
+    #ifdef __clang__
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wunknown-warning-option"
+    #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+    #endif
 
         uint8_t* get() const noexcept
         {
@@ -103,6 +133,10 @@ namespace DirectX
         {
             return static_cast<uint8_t*>(pData) + (slice * DepthPitch) + (row * RowPitch);
         }
+
+    #ifdef __clang__
+    #pragma clang diagnostic pop
+    #endif
 
         template<typename T>
         void copy(_In_reads_(count) T const* data, size_t count) noexcept
@@ -124,7 +158,7 @@ namespace DirectX
 
 
     // Helper sets a D3D resource name string (used by PIX and debug layer leak reporting).
-    #if !defined(NO_D3D11_DEBUG_NAME) && ( defined(_DEBUG) || defined(PROFILE) )
+#if !defined(NO_D3D11_DEBUG_NAME) && ( defined(_DEBUG) || defined(PROFILE) )
     template<UINT TNameLength>
     inline void SetDebugObjectName(_In_ ID3D11DeviceChild* resource, _In_z_ const char(&name)[TNameLength]) noexcept
     {
@@ -139,17 +173,16 @@ namespace DirectX
         resource->SetPrivateData(WKPDID_D3DDebugObjectName, TNameLength - 1, name);
     #endif
     }
-    #else
+#else
     template<UINT TNameLength>
     inline void SetDebugObjectName(_In_ ID3D11DeviceChild*, _In_z_ const char(&)[TNameLength]) noexcept
-    {
-    }
-    #endif
+    {}
+#endif
 
+#if !defined(NO_D3D11_DEBUG_NAME) && ( defined(_DEBUG) || defined(PROFILE) )
     template<UINT TNameLength>
     inline void SetDebugObjectName(_In_ ID3D11DeviceChild* resource, _In_z_ const wchar_t(&name)[TNameLength])
     {
-    #if !defined(NO_D3D11_DEBUG_NAME) && ( defined(_DEBUG) || defined(PROFILE) )
     #if defined(_XBOX_ONE) && defined(_TITLE)
         resource->SetName(name);
     #else
@@ -160,47 +193,53 @@ namespace DirectX
             resource->SetPrivateData(WKPDID_D3DDebugObjectName, TNameLength - 1, aname);
         }
     #endif
-    #else
-        UNREFERENCED_PARAMETER(resource);
-        UNREFERENCED_PARAMETER(name);
-    #endif
     }
+#else
+    template<UINT TNameLength>
+    inline void SetDebugObjectName(_In_ ID3D11DeviceChild*, _In_z_ const wchar_t(&)[TNameLength])
+    {}
+#endif
 
-    // Helper to check for power-of-2
-    template<typename T>
-    constexpr bool IsPowerOf2(T x) noexcept { return ((x != 0) && !(x & (x - 1))); }
-
-    // Helpers for aligning values by a power of 2
-    template<typename T>
-    inline T AlignDown(T size, size_t alignment) noexcept
+    inline namespace DX11
     {
-        if (alignment > 0)
-        {
-            assert(((alignment - 1) & alignment) == 0);
-            auto mask = static_cast<T>(alignment - 1);
-            return size & ~mask;
-        }
-        return size;
-    }
+        // Helper to check for power-of-2
+        template<typename T>
+        constexpr bool IsPowerOf2(T x) noexcept { return ((x != 0) && !(x & (x - 1))); }
 
-    template<typename T>
-    inline T AlignUp(T size, size_t alignment) noexcept
-    {
-        if (alignment > 0)
+        // Helpers for aligning values by a power of 2
+        template<typename T>
+        inline T AlignDown(T size, size_t alignment) noexcept
         {
-            assert(((alignment - 1) & alignment) == 0);
-            auto mask = static_cast<T>(alignment - 1);
-            return (size + mask) & ~mask;
+            if (alignment > 0)
+            {
+                assert(((alignment - 1) & alignment) == 0);
+                auto mask = static_cast<T>(alignment - 1);
+                return size & ~mask;
+            }
+            return size;
         }
-        return size;
+
+        template<typename T>
+        inline T AlignUp(T size, size_t alignment) noexcept
+        {
+            if (alignment > 0)
+            {
+                assert(((alignment - 1) & alignment) == 0);
+                auto mask = static_cast<T>(alignment - 1);
+                return (size + mask) & ~mask;
+            }
+            return size;
+        }
     }
 
     // Helper for creating a Direct3D input layout to match a shader from an IEffect
-    HRESULT __cdecl CreateInputLayoutFromEffect(_In_ ID3D11Device* device,
-        _In_ IEffect* effect,
-        _In_reads_(count) const D3D11_INPUT_ELEMENT_DESC* desc,
-        size_t count,
-        _COM_Outptr_ ID3D11InputLayout** pInputLayout) noexcept;
+    DIRECTX_TOOLKIT_API
+        HRESULT __cdecl CreateInputLayoutFromEffect(
+            _In_ ID3D11Device* device,
+            _In_ IEffect* effect,
+            _In_reads_(count) const D3D11_INPUT_ELEMENT_DESC* desc,
+            size_t count,
+            _COM_Outptr_ ID3D11InputLayout** pInputLayout) noexcept;
 
     template<typename T>
     HRESULT CreateInputLayoutFromEffect(_In_ ID3D11Device* device,

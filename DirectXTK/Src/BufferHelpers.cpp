@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -355,11 +355,14 @@ HRESULT DirectX::CreateTextureFromMemory(
 
 //--------------------------------------------------------------------------------------
 _Use_decl_annotations_
-void Internal::ConstantBufferBase::CreateBuffer(
+void Private::ConstantBufferBase::CreateBuffer(
     ID3D11Device* device,
     size_t bytes,
     ID3D11Buffer** pBuffer)
 {
+    if (!device)
+        throw std::invalid_argument("Direct3D device is null");
+
     if (!pBuffer)
         throw std::invalid_argument("ConstantBuffer needs valid buffer parameter");
 

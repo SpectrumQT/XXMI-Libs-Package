@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -25,6 +25,12 @@ class GeometricPrimitive::Impl
 {
 public:
     Impl() noexcept : mIndexCount(0) {}
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = default;
+    Impl& operator=(Impl&&) = default;
 
     void Initialize(_In_ ID3D11DeviceContext* deviceContext, const VertexCollection& vertices, const IndexCollection& indices);
 
@@ -154,6 +160,9 @@ void GeometricPrimitive::Impl::SharedResources::PrepareForRendering(bool alpha, 
 _Use_decl_annotations_
 void GeometricPrimitive::Impl::Initialize(ID3D11DeviceContext* deviceContext, const VertexCollection& vertices, const IndexCollection& indices)
 {
+    if (!deviceContext)
+        throw std::invalid_argument("Direct3D device context is null");
+
     if (vertices.size() >= USHRT_MAX)
         throw std::out_of_range("Too many vertices for 16-bit index buffer");
 
@@ -346,14 +355,12 @@ bool GeometricPrimitive::s_reversez = false;
 // Constructor.
 GeometricPrimitive::GeometricPrimitive() noexcept(false)
     : pImpl(std::make_unique<Impl>())
-{
-}
+{}
 
 
 // Destructor.
 GeometricPrimitive::~GeometricPrimitive()
-{
-}
+{}
 
 
 // Public entrypoints.

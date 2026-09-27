@@ -3,7 +3,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 
 using System.Drawing;
 
@@ -28,7 +28,7 @@ namespace MakeSpriteFont
         // Glyph image data (may only use a portion of a larger bitmap).
         public Bitmap Bitmap;
         public Rectangle Subrect;
-        
+
 
         // Layout information.
         public float XOffset;

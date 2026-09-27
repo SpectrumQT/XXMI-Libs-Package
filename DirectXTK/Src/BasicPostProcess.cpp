@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -102,7 +102,13 @@ namespace
             mVertexShader{},
             mPixelShaders{},
             mMutex{}
-        { }
+        {}
+
+        DeviceResources(const DeviceResources&) = delete;
+        DeviceResources& operator=(const DeviceResources&) = delete;
+
+        DeviceResources(DeviceResources&&) = delete;
+        DeviceResources& operator=(DeviceResources&&) = delete;
 
         // Gets or lazily creates the vertex shader.
         ID3D11VertexShader* GetVertexShader()
@@ -151,6 +157,12 @@ class BasicPostProcess::Impl : public AlignedNew<PostProcessConstants>
 {
 public:
     explicit Impl(_In_ ID3D11Device* device);
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = default;
+    Impl& operator=(Impl&&) = default;
 
     void Process(_In_ ID3D11DeviceContext* deviceContext, const std::function<void __cdecl()>& setCustomState);
 
@@ -472,8 +484,7 @@ void  BasicPostProcess::Impl::Bloom(bool horizontal, float size, float brightnes
 // Public constructor.
 BasicPostProcess::BasicPostProcess(_In_ ID3D11Device* device)
     : pImpl(std::make_unique<Impl>(device))
-{
-}
+{}
 
 
 BasicPostProcess::BasicPostProcess(BasicPostProcess&&) noexcept = default;
@@ -484,7 +495,7 @@ BasicPostProcess::~BasicPostProcess() = default;
 // IPostProcess methods.
 void BasicPostProcess::Process(
     _In_ ID3D11DeviceContext* deviceContext,
-    _In_opt_ std::function<void __cdecl()> setCustomState)
+    _In_ std::function<void __cdecl()> setCustomState)
 {
     pImpl->Process(deviceContext, setCustomState);
 }

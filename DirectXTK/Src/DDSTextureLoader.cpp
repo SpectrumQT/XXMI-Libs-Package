@@ -11,7 +11,7 @@
 // Licensed under the MIT License.
 //
 // http://go.microsoft.com/fwlink/?LinkId=248926
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -363,6 +363,9 @@ namespace
                 }
             }
             break;
+
+        default:
+            return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
         }
 
         return hr;
@@ -400,7 +403,7 @@ namespace
         bool isCubeMap = false;
 
         size_t mipCount = header->mipMapCount;
-        if (0 == mipCount)
+        if ((0 == mipCount) || (loadFlags & DDS_LOADER_IGNORE_MIPS))
         {
             mipCount = 1;
         }
@@ -418,11 +421,42 @@ namespace
 
             switch (d3d10ext->dxgiFormat)
             {
+            case DXGI_FORMAT_NV12:
+            case DXGI_FORMAT_P010:
+            case DXGI_FORMAT_P016:
+            case DXGI_FORMAT_420_OPAQUE:
+                if ((d3d10ext->resourceDimension != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+                    || (width % 2) != 0 || (height % 2) != 0)
+                {
+                    DebugTrace("ERROR: Video texture does not meet width/height requirements.\n");
+                    return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+                }
+                break;
+
+            case DXGI_FORMAT_YUY2:
+            case DXGI_FORMAT_Y210:
+            case DXGI_FORMAT_Y216:
+            case DXGI_FORMAT_P208:
+                if ((width % 2) != 0)
+                {
+                    DebugTrace("ERROR: Video texture does not meet width requirements.\n");
+                    return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+                }
+                break;
+
+            case DXGI_FORMAT_NV11:
+                if ((width % 4) != 0)
+                {
+                    DebugTrace("ERROR: Video texture does not meet width requirements.\n");
+                    return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+                }
+                break;
+
             case DXGI_FORMAT_AI44:
             case DXGI_FORMAT_IA44:
             case DXGI_FORMAT_P8:
             case DXGI_FORMAT_A8P8:
-                DebugTrace("ERROR: DDSTextureLoader does not support video textures. Consider using DirectXTex instead.\n");
+                DebugTrace("ERROR: Legacy stream video texture formats are not supported by Direct3D.\n");
                 return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
 
             default:
@@ -861,22 +895,13 @@ namespace
         if (texture || textureView)
         {
         #if defined(_XBOX_ONE) && defined(_TITLE)
-            const wchar_t* pstrName = wcsrchr(fileName, '\\');
-            if (!pstrName)
-            {
-                pstrName = fileName;
-            }
-            else
-            {
-                pstrName++;
-            }
             if (texture && *texture)
             {
-                (*texture)->SetName(pstrName);
+                (*texture)->SetName(fileName);
             }
             if (textureView && *textureView)
             {
-                (*textureView)->SetName(pstrName);
+                (*textureView)->SetName(fileName);
             }
         #else
             CHAR strFileA[MAX_PATH];
@@ -891,29 +916,19 @@ namespace
             );
             if (result > 0)
             {
-                const char* pstrName = strrchr(strFileA, '\\');
-                if (!pstrName)
-                {
-                    pstrName = strFileA;
-                }
-                else
-                {
-                    pstrName++;
-                }
-
                 if (texture && *texture)
                 {
                     (*texture)->SetPrivateData(WKPDID_D3DDebugObjectName,
-                        static_cast<UINT>(strnlen_s(pstrName, MAX_PATH)),
-                        pstrName
+                        static_cast<UINT>(result),
+                        strFileA
                     );
                 }
 
                 if (textureView && *textureView)
                 {
                     (*textureView)->SetPrivateData(WKPDID_D3DDebugObjectName,
-                        static_cast<UINT>(strnlen_s(pstrName, MAX_PATH)),
-                        pstrName
+                        static_cast<UINT>(result),
+                        strFileA
                     );
                 }
             }
@@ -1337,3 +1352,88 @@ HRESULT DirectX::CreateDDSTextureFromFileEx(
 
     return hr;
 }
+
+
+//--------------------------------------------------------------------------------------
+// Adapters for /Zc:wchar_t- clients
+
+#if defined(_MSC_VER) && !defined(_NATIVE_WCHAR_T_DEFINED)
+
+namespace DirectX
+{
+    HRESULT __cdecl CreateDDSTextureFromFile(
+        _In_ ID3D11Device* d3dDevice,
+        _In_z_ const __wchar_t* szFileName,
+        _Outptr_opt_ ID3D11Resource** texture,
+        _Outptr_opt_ ID3D11ShaderResourceView** textureView,
+        _In_ size_t maxsize,
+        _Out_opt_ DDS_ALPHA_MODE* alphaMode) noexcept
+    {
+        return CreateDDSTextureFromFile(d3dDevice,
+            reinterpret_cast<const unsigned short*>(szFileName),
+            texture, textureView, maxsize, alphaMode);
+    }
+
+    HRESULT __cdecl CreateDDSTextureFromFile(
+    #if defined(_XBOX_ONE) && defined(_TITLE)
+        _In_ ID3D11DeviceX* d3dDevice,
+        _In_opt_ ID3D11DeviceContextX* d3dContext,
+    #else
+        _In_ ID3D11Device* d3dDevice,
+        _In_opt_ ID3D11DeviceContext* d3dContext,
+    #endif
+        _In_z_ const __wchar_t* szFileName,
+        _Outptr_opt_ ID3D11Resource** texture,
+        _Outptr_opt_ ID3D11ShaderResourceView** textureView,
+        _In_ size_t maxsize,
+        _Out_opt_ DDS_ALPHA_MODE* alphaMode) noexcept
+    {
+        return CreateDDSTextureFromFile(d3dDevice, d3dContext,
+            reinterpret_cast<const unsigned short*>(szFileName),
+            texture, textureView, maxsize, alphaMode);
+    }
+
+    HRESULT __cdecl CreateDDSTextureFromFileEx(
+        _In_ ID3D11Device* d3dDevice,
+        _In_z_ const __wchar_t* szFileName,
+        _In_ size_t maxsize,
+        _In_ D3D11_USAGE usage,
+        _In_ unsigned int bindFlags,
+        _In_ unsigned int cpuAccessFlags,
+        _In_ unsigned int miscFlags,
+        _In_ DDS_LOADER_FLAGS loadFlags,
+        _Outptr_opt_ ID3D11Resource** texture,
+        _Outptr_opt_ ID3D11ShaderResourceView** textureView,
+        _Out_opt_ DDS_ALPHA_MODE* alphaMode) noexcept
+    {
+        return CreateDDSTextureFromFileEx(d3dDevice,
+            reinterpret_cast<const unsigned short*>(szFileName),
+            maxsize, usage, bindFlags, cpuAccessFlags, miscFlags, loadFlags, texture, textureView, alphaMode);
+    }
+
+    HRESULT __cdecl CreateDDSTextureFromFileEx(
+    #if defined(_XBOX_ONE) && defined(_TITLE)
+        _In_ ID3D11DeviceX* d3dDevice,
+        _In_opt_ ID3D11DeviceContextX* d3dContext,
+    #else
+        _In_ ID3D11Device* d3dDevice,
+        _In_opt_ ID3D11DeviceContext* d3dContext,
+    #endif
+        _In_z_ const __wchar_t* szFileName,
+        _In_ size_t maxsize,
+        _In_ D3D11_USAGE usage,
+        _In_ unsigned int bindFlags,
+        _In_ unsigned int cpuAccessFlags,
+        _In_ unsigned int miscFlags,
+        _In_ DDS_LOADER_FLAGS loadFlags,
+        _Outptr_opt_ ID3D11Resource** texture,
+        _Outptr_opt_ ID3D11ShaderResourceView** textureView,
+        _Out_opt_ DDS_ALPHA_MODE* alphaMode) noexcept
+    {
+        return CreateDDSTextureFromFileEx(d3dDevice, d3dContext,
+            reinterpret_cast<const unsigned short*>(szFileName),
+            maxsize, usage, bindFlags, cpuAccessFlags, miscFlags, loadFlags, texture, textureView, alphaMode);
+    }
+}
+
+#endif // !_NATIVE_WCHAR_T_DEFINED

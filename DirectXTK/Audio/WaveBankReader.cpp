@@ -6,8 +6,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
-// http://go.microsoft.com/fwlink/?LinkID=615561
+// https://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkID=615561
 //-------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -30,10 +30,14 @@ namespace
 {
 #pragma pack(push, 1)
 
+    constexpr uint16_t MSADPCM_FORMAT_EXTRA_BYTES = 32;
+    constexpr uint16_t MSADPCM_NUM_COEFFICIENTS = 7;
+
     constexpr size_t DVD_SECTOR_SIZE = 2048;
     constexpr size_t DVD_BLOCK_SIZE = DVD_SECTOR_SIZE * 16;
 
     constexpr size_t ALIGNMENT_MIN = 4;
+    constexpr size_t ALIGNMENT_MAX = 0xFFFF;
     constexpr size_t ALIGNMENT_DVD = DVD_SECTOR_SIZE;
 
     constexpr size_t MAX_DATA_SEGMENT_SIZE = 0xFFFFFFFF;
@@ -97,7 +101,9 @@ namespace
         }
     };
 
+#ifdef _MSC_VER
 #pragma warning( disable : 4201 4203 )
+#endif
 
     union MINIWAVEFORMAT
     {
@@ -181,6 +187,9 @@ namespace
                         return aWMABlockAlign[dwBlockAlignIndex];
                 }
                 break;
+
+            default:
+                break;
             }
 
             return 0;
@@ -222,6 +231,9 @@ namespace
                         return aWMAAvgBytesPerSec[dwBytesPerSecIndex];
                 }
                 break;
+
+            default:
+                break;
             }
 
             return 0;
@@ -236,10 +248,10 @@ namespace
         void AdpcmFillCoefficientTable(ADPCMWAVEFORMAT *fmt) const noexcept
         {
             // These are fixed since we are always using MS ADPCM
-            fmt->wNumCoef = 7 /* MSADPCM_NUM_COEFFICIENTS */;
+            fmt->wNumCoef = MSADPCM_NUM_COEFFICIENTS;
 
             static ADPCMCOEFSET aCoef[7] = { { 256, 0}, {512, -256}, {0,0}, {192,64}, {240,0}, {460, -208}, {392,-232} };
-            memcpy(&fmt->aCoef, aCoef, sizeof(aCoef));
+            memcpy(&fmt->aCoef, aCoef, sizeof(aCoef)); // CodeQL [SM01947] Code scanner doesn't understand the 0-length MSVC array extension. MSADPCM_FORMAT_EXTRA_BYTES includes this memory.
         }
     };
 
@@ -342,7 +354,7 @@ namespace
             }
         }
 
-        static uint32_t GetDuration(DWORD length, const BANKDATA& data, const uint32_t* seekTable) noexcept
+        static uint32_t GetDuration(DWORD length, const BANKDATA& data, _In_opt_ const uint32_t* seekTable) noexcept
         {
             switch (data.CompactFormat.wFormatTag)
             {
@@ -389,7 +401,7 @@ namespace
 
 #pragma pack(pop)
 
-    inline const uint32_t* FindSeekTable(uint32_t index, const uint8_t* seekTable, const HEADER& header, const BANKDATA& data) noexcept
+    inline const uint32_t* FindSeekTable(uint32_t index, _In_opt_ const uint8_t* seekTable, const HEADER& header, const BANKDATA& data) noexcept
     {
         if (!seekTable || index >= data.dwEntryCount)
             return nullptr;
@@ -437,8 +449,7 @@ public:
     #ifdef DIRECTX_ENABLE_XMA2
         , m_xmaMemory(nullptr)
     #endif
-    {
-    }
+    {}
 
     Impl(Impl&&) = default;
     Impl& operator= (Impl&&) = default;
@@ -507,6 +518,9 @@ HRESULT WaveBankReader::Impl::Open(const wchar_t* szFileName) noexcept(false)
     Close();
     Clear();
 
+    if (!szFileName)
+        return E_INVALIDARG;
+
     m_prepared = false;
 
     m_event.reset(CreateEventEx(nullptr, nullptr, CREATE_EVENT_MANUAL_RESET, EVENT_MODIFY_STATE | SYNCHRONIZE));
@@ -515,7 +529,6 @@ HRESULT WaveBankReader::Impl::Open(const wchar_t* szFileName) noexcept(false)
         return HRESULT_FROM_WIN32(GetLastError());
     }
 
-#if (_WIN32_WINNT >= _WIN32_WINNT_WIN8)
     CREATEFILE2_EXTENDED_PARAMETERS params = { sizeof(CREATEFILE2_EXTENDED_PARAMETERS), 0, 0, 0, {}, nullptr };
     params.dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
     params.dwFileFlags = FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN;
@@ -523,15 +536,6 @@ HRESULT WaveBankReader::Impl::Open(const wchar_t* szFileName) noexcept(false)
         szFileName,
         GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
         &params)));
-#else
-    ScopedHandle hFile(safe_handle(CreateFileW(
-        szFileName,
-        GENERIC_READ, FILE_SHARE_READ,
-        nullptr,
-        OPEN_EXISTING, FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN,
-        nullptr)));
-#endif
-
     if (!hFile)
     {
         return HRESULT_FROM_WIN32(GetLastError());
@@ -541,29 +545,15 @@ HRESULT WaveBankReader::Impl::Open(const wchar_t* szFileName) noexcept(false)
     OVERLAPPED request = {};
     request.hEvent = m_event.get();
 
-    bool wait = false;
     if (!ReadFile(hFile.get(), &m_header, sizeof(m_header), nullptr, &request))
     {
         const DWORD error = GetLastError();
         if (error != ERROR_IO_PENDING)
             return HRESULT_FROM_WIN32(error);
-        wait = true;
     }
 
     DWORD bytes;
-#if (_WIN32_WINNT >= _WIN32_WINNT_WIN8)
-    std::ignore = wait;
-
     BOOL result = GetOverlappedResultEx(hFile.get(), &request, &bytes, INFINITE, FALSE);
-#else
-    if (wait)
-    {
-        std::ignore = WaitForSingleObject(m_event.get(), INFINITE);
-    }
-
-    BOOL result = GetOverlappedResult(hFile.get(), &request, &bytes, FALSE);
-#endif
-
     if (!result || (bytes != sizeof(m_header)))
     {
         return HRESULT_FROM_WIN32(GetLastError());
@@ -591,26 +581,14 @@ HRESULT WaveBankReader::Impl::Open(const wchar_t* szFileName) noexcept(false)
     request.Offset = m_header.Segments[HEADER::SEGIDX_BANKDATA].dwOffset;
     request.hEvent = m_event.get();
 
-    wait = false;
     if (!ReadFile(hFile.get(), &m_data, sizeof(m_data), nullptr, &request))
     {
         const DWORD error = GetLastError();
         if (error != ERROR_IO_PENDING)
             return HRESULT_FROM_WIN32(error);
-        wait = true;
     }
 
-#if (_WIN32_WINNT >= _WIN32_WINNT_WIN8)
     result = GetOverlappedResultEx(hFile.get(), &request, &bytes, INFINITE, FALSE);
-#else
-    if (wait)
-    {
-        std::ignore = WaitForSingleObject(m_event.get(), INFINITE);
-    }
-
-    result = GetOverlappedResult(hFile.get(), &request, &bytes, FALSE);
-#endif
-
     if (!result || (bytes != sizeof(m_data)))
     {
         return HRESULT_FROM_WIN32(GetLastError());
@@ -626,12 +604,12 @@ HRESULT WaveBankReader::Impl::Open(const wchar_t* szFileName) noexcept(false)
 
     if (m_data.dwFlags & BANKDATA::TYPE_STREAMING)
     {
-        if (m_data.dwAlignment < ALIGNMENT_DVD)
+        if ((m_data.dwAlignment < ALIGNMENT_DVD) || (m_data.dwAlignment > ALIGNMENT_MAX))
             return E_FAIL;
         if (m_data.dwAlignment % DVD_SECTOR_SIZE)
             return E_FAIL;
     }
-    else if (m_data.dwAlignment < ALIGNMENT_MIN)
+    else if ((m_data.dwAlignment < ALIGNMENT_MIN) || (m_data.dwAlignment > ALIGNMENT_MAX))
     {
         return E_FAIL;
     }
@@ -658,7 +636,14 @@ HRESULT WaveBankReader::Impl::Open(const wchar_t* szFileName) noexcept(false)
     }
 
     const DWORD metadataBytes = m_header.Segments[HEADER::SEGIDX_ENTRYMETADATA].dwLength;
-    if (metadataBytes != (m_data.dwEntryCount * m_data.dwEntryMetaDataElementSize))
+
+    uint64_t expectedSize = uint64_t(m_data.dwEntryCount) * m_data.dwEntryMetaDataElementSize;
+    if (expectedSize > MAX_DATA_SEGMENT_SIZE)
+    {
+        return HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW);
+    }
+
+    if (metadataBytes != static_cast<DWORD>(expectedSize))
     {
         return E_FAIL;
     }
@@ -667,7 +652,13 @@ HRESULT WaveBankReader::Impl::Open(const wchar_t* szFileName) noexcept(false)
     const DWORD namesBytes = m_header.Segments[HEADER::SEGIDX_ENTRYNAMES].dwLength;
     if (namesBytes > 0)
     {
-        if (namesBytes >= (m_data.dwEntryNameElementSize * m_data.dwEntryCount))
+        expectedSize = uint64_t(m_data.dwEntryCount) * m_data.dwEntryNameElementSize;
+        if (expectedSize > UINT32_MAX)
+        {
+            return HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW);
+        }
+
+        if (namesBytes >= static_cast<DWORD>(expectedSize))
         {
             std::unique_ptr<char[]> temp(new (std::nothrow) char[namesBytes]);
             if (!temp)
@@ -677,26 +668,14 @@ HRESULT WaveBankReader::Impl::Open(const wchar_t* szFileName) noexcept(false)
             request.Offset = m_header.Segments[HEADER::SEGIDX_ENTRYNAMES].dwOffset;
             request.hEvent = m_event.get();
 
-            wait = false;
             if (!ReadFile(hFile.get(), temp.get(), namesBytes, nullptr, &request))
             {
                 const DWORD error = GetLastError();
                 if (error != ERROR_IO_PENDING)
                     return HRESULT_FROM_WIN32(error);
-                wait = true;
             }
 
-        #if (_WIN32_WINNT >= _WIN32_WINNT_WIN8)
             result = GetOverlappedResultEx(hFile.get(), &request, &bytes, INFINITE, FALSE);
-        #else
-            if (wait)
-            {
-                std::ignore = WaitForSingleObject(m_event.get(), INFINITE);
-            }
-
-            result = GetOverlappedResult(hFile.get(), &request, &bytes, FALSE);
-        #endif
-
             if (!result || (namesBytes != bytes))
             {
                 return HRESULT_FROM_WIN32(GetLastError());
@@ -730,26 +709,14 @@ HRESULT WaveBankReader::Impl::Open(const wchar_t* szFileName) noexcept(false)
     request.Offset = m_header.Segments[HEADER::SEGIDX_ENTRYMETADATA].dwOffset;
     request.hEvent = m_event.get();
 
-    wait = false;
     if (!ReadFile(hFile.get(), m_entries.get(), metadataBytes, nullptr, &request))
     {
         const DWORD error = GetLastError();
         if (error != ERROR_IO_PENDING)
             return HRESULT_FROM_WIN32(error);
-        wait = true;
     }
 
-#if (_WIN32_WINNT >= _WIN32_WINNT_WIN8)
     result = GetOverlappedResultEx(hFile.get(), &request, &bytes, INFINITE, FALSE);
-#else
-    if (wait)
-    {
-        std::ignore = WaitForSingleObject(m_event.get(), INFINITE);
-    }
-
-    result = GetOverlappedResult(hFile.get(), &request, &bytes, FALSE);
-#endif
-
     if (!result || (metadataBytes != bytes))
     {
         return HRESULT_FROM_WIN32(GetLastError());
@@ -783,26 +750,14 @@ HRESULT WaveBankReader::Impl::Open(const wchar_t* szFileName) noexcept(false)
         request.Offset = m_header.Segments[HEADER::SEGIDX_SEEKTABLES].dwOffset;
         request.hEvent = m_event.get();
 
-        wait = false;
         if (!ReadFile(hFile.get(), m_seekData.get(), seekLen, nullptr, &request))
         {
             const DWORD error = GetLastError();
             if (error != ERROR_IO_PENDING)
                 return HRESULT_FROM_WIN32(error);
-            wait = true;
         }
 
-    #if (_WIN32_WINNT >= _WIN32_WINNT_WIN8)
         result = GetOverlappedResultEx(hFile.get(), &request, &bytes, INFINITE, FALSE);
-    #else
-        if (wait)
-        {
-            std::ignore = WaitForSingleObject(m_event.get(), INFINITE);
-        }
-
-        result = GetOverlappedResult(hFile.get(), &request, &bytes, FALSE);
-    #endif
-
         if (!result || (seekLen != bytes))
         {
             return HRESULT_FROM_WIN32(GetLastError());
@@ -829,25 +784,13 @@ HRESULT WaveBankReader::Impl::Open(const wchar_t* szFileName) noexcept(false)
         // If streaming, reopen without buffering
         hFile.reset();
 
-    #if (_WIN32_WINNT >= _WIN32_WINNT_WIN8)
         CREATEFILE2_EXTENDED_PARAMETERS params2 = { sizeof(CREATEFILE2_EXTENDED_PARAMETERS), 0, 0, 0, {}, nullptr };
         params2.dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
         params2.dwFileFlags = FILE_FLAG_OVERLAPPED | FILE_FLAG_NO_BUFFERING;
-        m_async = CreateFile2(szFileName,
-            GENERIC_READ,
-            FILE_SHARE_READ,
-            OPEN_EXISTING,
+        m_async = CreateFile2(
+            szFileName,
+            GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
             &params2);
-    #else
-        m_async = CreateFileW(szFileName,
-            GENERIC_READ,
-            FILE_SHARE_READ,
-            nullptr,
-            OPEN_EXISTING,
-            FILE_FLAG_OVERLAPPED | FILE_FLAG_NO_BUFFERING,
-            nullptr);
-    #endif
-
         if (m_async == INVALID_HANDLE_VALUE)
         {
             return HRESULT_FROM_WIN32(GetLastError());
@@ -931,13 +874,7 @@ void WaveBankReader::Impl::Close() noexcept
         if (m_request.hEvent)
         {
             DWORD bytes;
-        #if (_WIN32_WINNT >= _WIN32_WINNT_WIN8)
             std::ignore = GetOverlappedResultEx(m_async, &m_request, &bytes, INFINITE, FALSE);
-        #else
-            std::ignore = WaitForSingleObject(m_request.hEvent, INFINITE);
-
-            std::ignore = GetOverlappedResult(m_async, &m_request, &bytes, FALSE);
-        #endif
         }
 
         CloseHandle(m_async);
@@ -983,11 +920,11 @@ HRESULT WaveBankReader::Impl::GetFormat(uint32_t index, WAVEFORMATEX* pFormat, s
         break;
 
     case MINIWAVEFORMAT::TAG_ADPCM:
-        if (maxsize < (sizeof(WAVEFORMATEX) + 32 /*MSADPCM_FORMAT_EXTRA_BYTES*/))
+        if (maxsize < (sizeof(WAVEFORMATEX) + MSADPCM_FORMAT_EXTRA_BYTES))
             return HRESULT_FROM_WIN32(ERROR_MORE_DATA);
 
         pFormat->wFormatTag = WAVE_FORMAT_ADPCM;
-        pFormat->cbSize = 32 /*MSADPCM_FORMAT_EXTRA_BYTES*/;
+        pFormat->cbSize = MSADPCM_FORMAT_EXTRA_BYTES;
         {
             auto adpcmFmt = reinterpret_cast<ADPCMWAVEFORMAT*>(pFormat);
             adpcmFmt->wSamplesPerBlock = static_cast<WORD>(miniFmt.AdpcmSamplesPerBlock());
@@ -1109,7 +1046,7 @@ HRESULT WaveBankReader::Impl::GetWaveData(uint32_t index, const uint8_t** pData,
 #endif
 
     if (!waveData)
-        return E_FAIL;
+        return E_POINTER;
 
     if (m_data.dwFlags & BANKDATA::TYPE_STREAMING)
     {
@@ -1213,8 +1150,22 @@ HRESULT WaveBankReader::Impl::GetMetadata(uint32_t index, Metadata& metadata) co
         DWORD dwOffset, dwLength;
         entry.ComputeLocations(dwOffset, dwLength, index, m_header, m_data, reinterpret_cast<const ENTRYCOMPACT*>(m_entries.get()));
 
-        auto seekTable = FindSeekTable(index, m_seekData.get(), m_header, m_data);
-        metadata.duration = entry.GetDuration(dwLength, m_data, seekTable);
+        if (m_seekData)
+        {
+            auto seekTable = FindSeekTable(index, m_seekData.get(), m_header, m_data);
+            if (seekTable)
+            {
+                metadata.duration = entry.GetDuration(dwLength, m_data, seekTable);
+            }
+            else
+            {
+                metadata.duration = entry.GetDuration(dwLength, m_data, nullptr);
+            }
+        }
+        else
+        {
+            metadata.duration = entry.GetDuration(dwLength, m_data, nullptr);
+        }
         metadata.loopStart = metadata.loopLength = 0;
         metadata.offsetBytes = dwOffset;
         metadata.lengthBytes = dwLength;
@@ -1234,7 +1185,9 @@ HRESULT WaveBankReader::Impl::GetMetadata(uint32_t index, Metadata& metadata) co
     {
         const uint64_t offset = uint64_t(metadata.offsetBytes) + uint64_t(m_header.Segments[HEADER::SEGIDX_ENTRYWAVEDATA].dwOffset);
         if (offset > UINT32_MAX)
+        {
             return HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW);
+        }
 
         metadata.offsetBytes = static_cast<uint32_t>(offset);
     }
@@ -1254,12 +1207,8 @@ bool WaveBankReader::Impl::UpdatePrepared() noexcept
     if (m_request.hEvent)
     {
 
-    #if (_WIN32_WINNT >= _WIN32_WINNT_WIN8)
         DWORD bytes;
         const BOOL result = GetOverlappedResultEx(m_async, &m_request, &bytes, 0, FALSE);
-    #else
-        const bool result = HasOverlappedIoCompleted(&m_request);
-    #endif
         if (result)
         {
             m_prepared = true;
@@ -1276,13 +1225,11 @@ bool WaveBankReader::Impl::UpdatePrepared() noexcept
 //--------------------------------------------------------------------------------------
 WaveBankReader::WaveBankReader() noexcept(false) :
     pImpl(std::make_unique<Impl>())
-{
-}
+{}
 
 
 WaveBankReader::~WaveBankReader()
-{
-}
+{}
 
 
 _Use_decl_annotations_
@@ -1295,10 +1242,13 @@ HRESULT WaveBankReader::Open(const wchar_t* szFileName) noexcept
 _Use_decl_annotations_
 uint32_t WaveBankReader::Find(const char* name) const
 {
-    auto it = pImpl->m_names.find(name);
-    if (it != pImpl->m_names.cend())
+    if (name)
     {
-        return it->second;
+        auto it = pImpl->m_names.find(name);
+        if (it != pImpl->m_names.cend())
+        {
+            return it->second;
+        }
     }
 
     return uint32_t(-1);

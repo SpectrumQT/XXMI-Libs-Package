@@ -4,8 +4,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
-// http://go.microsoft.com/fwlink/?LinkID=615561
+// https://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkID=615561
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -50,7 +50,9 @@ public:
         , mXMAMemory(nullptr)
     #endif
     {
-        assert(mEngine != nullptr);
+        if (!engine)
+            throw std::invalid_argument("AudioEngine is required");
+
         mEngine->RegisterNotify(this, false);
     }
 
@@ -152,8 +154,7 @@ public:
     }
 
     void __cdecl OnDestroyParent() noexcept override
-    {
-    }
+    {}
 
     const WAVEFORMATEX*                 mWaveFormat;
     const uint8_t*                      mStartAudio;
@@ -614,3 +615,15 @@ void SoundEffect::FillSubmitBuffer(_Out_ XAUDIO2_BUFFER& buffer) const
 }
 
 #endif
+
+
+//--------------------------------------------------------------------------------------
+// Adapters for /Zc:wchar_t- clients
+#if defined(_MSC_VER) && !defined(_NATIVE_WCHAR_T_DEFINED)
+
+_Use_decl_annotations_
+SoundEffect::SoundEffect(AudioEngine* engine, const __wchar_t* waveFileName) :
+    SoundEffect(engine, reinterpret_cast<const unsigned short*>(waveFileName))
+{}
+
+#endif // !_NATIVE_WCHAR_T_DEFINED

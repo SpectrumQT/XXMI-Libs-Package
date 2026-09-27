@@ -3,7 +3,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 
 using System;
 using System.IO;
@@ -27,7 +27,7 @@ namespace MakeSpriteFont
             {
                 // Convert the font.
                 MakeSpriteFont(options);
-                
+
                 return 0;
             }
             catch (Exception e)
@@ -35,7 +35,7 @@ namespace MakeSpriteFont
                 // Print an error message if conversion failed.
                 Console.WriteLine();
                 Console.Error.WriteLine("Error: {0}", e.Message);
-     
+
                 return 1;
             }
         }

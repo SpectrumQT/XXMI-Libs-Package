@@ -4,8 +4,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
-// http://go.microsoft.com/fwlink/?LinkID=615561
+// https://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkID=615561
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -39,8 +39,7 @@ BinaryReader::BinaryReader(_In_z_ wchar_t const* fileName) noexcept(false) :
 BinaryReader::BinaryReader(_In_reads_bytes_(dataSize) uint8_t const* dataBlob, size_t dataSize) noexcept :
     mPos(dataBlob),
     mEnd(dataBlob + dataSize)
-{
-}
+{}
 
 
 // Reads from the filesystem into memory.
@@ -55,20 +54,10 @@ HRESULT BinaryReader::ReadEntireFile(
     *dataSize = 0;
 
     // Open the file.
-#if (_WIN32_WINNT >= _WIN32_WINNT_WIN8)
     ScopedHandle hFile(safe_handle(CreateFile2(
         fileName,
         GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
         nullptr)));
-#else
-    ScopedHandle hFile(safe_handle(CreateFileW(
-        fileName,
-        GENERIC_READ, FILE_SHARE_READ,
-        nullptr,
-        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
-        nullptr)));
-#endif
-
     if (!hFile)
         return HRESULT_FROM_WIN32(GetLastError());
 

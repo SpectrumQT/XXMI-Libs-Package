@@ -4,8 +4,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
-// http://go.microsoft.com/fwlink/?LinkID=615561
+// https://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkID=615561
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -31,6 +31,9 @@ public:
         mBufferNeeded(nullptr),
         mObject(object)
     {
+        if (!engine)
+            throw std::invalid_argument("AudioEngine is required");
+
         if ((sampleRate < XAUDIO2_MIN_SAMPLE_RATE)
             || (sampleRate > XAUDIO2_MAX_SAMPLE_RATE))
         {
@@ -55,6 +58,12 @@ public:
             throw std::invalid_argument("DynamicSoundEffectInstance supports 8 or 16 bit");
         }
 
+        if (!bufferNeeded)
+        {
+            DebugTrace("DynamicSoundEffectInstance requires a valid callback\n");
+            throw std::invalid_argument("DynamicSoundEffectInstance");
+        }
+
         mBufferEvent.reset(CreateEventEx(nullptr, nullptr, 0, EVENT_MODIFY_STATE | SYNCHRONIZE));
         if (!mBufferEvent)
         {
@@ -63,7 +72,6 @@ public:
 
         CreateIntegerPCM(&mWaveFormat, sampleRate, channels, sampleBits);
 
-        assert(engine != nullptr);
         engine->RegisterNotify(this, true);
 
         mBase.Initialize(engine, &mWaveFormat, flags);
@@ -130,8 +138,7 @@ public:
     }
 
     void __cdecl OnDestroyParent() noexcept override
-    {
-    }
+    {}
 
     SoundEffectInstanceBase                             mBase;
 
@@ -214,6 +221,7 @@ void DynamicSoundEffectInstance::Impl::OnUpdate()
     const DWORD result = WaitForSingleObjectEx(mBufferEvent.get(), 0, FALSE);
     switch (result)
     {
+    default:
     case WAIT_TIMEOUT:
         break;
 
@@ -236,7 +244,9 @@ void DynamicSoundEffectInstance::Impl::OnUpdate()
 // DynamicSoundEffectInstance
 //--------------------------------------------------------------------------------------
 
+#ifdef _MSC_VER
 #pragma warning( disable : 4355 )
+#endif
 
 // Public constructors
 _Use_decl_annotations_
@@ -248,8 +258,7 @@ DynamicSoundEffectInstance::DynamicSoundEffectInstance(
     int sampleBits,
     SOUND_EFFECT_INSTANCE_FLAGS flags) :
     pImpl(std::make_unique<Impl>(engine, this, bufferNeeded, sampleRate, channels, sampleBits, flags))
-{
-}
+{}
 
 
 DynamicSoundEffectInstance::DynamicSoundEffectInstance(DynamicSoundEffectInstance&&) noexcept = default;

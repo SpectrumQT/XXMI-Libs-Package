@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkID=615561
+// https://go.microsoft.com/fwlink/?LinkID=615561
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -72,6 +72,12 @@ class PBREffect::Impl : public EffectBase<PBREffectTraits>
 {
 public:
     explicit Impl(_In_ ID3D11Device* device);
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = default;
+    Impl& operator=(Impl&&) = default;
 
     void Initialize(_In_ ID3D11Device* device, bool enableSkinning);
 
@@ -681,6 +687,9 @@ void PBREffect::SetRenderTargetSizeInPixels(int width, int height)
 //--------------------------------------------------------------------------------------
 // SkinnedPBREffect
 //--------------------------------------------------------------------------------------
+
+SkinnedPBREffect::~SkinnedPBREffect()
+{}
 
 // Animation settings.
 void SkinnedPBREffect::SetWeightsPerVertex(int value)

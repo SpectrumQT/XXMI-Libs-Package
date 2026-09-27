@@ -3,7 +3,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 
 using System;
 using System.IO;
@@ -27,6 +27,7 @@ namespace MakeSpriteFont
         List<string> requiredUsageHelp = new List<string>();
         List<string> optionalUsageHelp = new List<string>();
 
+        private const string feedbackURL = "https://github.com/microsoft/DirectXTK/issues";
 
         // Constructor.
         public CommandLineParser(object optionsObject)
@@ -89,7 +90,25 @@ namespace MakeSpriteFont
 
         bool ParseArgument(string arg)
         {
-            if (arg.StartsWith("/"))
+            if (arg.StartsWith("--"))
+            {
+                string name = arg.Substring(2).ToLowerInvariant();
+
+                if (name == "version")
+                {
+                    ShowVersion();
+                }
+                else if (name == "help")
+                {
+                    ShowUsage();
+                }
+                else
+                {
+                    ShowError("Unknown long option '{0}'", name);
+                }
+                return false;
+            }
+            else if (arg.StartsWith("/") || arg.StartsWith("-"))
             {
                 // Parse an optional argument.
                 char[] separators = { ':' };
@@ -108,6 +127,11 @@ namespace MakeSpriteFont
                 }
 
                 return SetOption(field, value);
+            }
+            else if (arg.Equals("feedback", StringComparison.OrdinalIgnoreCase))
+            {
+                System.Diagnostics.Process.Start(feedbackURL);
+                return false;
             }
             else
             {
@@ -202,10 +226,16 @@ namespace MakeSpriteFont
 
         void ShowError(string message, params object[] args)
         {
-            string name = Path.GetFileNameWithoutExtension(Process.GetCurrentProcess().ProcessName);
-
             Console.Error.WriteLine(message, args);
             Console.Error.WriteLine();
+            ShowUsage();
+        }
+
+
+        void ShowUsage()
+        {
+            string name = Path.GetFileNameWithoutExtension(Process.GetCurrentProcess().ProcessName);
+
             Console.Error.WriteLine("Usage: {0} {1}", name, string.Join(" ", requiredUsageHelp));
 
             if (optionalUsageHelp.Count > 0)
@@ -220,6 +250,15 @@ namespace MakeSpriteFont
             }
         }
 
+        void ShowVersion()
+        {
+            string name = Path.GetFileNameWithoutExtension(Process.GetCurrentProcess().ProcessName);
+
+            Version version = Assembly.GetEntryAssembly().GetName().Version;
+
+            Console.Error.WriteLine("{0} Version {1}", name, version);
+        }
+
 
         static T GetAttribute<T>(ICustomAttributeProvider provider) where T : Attribute
         {
@@ -230,7 +269,7 @@ namespace MakeSpriteFont
         // Used on optionsObject fields to indicate which options are required.
         [AttributeUsage(AttributeTargets.Field)]
         public sealed class RequiredAttribute : Attribute
-        { 
+        {
         }
 
 

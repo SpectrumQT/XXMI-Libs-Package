@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -14,7 +14,7 @@
 #include "PlatformHelpers.h"
 
 using namespace DirectX;
-using namespace DirectX::Internal;
+using namespace DirectX::DX11::Private;
 using Microsoft::WRL::ComPtr;
 
 
@@ -23,6 +23,12 @@ class PrimitiveBatchBase::Impl
 {
 public:
     Impl(_In_ ID3D11DeviceContext* deviceContext, size_t maxIndices, size_t maxVertices, size_t vertexSize);
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = default;
+    Impl& operator=(Impl&&) = default;
 
     void Begin();
     void End();
@@ -122,12 +128,13 @@ PrimitiveBatchBase::Impl::Impl(_In_ ID3D11DeviceContext* deviceContext, size_t m
     grfxMemoryIB(nullptr),
     grfxMemoryVB(nullptr)
 #else
-    mMappedIndices
-{
-},
-mMappedVertices{}
+    mMappedIndices{},
+    mMappedVertices{}
 #endif
 {
+    if (!deviceContext)
+        throw std::invalid_argument("Direct3D device context is null");
+
     ComPtr<ID3D11Device> device;
     deviceContext->GetDevice(&device);
 
@@ -423,8 +430,7 @@ void PrimitiveBatchBase::Impl::FlushBatch()
 // Public constructor.
 PrimitiveBatchBase::PrimitiveBatchBase(_In_ ID3D11DeviceContext* deviceContext, size_t maxIndices, size_t maxVertices, size_t vertexSize)
     : pImpl(std::make_unique<Impl>(deviceContext, maxIndices, maxVertices, vertexSize))
-{
-}
+{}
 
 
 PrimitiveBatchBase::PrimitiveBatchBase(PrimitiveBatchBase&&) noexcept = default;

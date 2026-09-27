@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -68,11 +68,20 @@ public:
         mUseNormalMapEffect(true),
         mForceSRGB(false)
     {
+        if (!device)
+            throw std::invalid_argument("Direct3D device is null");
+
         if (device->GetFeatureLevel() < D3D_FEATURE_LEVEL_10_0)
         {
             mUseNormalMapEffect = false;
         }
     }
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = delete;
+    Impl& operator=(Impl&&) = delete;
 
     std::shared_ptr<IEffect> CreateEffect(_In_ IEffectFactory* factory, _In_ const IEffectFactory::EffectInfo& info, _In_opt_ ID3D11DeviceContext* deviceContext);
     void CreateTexture(_In_z_ const wchar_t* texture, _In_opt_ ID3D11DeviceContext* deviceContext, _Outptr_ ID3D11ShaderResourceView** textureView);
@@ -477,8 +486,7 @@ void EffectFactory::Impl::ReleaseCache()
 
 EffectFactory::EffectFactory(_In_ ID3D11Device* device)
     : pImpl(Impl::instancePool.DemandCreate(device))
-{
-}
+{}
 
 
 EffectFactory::EffectFactory(EffectFactory&&) noexcept = default;

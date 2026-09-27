@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -55,6 +55,12 @@ class SkinnedEffect::Impl : public EffectBase<SkinnedEffectTraits>
 {
 public:
     explicit Impl(_In_ ID3D11Device* device);
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = default;
+    Impl& operator=(Impl&&) = default;
 
     bool preferPerPixelLighting;
     bool biasedVertexNormals;
@@ -362,8 +368,7 @@ void SkinnedEffect::Impl::Apply(_In_ ID3D11DeviceContext* deviceContext)
 // Public constructor.
 SkinnedEffect::SkinnedEffect(_In_ ID3D11Device* device)
     : pImpl(std::make_unique<Impl>(device))
-{
-}
+{}
 
 
 SkinnedEffect::SkinnedEffect(SkinnedEffect&&) noexcept = default;

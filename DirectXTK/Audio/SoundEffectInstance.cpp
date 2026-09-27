@@ -4,8 +4,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
-// http://go.microsoft.com/fwlink/?LinkID=615561
+// https://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkID=615561
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -228,14 +228,12 @@ void SoundEffectInstance::Impl::Play(bool loop)
 _Use_decl_annotations_
 SoundEffectInstance::SoundEffectInstance(AudioEngine* engine, SoundEffect* effect, SOUND_EFFECT_INSTANCE_FLAGS flags) :
     pImpl(std::make_unique<Impl>(engine, effect, flags))
-{
-}
+{}
 
 _Use_decl_annotations_
 SoundEffectInstance::SoundEffectInstance(AudioEngine* engine, WaveBank* waveBank, unsigned int index, SOUND_EFFECT_INSTANCE_FLAGS flags) :
     pImpl(std::make_unique<Impl>(engine, waveBank, index, flags))
-{
-}
+{}
 
 
 // Move ctor/operator.

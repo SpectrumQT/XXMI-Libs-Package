@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -47,17 +47,17 @@ namespace
     // HDTV to UHDTV (Rec.709 color primaries into Rec.2020)
     constexpr float c_from709to2020[12] =
     {
-          0.6274040f, 0.3292820f, 0.0433136f, 0.f,
-          0.0690970f, 0.9195400f, 0.0113612f, 0.f,
-          0.0163916f, 0.0880132f, 0.8955950f, 0.f,
+        0.6274040f, 0.3292820f, 0.0433136f, 0.f,
+        0.0690970f, 0.9195400f, 0.0113612f, 0.f,
+        0.0163916f, 0.0880132f, 0.8955950f, 0.f,
     };
 
     // DCI-P3-D65 https://en.wikipedia.org/wiki/DCI-P3 to UHDTV (DCI-P3-D65 color primaries into Rec.2020)
     constexpr float c_fromP3D65to2020[12] =
     {
-           0.753845f,  0.198593f,  0.047562f, 0.f,
-          0.0457456f,  0.941777f, 0.0124772f, 0.f,
-        -0.00121055f, 0.0176041f,  0.983607f, 0.f,
+        0.753845f,    0.198593f,  0.047562f, 0.f,
+        0.0457456f,   0.941777f,  0.0124772f, 0.f,
+        -0.00121055f, 0.0176041f, 0.983607f, 0.f,
     };
 
     // HDTV to DCI-P3-D65 (a.k.a. Display P3 or P3D65)
@@ -193,7 +193,13 @@ namespace
             mVertexShader{},
             mPixelShaders{},
             mMutex{}
-        { }
+        {}
+
+        DeviceResources(const DeviceResources&) = delete;
+        DeviceResources& operator=(const DeviceResources&) = delete;
+
+        DeviceResources(DeviceResources&&) = delete;
+        DeviceResources& operator=(DeviceResources&&) = delete;
 
         // Gets or lazily creates the vertex shader.
         ID3D11VertexShader* GetVertexShader()
@@ -245,6 +251,12 @@ class ToneMapPostProcess::Impl : public AlignedNew<ToneMapConstants>
 {
 public:
     explicit Impl(_In_ ID3D11Device* device);
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = default;
+    Impl& operator=(Impl&&) = default;
 
     void Process(_In_ ID3D11DeviceContext* deviceContext, const std::function<void __cdecl()>& setCustomState);
 
@@ -384,8 +396,7 @@ int ToneMapPostProcess::Impl::GetCurrentShaderPermutation() const noexcept
 // Public constructor.
 ToneMapPostProcess::ToneMapPostProcess(_In_ ID3D11Device* device)
     : pImpl(std::make_unique<Impl>(device))
-{
-}
+{}
 
 
 ToneMapPostProcess::ToneMapPostProcess(ToneMapPostProcess&&) noexcept = default;
@@ -396,7 +407,7 @@ ToneMapPostProcess::~ToneMapPostProcess() = default;
 // IPostProcess methods.
 void ToneMapPostProcess::Process(
     _In_ ID3D11DeviceContext* deviceContext,
-    _In_opt_ std::function<void __cdecl()> setCustomState)
+    _In_ std::function<void __cdecl()> setCustomState)
 {
     pImpl->Process(deviceContext, setCustomState);
 }

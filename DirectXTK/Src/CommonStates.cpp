@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -24,8 +24,13 @@ class CommonStates::Impl
 public:
     explicit Impl(_In_ ID3D11Device* device) noexcept
         : mDevice(device)
-    {
-    }
+    {}
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = delete;
+    Impl& operator=(Impl&&) = delete;
 
     HRESULT CreateBlendState(D3D11_BLEND srcBlend, D3D11_BLEND destBlend, _Outptr_ ID3D11BlendState** pResult);
     HRESULT CreateDepthStencilState(bool enable, bool writeEnable, bool reverseZ, _Outptr_ ID3D11DepthStencilState** pResult);
@@ -182,8 +187,11 @@ HRESULT CommonStates::Impl::CreateSamplerState(
 
 // Public constructor.
 CommonStates::CommonStates(_In_ ID3D11Device* device)
-    : pImpl(Impl::instancePool.DemandCreate(device))
 {
+    if (!device)
+        throw std::invalid_argument("Direct3D device is null");
+
+    pImpl = Impl::instancePool.DemandCreate(device);
 }
 
 

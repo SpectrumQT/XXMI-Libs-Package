@@ -4,8 +4,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
-// http://go.microsoft.com/fwlink/?LinkID=615561
+// https://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkID=615561
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -231,13 +231,13 @@ void DirectX::ComputeGeoSphere(VertexCollection& vertices, IndexCollection& indi
     // Makes an undirected edge. Rather than overloading comparison operators to give us the (a,b)==(b,a) property,
     // we'll just ensure that the larger of the two goes first. This'll simplify things greatly.
     auto makeUndirectedEdge = [](uint16_t a, uint16_t b) noexcept
-    {
-        return std::make_pair(std::max(a, b), std::min(a, b));
-    };
+        {
+            return std::make_pair(std::max(a, b), std::min(a, b));
+        };
 
-    // Key: an edge
-    // Value: the index of the vertex which lies midway between the two vertices pointed to by the key value
-    // This map is used to avoid duplicating vertices when subdividing triangles along edges.
+        // Key: an edge
+        // Value: the index of the vertex which lies midway between the two vertices pointed to by the key value
+        // This map is used to avoid duplicating vertices when subdividing triangles along edges.
     using EdgeSubdivisionMap = std::map<UndirectedEdge, uint16_t>;
 
 
@@ -307,42 +307,42 @@ void DirectX::ComputeGeoSphere(VertexCollection& vertices, IndexCollection& indi
             uint16_t iv20; // index of v20
 
             // Function that, when given the index of two vertices, creates a new vertex at the midpoint of those vertices.
-            auto const divideEdge = [&](uint16_t i0, uint16_t i1, XMFLOAT3& outVertex, uint16_t& outIndex)
-            {
-                const UndirectedEdge edge = makeUndirectedEdge(i0, i1);
-
-                // Check to see if we've already generated this vertex
-                auto it = subdividedEdges.find(edge);
-                if (it != subdividedEdges.end())
+            const auto divideEdge = [&](uint16_t i0, uint16_t i1, XMFLOAT3& outVertex, uint16_t& outIndex)
                 {
-                    // We've already generated this vertex before
-                    outIndex = it->second; // the index of this vertex
-                    outVertex = vertexPositions[outIndex]; // and the vertex itself
-                }
-                else
-                {
-                    // Haven't generated this vertex before: so add it now
+                    const UndirectedEdge edge = makeUndirectedEdge(i0, i1);
 
-                    // outVertex = (vertices[i0] + vertices[i1]) / 2
-                    XMStoreFloat3(
-                        &outVertex,
-                        XMVectorScale(
-                            XMVectorAdd(XMLoadFloat3(&vertexPositions[i0]), XMLoadFloat3(&vertexPositions[i1])),
-                            0.5f
-                        )
-                    );
+                    // Check to see if we've already generated this vertex
+                    auto it = subdividedEdges.find(edge);
+                    if (it != subdividedEdges.end())
+                    {
+                        // We've already generated this vertex before
+                        outIndex = it->second; // the index of this vertex
+                        outVertex = vertexPositions[outIndex]; // and the vertex itself
+                    }
+                    else
+                    {
+                        // Haven't generated this vertex before: so add it now
 
-                    outIndex = static_cast<uint16_t>(vertexPositions.size());
-                    CheckIndexOverflow(outIndex);
-                    vertexPositions.push_back(outVertex);
+                        // outVertex = (vertices[i0] + vertices[i1]) / 2
+                        XMStoreFloat3(
+                            &outVertex,
+                            XMVectorScale(
+                                XMVectorAdd(XMLoadFloat3(&vertexPositions[i0]), XMLoadFloat3(&vertexPositions[i1])),
+                                0.5f
+                            )
+                        );
 
-                    // Now add it to the map.
-                    auto entry = std::make_pair(edge, outIndex);
-                    subdividedEdges.insert(entry);
-                }
-            };
+                        outIndex = static_cast<uint16_t>(vertexPositions.size());
+                        CheckIndexOverflow(outIndex);
+                        vertexPositions.push_back(outVertex);
 
-            // Add/get new vertices and their indices
+                        // Now add it to the map.
+                        auto entry = std::make_pair(edge, outIndex);
+                        subdividedEdges.insert(entry);
+                    }
+                };
+
+                // Add/get new vertices and their indices
             divideEdge(iv0, iv1, v01, iv01);
             divideEdge(iv1, iv2, v12, iv12);
             divideEdge(iv0, iv2, v20, iv20);
@@ -357,7 +357,7 @@ void DirectX::ComputeGeoSphere(VertexCollection& vertices, IndexCollection& indi
             //       v12
             const uint16_t indicesToAdd[] =
             {
-                 iv0, iv01, iv20, // a
+                iv0, iv01,  iv20, // a
                 iv20, iv12,  iv2, // b
                 iv20, iv01, iv12, // c
                 iv01,  iv1, iv12, // d
@@ -372,8 +372,8 @@ void DirectX::ComputeGeoSphere(VertexCollection& vertices, IndexCollection& indi
     vertices.reserve(vertexPositions.size());
     for (const auto& it : vertexPositions)
     {
-        auto const normal = XMVector3Normalize(XMLoadFloat3(&it));
-        auto const pos = XMVectorScale(normal, radius);
+        const auto normal = XMVector3Normalize(XMLoadFloat3(&it));
+        const auto pos = XMVectorScale(normal, radius);
 
         XMFLOAT3 normalFloat3;
         XMStoreFloat3(&normalFloat3, normal);
@@ -385,7 +385,7 @@ void DirectX::ComputeGeoSphere(VertexCollection& vertices, IndexCollection& indi
         const float u = longitude / XM_2PI + 0.5f;
         const float v = latitude / XM_PI;
 
-        auto const texcoord = XMVectorSet(1.0f - u, v, 0.0f, 0.0f);
+        const auto texcoord = XMVectorSet(1.0f - u, v, 0.0f, 0.0f);
         vertices.push_back(VertexPositionNormalTexture(pos, normal, texcoord));
     }
 
@@ -468,64 +468,64 @@ void DirectX::ComputeGeoSphere(VertexCollection& vertices, IndexCollection& indi
     // onto a single point. In general there's no real way to do that right. But to match the behavior of non-geodesic
     // spheres, we need to duplicate the pole vertex for every triangle that uses it. This will introduce seams near the
     // poles, but reduce stretching.
-    auto const fixPole = [&](size_t poleIndex)
-    {
-        const auto& poleVertex = vertices[poleIndex];
-        bool overwrittenPoleVertex = false; // overwriting the original pole vertex saves us one vertex
-
-        for (size_t i = 0; i < indices.size(); i += 3)
+    const auto fixPole = [&](size_t poleIndex)
         {
-            // These pointers point to the three indices which make up this triangle. pPoleIndex is the pointer to the
-            // entry in the index array which represents the pole index, and the other two pointers point to the other
-            // two indices making up this triangle.
-            uint16_t* pPoleIndex;
-            uint16_t* pOtherIndex0;
-            uint16_t* pOtherIndex1;
-            if (indices[i + 0] == poleIndex)
-            {
-                pPoleIndex = &indices[i + 0];
-                pOtherIndex0 = &indices[i + 1];
-                pOtherIndex1 = &indices[i + 2];
-            }
-            else if (indices[i + 1] == poleIndex)
-            {
-                pPoleIndex = &indices[i + 1];
-                pOtherIndex0 = &indices[i + 2];
-                pOtherIndex1 = &indices[i + 0];
-            }
-            else if (indices[i + 2] == poleIndex)
-            {
-                pPoleIndex = &indices[i + 2];
-                pOtherIndex0 = &indices[i + 0];
-                pOtherIndex1 = &indices[i + 1];
-            }
-            else
-            {
-                continue;
-            }
+            const auto& poleVertex = vertices[poleIndex];
+            bool overwrittenPoleVertex = false; // overwriting the original pole vertex saves us one vertex
 
-            const auto& otherVertex0 = vertices[*pOtherIndex0];
-            const auto& otherVertex1 = vertices[*pOtherIndex1];
-
-            // Calculate the texcoords for the new pole vertex, add it to the vertices and update the index
-            VertexPositionNormalTexture newPoleVertex = poleVertex;
-            newPoleVertex.textureCoordinate.x = (otherVertex0.textureCoordinate.x + otherVertex1.textureCoordinate.x) / 2;
-            newPoleVertex.textureCoordinate.y = poleVertex.textureCoordinate.y;
-
-            if (!overwrittenPoleVertex)
+            for (size_t i = 0; i < indices.size(); i += 3)
             {
-                vertices[poleIndex] = newPoleVertex;
-                overwrittenPoleVertex = true;
-            }
-            else
-            {
-                CheckIndexOverflow(vertices.size());
+                // These pointers point to the three indices which make up this triangle. pPoleIndex is the pointer to the
+                // entry in the index array which represents the pole index, and the other two pointers point to the other
+                // two indices making up this triangle.
+                uint16_t* pPoleIndex;
+                uint16_t* pOtherIndex0;
+                uint16_t* pOtherIndex1;
+                if (indices[i + 0] == poleIndex)
+                {
+                    pPoleIndex = &indices[i + 0];
+                    pOtherIndex0 = &indices[i + 1];
+                    pOtherIndex1 = &indices[i + 2];
+                }
+                else if (indices[i + 1] == poleIndex)
+                {
+                    pPoleIndex = &indices[i + 1];
+                    pOtherIndex0 = &indices[i + 2];
+                    pOtherIndex1 = &indices[i + 0];
+                }
+                else if (indices[i + 2] == poleIndex)
+                {
+                    pPoleIndex = &indices[i + 2];
+                    pOtherIndex0 = &indices[i + 0];
+                    pOtherIndex1 = &indices[i + 1];
+                }
+                else
+                {
+                    continue;
+                }
 
-                *pPoleIndex = static_cast<uint16_t>(vertices.size());
-                vertices.push_back(newPoleVertex);
+                const auto& otherVertex0 = vertices[*pOtherIndex0];
+                const auto& otherVertex1 = vertices[*pOtherIndex1];
+
+                // Calculate the texcoords for the new pole vertex, add it to the vertices and update the index
+                VertexPositionNormalTexture newPoleVertex = poleVertex;
+                newPoleVertex.textureCoordinate.x = (otherVertex0.textureCoordinate.x + otherVertex1.textureCoordinate.x) / 2;
+                newPoleVertex.textureCoordinate.y = poleVertex.textureCoordinate.y;
+
+                if (!overwrittenPoleVertex)
+                {
+                    vertices[poleIndex] = newPoleVertex;
+                    overwrittenPoleVertex = true;
+                }
+                else
+                {
+                    CheckIndexOverflow(vertices.size());
+
+                    *pPoleIndex = static_cast<uint16_t>(vertices.size());
+                    vertices.push_back(newPoleVertex);
+                }
             }
-        }
-    };
+        };
 
     fixPole(northPoleIndex);
     fixPole(southPoleIndex);

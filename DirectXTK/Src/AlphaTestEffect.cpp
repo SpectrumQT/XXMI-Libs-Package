@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -42,6 +42,12 @@ class AlphaTestEffect::Impl : public EffectBase<AlphaTestEffectTraits>
 {
 public:
     explicit Impl(_In_ ID3D11Device* device);
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = default;
+    Impl& operator=(Impl&&) = default;
 
     D3D11_COMPARISON_FUNC alphaFunction;
     int referenceAlpha;
@@ -196,7 +202,7 @@ void AlphaTestEffect::Impl::Apply(_In_ ID3D11DeviceContext* deviceContext)
     if (dirtyFlags & EffectDirtyFlags::AlphaTest)
     {
         // Convert reference alpha from 8 bit integer to 0-1 float format.
-        auto const reference = static_cast<float>(referenceAlpha) / 255.0f;
+        const auto reference = static_cast<float>(referenceAlpha) / 255.0f;
 
         // Comparison tolerance of half the 8 bit integer precision.
         constexpr float threshold = 0.5f / 255.0f;
@@ -282,8 +288,7 @@ void AlphaTestEffect::Impl::Apply(_In_ ID3D11DeviceContext* deviceContext)
 // Public constructor.
 AlphaTestEffect::AlphaTestEffect(_In_ ID3D11Device* device)
     : pImpl(std::make_unique<Impl>(device))
-{
-}
+{}
 
 
 AlphaTestEffect::AlphaTestEffect(AlphaTestEffect&&) noexcept = default;

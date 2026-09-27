@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -95,7 +95,16 @@ public:
         mDevice(device),
         mSharing(true),
         mForceSRGB(false)
-    {}
+    {
+        if (!device)
+            throw std::invalid_argument("Direct3D device is null");
+    }
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = delete;
+    Impl& operator=(Impl&&) = delete;
 
     std::shared_ptr<IEffect> CreateEffect(
         _In_ IEffectFactory* factory,
@@ -306,8 +315,7 @@ void PBREffectFactory::Impl::ReleaseCache()
 
 PBREffectFactory::PBREffectFactory(_In_ ID3D11Device* device)
     : pImpl(Impl::instancePool.DemandCreate(device))
-{
-}
+{}
 
 PBREffectFactory::PBREffectFactory(PBREffectFactory&&) noexcept = default;
 PBREffectFactory& PBREffectFactory::operator= (PBREffectFactory&&) noexcept = default;

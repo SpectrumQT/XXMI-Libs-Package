@@ -18,6 +18,7 @@
 *.VC.db
 *.nupkg
 .vs
+.vscode
 Bin
 packages
 /Src/Shaders/Compiled/*.inc
@@ -25,6 +26,9 @@ packages
 /ipch
 /MakeSpriteFont/obj
 /Tests
+/Testing
 /wiki
 /out
 /CMakeUserPresets.json
+/build/vcpkg_installed
+/build/*.exe

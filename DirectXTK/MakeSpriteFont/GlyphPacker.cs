@@ -3,7 +3,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 
 using System;
 using System.Collections.Generic;
@@ -142,9 +142,9 @@ namespace MakeSpriteFont
                 usedPixels += (glyph.Width * glyph.Height);
             }
 
-            float utilization = ( (float)usedPixels / (float)(width * height) ) * 100;
+            float utilization = ((float)usedPixels / (float)(width * height)) * 100;
 
-            Console.WriteLine("Packing efficiency {0}%", utilization );
+            Console.WriteLine("Packing efficiency {0}%", utilization);
 
             return output;
         }

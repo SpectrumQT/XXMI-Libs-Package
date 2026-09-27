@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Release|Gaming.Desktop.x64">
       <Configuration>Release</Configuration>
@@ -78,7 +78,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Gaming.Desktop.x64'">
     <LibraryPath>$(Console_SdkLibPath);$(LibraryPath)</LibraryPath>
     <IncludePath>$(Console_SdkIncludeRoot);$(IncludePath)</IncludePath>
-    <LinkIncremental>true</LinkIncremental>
+    <LinkIncremental>false</LinkIncremental>
     <OutDir>Bin\GDK_2022\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>Bin\GDK_2022\$(Platform)\$(Configuration)\</IntDir>
     <TargetName>DirectXTK</TargetName>
@@ -199,6 +199,7 @@
     <ClInclude Include="Src\AlignedNew.h" />
     <ClInclude Include="Src\Bezier.h" />
     <ClInclude Include="Src\BinaryReader.h" />
+    <ClInclude Include="Src\CMO.h" />
     <ClInclude Include="Src\DemandCreate.h" />
     <ClInclude Include="Src\EffectCommon.h" />
     <ClInclude Include="Src\Geometry.h" />
@@ -292,17 +293,25 @@
     <None Include="Src\Shaders\DebugEffect.fx" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <ImportGroup Label="ExtensionTargets">
-  </ImportGroup>
+  <ImportGroup Label="ExtensionTargets" />
+  <Target Name="EnsureGDK" BeforeTargets="_CheckForInvalidConfigurationAndPlatform" Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(Platform)', 'Gaming\..+\.x64'))">
+    <PropertyGroup>
+      <ErrorText>This project requires the Microsoft GDK to be installed. If you have already installed the GDK, then run Repair to ensure proper integration with Visual Studio. The missing platform is {0}.</ErrorText>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(VCTargetsPath)\Platforms\$(Platform)\Platform.props')" Text="$([System.String]::Format('$(ErrorText)', '$(Platform)'))" />
+  </Target>
   <Target Name="ATGEnsureShaders" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <_ATGFXCPath>$(WindowsSDK_ExecutablePath_x64.Split(';')[0])</_ATGFXCPath>
       <_ATGFXCPath>$(_ATGFXCPath.Replace("x64",""))</_ATGFXCPath>
       <_ATGFXCPath Condition="'$(_ATGFXCPath)' != '' and !HasTrailingSlash('$(_ATGFXCPath)')">$(_ATGFXCPath)\</_ATGFXCPath>
+      <_ATGFXCVer>$([System.Text.RegularExpressions.Regex]::Match($(_ATGFXCPath), '10\.0\.\d+\.0'))</_ATGFXCVer>
+      <_ATGFXCVer Condition="'$(_ATGFXCVer)' != '' and !HasTrailingSlash('$(_ATGFXCVer)')">$(_ATGFXCVer)\</_ATGFXCVer>
     </PropertyGroup>
-    <Exec Condition="!Exists('src/Shaders/Compiled/SpriteEffect_SpriteVertexShader.inc')" WorkingDirectory="$(ProjectDir)src/Shaders" Command="CompileShaders" EnvironmentVariables="WindowsSdkVerBinPath=$(_ATGFXCPath)" />
+    <Exec Condition="!Exists('src/Shaders/Compiled/SpriteEffect_SpriteVertexShader.inc')" WorkingDirectory="$(ProjectDir)src/Shaders" Command="CompileShaders" EnvironmentVariables="WindowsSdkVerBinPath=$(_ATGFXCPath);WindowsSDKVersion=$(_ATGFXCVer);CompileShadersOutput=$(ProjectDir)Src/Shaders/Compiled" LogStandardErrorAsError="true" />
     <PropertyGroup>
       <_ATGFXCPath />
+      <_ATGFXCVer />
     </PropertyGroup>
   </Target>
   <Target Name="ATGDeleteShaders" AfterTargets="Clean">

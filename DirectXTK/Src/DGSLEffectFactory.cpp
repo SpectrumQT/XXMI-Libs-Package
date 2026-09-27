@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -34,7 +34,16 @@ public:
         mDevice(device),
         mSharing(true),
         mForceSRGB(false)
-    {}
+    {
+        if (!device)
+            throw std::invalid_argument("Direct3D device is null");
+    }
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = delete;
+    Impl& operator=(Impl&&) = delete;
 
     std::shared_ptr<IEffect> CreateEffect(_In_ DGSLEffectFactory* factory, _In_ const IEffectFactory::EffectInfo& info, _In_opt_ ID3D11DeviceContext* deviceContext);
     std::shared_ptr<IEffect> CreateDGSLEffect(_In_ DGSLEffectFactory* factory, _In_ const DGSLEffectInfo& info, _In_opt_ ID3D11DeviceContext* deviceContext);
@@ -536,8 +545,7 @@ void DGSLEffectFactory::Impl::ReleaseCache()
 
 DGSLEffectFactory::DGSLEffectFactory(_In_ ID3D11Device* device)
     : pImpl(Impl::instancePool.DemandCreate(device))
-{
-}
+{}
 
 
 DGSLEffectFactory::DGSLEffectFactory(DGSLEffectFactory&&) noexcept = default;

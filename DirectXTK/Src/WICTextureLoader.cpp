@@ -18,7 +18,7 @@
 // Licensed under the MIT License.
 //
 // http://go.microsoft.com/fwlink/?LinkId=248926
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 // We could load multi-frame images (TIFF/GIF) into a texture array.
@@ -44,6 +44,11 @@ namespace
     {
         const GUID&         wic;
         DXGI_FORMAT         format;
+
+        constexpr WICTranslate(const GUID& wg, DXGI_FORMAT fmt) noexcept :
+            wic(wg),
+            format(fmt)
+        {}
     };
 
     constexpr WICTranslate g_WICFormats[] =
@@ -78,6 +83,11 @@ namespace
     {
         const GUID& source;
         const GUID& target;
+
+        constexpr WICConvert(const GUID& src, const GUID& tgt) noexcept :
+            source(src),
+            target(tgt)
+        {}
     };
 
     constexpr WICConvert g_WICConvert[] =
@@ -131,11 +141,9 @@ namespace
         { GUID_WICPixelFormat40bppCMYKAlpha,        GUID_WICPixelFormat32bppRGBA }, // DXGI_FORMAT_R8G8B8A8_UNORM
         { GUID_WICPixelFormat80bppCMYKAlpha,        GUID_WICPixelFormat64bppRGBA }, // DXGI_FORMAT_R16G16B16A16_UNORM
 
-    #if (_WIN32_WINNT >= _WIN32_WINNT_WIN8) || defined(_WIN7_PLATFORM_UPDATE)
         { GUID_WICPixelFormat32bppRGB,              GUID_WICPixelFormat32bppRGBA }, // DXGI_FORMAT_R8G8B8A8_UNORM
         { GUID_WICPixelFormat64bppRGB,              GUID_WICPixelFormat64bppRGBA }, // DXGI_FORMAT_R16G16B16A16_UNORM
         { GUID_WICPixelFormat64bppPRGBAHalf,        GUID_WICPixelFormat64bppRGBAHalf }, // DXGI_FORMAT_R16G16B16A16_FLOAT
-    #endif
 
         // We don't support n-channel formats
     };
@@ -144,7 +152,6 @@ namespace
 
     BOOL WINAPI InitializeWICFactory(PINIT_ONCE, PVOID, PVOID *ifactory) noexcept
     {
-    #if (_WIN32_WINNT >= _WIN32_WINNT_WIN8) || defined(_WIN7_PLATFORM_UPDATE)
         HRESULT hr = CoCreateInstance(
             CLSID_WICImagingFactory2,
             nullptr,
@@ -170,34 +177,29 @@ namespace
             );
             return SUCCEEDED(hr) ? TRUE : FALSE;
         }
-    #else
-        return SUCCEEDED(CoCreateInstance(
-            CLSID_WICImagingFactory,
-            nullptr,
-            CLSCTX_INPROC_SERVER,
-            __uuidof(IWICImagingFactory),
-            ifactory)) ? TRUE : FALSE;
-    #endif
     }
 }
 
 //--------------------------------------------------------------------------------------
 namespace DirectX
 {
-    namespace Internal
+    inline namespace DX11
     {
-        bool IsWIC2() noexcept;
-        IWICImagingFactory* GetWIC() noexcept;
-        // Also used by ScreenGrab
+        namespace ToolKitInternal
+        {
+            bool IsWIC2() noexcept;
+            IWICImagingFactory* GetWIC() noexcept;
+            // Also used by ScreenGrab
+        }
     }
 }
 
-bool DirectX::Internal::IsWIC2() noexcept
+bool DirectX::DX11::ToolKitInternal::IsWIC2() noexcept
 {
     return g_WIC2;
 }
 
-IWICImagingFactory* DirectX::Internal::GetWIC() noexcept
+IWICImagingFactory* DirectX::DX11::ToolKitInternal::GetWIC() noexcept
 {
     static INIT_ONCE s_initOnce = INIT_ONCE_STATIC_INIT;
 
@@ -214,7 +216,7 @@ IWICImagingFactory* DirectX::Internal::GetWIC() noexcept
     return factory;
 }
 
-using namespace Internal;
+using namespace DirectX::DX11::ToolKitInternal;
 
 namespace
 {
@@ -227,13 +229,11 @@ namespace
                 return g_WICFormats[i].format;
         }
 
-    #if (_WIN32_WINNT >= _WIN32_WINNT_WIN8) || defined(_WIN7_PLATFORM_UPDATE)
         if (g_WIC2)
         {
             if (memcmp(&GUID_WICPixelFormat96bppRGBFloat, &guid, sizeof(GUID)) == 0)
                 return DXGI_FORMAT_R32G32B32_FLOAT;
         }
-    #endif
 
         return DXGI_FORMAT_UNKNOWN;
     }
@@ -369,7 +369,6 @@ namespace
         {
             if (memcmp(&GUID_WICPixelFormat96bppRGBFixedPoint, &pixelFormat, sizeof(WICPixelFormatGUID)) == 0)
             {
-            #if (_WIN32_WINNT >= _WIN32_WINNT_WIN8) || defined(_WIN7_PLATFORM_UPDATE)
                 if (g_WIC2)
                 {
                     memcpy_s(&convertGUID, sizeof(WICPixelFormatGUID), &GUID_WICPixelFormat96bppRGBFloat, sizeof(GUID));
@@ -377,7 +376,6 @@ namespace
                     bpp = 96;
                 }
                 else
-                #endif
                 {
                     memcpy_s(&convertGUID, sizeof(WICPixelFormatGUID), &GUID_WICPixelFormat128bppRGBAFloat, sizeof(GUID));
                     format = DXGI_FORMAT_R32G32B32A32_FLOAT;
@@ -414,7 +412,6 @@ namespace
             bpp = WICBitsPerPixel(pixelFormat);
         }
 
-    #if (_WIN32_WINNT >= _WIN32_WINNT_WIN8) || defined(_WIN7_PLATFORM_UPDATE)
         if ((format == DXGI_FORMAT_R32G32B32_FLOAT) && d3dContext && textureView)
         {
             // Special case test for optional device support for autogen mipchains for R32G32B32_FLOAT
@@ -428,7 +425,6 @@ namespace
                 bpp = 128;
             }
         }
-    #endif
 
         if (loadFlags & WIC_LOADER_FORCE_RGBA32)
         {
@@ -536,8 +532,8 @@ namespace
         if (rowBytes > UINT32_MAX || numBytes > UINT32_MAX)
             return HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW);
 
-        auto const rowPitch = static_cast<size_t>(rowBytes);
-        auto const imageSize = static_cast<size_t>(numBytes);
+        const auto rowPitch = static_cast<size_t>(rowBytes);
+        const auto imageSize = static_cast<size_t>(numBytes);
 
         std::unique_ptr<uint8_t[]> temp(new (std::nothrow) uint8_t[imageSize]);
         if (!temp)
@@ -743,22 +739,13 @@ namespace
         if (texture || textureView)
         {
         #if defined(_XBOX_ONE) && defined(_TITLE)
-            const wchar_t* pstrName = wcsrchr(fileName, '\\');
-            if (!pstrName)
-            {
-                pstrName = fileName;
-            }
-            else
-            {
-                pstrName++;
-            }
             if (texture && *texture)
             {
-                (*texture)->SetName(pstrName);
+                (*texture)->SetName(fileName);
             }
             if (textureView && *textureView)
             {
-                (*textureView)->SetName(pstrName);
+                (*textureView)->SetName(fileName);
             }
         #else
             CHAR strFileA[MAX_PATH];
@@ -773,29 +760,19 @@ namespace
             );
             if (result > 0)
             {
-                const char* pstrName = strrchr(strFileA, '\\');
-                if (!pstrName)
-                {
-                    pstrName = strFileA;
-                }
-                else
-                {
-                    pstrName++;
-                }
-
                 if (texture && *texture)
                 {
                     (*texture)->SetPrivateData(WKPDID_D3DDebugObjectName,
-                        static_cast<UINT>(strnlen_s(pstrName, MAX_PATH)),
-                        pstrName
+                        static_cast<UINT>(result),
+                        strFileA
                     );
                 }
 
                 if (textureView && *textureView)
                 {
                     (*textureView)->SetPrivateData(WKPDID_D3DDebugObjectName,
-                        static_cast<UINT>(strnlen_s(pstrName, MAX_PATH)),
-                        pstrName
+                        static_cast<UINT>(result),
+                        strFileA
                     );
                 }
             }
@@ -1219,3 +1196,84 @@ HRESULT DirectX::CreateWICTextureFromFileEx(
 
     return hr;
 }
+
+
+//--------------------------------------------------------------------------------------
+// Adapters for /Zc:wchar_t- clients
+
+#if defined(_MSC_VER) && !defined(_NATIVE_WCHAR_T_DEFINED)
+
+namespace DirectX
+{
+    HRESULT __cdecl CreateWICTextureFromFile(
+        _In_ ID3D11Device* d3dDevice,
+        _In_z_ const __wchar_t* szFileName,
+        _Outptr_opt_ ID3D11Resource** texture,
+        _Outptr_opt_ ID3D11ShaderResourceView** textureView,
+        _In_ size_t maxsize) noexcept
+    {
+        return CreateWICTextureFromFile(d3dDevice,
+            reinterpret_cast<const unsigned short*>(szFileName),
+            texture, textureView, maxsize);
+    }
+
+    HRESULT __cdecl CreateWICTextureFromFile(
+    #if defined(_XBOX_ONE) && defined(_TITLE)
+        _In_ ID3D11DeviceX* d3dDevice,
+        _In_opt_ ID3D11DeviceContextX* d3dContext,
+    #else
+        _In_ ID3D11Device* d3dDevice,
+        _In_opt_ ID3D11DeviceContext* d3dContext,
+    #endif
+        _In_z_ const __wchar_t* szFileName,
+        _Outptr_opt_ ID3D11Resource** texture,
+        _Outptr_opt_ ID3D11ShaderResourceView** textureView,
+        _In_ size_t maxsize) noexcept
+    {
+        return CreateWICTextureFromFile(d3dDevice, d3dContext,
+            reinterpret_cast<const unsigned short*>(szFileName),
+            texture, textureView, maxsize);
+    }
+
+    HRESULT __cdecl CreateWICTextureFromFileEx(
+        _In_ ID3D11Device* d3dDevice,
+        _In_z_ const __wchar_t* szFileName,
+        _In_ size_t maxsize,
+        _In_ D3D11_USAGE usage,
+        _In_ unsigned int bindFlags,
+        _In_ unsigned int cpuAccessFlags,
+        _In_ unsigned int miscFlags,
+        _In_ WIC_LOADER_FLAGS loadFlags,
+        _Outptr_opt_ ID3D11Resource** texture,
+        _Outptr_opt_ ID3D11ShaderResourceView** textureView) noexcept
+    {
+        return CreateWICTextureFromFileEx(d3dDevice,
+            reinterpret_cast<const unsigned short*>(szFileName),
+            maxsize, usage, bindFlags, cpuAccessFlags, miscFlags, loadFlags, texture, textureView);
+    }
+
+    HRESULT __cdecl CreateWICTextureFromFileEx(
+    #if defined(_XBOX_ONE) && defined(_TITLE)
+        _In_ ID3D11DeviceX* d3dDevice,
+        _In_opt_ ID3D11DeviceContextX* d3dContext,
+    #else
+        _In_ ID3D11Device* d3dDevice,
+        _In_opt_ ID3D11DeviceContext* d3dContext,
+    #endif
+        _In_z_ const __wchar_t* szFileName,
+        _In_ size_t maxsize,
+        _In_ D3D11_USAGE usage,
+        _In_ unsigned int bindFlags,
+        _In_ unsigned int cpuAccessFlags,
+        _In_ unsigned int miscFlags,
+        _In_ WIC_LOADER_FLAGS loadFlags,
+        _Outptr_opt_ ID3D11Resource** texture,
+        _Outptr_opt_ ID3D11ShaderResourceView** textureView) noexcept
+    {
+        return CreateWICTextureFromFileEx(d3dDevice, d3dContext,
+            reinterpret_cast<const unsigned short*>(szFileName),
+            maxsize, usage, bindFlags, cpuAccessFlags, miscFlags, loadFlags, texture, textureView);
+    }
+}
+
+#endif // !_NATIVE_WCHAR_T_DEFINED

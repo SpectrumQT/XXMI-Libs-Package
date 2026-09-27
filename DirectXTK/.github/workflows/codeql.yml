@@ -1,0 +1,91 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+#
+# http://go.microsoft.com/fwlink/?LinkId=248929
+
+name: "CodeQL"
+
+on:
+  push:
+    branches: "main"
+    paths-ignore:
+      - '*.md'
+      - LICENSE
+      - '.azuredevops/**'
+      - '.github/*.md'
+      - '.nuget/*'
+      - build/*.cmd
+      - build/*.json
+      - build/*.props
+      - build/*.ps1
+      - build/*.targets
+  pull_request:
+    branches: "main"
+    paths-ignore:
+      - '*.md'
+      - LICENSE
+      - '.azuredevops/**'
+      - '.github/*.md'
+      - '.nuget/*'
+      - build/*.cmd
+      - build/*.json
+      - build/*.props
+      - build/*.ps1
+      - build/*.targets
+  schedule:
+    - cron: '31 2 * * 5'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: windows-latest
+    timeout-minutes: 360
+    permissions:
+      actions: read  # for github/codeql-action/init to get workflow details
+      contents: read  # for actions/checkout to fetch code
+      security-events: write  # for github/codeql-action/autobuild to send a status report
+      packages: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [c-cpp, csharp]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - if: matrix.language == 'c-cpp'
+        name: 'Install Ninja'
+        run: choco install ninja
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v3.29.5
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: manual
+
+      - if: matrix.language == 'c-cpp'
+        name: 'Configure CMake (C/C++)'
+        working-directory: ${{ github.workspace }}
+        run: cmake --preset=x64-Debug
+
+      - if: matrix.language == 'c-cpp'
+        name: 'Build (C/C++)'
+        working-directory: ${{ github.workspace }}
+        run: cmake --build out\build\x64-Debug
+
+      - if: matrix.language == 'csharp'
+        name: 'Build (C#)'
+        working-directory: ./MakeSpriteFont
+        run: msbuild MakeSpriteFont.csproj /p:Configuration=Debug /p:Platform=AnyCPU
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v3.29.5
+        with:
+          category: "/language:${{ matrix.language }}"

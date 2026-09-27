@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -20,7 +20,7 @@
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
 
-static_assert(sizeof(VertexPositionNormalTexture) == 32, "VBO vertex size mismatch");
+static_assert(sizeof(VertexPositionNormalTexture) == sizeof(VBO::vertex_t), "VBO vertex size mismatch");
 
 namespace
 {
@@ -46,7 +46,7 @@ namespace
 
 //--------------------------------------------------------------------------------------
 _Use_decl_annotations_
-std::unique_ptr<Model> DirectX::Model::CreateFromVBO(
+std::unique_ptr<Model> Model::CreateFromVBO(
     ID3D11Device* device,
     const uint8_t* meshData, size_t dataSize,
     std::shared_ptr<IEffect> ieffect,
@@ -77,7 +77,7 @@ std::unique_ptr<Model> DirectX::Model::CreateFromVBO(
             throw std::runtime_error("VB too large for DirectX 11");
     }
 
-    auto const vertSize = static_cast<size_t>(sizeInBytes);
+    const auto vertSize = static_cast<size_t>(sizeInBytes);
 
     if (dataSize < (vertSize + sizeof(VBO::header_t)))
         throw std::runtime_error("End of file");
@@ -94,7 +94,7 @@ std::unique_ptr<Model> DirectX::Model::CreateFromVBO(
             throw std::runtime_error("IB too large for DirectX 11");
     }
 
-    auto const indexSize = static_cast<size_t>(sizeInBytes);
+    const auto indexSize = static_cast<size_t>(sizeInBytes);
 
     if (dataSize < (sizeof(VBO::header_t) + vertSize + indexSize))
         throw std::runtime_error("End of file");
@@ -152,7 +152,7 @@ std::unique_ptr<Model> DirectX::Model::CreateFromVBO(
 
     SetDebugObjectName(il.Get(), "ModelVBO");
 
-    auto part = new ModelMeshPart();
+    auto part = std::make_unique<ModelMeshPart>();
     part->indexCount = header->numIndices;
     part->startIndex = 0;
     part->vertexStride = static_cast<UINT>(sizeof(VertexPositionNormalTexture));
@@ -167,9 +167,11 @@ std::unique_ptr<Model> DirectX::Model::CreateFromVBO(
     mesh->pmalpha = (flags & ModelLoader_PremultipledAlpha) != 0;
     BoundingSphere::CreateFromPoints(mesh->boundingSphere, header->numVertices, &verts->position, sizeof(VertexPositionNormalTexture));
     BoundingBox::CreateFromPoints(mesh->boundingBox, header->numVertices, &verts->position, sizeof(VertexPositionNormalTexture));
-    mesh->meshParts.emplace_back(part);
+    mesh->meshParts.reserve(1);
+    mesh->meshParts.emplace_back(std::move(part));
 
     auto model = std::make_unique<Model>();
+    model->meshes.reserve(1);
     model->meshes.emplace_back(mesh);
 
     return model;
@@ -178,7 +180,7 @@ std::unique_ptr<Model> DirectX::Model::CreateFromVBO(
 
 //--------------------------------------------------------------------------------------
 _Use_decl_annotations_
-std::unique_ptr<Model> DirectX::Model::CreateFromVBO(
+std::unique_ptr<Model> Model::CreateFromVBO(
     ID3D11Device* device,
     const wchar_t* szFileName,
     std::shared_ptr<IEffect> ieffect,
@@ -200,3 +202,21 @@ std::unique_ptr<Model> DirectX::Model::CreateFromVBO(
 
     return model;
 }
+
+
+//--------------------------------------------------------------------------------------
+// Adapters for /Zc:wchar_t- clients
+
+#if defined(_MSC_VER) && !defined(_NATIVE_WCHAR_T_DEFINED)
+
+_Use_decl_annotations_
+std::unique_ptr<Model> Model::CreateFromVBO(
+    ID3D11Device* device,
+    const __wchar_t* szFileName,
+    std::shared_ptr<IEffect> ieffect,
+    ModelLoaderFlags flags)
+{
+    return CreateFromVBO(device, reinterpret_cast<const unsigned short*>(szFileName), ieffect, flags);
+}
+
+#endif

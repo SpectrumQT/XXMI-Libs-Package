@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -69,6 +69,12 @@ class NormalMapEffect::Impl : public EffectBase<NormalMapEffectTraits>
 {
 public:
     explicit Impl(_In_ ID3D11Device* device);
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = default;
+    Impl& operator=(Impl&&) = default;
 
     void Initialize(_In_ ID3D11Device* device, bool enableSkinning);
 
@@ -689,6 +695,9 @@ void NormalMapEffect::SetInstancingEnabled(bool value)
 //--------------------------------------------------------------------------------------
 // SkinnedNormalMapEffect
 //--------------------------------------------------------------------------------------
+
+SkinnedNormalMapEffect::~SkinnedNormalMapEffect()
+{}
 
 // Animation settings.
 void SkinnedNormalMapEffect::SetWeightsPerVertex(int value)

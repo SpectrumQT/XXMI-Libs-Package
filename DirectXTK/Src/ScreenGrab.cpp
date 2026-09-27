@@ -12,7 +12,7 @@
 // Licensed under the MIT License.
 //
 // http://go.microsoft.com/fwlink/?LinkId=248926
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 // Does not capture 1D textures or 3D textures (volume maps)
@@ -185,32 +185,22 @@ HRESULT DirectX::SaveDDSTextureToFile(
         return hr;
 
     // Create file
-#if (_WIN32_WINNT >= _WIN32_WINNT_WIN8)
     ScopedHandle hFile(safe_handle(CreateFile2(
         fileName,
         GENERIC_WRITE | DELETE, 0, CREATE_ALWAYS,
         nullptr)));
-#else
-    ScopedHandle hFile(safe_handle(CreateFileW(
-        fileName,
-        GENERIC_WRITE | DELETE, 0,
-        nullptr,
-        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
-        nullptr)));
-#endif
     if (!hFile)
         return HRESULT_FROM_WIN32(GetLastError());
 
     auto_delete_file delonfail(hFile.get());
 
     // Setup header
-    constexpr size_t MAX_HEADER_SIZE = sizeof(uint32_t) + sizeof(DDS_HEADER) + sizeof(DDS_HEADER_DXT10);
-    uint8_t fileHeader[MAX_HEADER_SIZE] = {};
+    uint8_t fileHeader[DDS_DX10_HEADER_SIZE] = {};
 
     *reinterpret_cast<uint32_t*>(&fileHeader[0]) = DDS_MAGIC;
 
     auto header = reinterpret_cast<DDS_HEADER*>(&fileHeader[0] + sizeof(uint32_t));
-    size_t headerSize = sizeof(uint32_t) + sizeof(DDS_HEADER);
+    size_t headerSize = DDS_MIN_HEADER_SIZE;
     header->size = sizeof(DDS_HEADER);
     header->flags = DDS_HEADER_FLAGS_TEXTURE | DDS_HEADER_FLAGS_MIPMAP;
     header->height = desc.Height;
@@ -268,7 +258,7 @@ HRESULT DirectX::SaveDDSTextureToFile(
         memcpy(&header->ddspf, &DDSPF_DX10, sizeof(DDS_PIXELFORMAT));
 
         headerSize += sizeof(DDS_HEADER_DXT10);
-        extHeader = reinterpret_cast<DDS_HEADER_DXT10*>(fileHeader + sizeof(uint32_t) + sizeof(DDS_HEADER));
+        extHeader = reinterpret_cast<DDS_HEADER_DXT10*>(fileHeader + DDS_MIN_HEADER_SIZE);
         extHeader->dxgiFormat = desc.Format;
         extHeader->resourceDimension = D3D11_RESOURCE_DIMENSION_TEXTURE2D;
         extHeader->arraySize = 1;
@@ -345,10 +335,13 @@ HRESULT DirectX::SaveDDSTextureToFile(
 //--------------------------------------------------------------------------------------
 namespace DirectX
 {
-    namespace Internal
+    inline namespace DX11
     {
-        extern bool IsWIC2() noexcept;
-        extern IWICImagingFactory* GetWIC() noexcept;
+        namespace ToolKitInternal
+        {
+            extern bool IsWIC2() noexcept;
+            extern IWICImagingFactory* GetWIC() noexcept;
+        }
     }
 }
 
@@ -362,7 +355,7 @@ HRESULT DirectX::SaveWICTextureToFile(
     std::function<void(IPropertyBag2*)> setCustomProps,
     bool forceSRGB)
 {
-    using namespace Internal;
+    using namespace DX11::ToolKitInternal;
 
     if (!fileName)
         return E_INVALIDARG;
@@ -493,7 +486,6 @@ HRESULT DirectX::SaveWICTextureToFile(
         // Screenshots don't typically include the alpha channel of the render target
         switch (desc.Format)
         {
-        #if (_WIN32_WINNT >= _WIN32_WINNT_WIN8) || defined(_WIN7_PLATFORM_UPDATE)
         case DXGI_FORMAT_R32G32B32A32_FLOAT:
         case DXGI_FORMAT_R16G16B16A16_FLOAT:
             if (IsWIC2())
@@ -505,7 +497,6 @@ HRESULT DirectX::SaveWICTextureToFile(
                 targetGuid = GUID_WICPixelFormat24bppBGR;
             }
             break;
-        #endif
 
         case DXGI_FORMAT_R16G16B16A16_UNORM: targetGuid = GUID_WICPixelFormat48bppBGR; break;
         case DXGI_FORMAT_B5G5R5A1_UNORM:     targetGuid = GUID_WICPixelFormat16bppBGR555; break;
@@ -689,3 +680,37 @@ HRESULT DirectX::SaveWICTextureToFile(
 
     return S_OK;
 }
+
+
+//--------------------------------------------------------------------------------------
+// Adapters for /Zc:wchar_t- clients
+
+#if defined(_MSC_VER) && !defined(_NATIVE_WCHAR_T_DEFINED)
+
+namespace DirectX
+{
+    HRESULT __cdecl SaveDDSTextureToFile(
+        _In_ ID3D11DeviceContext* pContext,
+        _In_ ID3D11Resource* pSource,
+        _In_z_ const __wchar_t* fileName) noexcept
+    {
+        return SaveDDSTextureToFile(pContext, pSource,
+            reinterpret_cast<const unsigned short*>(fileName));
+    }
+
+    HRESULT __cdecl SaveWICTextureToFile(
+        _In_ ID3D11DeviceContext* pContext,
+        _In_ ID3D11Resource* pSource,
+        _In_ REFGUID guidContainerFormat,
+        _In_z_ const __wchar_t* fileName,
+        _In_opt_ const GUID* targetFormat,
+        _In_ std::function<void __cdecl(IPropertyBag2*)> setCustomProps,
+        _In_ bool forceSRGB)
+    {
+        return SaveWICTextureToFile(pContext, pSource, guidContainerFormat,
+            reinterpret_cast<const unsigned short*>(fileName),
+            targetFormat, setCustomProps, forceSRGB);
+    }
+}
+
+#endif // !_NATIVE_WCHAR_T_DEFINED

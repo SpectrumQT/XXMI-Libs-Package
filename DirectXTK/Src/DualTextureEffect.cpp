@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -42,6 +42,12 @@ class DualTextureEffect::Impl : public EffectBase<DualTextureEffectTraits>
 {
 public:
     explicit Impl(_In_ ID3D11Device* device);
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = default;
+    Impl& operator=(Impl&&) = default;
 
     bool vertexColorEnabled;
 
@@ -185,8 +191,7 @@ void DualTextureEffect::Impl::Apply(_In_ ID3D11DeviceContext* deviceContext)
 // Public constructor.
 DualTextureEffect::DualTextureEffect(_In_ ID3D11Device* device)
     : pImpl(std::make_unique<Impl>(device))
-{
-}
+{}
 
 
 DualTextureEffect::DualTextureEffect(DualTextureEffect&&) noexcept = default;

@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -43,6 +43,12 @@ class DebugEffect::Impl : public EffectBase<DebugEffectTraits>
 {
 public:
     explicit Impl(_In_ ID3D11Device* device);
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = default;
+    Impl& operator=(Impl&&) = default;
 
     bool vertexColorEnabled;
     bool biasedVertexNormals;
@@ -298,8 +304,7 @@ void DebugEffect::Impl::Apply(_In_ ID3D11DeviceContext* deviceContext)
 // Public constructor.
 DebugEffect::DebugEffect(_In_ ID3D11Device* device)
     : pImpl(std::make_unique<Impl>(device))
-{
-}
+{}
 
 
 DebugEffect::DebugEffect(DebugEffect&&) noexcept = default;

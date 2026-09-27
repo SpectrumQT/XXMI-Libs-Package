@@ -4,12 +4,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
-// http://go.microsoft.com/fwlink/?LinkID=615561
+// https://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkID=615561
 //--------------------------------------------------------------------------------------
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <exception>
 #include <stdexcept>
@@ -27,6 +28,9 @@ namespace DirectX
         explicit BinaryReader(_In_z_ wchar_t const* fileName) noexcept(false);
         BinaryReader(_In_reads_bytes_(dataSize) uint8_t const* dataBlob, size_t dataSize) noexcept;
 
+        BinaryReader(BinaryReader&&) noexcept;
+        BinaryReader& operator= (BinaryReader&&) noexcept;
+
         BinaryReader(BinaryReader const&) = delete;
         BinaryReader& operator= (BinaryReader const&) = delete;
 
@@ -42,7 +46,11 @@ namespace DirectX
         {
             static_assert(std::is_standard_layout<T>::value, "Can only read plain-old-data types");
 
-            uint8_t const* newPos = mPos + sizeof(T) * elementCount;
+            const uint64_t byteCount = uint64_t(sizeof(T)) * uint64_t(elementCount);
+            if (byteCount > UINT32_MAX)
+                throw std::overflow_error("ReadArray");
+
+            uint8_t const* newPos = mPos + static_cast<size_t>(byteCount);
 
             if (newPos < mPos)
                 throw std::overflow_error("ReadArray");

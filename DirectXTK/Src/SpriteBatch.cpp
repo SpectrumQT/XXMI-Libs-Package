@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -62,6 +62,12 @@ XM_ALIGNED_STRUCT(16) SpriteBatch::Impl : public AlignedNew<SpriteBatch::Impl>
 {
 public:
     explicit Impl(_In_ ID3D11DeviceContext* deviceContext);
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = default;
+    Impl& operator=(Impl&&) = default;
 
     void XM_CALLCONV Begin(SpriteSortMode sortMode,
         _In_opt_ ID3D11BlendState* blendState,
@@ -323,6 +329,8 @@ SpriteBatch::Impl::ContextResources::ContextResources(_In_ ID3D11DeviceContext* 
     deviceContext = context;
 #endif
 
+    SetDebugObjectName(constantBuffer.GetBuffer(), "DirectXTK::SpriteBatch");
+
     CreateVertexBuffer();
 }
 
@@ -374,10 +382,13 @@ SpriteBatch::Impl::Impl(_In_ ID3D11DeviceContext* deviceContext)
     mSpriteQueueArraySize(0),
     mInBeginEndPair(false),
     mSortMode(SpriteSortMode_Deferred),
-    mTransformMatrix(MatrixIdentity),
-    mDeviceResources(deviceResourcesPool.DemandCreate(GetDevice(deviceContext).Get())),
-    mContextResources(contextResourcesPool.DemandCreate(deviceContext))
+    mTransformMatrix(MatrixIdentity)
 {
+    if (!deviceContext)
+        throw std::invalid_argument("Direct3D device context is null");
+
+    mDeviceResources = deviceResourcesPool.DemandCreate(GetDevice(deviceContext).Get());
+    mContextResources = contextResourcesPool.DemandCreate(deviceContext);
 }
 
 
@@ -789,8 +800,8 @@ void SpriteBatch::Impl::RenderBatch(ID3D11ShaderResourceView* texture, SpriteInf
     #endif
 
             // Ok lads, the time has come for us draw ourselves some sprites!
-        auto const startIndex = static_cast<UINT>(mContextResources->vertexBufferPosition * IndicesPerSprite);
-        auto const indexCount = static_cast<UINT>(batchSize * IndicesPerSprite);
+        const auto startIndex = static_cast<UINT>(mContextResources->vertexBufferPosition * IndicesPerSprite);
+        const auto indexCount = static_cast<UINT>(batchSize * IndicesPerSprite);
 
         deviceContext->DrawIndexed(indexCount, startIndex, 0);
 
@@ -1012,8 +1023,7 @@ XMMATRIX SpriteBatch::Impl::GetViewportTransform(_In_ ID3D11DeviceContext* devic
 // Public constructor.
 SpriteBatch::SpriteBatch(_In_ ID3D11DeviceContext* deviceContext)
     : pImpl(std::make_unique<Impl>(deviceContext))
-{
-}
+{}
 
 
 SpriteBatch::SpriteBatch(SpriteBatch&&) noexcept = default;

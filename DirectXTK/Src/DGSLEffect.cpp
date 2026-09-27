@@ -4,7 +4,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
@@ -222,6 +222,12 @@ class DGSLEffect::Impl : public AlignedNew<DGSLEffectConstants>
 public:
     Impl(_In_ ID3D11Device* device, _In_opt_ ID3D11PixelShader* pixelShader) :
         constants{},
+        world{},
+        view{},
+        projection{},
+        lightEnabled{},
+        lightDiffuseColor{},
+        lightSpecularColor{},
         dirtyFlags(INT_MAX),
         vertexColorEnabled(false),
         textureEnabled(false),
@@ -239,6 +245,12 @@ public:
         static_assert(static_cast<int>(std::size(DGSLEffectTraits::PixelShaderBytecode)) == DGSLEffectTraits::PixelShaderCount, "array/max mismatch");
         static_assert(MaxDirectionalLights == 4, "Mismatch with DGSL pipline");
     }
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = default;
+    Impl& operator=(Impl&&) = default;
 
     void Initialize(_In_ ID3D11Device* device, bool enableSkinning)
     {
@@ -321,7 +333,7 @@ private:
             : EffectDeviceResources(device),
             mVertexShaders{},
             mPixelShaders{}
-        { }
+        {}
 
         // Gets or lazily creates the vertex shader.
         ID3D11VertexShader* GetVertexShader(int permutation)
@@ -892,6 +904,9 @@ void DGSLEffect::SetTexture(int whichTexture, _In_opt_ ID3D11ShaderResourceView*
 //--------------------------------------------------------------------------------------
 // SkinnedDGSLEffect
 //--------------------------------------------------------------------------------------
+
+SkinnedDGSLEffect::~SkinnedDGSLEffect()
+{}
 
 // Animation settings.
 void SkinnedDGSLEffect::SetWeightsPerVertex(int value)

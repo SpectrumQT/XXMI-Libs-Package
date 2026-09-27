@@ -12851,19 +12851,29 @@ static void SetSlotRange(CommandListState *state, ResourceCopyTarget &target, un
 {
 	ID3D11DeviceContext1 *context = state->mOrigContext1;
 	UINT uav_counters[D3D11_1_UAV_SLOT_COUNT]; // TODO: Allow these to be set
+	UINT cb_first[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
+	UINT cb_counts[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
+	bool cb_regions = false;
 	std::fill_n(uav_counters, D3D11_1_UAV_SLOT_COUNT, (UINT)-1);
 
 	if (target.type == ResourceCopyTargetType::CONSTANT_BUFFER) {
-		// A copy into a cb slot binds a region (XXSetConstantBuffers1),
-		// which has no whole-range equivalent: bind those slot by slot.
+		// Same split as SetResource(): a region of a buffer needs
+		// XXSetConstantBuffers1, and the windows it takes are per slot, so one
+		// region in the range sends every slot through it. Without one the
+		// plain call stays, which a driver lacking constant buffer offsetting
+		// support cannot drop.
 		for (unsigned i = 0; i < count; i++) {
-			if (!cb_sizes[i])
-				continue;
-			for (unsigned j = 0; j < count; j++) {
-				target.slot = first + j;
-				target.SetResource(state, buffers[j], NULL, 0, cb_offsets[j], DXGI_FORMAT_UNKNOWN, cb_sizes[j]);
+			if (cb_sizes[i]) {
+				// Bytes -> constants of 16 bytes each, as in SetResource():
+				cb_first[i] = cb_offsets[i] / 16;
+				cb_counts[i] = cb_sizes[i] / 16;
+				cb_regions = true;
+			} else {
+				// No region: the widest window there is, which the runtime
+				// intersects with the buffer to bind all of it.
+				cb_first[i] = 0;
+				cb_counts[i] = D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT;
 			}
-			return;
 		}
 	}
 
@@ -12879,6 +12889,17 @@ static void SetSlotRange(CommandListState *state, ResourceCopyTarget &target, un
 				first, count, (ID3D11UnorderedAccessView *const *)views, uav_counters);
 		break;
 	case ResourceCopyTargetType::CONSTANT_BUFFER:
+		if (cb_regions) {
+			switch (target.shader_type) {
+				case L'v': context->VSSetConstantBuffers1(first, count, buffers, cb_first, cb_counts); break;
+				case L'h': context->HSSetConstantBuffers1(first, count, buffers, cb_first, cb_counts); break;
+				case L'd': context->DSSetConstantBuffers1(first, count, buffers, cb_first, cb_counts); break;
+				case L'g': context->GSSetConstantBuffers1(first, count, buffers, cb_first, cb_counts); break;
+				case L'p': context->PSSetConstantBuffers1(first, count, buffers, cb_first, cb_counts); break;
+				case L'c': context->CSSetConstantBuffers1(first, count, buffers, cb_first, cb_counts); break;
+			}
+			break;
+		}
 		switch (target.shader_type) {
 			case L'v': context->VSSetConstantBuffers(first, count, buffers); break;
 			case L'h': context->HSSetConstantBuffers(first, count, buffers); break;

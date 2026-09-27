@@ -43,16 +43,9 @@ PoolTextures[0:7] = ref unless_null ps-t[0:7] ; Elements of empty slots are not 
 ps-t[0:7] = ref unless_null PoolTextures[0:7] ; Empty pool elements do not unbind their slot.
 ```
 
-## Inheriting Bounds
+## Computed Bounds
 
-When one side has bounds, the other side may omit them. This is handy when the pool size defines the range:
-
-```ini
-ps-t = ref PoolTextures[0:7] ; Same as ps-t[0:7] = ref PoolTextures[0:7]
-PoolTextures = ref ps-t[0:7] ; Same as PoolTextures[0:7] = ref ps-t[0:7]
-```
-
-The bounds can also be computed, for example from the number of textures the character actually uses:
+The bounds are expressions, so they can be computed, for example from the number of textures the character actually uses:
 
 ```ini
 $last = $texture_count - 1

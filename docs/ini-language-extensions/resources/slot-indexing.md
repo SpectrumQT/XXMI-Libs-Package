@@ -68,24 +68,7 @@ Pool bounds follow [Ring indexing](../pools/indexing.md/#ring-indexing) rules, s
 
 This holds for every index type: on a `fifo` or `spatial` pool the bounds are still element indices, not keys, so the range addresses the physical elements directly and bypasses key lookup. Element keys are not touched by a range operation. A fetch counts as an update of the elements it writes for [expiration](../pools/declaration.md/#element-expiration) purposes, like any assignment.
 
-A pool range is only valid on the other side of a slot range.
-
-### Inheriting Bounds
-
-When bounds are given on one side only, the other side uses the same bounds:
-
-```ini
-ps-t = ref PoolFoo[0:9]   ; Same as ps-t[0:9] = ref PoolFoo[0:9]
-ps-t[0:9] = ref PoolFoo   ; Same as ps-t[0:9] = ref PoolFoo[0:9]
-PoolFoo[0:9] = ref ps-t   ; Same as PoolFoo[0:9] = ref ps-t[0:9]
-PoolFoo = ref ps-t[0:9]   ; Same as PoolFoo[0:9] = ref ps-t[0:9]
-```
-
-The bare `<stage>-t`, `<stage>-u` and `<stage>-cb` forms are only valid opposite a pool range.
-
-When the slots inherit their bounds from a pool range, the wrapped pool indices are used as slot numbers, so the pool range must not wrap around the end of the pool. When the pool inherits its bounds from a slot range, the slot numbers are used as pool indices, so the range must not be larger than the pool.
-
-When bounds are given on both sides, both ranges must have the same size.
+A pool range is only valid on the other side of a slot range. Each side states its own bounds, so that a range is visible in the line without reading the other side of the assignment, and the two ranges must have the same size.
 
 ### Copy Options
 
@@ -110,7 +93,7 @@ The frame analysis log lists every slot of the range as the equivalent single-sl
 dump = ps-t[0:3]
 ```
 
-Pool ranges and the bare `<stage>-t` form are not supported by `dump`. Other commands do not accept ranges.
+Pool ranges are not supported by `dump`. Other commands do not accept ranges.
 
 ## Examples
 

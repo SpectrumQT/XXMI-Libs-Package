@@ -1190,10 +1190,9 @@ static bool ParseFrameAnalysisDump(const wchar_t *section,
 	if (!operation->target.ParseTarget(target, true, ini_namespace, pre_command_list->scope, true, true))
 		goto bail;
 
-	if (operation->target.evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_RANGE
-		|| (operation->target.IsRange() && !operation->target.range_start))
+	if (operation->target.evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_RANGE)
 	{
-		LogOverlayW(LOG_WARNING, L"dump supports slot ranges with explicit bounds only: %ls\n", target);
+		LogOverlayW(LOG_WARNING, L"dump does not support pool ranges: %ls\n", target);
 		goto bail;
 	}
 
@@ -8332,41 +8331,6 @@ IniParserResult ResourceCopyTarget::ParseTargetPipelineSlot(const wchar_t*& targ
 			return expression_ret;
 	}
 
-	// Bare "ps-t" / "ps-u" / "ps-cb": a slot range whose bounds come from
-	// the other side of the assignment (ps-t = ref PoolFoo[0:9]).
-	// Only matches when the suffix is *exactly* the keyword with nothing
-	// trailing (no slot digits) - anything else (e.g. "ps-t0") must fall
-	// through to the numeric slot parsing below.
-	if (evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE && length >= 4
-		&& is_shader_resource(target[0]) && target[1] == L's' && target[2] == L'-')
-	{
-		const wchar_t* suffix = target + 3;
-		size_t suffix_len = length - 3;
-		bool bare = false;
-
-		if (suffix_len == 1 && suffix[0] == L't') {
-			type = ResourceCopyTargetType::SHADER_RESOURCE;
-			max_slot = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
-			bare = true;
-		} else if (suffix_len == 1 && suffix[0] == L'u') {
-			if (target[0] != L'p' && target[0] != L'c')
-				return IniParserResult::SYNTAX_ERROR;
-			type = ResourceCopyTargetType::UNORDERED_ACCESS_VIEW;
-			max_slot = D3D11_1_UAV_SLOT_COUNT;
-			bare = true;
-		} else if (suffix_len == 2 && suffix[0] == L'c' && suffix[1] == L'b') {
-			type = ResourceCopyTargetType::CONSTANT_BUFFER;
-			max_slot = D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT;
-			bare = true;
-		}
-
-		if (bare) {
-			shader_type = target[0];
-			evaluation_mode = ResourceCopyTargetEvaluationMode::SLOT_RANGE;
-			return IniParserResult::TOKEN_FOUND;
-		}
-	}
-
 	struct TargetInfo {
 		const wchar_t* keyword;
 		size_t len;
@@ -12990,13 +12954,10 @@ static CommandListCommand* parse_slot_range_operation(
 	ResourceCopyTarget &slots = bind ? dst : src;
 	ResourceCopyTarget &other = bind ? src : dst;
 
-	// A pool with or without bounds; without, it takes the slot range's.
-	bool other_is_pool = other.type == ResourceCopyTargetType::POOL
-		&& (other.evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_RANGE
-			|| other.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE);
+	bool other_is_pool = other.type == ResourceCopyTargetType::POOL;
 
 	if (bind) {
-		// ps-t[$a:$b] = ref PoolFoo[$c:$d] | ref PoolFoo | ref ResourceFoo | null
+		// ps-t[$a:$b] = ref PoolFoo[$c:$d] | ref ResourceFoo | null
 		bool src_ok = other_is_pool
 			|| (src.type == ResourceCopyTargetType::CUSTOM_RESOURCE && src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE)
 			|| src.type == ResourceCopyTargetType::EMPTY;
@@ -13010,8 +12971,10 @@ static CommandListCommand* parse_slot_range_operation(
 		return nullptr;
 	}
 
-	if (!slots.range_start && !(other_is_pool && other.range_start)) {
-		LogOverlayW(LOG_WARNING, L"Slot range needs bounds on at least one side\n - [%ls] @ [%ls]\n", section, ini_namespace->c_str());
+	// Each side states its own bounds, so that a range is visible in the ini
+	// line without reading the other side of the assignment:
+	if (other_is_pool && other.evaluation_mode != ResourceCopyTargetEvaluationMode::POOL_RANGE) {
+		LogOverlayW(LOG_WARNING, L"A pool opposite a slot range needs explicit bounds\n - [%ls] @ [%ls]\n", section, ini_namespace->c_str());
 		return nullptr;
 	}
 
@@ -13348,33 +13311,16 @@ void SlotRangeCopyOperation::run(CommandListState *state)
 	int slot_first = 0, pool_first = 0;
 	unsigned count = 0, pool_count = 0;
 
-	// Bounds given on one side are inherited by the other; given on both,
-	// the sizes must match.
-	if (slots.range_start && !slots.ResolveRange(state, &slot_first, &count))
-		return;
-	if (has_pool && other.range_start && !other.ResolveRange(state, &pool_first, &pool_count))
+	if (!slots.ResolveRange(state, &slot_first, &count))
 		return;
 
-	if (!slots.range_start) {
-		// Slots inherit the pool range: wrap it to a positive index, and
-		// it must not wrap around the end of the pool since slots can't.
-		int size = (int)other.RangeLimit();
-		slot_first = ((pool_first % size) + size) % size;
-		count = pool_count;
-		if (slot_first + (int)count > size || slot_first + (int)count > (int)slots.RangeLimit()) {
-			LogOverlayW(LOG_WARNING, L"Pool range [%d:%d] can't be used as slots, give explicit slot bounds\n - [%ls]\n", pool_first, pool_first + (int)count - 1, ini_line.c_str());
+	if (has_pool) {
+		if (!other.ResolveRange(state, &pool_first, &pool_count))
+			return;
+		if (pool_count != count) {
+			LogOverlayW(LOG_WARNING, L"Slot range and pool range sizes differ (%u vs %u)\n - [%ls]\n", count, pool_count, ini_line.c_str());
 			return;
 		}
-	} else if (has_pool && !other.range_start) {
-		pool_first = slot_first;
-		pool_count = count;
-		if (pool_count > other.RangeLimit()) {
-			LogOverlayW(LOG_WARNING, L"Slot range [%d:%d] exceeds the pool size (%u)\n - [%ls]\n", slot_first, slot_first + (int)count - 1, other.RangeLimit(), ini_line.c_str());
-			return;
-		}
-	} else if (has_pool && pool_count != count) {
-		LogOverlayW(LOG_WARNING, L"Slot range and pool range sizes differ (%u vs %u)\n - [%ls]\n", count, pool_count, ini_line.c_str());
-		return;
 	}
 
 	unsigned first = (unsigned)slot_first;

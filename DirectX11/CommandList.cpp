@@ -8471,19 +8471,12 @@ bool ResourceCopyTarget::IsRange() const
 		|| evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_RANGE;
 }
 
-bool ResourceCopyTarget::ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope, bool allow_custom, bool allow_range)
+bool ResourceCopyTarget::AcceptParsedTarget(IniParserResult ret, bool allow_range) const
 {
-	bool ret = _ParseTarget(target, is_source, ini_namespace, scope, allow_custom);
-
-	if (ret && !allow_range && IsRange()) {
-		LogOverlayW(LOG_WARNING, L"Ranges are not supported here: %ls\n", target);
-		return false;
-	}
-
-	return ret;
+	return ret == IniParserResult::TOKEN_FOUND && (allow_range || !IsRange());
 }
 
-bool ResourceCopyTarget::_ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope, bool allow_custom)
+bool ResourceCopyTarget::ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope, bool allow_custom, bool allow_range)
 {
 	IniParserResult ret;
 	size_t length = wcslen(target);
@@ -8508,7 +8501,7 @@ bool ResourceCopyTarget::_ParseTarget(const wchar_t *target, bool is_source, con
 			// Parse pool variable (e.g. `$PoolFoo[0]`).
 			ret = ParseTargetPool(target, length, ini_namespace, scope, is_source);
 			//LogInfo("ParseTarget: %d at ParseTargetPool\n", ret);
-			return ret == IniParserResult::TOKEN_FOUND;
+			return AcceptParsedTarget(ret, allow_range);
 		}
 
 		// Consume an optional resource member suffix (e.g. `->HashRegion(0, 16)` or `->Length`).
@@ -8521,20 +8514,20 @@ bool ResourceCopyTarget::_ParseTarget(const wchar_t *target, bool is_source, con
 		ret = ParseTargetCustomResource(target, length, ini_namespace, scope);
 		//LogInfo("ParseTarget: %d at ParseTargetCustomResource\n", ret);
 		if (ret != IniParserResult::TOKEN_NOT_FOUND)
-			return ret == IniParserResult::TOKEN_FOUND;
+			return AcceptParsedTarget(ret, allow_range);
 
 		// Parse the remainder as a resource pool (e.g. `PoolFoo`).
 		ret = ParseTargetPool(target, length, ini_namespace, scope, is_source);
 		//LogInfo("ParseTarget: %d at ParseTargetPool\n", ret);
 		if (ret != IniParserResult::TOKEN_NOT_FOUND)
-			return ret == IniParserResult::TOKEN_FOUND;
+			return AcceptParsedTarget(ret, allow_range);
 	}
 
 	// Parse the remainder as a pipeline slot (e.g. `vb0`, `this`, `null`).
 	ret = ParseTargetPipelineSlot(target, length, is_source, ini_namespace, scope);
 	//LogInfo("ParseTarget: %d at ParseTargetPipelineSlot\n", ret);
 	if (ret != IniParserResult::TOKEN_NOT_FOUND)
-		return ret == IniParserResult::TOKEN_FOUND;
+		return AcceptParsedTarget(ret, allow_range);
 
 	//LogInfo("ParseTarget: 0 at END\n");
 	return false;

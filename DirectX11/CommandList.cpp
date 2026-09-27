@@ -9097,14 +9097,6 @@ bool ParseCommandListResourceCopyTargetDirective(
 			break;
 		}
 
-		if (dst.IsRange() || src.IsRange())
-		{
-			// PoolFoo[$a:$b] is only valid opposite a slot range.
-			LogOverlayW(LOG_WARNING, L"Pool range needs a slot range on the other side: \"%ls = %ls\"\n - [%ls] @ [%ls]\n",
-				key, val->c_str(), section, ini_namespace->c_str());
-			return false;
-		}
-
 		switch (src.type)
 		{
 		case ResourceCopyTargetType::VARIABLE:

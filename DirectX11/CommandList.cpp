@@ -8075,6 +8075,25 @@ IniParserResult ResourceCopyTarget::ParseTargetCustomResource(const wchar_t*& ta
 	return IniParserResult::TOKEN_FOUND;
 }
 
+// Bounds of a range written as "<start>:<end>" inside brackets, for
+// PoolFoo[$a:$b] and ps-t[$a:$b] alike. `colon` is their separator in `text`.
+// Both bounds are left unset when either expression does not parse.
+bool ResourceCopyTarget::ParseRangeBounds(const wstring& text, size_t colon, const wstring* ini_namespace, CommandListScope* scope)
+{
+	wstring start_text = text.substr(0, colon);
+	wstring end_text = text.substr(colon + 1);
+
+	range_start = std::make_unique<CommandListExpression>();
+	range_end = std::make_unique<CommandListExpression>();
+
+	if (range_start->parse(&start_text, ini_namespace, scope) && range_end->parse(&end_text, ini_namespace, scope))
+		return true;
+
+	range_start.reset();
+	range_end.reset();
+	return false;
+}
+
 IniParserResult ResourceCopyTarget::ParseTargetPool(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope, bool is_source)
 {
 	if (length < 5 || wcsncmp(target, L"pool", 4))
@@ -8157,15 +8176,8 @@ IniParserResult ResourceCopyTarget::ParseTargetPool(const wchar_t*& target, size
 		if (evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE)
 			return IniParserResult::SYNTAX_ERROR;
 
-		wstring start_text = pool_index_text.substr(0, colon);
-		wstring end_text = pool_index_text.substr(colon + 1);
-		range_start = std::make_unique<CommandListExpression>();
-		range_end = std::make_unique<CommandListExpression>();
-		if (!range_start->parse(&start_text, ini_namespace, scope) || !range_end->parse(&end_text, ini_namespace, scope)) {
-			range_start.reset();
-			range_end.reset();
+		if (!ParseRangeBounds(pool_index_text, colon, ini_namespace, scope))
 			return IniParserResult::SYNTAX_ERROR;
-		}
 
 		type = ResourceCopyTargetType::POOL;
 		evaluation_mode = ResourceCopyTargetEvaluationMode::POOL_RANGE;
@@ -8301,15 +8313,9 @@ IniParserResult ResourceCopyTarget::ParseTargetSlotExpression(const wchar_t* tex
 	if (!info->range_allowed || evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE)
 		return IniParserResult::SYNTAX_ERROR;
 
-	wstring start_text = inner.substr(0, colon);
-	wstring end_text = inner.substr(colon + 1);
-	range_start = std::make_unique<CommandListExpression>();
-	range_end = std::make_unique<CommandListExpression>();
-	if (!range_start->parse(&start_text, ini_namespace, scope) || !range_end->parse(&end_text, ini_namespace, scope)) {
-		range_start.reset();
-		range_end.reset();
+	if (!ParseRangeBounds(inner, colon, ini_namespace, scope))
 		return IniParserResult::SYNTAX_ERROR;
-	}
+
 	evaluation_mode = ResourceCopyTargetEvaluationMode::SLOT_RANGE;
 	return IniParserResult::TOKEN_FOUND;
 }

@@ -10854,10 +10854,14 @@ static ID3D11Buffer *RecreateCompatibleBuffer(
 			dst_size = (new_desc.ByteWidth + 15) & ~0xf;
 			dst_size = min(dst_size, D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16);
 
-			// Constant buffers cannot be structured, so clear that flag:
+			// Constant buffers cannot be structured, so clear that flag
+			// and the stride that came with it. D3D11 ignores a stride
+			// without the flag, but GetResourceStride() (`->stride`) and
+			// FillInMissingInfo() both read it back out of the buffer
+			// description, and would report the source's element size for
+			// a buffer that is no longer made of elements:
 			new_desc.MiscFlags &= ~D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-			// XXX: Should we clear StructureByteStride? Seems to work ok
-			// without clearing that.
+			new_desc.StructureByteStride = 0;
 
 			// If the size of the new resource doesn't match the old or
 			// there is an offset we will have to perform a region copy

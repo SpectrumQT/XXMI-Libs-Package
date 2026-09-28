@@ -6205,25 +6205,23 @@ void CustomResource::SetHandleInfo(ID3D11Resource* source, size_t offset, size_t
 	if (!source)
 		return;
 
-	EnterCriticalSectionPretty(&G->mCriticalSection);
+	{
+		CriticalSectionGuard(&G->mCriticalSection);
 
-	ResourceHandleInfo* src_handle_info = GetResourceHandleInfo(source);
+		ResourceHandleInfo* src_handle_info = GetResourceHandleInfo(source);
 
-	if (!src_handle_info || !src_handle_info->cached_data || !src_handle_info->cached_data_size) {
-		LeaveCriticalSection(&G->mCriticalSection);
-		return;
+		if (!src_handle_info || !src_handle_info->cached_data || !src_handle_info->cached_data_size)
+			return;
+
+		if (!handle_info)
+			handle_info = std::make_unique<ResourceHandleInfo>();
+
+		// Initialize cache view using the requested size and an offset relative to the shared source cache.
+		handle_info->InitializeDataCache(data_size ? data_size : src_handle_info->cached_data_size, src_handle_info->cached_data_offset + offset);
+
+		// Share ownership of the cached buffer to ensure it remains alive independently of the source. No data is copied.
+		handle_info->cached_data = src_handle_info->cached_data;
 	}
-
-	if (!handle_info)
-		handle_info = std::make_unique<ResourceHandleInfo>();
-
-	// Initialize cache and store view metadata (offset and size) relative to the shared cache.
-	handle_info->InitializeDataCache(data_size ? data_size : src_handle_info->cached_data_size, src_handle_info->cached_data_offset + offset);
-
-	// Share ownership of the cached buffer to ensure it remains alive independently of the source.
-	handle_info->cached_data = src_handle_info->cached_data;
-
-	LeaveCriticalSection(&G->mCriticalSection);
 }
 
 ResourceHandleInfo* CustomResource::GetHandleInfo()
@@ -12210,7 +12208,7 @@ void ResourceCopyOperation::CopyResourceToResource(
 		} else if (buf_dst_size) {
 			COMMAND_LIST_LOG(state, "  performing region copy (src_stride=%d src_offset=%d src_size=%d dst_size=%d)\n", stride, offset, buf_src_size, buf_dst_size);
 			Profiling::buffer_region_copies++;
-			if (G->track_region_hashes && dst_custom_resource)
+			if (G->cache_resource_data != DataCacheBindFlags::INVALID && dst_custom_resource)
 				dst_custom_resource->SetHandleInfo(src_resource, offset, buf_dst_size);
 			SpecialCopyBufferRegion(dst_resource, src_resource,
 					state, stride, &offset,
@@ -12218,7 +12216,7 @@ void ResourceCopyOperation::CopyResourceToResource(
 		} else {
 			COMMAND_LIST_LOG(state, "  performing full copy (src_stride=%d src_offset=%d src_size=%d dst_size=%d)\n", stride, offset, buf_src_size, buf_dst_size);
 			Profiling::resource_full_copies++;
-			if (G->track_region_hashes && dst_custom_resource)
+			if (G->cache_resource_data != DataCacheBindFlags::INVALID && dst_custom_resource)
 				dst_custom_resource->SetHandleInfo(src_resource, 0, buf_dst_size);
 			state->mOrigContext1->CopyResource(dst_resource, src_resource);
 		}
@@ -12230,7 +12228,7 @@ void ResourceCopyOperation::CopyResourceToResource(
 			offset = (UINT)src.member_args[0].GetValue(state);
 			buf_dst_size = (UINT)src.member_args[1].GetValue(state);
 		}
-		if (G->track_region_hashes && dst_custom_resource)
+		if (G->cache_resource_data != DataCacheBindFlags::INVALID && dst_custom_resource)
 			dst_custom_resource->SetHandleInfo(src_resource, offset, buf_src_size);
 		dst_resource = src_resource;
 		if (src_view && (EquivTarget(src.type) == EquivTarget(dst.type))) {

@@ -495,6 +495,7 @@ struct Globals
 
 	ShaderHashType shader_hash_type;
 	bool track_region_hashes;
+	DataCacheBindFlags cache_resource_data = (DataCacheBindFlags)0;
 	bool track_implicit_index_buffers;
 	bool allow_buffer_resize;
 	int texture_hash_version;

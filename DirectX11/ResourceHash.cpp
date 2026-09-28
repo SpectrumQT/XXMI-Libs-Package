@@ -2172,14 +2172,11 @@ uint32_t ResourceHandleInfo::GetCachedRegionHash(const RegionHashKeyL2& key)
 // Used when the underlying resource contents may have changed.
 void ClearResourceRegionHashCache(ID3D11Resource* resource)
 {
-	EnterCriticalSectionPretty(&G->mCriticalSection);
+	CriticalSectionGuard(&G->mCriticalSection);
 	ResourceHandleInfo* info = GetResourceHandleInfo(resource);
-	if (!info) {
-		LeaveCriticalSection(&G->mCriticalSection);
+	if (!info)
 		return;
-	}
 	info->ClearDataCache();
-	LeaveCriticalSection(&G->mCriticalSection);
 }
 
 // Creates a CPU-readable snapshot of the buffer contents and stores it
@@ -2195,6 +2192,10 @@ static bool CacheBufferData(HackerContext* context, ID3D11Buffer* buffer, Resour
 	// Query the buffer size.
 	D3D11_BUFFER_DESC desc;
 	buffer->GetDesc(&desc);
+
+	// Prevent caching if it's not enabled for any of this buffer's bind flags.
+	if ((desc.BindFlags & (D3D11_BIND_FLAG)G->cache_resource_data) == 0)
+		return false;
 
 	// Acquire a cached staging buffer. Buffers are pooled by size and reused
 	// across calls to avoid repeated CreateBuffer() overhead.

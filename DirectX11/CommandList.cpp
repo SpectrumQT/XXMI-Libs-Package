@@ -1221,8 +1221,24 @@ bool ParseStoreCommand(const wchar_t* section,
 
 	CommandArgumentReader args(L"store", *val, section, ini_namespace, pre_command_list->scope);
 
-	if (!args.GetVariable(operation->var, false))
+	wstring dst_var_token;
+
+	if (!args.PeekToken(&dst_var_token, CommandArgumentReader::PeekMode::Argument))
 		return args.Fail();
+
+	// TODO C++20: if (dst_var_token.ends_with(L']') && dst_var_token.starts_with(L"$pool")) 
+	if (dst_var_token.back() == L']' && dst_var_token.compare(0, 5, L"$pool") == 0)
+	{
+		// DST var is pool variable, e.g. `$PoolFoo[$index]`.
+		if (!args.GetTarget(&operation->pool_var, true))
+			return args.Fail();
+	}
+	else
+	{
+		// DST var is regular INI variable, e.g. `$foo`.
+		if (!args.GetVariable(operation->var, false))
+			return args.Fail();
+	}
 
 	if (!args.ConsumeSeparator(SeparatorMode::Comma))
 		return args.Fail();
@@ -1694,8 +1710,8 @@ void DrawCommand::run(CommandListState *state)
 
 void StoreCommand::run(CommandListState* state)
 {
-	HackerContext* mHackerContext = state->mHackerContext;
-	ID3D11DeviceContext* mOrigContext1 = state->mOrigContext1;
+	HackerContext* hacker_context = state->mHackerContext;
+	ID3D11DeviceContext* orig_context = state->mOrigContext1;
 
 	ID3D11View* src_view = nullptr;
 	ID3D11Resource* src_resource = src.GetResource(state, &src_view, nullptr, nullptr, nullptr, nullptr, nullptr);
@@ -1709,8 +1725,6 @@ void StoreCommand::run(CommandListState* state)
 	D3D11_BUFFER_DESC src_desc = {};
 	static_cast<ID3D11Buffer*>(src_resource)->GetDesc(&src_desc);
 
-	const bool is_structured = (src_desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) != 0;
-
 	const UINT value_index = offset_expression->evaluate(state);
 	const UINT value_size = sizeof(float);
 
@@ -1718,57 +1732,106 @@ void StoreCommand::run(CommandListState* state)
 	// The requested offset is therefore a value index, regardless of whether the underlying buffer is structured.
 	const UINT64 value_byte_offset = static_cast<UINT64>(value_index) * value_size;
 
-	UINT64 copy_offset = 0;
-	UINT64 copy_size = 0;
-	UINT value_offset = 0;
+	float value;
 
-	if (is_structured)
+	// Prefer reading requested value from the CPU-side cache whenever it is available.
+	if (TryReadValueFromCache(src_resource, value_byte_offset, value))
 	{
-		const UINT stride = src_desc.StructureByteStride;
-
-		if (stride == 0)
-		{
-			var->fval = 0.0f;
-			src_resource->Release();
-			return;
-		}
-
-		// CopySubresourceRegion requires a structured-buffer copy region to contain complete structure elements.
-		// Find the first structure touched by the requested value.
-		const UINT64 first_struct_offset = (value_byte_offset / stride) * stride;
-
-		// The requested value occupies [value_byte_offset, value_end_offset).
-		const UINT64 value_end_offset = value_byte_offset + value_size;
-
-		// Round the end of the requested value up to a structure boundary.
-		// This allows the requested 4-byte value to span multiple structures
-		// when StructureByteStride is smaller than sizeof(float).
-		const UINT64 copy_end_offset = ((value_end_offset + stride - 1) / stride) * stride;
-
-		// Copy whole structures, potentially more than one, while retaining
-		// the requested value's byte offset within the copied staging data.
-		copy_offset = first_struct_offset;
-		copy_size = copy_end_offset - first_struct_offset;
-		value_offset = static_cast<UINT>(value_byte_offset - first_struct_offset);
-	}
-	else
-	{
-		// Non-structured buffers have no structure-alignment restriction,
-		// so only the requested 4-byte value needs to be copied.
-		copy_offset = value_byte_offset;
-		copy_size = value_size;
-		value_offset = 0;
-	}
-
-	// Make sure the complete source copy region is inside the buffer.
-	if (copy_offset + copy_size > src_desc.ByteWidth)
-	{
-		var->fval = 0.0f;
+		SetOutputValue(state, value);
 		src_resource->Release();
 		return;
 	}
 
-	// Copy the requested float into the staging buffer for CPU readback.
+	UINT64 copy_offset = 0;
+	UINT64 copy_size = 0;
+	UINT value_offset = 0;
+
+	// Calculate the GPU copy region required to retrieve the value.
+	if (!CalculateCopyRegion(src_desc, value_size, value_byte_offset, &copy_offset, &copy_size, &value_offset))
+	{
+		SetOutputValue(state, 0.0f);
+		src_resource->Release();
+		return;
+	}
+
+	// Make sure the complete source copy region is inside the buffer.
+	if (copy_offset > src_desc.ByteWidth || copy_size > src_desc.ByteWidth - copy_offset)
+	{
+		SetOutputValue(state, 0.0f);
+		src_resource->Release();
+		return;
+	}
+
+	// Fall back to GPU readback when the value is not available in the cache.
+	if (ReadValueFromGPU(hacker_context, orig_context, src_resource, copy_offset, copy_size, value_offset, value))
+	{
+		SetOutputValue(state, value);
+	}
+	else
+	{
+		SetOutputValue(state, 0.0f);
+	}
+
+	src_resource->Release();
+}
+
+// Calculate the source copy region needed to retrieve a value from the buffer.
+bool StoreCommand::CalculateCopyRegion(
+	const D3D11_BUFFER_DESC& src_desc,
+	const UINT value_size,
+	UINT64 value_byte_offset,
+	UINT64* copy_offset,
+	UINT64* copy_size,
+	UINT* value_offset)
+{
+	const bool is_structured = (src_desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) != 0;
+
+	if (!is_structured)
+	{
+		// Non-structured buffers have no structure-alignment restriction,
+		// so only the requested 4-byte value needs to be copied.
+		*copy_offset = value_byte_offset;
+		*copy_size = value_size;
+		*value_offset = 0;
+		return true;
+	}
+
+	const UINT stride = src_desc.StructureByteStride;
+
+	if (stride == 0)
+		return false;
+
+	// CopySubresourceRegion requires a structured-buffer copy region to contain complete structure elements.
+	// Find the first structure touched by the requested value.
+	const UINT64 first_struct_offset = (value_byte_offset / stride) * stride;
+
+	// The requested value occupies [value_byte_offset, value_end_offset).
+	const UINT64 value_end_offset = value_byte_offset + value_size;
+
+	// Round the end of the requested value up to a structure boundary.
+	// This allows the requested 4-byte value to span multiple structures
+	// when StructureByteStride is smaller than value_size.
+	const UINT64 copy_end_offset = ((value_end_offset + stride - 1) / stride) * stride;
+
+	// Copy whole structures, potentially more than one, while retaining
+	// the requested value's byte offset within the copied staging data.
+	*copy_offset = first_struct_offset;
+	*copy_size = copy_end_offset - first_struct_offset;
+	*value_offset = static_cast<UINT>(value_byte_offset - first_struct_offset);
+
+	return true;
+}
+
+// Read a value from the source buffer through the CPU-readable staging buffer.
+bool StoreCommand::ReadValueFromGPU(
+	HackerContext* hacker_context,
+	ID3D11DeviceContext* orig_context,
+	ID3D11Resource* src_resource,
+	UINT64 copy_offset,
+	UINT64 copy_size,
+	UINT value_offset,
+	float& value)
+{
 	D3D11_BOX box = {};
 	box.left = static_cast<UINT>(copy_offset);
 	box.right = static_cast<UINT>(copy_offset + copy_size);
@@ -1785,28 +1848,26 @@ void StoreCommand::run(CommandListState* state)
 	//
 	// Its size is the complete copy region, which may contain multiple
 	// structures when the requested value crosses a structure boundary.
-	ID3D11Buffer* staging = mHackerContext->GetReadbackBuffer(copy_size);
+	ID3D11Buffer* staging = hacker_context->GetReadbackBuffer(copy_size);
 
 	if (!staging)
 	{
 		LogInfo("StoreCommand: Failed to acquire readback buffer\n");
-		src_resource->Release();
-		return;
+		return false;
 	}
 
-	// Copy the complete source region into the CPU-readable staging buffer.
-	mOrigContext1->CopySubresourceRegion(staging, 0, 0, 0, 0, src_resource, 0, &box);
+	// Copy the required source region into the CPU-readable staging buffer.
+	orig_context->CopySubresourceRegion(staging, 0, 0, 0, 0, src_resource, 0, &box);
 
-	// Map the staging buffer so the copied value can be read by the CPU.
+	// Map the staging buffer so the requested value can be read by the CPU.
 	D3D11_MAPPED_SUBRESOURCE map = {};
 
-	HRESULT hr = mOrigContext1->Map(staging, 0, D3D11_MAP_READ, 0, &map);
+	HRESULT hr = orig_context->Map(staging, 0, D3D11_MAP_READ, 0, &map);
 
 	if (FAILED(hr))
 	{
 		LogInfo("StoreCommand: Map(D3D11_MAP_READ) failed (hr=0x%08X)\n", hr);
-		src_resource->Release();
-		return;
+		return false;
 	}
 
 	// The staging buffer starts at copy_offset in the source resource.
@@ -1816,11 +1877,39 @@ void StoreCommand::run(CommandListState* state)
 
 	// Read the value before Unmap(), since the mapped pointer becomes
 	// invalid after the staging resource is unmapped.
-	var->fval = *reinterpret_cast<const float*>(value_offset + data);
+	memcpy(&value, data + value_offset, sizeof(float));
 
-	mOrigContext1->Unmap(staging, 0);
+	orig_context->Unmap(staging, 0);
 
-	src_resource->Release();
+	return true;
+}
+
+// Try to read the requested value directly from the CPU-side resource cache.
+// Returns false when the resource has no cached snapshot or the requested range is not fully covered by it.
+bool StoreCommand::TryReadValueFromCache(ID3D11Resource* resource, UINT64 byte_offset, float& value)
+{
+	CriticalSectionGuard(&G->mCriticalSection);
+
+	ResourceHandleInfo* handle_info = GetResourceHandleInfo(resource);
+
+	if (!handle_info ||
+		!handle_info->cached_data ||
+		byte_offset > handle_info->cached_data_size ||
+		sizeof(float) > handle_info->cached_data_size - byte_offset)
+	{
+		return false;
+	}
+
+	const uint8_t* cached_data = handle_info->GetCachedData();
+	memcpy(&value, cached_data + byte_offset, sizeof(float));
+
+	return true;
+}
+
+void StoreCommand::SetOutputValue(CommandListState* state, float value)
+{
+	CommandListVariable* dst_var = var ? var : pool_var.GetPoolVariable(state, true);
+	dst_var->fval = value;
 }
 
 void SkipCommand::run(CommandListState *state)

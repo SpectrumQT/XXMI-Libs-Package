@@ -1685,11 +1685,30 @@ class StoreCommand : public CommandListCommand {
 public:
 	ResourceCopyTarget src;
 	CommandListVariable* var = nullptr;
+	ResourceCopyTarget pool_var;
 	unique_ptr<CommandListExpression> offset_expression;
 
 	wstring ini_section;
 
 	void run(CommandListState*) override;
+
+	bool CalculateCopyRegion(
+		const D3D11_BUFFER_DESC& desc,
+		const UINT value_size,
+		UINT64 value_byte_offset,
+		UINT64* copy_offset,
+		UINT64* copy_size,
+		UINT* value_offset);
+	bool ReadValueFromGPU(
+		HackerContext* hacker_context,
+		ID3D11DeviceContext* orig_context,
+		ID3D11Resource* src_resource,
+		UINT64 copy_offset,
+		UINT64 copy_size,
+		UINT value_offset,
+		float& value);
+	bool TryReadValueFromCache(ID3D11Resource* resource, UINT64 byte_offset, float& value);
+	void SetOutputValue(CommandListState* state, float value);
 };
 
 class ClearViewCommand : public CommandListCommand {

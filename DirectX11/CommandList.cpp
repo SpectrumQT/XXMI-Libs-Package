@@ -1187,8 +1187,14 @@ static bool ParseFrameAnalysisDump(const wchar_t *section,
 	if (!target)
 		goto bail;
 
-	if (!operation->target.ParseTarget(target, true, ini_namespace, pre_command_list->scope))
+	if (!operation->target.ParseTarget(target, true, ini_namespace, pre_command_list->scope, true, true))
 		goto bail;
+
+	if (operation->target.evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_RANGE)
+	{
+		LogOverlayW(LOG_WARNING, L"dump does not support pool ranges: %ls\n", target);
+		goto bail;
+	}
 
 	operation->target_name = L"[" + wstring(section) + L"]-" + wstring(target);
 	// target_name will be used in the filenames, so replace any reserved characters:
@@ -2156,23 +2162,40 @@ void FrameAnalysisDumpCommand::run(CommandListState *state)
 
 	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
 
-	resource = target.GetResource(state, &view, &stride, &offset, &format, NULL);
-	if (!resource) {
-		COMMAND_LIST_LOG(state, "  No resource to dump\n");
+	// A slot range dumps every slot in turn:
+	int first = (int)target.slot;
+	unsigned count = 1;
+	if (target.IsRange() && !target.ResolveRange(state, &first, &count))
 		return;
-	}
 
-	// Fill in any missing info before handing it to frame analysis. The
-	// format is particularly important to try to avoid saving TYPELESS
-	// resources:
-	FillInMissingInfo(target.type, resource, view, &stride, &offset, &buf_size, &format);
+	for (unsigned i = 0; i < count; i++) {
+		wstring name = target_name;
+		if (target.IsRange()) {
+			target.slot = (unsigned)first + i;
+			name += L"-" + std::to_wstring(target.slot);
+		}
 
-	state->mHackerContext->FrameAnalysisDump(resource, analyse_options, target_name.c_str(), format, stride, offset);
+		resource = target.GetResource(state, &view, &stride, &offset, &format, NULL);
+		if (!resource) {
+			COMMAND_LIST_LOG(state, "  No resource to dump (slot %u)\n", target.slot);
+			continue;
+		}
 
-	if (resource)
+		// Fill in any missing info before handing it to frame analysis. The
+		// format is particularly important to try to avoid saving TYPELESS
+		// resources:
+		FillInMissingInfo(target.type, resource, view, &stride, &offset, &buf_size, &format);
+
+		state->mHackerContext->FrameAnalysisDump(resource, analyse_options, name.c_str(), format, stride, offset);
+
 		resource->Release();
-	if (view)
-		view->Release();
+		if (view)
+			view->Release();
+		resource = NULL;
+		view = NULL;
+		stride = offset = buf_size = 0;
+		format = DXGI_FORMAT_UNKNOWN;
+	}
 }
 
 bool FrameAnalysisDumpCommand::noop(bool post, bool ignore_cto_pre, bool ignore_cto_post)
@@ -4364,7 +4387,7 @@ bool CommandArgumentReader::GetVariable(CommandListVariable*& out, bool is_sourc
 	return true;
 }
 
-bool CommandArgumentReader::GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode, bool validate)
+bool CommandArgumentReader::GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode, bool validate, bool allow_range)
 {
 	wstring token;
 
@@ -4379,7 +4402,7 @@ bool CommandArgumentReader::GetTarget(ResourceCopyTarget* out, bool is_source, P
 		return false;
 	}
 
-	if (!out->ParseTarget(token.c_str(), is_source, m_ini_namespace, m_scope))
+	if (!out->ParseTarget(token.c_str(), is_source, m_ini_namespace, m_scope, true, allow_range))
 	{
 		SetError(L"Unknown target: " + token, m_peek_start_pos);
 		return false;
@@ -8138,6 +8161,25 @@ IniParserResult ResourceCopyTarget::ParseTargetCustomResource(const wchar_t*& ta
 	return IniParserResult::TOKEN_FOUND;
 }
 
+// Bounds of a range written as "<start>:<end>" inside brackets, for
+// PoolFoo[$a:$b] and ps-t[$a:$b] alike. `colon` is their separator in `text`.
+// Both bounds are left unset when either expression does not parse.
+bool ResourceCopyTarget::ParseRangeBounds(const wstring& text, size_t colon, const wstring* ini_namespace, CommandListScope* scope)
+{
+	wstring start_text = text.substr(0, colon);
+	wstring end_text = text.substr(colon + 1);
+
+	range_start = std::make_unique<CommandListExpression>();
+	range_end = std::make_unique<CommandListExpression>();
+
+	if (range_start->parse(&start_text, ini_namespace, scope) && range_end->parse(&end_text, ini_namespace, scope))
+		return true;
+
+	range_start.reset();
+	range_end.reset();
+	return false;
+}
+
 IniParserResult ResourceCopyTarget::ParseTargetPool(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope, bool is_source)
 {
 	if (length < 5 || wcsncmp(target, L"pool", 4))
@@ -8214,6 +8256,20 @@ IniParserResult ResourceCopyTarget::ParseTargetPool(const wchar_t*& target, size
 		return IniParserResult::TOKEN_FOUND;
 	}
 
+	// Pool range: PoolFoo[$a:$b], resources only.
+	size_t colon = pool_index_text.find(L':');
+	if (colon != wstring::npos) {
+		if (evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE)
+			return IniParserResult::SYNTAX_ERROR;
+
+		if (!ParseRangeBounds(pool_index_text, colon, ini_namespace, scope))
+			return IniParserResult::SYNTAX_ERROR;
+
+		type = ResourceCopyTargetType::POOL;
+		evaluation_mode = ResourceCopyTargetEvaluationMode::POOL_RANGE;
+		return IniParserResult::TOKEN_FOUND;
+	}
+
 	// Handle resource pool index
 	if (custom_resource_pool->index_type == PoolIndexType::STATIC)
 	{
@@ -8280,7 +8336,7 @@ constexpr bool token_equals(const wchar_t* str, size_t len, const wchar_t* token
 	return len == token_len && wmemcmp(str, token, token_len) == 0;
 }
 
-// Slot given in brackets: ps-t[$i] (any slot type).
+// Slot given in brackets: ps-t[$i] (any slot type) or ps-t[$a:$b] (t, u, cb).
 IniParserResult ResourceCopyTarget::ParseTargetSlotExpression(const wchar_t* text, size_t length, const wstring* ini_namespace, CommandListScope* scope)
 {
 	struct SlotTypeInfo {
@@ -8288,16 +8344,17 @@ IniParserResult ResourceCopyTarget::ParseTargetSlotExpression(const wchar_t* tex
 		size_t len;
 		ResourceCopyTargetType type;
 		bool has_stage;
+		bool range_allowed;
 		unsigned max_slot_count;
 	};
 
 	static constexpr SlotTypeInfo slot_types[] = {
-		{ L"o",    1, ResourceCopyTargetType::RENDER_TARGET,         false, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT            },
-		{ L"vb",   2, ResourceCopyTargetType::VERTEX_BUFFER,         false, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT         },
-		{ L"so",   2, ResourceCopyTargetType::STREAM_OUTPUT,         false, D3D11_SO_STREAM_COUNT                             },
-		{ L"s-t",  3, ResourceCopyTargetType::SHADER_RESOURCE,       true,  D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT      },
-		{ L"s-u",  3, ResourceCopyTargetType::UNORDERED_ACCESS_VIEW, true,  D3D11_1_UAV_SLOT_COUNT                            },
-		{ L"s-cb", 4, ResourceCopyTargetType::CONSTANT_BUFFER,       true,  D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT },
+		{ L"o",    1, ResourceCopyTargetType::RENDER_TARGET,         false, false, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT            },
+		{ L"vb",   2, ResourceCopyTargetType::VERTEX_BUFFER,         false, false, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT         },
+		{ L"so",   2, ResourceCopyTargetType::STREAM_OUTPUT,         false, false, D3D11_SO_STREAM_COUNT                             },
+		{ L"s-t",  3, ResourceCopyTargetType::SHADER_RESOURCE,       true,  true,  D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT      },
+		{ L"s-u",  3, ResourceCopyTargetType::UNORDERED_ACCESS_VIEW, true,  true,  D3D11_1_UAV_SLOT_COUNT                            },
+		{ L"s-cb", 4, ResourceCopyTargetType::CONSTANT_BUFFER,       true,  true,  D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT },
 	};
 
 	const wchar_t* open = wmemchr(text, L'[', length);
@@ -8328,11 +8385,24 @@ IniParserResult ResourceCopyTarget::ParseTargetSlotExpression(const wchar_t* tex
 	max_slot = info->max_slot_count;
 
 	wstring inner(open + 1, text + length - 1);
-	slot_expression = std::make_unique<CommandListExpression>();
-	if (!slot_expression->parse(&inner, ini_namespace, scope)) {
-		slot_expression.reset();
-		return IniParserResult::SYNTAX_ERROR;
+	size_t colon = inner.find(L':');
+
+	if (colon == wstring::npos) {
+		slot_expression = std::make_unique<CommandListExpression>();
+		if (!slot_expression->parse(&inner, ini_namespace, scope)) {
+			slot_expression.reset();
+			return IniParserResult::SYNTAX_ERROR;
+		}
+		return IniParserResult::TOKEN_FOUND;
 	}
+
+	if (!info->range_allowed || evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE)
+		return IniParserResult::SYNTAX_ERROR;
+
+	if (!ParseRangeBounds(inner, colon, ini_namespace, scope))
+		return IniParserResult::SYNTAX_ERROR;
+
+	evaluation_mode = ResourceCopyTargetEvaluationMode::SLOT_RANGE;
 	return IniParserResult::TOKEN_FOUND;
 }
 
@@ -8452,7 +8522,18 @@ bool contains_whitespace(const wchar_t* str, size_t len)
 	return false;
 }
 
-bool ResourceCopyTarget::ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope, bool allow_custom)
+bool ResourceCopyTarget::IsRange() const
+{
+	return evaluation_mode == ResourceCopyTargetEvaluationMode::SLOT_RANGE
+		|| evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_RANGE;
+}
+
+bool ResourceCopyTarget::AcceptParsedTarget(IniParserResult ret, bool allow_range) const
+{
+	return ret == IniParserResult::TOKEN_FOUND && (allow_range || !IsRange());
+}
+
+bool ResourceCopyTarget::ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope, bool allow_custom, bool allow_range)
 {
 	IniParserResult ret;
 	size_t length = wcslen(target);
@@ -8477,7 +8558,7 @@ bool ResourceCopyTarget::ParseTarget(const wchar_t *target, bool is_source, cons
 			// Parse pool variable (e.g. `$PoolFoo[0]`).
 			ret = ParseTargetPool(target, length, ini_namespace, scope, is_source);
 			//LogInfo("ParseTarget: %d at ParseTargetPool\n", ret);
-			return ret == IniParserResult::TOKEN_FOUND;
+			return AcceptParsedTarget(ret, allow_range);
 		}
 
 		// Consume an optional resource member suffix (e.g. `->HashRegion(0, 16)` or `->Length`).
@@ -8490,20 +8571,20 @@ bool ResourceCopyTarget::ParseTarget(const wchar_t *target, bool is_source, cons
 		ret = ParseTargetCustomResource(target, length, ini_namespace, scope);
 		//LogInfo("ParseTarget: %d at ParseTargetCustomResource\n", ret);
 		if (ret != IniParserResult::TOKEN_NOT_FOUND)
-			return ret == IniParserResult::TOKEN_FOUND;
+			return AcceptParsedTarget(ret, allow_range);
 
 		// Parse the remainder as a resource pool (e.g. `PoolFoo`).
 		ret = ParseTargetPool(target, length, ini_namespace, scope, is_source);
 		//LogInfo("ParseTarget: %d at ParseTargetPool\n", ret);
 		if (ret != IniParserResult::TOKEN_NOT_FOUND)
-			return ret == IniParserResult::TOKEN_FOUND;
+			return AcceptParsedTarget(ret, allow_range);
 	}
 
 	// Parse the remainder as a pipeline slot (e.g. `vb0`, `this`, `null`).
 	ret = ParseTargetPipelineSlot(target, length, is_source, ini_namespace, scope);
 	//LogInfo("ParseTarget: %d at ParseTargetPipelineSlot\n", ret);
 	if (ret != IniParserResult::TOKEN_NOT_FOUND)
-		return ret == IniParserResult::TOKEN_FOUND;
+		return AcceptParsedTarget(ret, allow_range);
 
 	//LogInfo("ParseTarget: 0 at END\n");
 	return false;
@@ -8974,7 +9055,7 @@ static bool parse_resource_copy_target_source(
 			continue;
 		}
 
-		if (!src_found && args.GetTarget(&src, true, CommandArgumentReader::PeekMode::Token, false))
+		if (!src_found && args.GetTarget(&src, true, CommandArgumentReader::PeekMode::Token, false, true))
 		{
 			src_found = true;
 			continue;
@@ -9005,6 +9086,10 @@ static bool parse_resource_copy_target_source(
 	return src_found;
 }
 
+static CommandListCommand* parse_slot_range_operation(
+	const wchar_t* section, ResourceCopyTarget& dst, ResourceCopyTarget& src, ResourceCopyOptions options, CommandList* command_list, const wstring* ini_namespace
+);
+
 bool ParseCommandListResourceCopyTargetDirective(
 	const wchar_t *section, const wchar_t *key, wstring *val, CommandList *command_list, const wstring *ini_namespace
 )
@@ -9013,7 +9098,7 @@ bool ParseCommandListResourceCopyTargetDirective(
 
 	ResourceCopyTarget dst = ResourceCopyTarget();
 
-	if (!dst.ParseTarget(key, false, ini_namespace, command_list->scope))
+	if (!dst.ParseTarget(key, false, ini_namespace, command_list->scope, true, true))
 	{
 		if (dst.evaluation_mode != ResourceCopyTargetEvaluationMode::VARIABLE)
 			return false;
@@ -9053,6 +9138,14 @@ bool ParseCommandListResourceCopyTargetDirective(
 
 		if (!parse_resource_copy_target_source(section, *val, src, options, command_list, ini_namespace, key))
 			return false;
+
+		if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::SLOT_RANGE
+			|| src.evaluation_mode == ResourceCopyTargetEvaluationMode::SLOT_RANGE)
+		{
+			// ps-t[$a:$b] = ref PoolFoo[$c:$d]  /  PoolFoo[$c:$d] = ref ps-t[$a:$b]
+			operation = parse_slot_range_operation(section, dst, src, options, command_list, ini_namespace);
+			break;
+		}
 
 		switch (src.type)
 		{
@@ -9439,6 +9532,35 @@ unsigned ResourceCopyTarget::ResolveSlot(CommandListState *state)
 		return UINT_MAX;
 	}
 	return (unsigned)value;
+}
+
+unsigned ResourceCopyTarget::RangeLimit()
+{
+	return (type == ResourceCopyTargetType::POOL) ? (unsigned)custom_resource_pool->GetPoolSize() : max_slot;
+}
+
+bool ResourceCopyTarget::ResolveRange(CommandListState *state, int *first, unsigned *count)
+{
+	float start = range_start->evaluate(state);
+	float end = range_end->evaluate(state);
+	unsigned limit = RangeLimit();
+	bool valid;
+
+	if (type == ResourceCopyTargetType::POOL) {
+		// Pool indices wrap like PoolFoo[-1], so only the size is bounded:
+		valid = end >= start && end - start < (float)limit;
+	} else {
+		valid = start >= 0 && end >= start && end < (float)limit;
+	}
+
+	if (!valid) {
+		LogOverlayW(LOG_WARNING, L"Range [%f:%f] is invalid (limit %u)\n", start, end, limit);
+		return false;
+	}
+
+	*first = (int)start;
+	*count = (unsigned)((int)end - (int)start + 1);
+	return true;
 }
 
 ID3D11Resource *ResourceCopyTarget::GetResource(
@@ -12727,4 +12849,574 @@ void merge_shader_resource_batches(CommandList *command_list)
 }
 
 #pragma endregion ShaderResourceBatches
+
+
+#pragma region SlotRangeCopyOperation
+
+// Everything bound to a slot range, in the form the XXGet/XXSet calls take
+// it. A range is either cb slots or t/u slots, never both, and there are far
+// fewer cb slots than resource slots, so only one of the two arrays is in use:
+struct SlotRangeBindings {
+	const bool is_cb;
+	ID3D11View *views[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+	ID3D11Buffer *buffers[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
+	UINT cb_offsets[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
+	UINT cb_sizes[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
+
+	explicit SlotRangeBindings(bool is_cb) : is_cb(is_cb) {}
+	SlotRangeBindings(const SlotRangeBindings&) = delete;
+	SlotRangeBindings& operator=(const SlotRangeBindings&) = delete;
+
+	// Every view and buffer in here holds a reference:
+	~SlotRangeBindings()
+	{
+		for (ID3D11View *view : views) {
+			if (view)
+				view->Release();
+		}
+		for (ID3D11Buffer *buffer : buffers) {
+			if (buffer)
+				buffer->Release();
+		}
+	}
+
+	// Leaves the slot at index unbound:
+	void Release(unsigned index)
+	{
+		if (is_cb) {
+			if (buffers[index])
+				buffers[index]->Release();
+			buffers[index] = NULL;
+			cb_offsets[index] = cb_sizes[index] = 0;
+		} else {
+			if (views[index])
+				views[index]->Release();
+			views[index] = NULL;
+		}
+	}
+
+	// Binds what a deferred single slot operation produced, taking over the
+	// reference this range uses and dropping the other:
+	void Take(unsigned index, DeferredBinding &binding)
+	{
+		Release(index);
+		if (is_cb) {
+			buffers[index] = (ID3D11Buffer*)binding.resource;
+			cb_offsets[index] = binding.offset;
+			cb_sizes[index] = binding.size;
+			if (binding.view)
+				binding.view->Release();
+		} else {
+			views[index] = binding.view;
+			if (binding.resource)
+				binding.resource->Release();
+		}
+	}
+
+	// The slot's contents as a copy from it needs them, matching what
+	// GetResource() hands a single slot operation. AddRef'd, may be NULL:
+	ID3D11Resource* Resource(unsigned index) const
+	{
+		ID3D11Resource *resource = NULL;
+
+		if (is_cb) {
+			resource = buffers[index];
+			if (resource)
+				resource->AddRef();
+		} else if (views[index]) {
+			views[index]->GetResource(&resource);
+		}
+
+		return resource;
+	}
+	ID3D11View* View(unsigned index) const { return is_cb ? NULL : views[index]; }
+	UINT Offset(unsigned index) const { return is_cb ? cb_offsets[index] : 0; }
+	UINT Size(unsigned index) const { return is_cb ? cb_sizes[index] : 0; }
+};
+
+// Whole-range pipeline access for the slot types that support ranges.
+// Returned views/buffers are AddRef'd like the single slot GetResource().
+static void GetSlotRange(CommandListState *state, ResourceCopyTarget &target, unsigned first, unsigned count, SlotRangeBindings &bindings)
+{
+	ID3D11DeviceContext1 *context = state->mOrigContext1;
+
+	switch (target.type) {
+	case ResourceCopyTargetType::SHADER_RESOURCE:
+		GetShaderResourcesBatch(context, target.shader_type, first, count, (ID3D11ShaderResourceView**)bindings.views);
+		break;
+	case ResourceCopyTargetType::UNORDERED_ACCESS_VIEW:
+		if (target.shader_type == L'c')
+			context->CSGetUnorderedAccessViews(first, count, (ID3D11UnorderedAccessView**)bindings.views);
+		else
+			context->OMGetRenderTargetsAndUnorderedAccessViews(0, NULL, NULL, first, count, (ID3D11UnorderedAccessView**)bindings.views);
+		break;
+	case ResourceCopyTargetType::CONSTANT_BUFFER:
+		switch (target.shader_type) {
+			case L'v': context->VSGetConstantBuffers1(first, count, bindings.buffers, bindings.cb_offsets, bindings.cb_sizes); break;
+			case L'h': context->HSGetConstantBuffers1(first, count, bindings.buffers, bindings.cb_offsets, bindings.cb_sizes); break;
+			case L'd': context->DSGetConstantBuffers1(first, count, bindings.buffers, bindings.cb_offsets, bindings.cb_sizes); break;
+			case L'g': context->GSGetConstantBuffers1(first, count, bindings.buffers, bindings.cb_offsets, bindings.cb_sizes); break;
+			case L'p': context->PSGetConstantBuffers1(first, count, bindings.buffers, bindings.cb_offsets, bindings.cb_sizes); break;
+			case L'c': context->CSGetConstantBuffers1(first, count, bindings.buffers, bindings.cb_offsets, bindings.cb_sizes); break;
+		}
+		// Same unit conversion as GetResource(): constants -> bytes
+		for (unsigned i = 0; i < count; i++) {
+			bindings.cb_offsets[i] *= 16;
+			bindings.cb_sizes[i] *= 16;
+		}
+		break;
+	}
+}
+
+static void SetSlotRange(CommandListState *state, ResourceCopyTarget &target, unsigned first, unsigned count, const SlotRangeBindings &bindings)
+{
+	ID3D11DeviceContext1 *context = state->mOrigContext1;
+	UINT uav_counters[D3D11_1_UAV_SLOT_COUNT]; // TODO: Allow these to be set
+	UINT cb_first[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
+	UINT cb_counts[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
+	bool cb_regions = false;
+	std::fill_n(uav_counters, D3D11_1_UAV_SLOT_COUNT, (UINT)-1);
+
+	if (target.type == ResourceCopyTargetType::CONSTANT_BUFFER) {
+		// Same split as SetResource(): a region of a buffer needs
+		// XXSetConstantBuffers1, and the windows it takes are per slot, so one
+		// region in the range sends every slot through it. Without one the
+		// plain call stays, which a driver lacking constant buffer offsetting
+		// support cannot drop.
+		for (unsigned i = 0; i < count; i++) {
+			if (bindings.cb_sizes[i]) {
+				// Bytes -> constants of 16 bytes each, as in SetResource():
+				cb_first[i] = bindings.cb_offsets[i] / 16;
+				cb_counts[i] = bindings.cb_sizes[i] / 16;
+				cb_regions = true;
+			} else {
+				// No region: the widest window there is, which the runtime
+				// intersects with the buffer to bind all of it.
+				cb_first[i] = 0;
+				cb_counts[i] = D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT;
+			}
+		}
+	}
+
+	switch (target.type) {
+	case ResourceCopyTargetType::SHADER_RESOURCE:
+		SetShaderResourcesBatch(context, target.shader_type, first, count, (ID3D11ShaderResourceView *const *)bindings.views);
+		break;
+	case ResourceCopyTargetType::UNORDERED_ACCESS_VIEW:
+		if (target.shader_type == L'c')
+			context->CSSetUnorderedAccessViews(first, count, (ID3D11UnorderedAccessView *const *)bindings.views, uav_counters);
+		else
+			context->OMSetRenderTargetsAndUnorderedAccessViews(D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, NULL, NULL,
+				first, count, (ID3D11UnorderedAccessView *const *)bindings.views, uav_counters);
+		break;
+	case ResourceCopyTargetType::CONSTANT_BUFFER:
+		if (cb_regions) {
+			switch (target.shader_type) {
+				case L'v': context->VSSetConstantBuffers1(first, count, bindings.buffers, cb_first, cb_counts); break;
+				case L'h': context->HSSetConstantBuffers1(first, count, bindings.buffers, cb_first, cb_counts); break;
+				case L'd': context->DSSetConstantBuffers1(first, count, bindings.buffers, cb_first, cb_counts); break;
+				case L'g': context->GSSetConstantBuffers1(first, count, bindings.buffers, cb_first, cb_counts); break;
+				case L'p': context->PSSetConstantBuffers1(first, count, bindings.buffers, cb_first, cb_counts); break;
+				case L'c': context->CSSetConstantBuffers1(first, count, bindings.buffers, cb_first, cb_counts); break;
+			}
+			break;
+		}
+		switch (target.shader_type) {
+			case L'v': context->VSSetConstantBuffers(first, count, bindings.buffers); break;
+			case L'h': context->HSSetConstantBuffers(first, count, bindings.buffers); break;
+			case L'd': context->DSSetConstantBuffers(first, count, bindings.buffers); break;
+			case L'g': context->GSSetConstantBuffers(first, count, bindings.buffers); break;
+			case L'p': context->PSSetConstantBuffers(first, count, bindings.buffers); break;
+			case L'c': context->CSSetConstantBuffers(first, count, bindings.buffers); break;
+		}
+		break;
+	}
+}
+
+static CommandListCommand* parse_slot_range_operation(
+	const wchar_t* section, ResourceCopyTarget& dst, ResourceCopyTarget& src, ResourceCopyOptions options, CommandList* command_list, const wstring* ini_namespace
+)
+{
+	bool bind = dst.evaluation_mode == ResourceCopyTargetEvaluationMode::SLOT_RANGE;
+	ResourceCopyTarget &slots = bind ? dst : src;
+	ResourceCopyTarget &other = bind ? src : dst;
+
+	bool other_is_pool = other.type == ResourceCopyTargetType::POOL;
+
+	if (bind) {
+		// ps-t[$a:$b] = ref PoolFoo[$c:$d] | ref ResourceFoo | null
+		bool src_ok = other_is_pool
+			|| (src.type == ResourceCopyTargetType::CUSTOM_RESOURCE && src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE)
+			|| src.type == ResourceCopyTargetType::EMPTY;
+		if (!src_ok) {
+			LogOverlayW(LOG_WARNING, L"Slot range destination needs a pool, custom resource or null source\n - [%ls] @ [%ls]\n", section, ini_namespace->c_str());
+			return nullptr;
+		}
+	} else if (!other_is_pool) {
+		// PoolFoo[$c:$d] = ref ps-t[$a:$b]
+		LogOverlayW(LOG_WARNING, L"Slot range source needs a pool destination\n - [%ls] @ [%ls]\n", section, ini_namespace->c_str());
+		return nullptr;
+	}
+
+	// Each side states its own bounds, so that a range is visible in the ini
+	// line without reading the other side of the assignment:
+	if (other_is_pool && other.evaluation_mode != ResourceCopyTargetEvaluationMode::POOL_RANGE) {
+		LogOverlayW(LOG_WARNING, L"A pool opposite a slot range needs explicit bounds\n - [%ls] @ [%ls]\n", section, ini_namespace->c_str());
+		return nullptr;
+	}
+
+	// Same defaults as parse_resource_copy_operation: binding a custom
+	// resource is a reference, fetching into one is a full copy.
+	if (!(options & ResourceCopyOptions::COPY_TYPE_MASK))
+		options |= bind ? ResourceCopyOptions::REFERENCE : ResourceCopyOptions::COPY;
+
+	if (bind && src.type != ResourceCopyTargetType::EMPTY && (options & ResourceCopyOptions::REFERENCE)) {
+		// Same parse time bind flag propagation as parse_resource_copy_operation:
+		D3D11_RESOURCE_MISC_FLAG misc_flags = (D3D11_RESOURCE_MISC_FLAG)0;
+		D3D11_BIND_FLAG bind_flags = dst.BindFlags(NULL, &misc_flags);
+		bool ok = src.type == ResourceCopyTargetType::POOL
+			? src.custom_resource_pool->PropagateFlags(bind_flags, misc_flags)
+			: src.GetCustomResource(nullptr, true)->AddFlags(bind_flags, misc_flags, true);
+		if (!ok) {
+			LogOverlayW(LOG_WARNING, L"Slot range source has incompatible bind flags\n - [%ls] @ [%ls]\n", section, ini_namespace->c_str());
+			return nullptr;
+		}
+	}
+
+	SlotRangeCopyOperation* operation = new SlotRangeCopyOperation();
+	operation->src = std::move(src);
+	operation->dst = std::move(dst);
+	operation->options = options;
+	return operation;
+}
+
+SlotRangeCopyOperation::~SlotRangeCopyOperation()
+{
+	for (ID3D11View *view : cached_views) {
+		if (view)
+			view->Release();
+	}
+}
+
+bool SlotRangeCopyOperation::optimise(HackerDevice *device)
+{
+	bool ret = false;
+	for (ResourceCopyTarget *target : { &src, &dst }) {
+		if (target->range_start)
+			ret = target->range_start->optimise(device) || ret;
+		if (target->range_end)
+			ret = target->range_end->optimise(device) || ret;
+	}
+	return ret;
+}
+
+// View of the slot's type for resource, AddRef'd. Prefers the source's own
+// view when it is already of that type (e.g. the SRV saved from this very
+// slot), otherwise creates one and caches it per slot.
+ID3D11View* SlotRangeCopyOperation::ViewForSlot(CommandListState *state, unsigned index, ID3D11Resource *resource, ID3D11View *src_view)
+{
+	if (src_view && ViewMatchesResource(src_view, resource)) {
+		REFIID iid = dst.type == ResourceCopyTargetType::UNORDERED_ACCESS_VIEW
+			? __uuidof(ID3D11UnorderedAccessView) : __uuidof(ID3D11ShaderResourceView);
+		void *typed = NULL;
+		if (SUCCEEDED(src_view->QueryInterface(iid, &typed)))
+			return (ID3D11View*)typed;
+	}
+
+	if (cached_views.size() <= index)
+		cached_views.resize(index + 1, nullptr);
+
+	if (cached_views[index]) {
+		if (ViewMatchesResource(cached_views[index], resource)) {
+			cached_views[index]->AddRef();
+			return cached_views[index];
+		}
+		cached_views[index]->Release();
+		cached_views[index] = NULL;
+	}
+
+	ID3D11View *view = CreateCompatibleView(&dst, resource, state, 0, 0, DXGI_FORMAT_UNKNOWN, 0, options);
+	if (view) {
+		cached_views[index] = view;
+		view->AddRef();
+	}
+	return view;
+}
+
+// Per slot ResourceCopyOperation for anything the plain ref path can't do
+// (copy, resolve_msaa, raw, ...). Created on first use; the fixed slot side
+// is set up here, the custom resource side is set per run.
+ResourceCopyOperation* SlotRangeCopyOperation::SlotOp(unsigned index, unsigned slot)
+{
+	bool bind = dst.evaluation_mode == ResourceCopyTargetEvaluationMode::SLOT_RANGE;
+
+	if (slot_ops.size() <= index)
+		slot_ops.resize(index + 1);
+
+	if (!slot_ops[index]) {
+		auto op = std::make_unique<ResourceCopyOperation>();
+		ResourceCopyTarget &op_slot = bind ? op->dst : op->src;
+		ResourceCopyTarget &op_resource = bind ? op->src : op->dst;
+		const ResourceCopyTarget &range = bind ? dst : src;
+
+		op_slot.type = range.type;
+		op_slot.shader_type = range.shader_type;
+		op_slot.max_slot = range.max_slot;
+		op_resource.type = ResourceCopyTargetType::CUSTOM_RESOURCE;
+		op->options = options;
+		op->ini_line = ini_line;
+		slot_ops[index] = std::move(op);
+	}
+
+	(bind ? slot_ops[index]->dst : slot_ops[index]->src).slot = slot;
+	return slot_ops[index].get();
+}
+
+bool SlotRangeCopyOperation::UsesSlotOps() const
+{
+	static const int plain_ref = (int)ResourceCopyOptions::REFERENCE
+		| (int)ResourceCopyOptions::UNLESS_NULL
+		| (int)ResourceCopyOptions::NO_VIEW_CACHE;
+	return ((int)options & ~plain_ref) && src.type != ResourceCopyTargetType::EMPTY;
+}
+
+// Frame analysis log line per slot. Guarded so the name formatting isn't
+// paid for on every run:
+#define SLOT_RANGE_LOG(state, fmt, ...) \
+	do { \
+		if (G->analyse_frame) \
+			COMMAND_LIST_LOG(state, fmt, __VA_ARGS__); \
+	} while (0)
+
+// "copy" or "ref" for the frame analysis log:
+static const char* copy_type_name(ResourceCopyOptions options)
+{
+	return (options & ResourceCopyOptions::COPY_MASK) ? "copy" : "ref";
+}
+
+// The pool element paired with the slot at `index` in the range. Range bounds
+// are element indices on every pool type, so this bypasses the fifo /
+// spatial key lookup (use_ring_index):
+static CustomResource* pool_element(CustomResourcePool *pool, int pool_first, unsigned index, bool is_assignment)
+{
+	// GetResource(id, template_lookup, use_ring_index, is_assignment):
+	return pool->GetResource((float)(pool_first + (int)index), false, true, is_assignment);
+}
+
+// "ps-t3" for the frame analysis log:
+static std::string slot_log_name(const ResourceCopyTarget &target, unsigned slot)
+{
+	const char *kind = target.type == ResourceCopyTargetType::CONSTANT_BUFFER ? "cb"
+		: target.type == ResourceCopyTargetType::UNORDERED_ACCESS_VIEW ? "u" : "t";
+	char buf[16];
+	_snprintf_s(buf, sizeof(buf), _TRUNCATE, "%cs-%s%u", (char)target.shader_type, kind, slot);
+	return buf;
+}
+
+// Runs a regular single slot operation for one slot of the range, and takes
+// the binding it would have made for SetSlotRange to apply with the rest.
+void SlotRangeCopyOperation::BindSlotOp(CommandListState *state, SlotRangeBindings &bindings, unsigned index, unsigned slot, CustomResource *source)
+{
+	ResourceCopyOperation *op = SlotOp(index, slot);
+	ID3D11Resource *resource = NULL;
+	ID3D11View *src_view = NULL;
+	UINT stride = 0, offset = 0, buf_src_size = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+	DeferredBinding binding;
+
+	SLOT_RANGE_LOG(state, "  %s = %s %S\n", slot_log_name(dst, slot).c_str(), copy_type_name(options), source ? source->name.c_str() : L"null");
+
+	op->src.SetCustomResource(source);
+	op->deferred = &binding;
+	// Same as ResourceCopyOperation::run() without the log line; its own
+	// lines are nested under the one above:
+	resource = op->src.GetResource(state, &src_view, &stride, &offset, &format, &buf_src_size, (options & ResourceCopyOptions::REFERENCE) ? &op->dst : NULL);
+	state->extra_indent += 2;
+	op->CopyResourceToResource(state, resource, src_view, stride, offset, format, buf_src_size);
+	state->extra_indent -= 2;
+	op->deferred = NULL;
+	if (src_view)
+		src_view->Release();
+	if (resource)
+		resource->Release();
+
+	// Nothing assigned means unless_null found a null source and the slot
+	// keeps whatever it was bound to:
+	if (binding.assigned)
+		bindings.Take(index, binding);
+}
+
+// Binds the source resource itself, through a view of the slot's type where
+// the slot takes one.
+void SlotRangeCopyOperation::BindSlotRef(CommandListState *state, SlotRangeBindings &bindings, unsigned index, unsigned slot, CustomResource *source)
+{
+	ID3D11Resource *resource = NULL;
+	ID3D11View *src_view = NULL;
+
+	if (source) {
+		ResourceCopyTarget element;
+		element.type = ResourceCopyTargetType::CUSTOM_RESOURCE;
+		element.SetCustomResource(source);
+		resource = element.GetResource(state, &src_view, NULL, NULL, NULL, NULL, &dst);
+	}
+
+	if (!resource) {
+		if (src.type == ResourceCopyTargetType::EMPTY)
+			SLOT_RANGE_LOG(state, "  %s = null\n", slot_log_name(dst, slot).c_str());
+		else
+			SLOT_RANGE_LOG(state, "  %s = %s %S: source is NULL%s\n", slot_log_name(dst, slot).c_str(), copy_type_name(options),
+				source ? source->name.c_str() : L"null", (options & ResourceCopyOptions::UNLESS_NULL) ? ", keeping current binding" : "");
+		if (!(options & ResourceCopyOptions::UNLESS_NULL))
+			bindings.Release(index);
+		return;
+	}
+
+	SLOT_RANGE_LOG(state, "  %s = ref %S\n", slot_log_name(dst, slot).c_str(), source->name.c_str());
+
+	// Same accounting as a single-slot "ref" copy (CopyResourceToResource):
+	Profiling::resource_reference_copies++;
+
+	bindings.Release(index);
+	if (bindings.is_cb) {
+		bindings.buffers[index] = (ID3D11Buffer*)resource; // takes the GetResource() reference
+	} else {
+		bindings.views[index] = ViewForSlot(state, index, resource, src_view);
+		resource->Release();
+	}
+
+	if (src_view)
+		src_view->Release();
+}
+
+void SlotRangeCopyOperation::RunBind(CommandListState *state, unsigned first, unsigned count, int pool_first)
+{
+	SlotRangeBindings bindings(dst.type == ResourceCopyTargetType::CONSTANT_BUFFER);
+	bool use_slot_ops = UsesSlotOps();
+
+	// Slots kept by unless_null are rebound exactly as fetched, including a
+	// cb region the game bound with XXSetConstantBuffers1:
+	if (options & ResourceCopyOptions::UNLESS_NULL)
+		GetSlotRange(state, dst, first, count, bindings);
+
+	// A single custom resource (ResourceFoo or PoolFoo[$i]) goes to every slot:
+	CustomResource *single_source = NULL;
+	if (src.type == ResourceCopyTargetType::CUSTOM_RESOURCE)
+		single_source = src.GetCustomResource(state);
+
+	for (unsigned i = 0; i < count; i++) {
+		CustomResource *source = src.type == ResourceCopyTargetType::POOL
+			? pool_element(src.custom_resource_pool, pool_first, i, false) : single_source;
+
+		if (use_slot_ops)
+			BindSlotOp(state, bindings, i, first + i, source);
+		else
+			BindSlotRef(state, bindings, i, first + i, source);
+	}
+
+	SetSlotRange(state, dst, first, count, bindings);
+
+	if (options & ResourceCopyOptions::NO_VIEW_CACHE) {
+		for (ID3D11View *&view : cached_views) {
+			if (view) view->Release();
+			view = NULL;
+		}
+	}
+}
+
+// Hands one slot's contents to a regular single slot operation, which is what
+// ResourceCopyOperation::run() does for a slot source.
+void SlotRangeCopyOperation::FetchSlotOp(CommandListState *state, const SlotRangeBindings &bindings, unsigned index, unsigned slot, CustomResource *element, ID3D11Resource *resource)
+{
+	ResourceCopyOperation *op = SlotOp(index, slot);
+
+	SLOT_RANGE_LOG(state, "  %S = %s %s\n", element->name.c_str(), copy_type_name(options), slot_log_name(src, slot).c_str());
+
+	op->dst.SetCustomResource(element);
+	// Its own lines are nested under the one above:
+	state->extra_indent += 2;
+	op->CopyResourceToResource(state, resource, bindings.View(index), 0, bindings.Offset(index), DXGI_FORMAT_UNKNOWN, bindings.Size(index));
+	state->extra_indent -= 2;
+}
+
+// Stores one slot's contents in the pool element,
+// as "PoolFoo[n] = ref <slot>" would.
+void SlotRangeCopyOperation::FetchSlotRef(CommandListState *state, const SlotRangeBindings &bindings, unsigned index, unsigned slot, CustomResource *element, ID3D11Resource *resource)
+{
+	ResourceCopyTarget target;
+
+	SLOT_RANGE_LOG(state, "  %S = ref %s%s\n", element->name.c_str(), slot_log_name(src, slot).c_str(), resource ? "" : ": source is NULL");
+
+	// Same accounting as a single-slot "ref" copy (CopyResourceToResource):
+	if (resource)
+		Profiling::resource_reference_copies++;
+
+	target.type = ResourceCopyTargetType::CUSTOM_RESOURCE;
+	target.SetCustomResource(element);
+	target.SetResource(state, resource, bindings.View(index), 0, bindings.Offset(index), DXGI_FORMAT_UNKNOWN, bindings.Size(index));
+}
+
+void SlotRangeCopyOperation::RunFetch(CommandListState *state, unsigned first, unsigned count, int pool_first)
+{
+	SlotRangeBindings bindings(src.type == ResourceCopyTargetType::CONSTANT_BUFFER);
+	bool use_slot_ops = UsesSlotOps();
+
+	GetSlotRange(state, src, first, count, bindings);
+
+	for (unsigned i = 0; i < count; i++) {
+		ID3D11Resource *resource = bindings.Resource(i);
+
+		// unless_null must leave the element exactly as it was, so bail
+		// before resolving it: the lookup below is an assignment, which
+		// postpones the element's expiration and can lazily create its
+		// resource even though nothing is written to it.
+		if (!resource && (options & ResourceCopyOptions::UNLESS_NULL)) {
+			SLOT_RANGE_LOG(state, "  %S[%d] = %s %s: source is NULL, keeping current resource\n",
+				dst.custom_resource_pool->name.c_str(), pool_first + (int)i, copy_type_name(options), slot_log_name(src, first + i).c_str());
+			continue;
+		}
+
+		CustomResource *element = pool_element(dst.custom_resource_pool, pool_first, i, true);
+
+		if (use_slot_ops)
+			FetchSlotOp(state, bindings, i, first + i, element, resource);
+		else
+			FetchSlotRef(state, bindings, i, first + i, element, resource);
+
+		if (resource)
+			resource->Release();
+	}
+}
+
+void SlotRangeCopyOperation::run(CommandListState *state)
+{
+	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
+
+	bool bind = dst.evaluation_mode == ResourceCopyTargetEvaluationMode::SLOT_RANGE;
+	ResourceCopyTarget &slots = bind ? dst : src;
+	ResourceCopyTarget &other = bind ? src : dst;
+	bool has_pool = other.type == ResourceCopyTargetType::POOL;
+	int slot_first = 0, pool_first = 0;
+	unsigned count = 0, pool_count = 0;
+
+	if (!slots.ResolveRange(state, &slot_first, &count))
+		return;
+
+	if (has_pool) {
+		if (!other.ResolveRange(state, &pool_first, &pool_count))
+			return;
+		if (pool_count != count) {
+			LogOverlayW(LOG_WARNING, L"Slot range and pool range sizes differ (%u vs %u)\n - [%ls]\n", count, pool_count, ini_line.c_str());
+			return;
+		}
+	}
+
+	unsigned first = (unsigned)slot_first;
+
+	if (bind)
+		RunBind(state, first, count, pool_first);
+	else
+		RunFetch(state, first, count, pool_first);
+}
+
+#pragma endregion SlotRangeCopyOperation
 

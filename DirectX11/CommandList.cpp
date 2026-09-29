@@ -6429,7 +6429,7 @@ void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 				filename.c_str(), is_gdds ? L"GDDS" : L"DDS", bind_flags);
 
 #ifdef USING_DIRECTSTORAGE
-		if (DirectStorageManager::IsEnabled() && DirectStorageManager::EnsureInitialized(mOrigDevice1)) {
+		if (is_gdds && DirectStorageManager::IsEnabled() && DirectStorageManager::EnsureInitialized(mOrigDevice1)) {
 			ID3D11Texture2D *dsTex = nullptr;
 			hr = DirectStorageManager::GetInstance()->LoadTextureFromFile(
 					mOrigDevice1, filename,
@@ -6442,8 +6442,7 @@ void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 				is_null = false;
 				return;
 			}
-			if (is_gdds)
-				LogDebugW(L"DirectStorage failed for %s (0x%x), attempting fallback\n", filename.c_str(), hr);
+			LogDebugW(L"DirectStorage failed for %s (0x%x), attempting fallback\n", filename.c_str(), hr);
 		}
 #endif
 

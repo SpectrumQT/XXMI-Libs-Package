@@ -332,6 +332,12 @@ HRESULT DirectStorageManager::WaitForFence(UINT64 value)
 	if (m_fence->GetCompletedValue() >= value)
 		return S_OK;
 
+	for (int spin = 0; spin < 2000; ++spin) {
+		if (m_fence->GetCompletedValue() >= value)
+			return S_OK;
+		YieldProcessor();
+	}
+
 	HRESULT hr = m_fence->SetEventOnCompletion(value, m_fenceEvent);
 	if (FAILED(hr))
 		return hr;
@@ -363,6 +369,9 @@ UINT DirectStorageManager::BitsPerPixel(DXGI_FORMAT fmt)
 	case DXGI_FORMAT_R8G8B8A8_UNORM:
 	case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
 	case DXGI_FORMAT_B8G8R8A8_UNORM:
+	case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+	case DXGI_FORMAT_B8G8R8X8_UNORM:
+	case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
 		return 32;
 	case DXGI_FORMAT_R16G16_TYPELESS:
 	case DXGI_FORMAT_R16G16_FLOAT:
@@ -571,11 +580,6 @@ bool DirectStorageManager::ParseGDDS(const wchar_t *filename, GDDSInfo *out)
 	}
 	CloseHandle(file);
 
-	// Normalize format mappings for DirectStorage
-	if ((UINT)format == 72)
-		format = DXGI_FORMAT_BC1_UNORM_SRGB;
-	else if ((UINT)format == 78)
-		format = DXGI_FORMAT_BC7_UNORM;
 
 	D3D12_RESOURCE_DESC desc{};
 	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;

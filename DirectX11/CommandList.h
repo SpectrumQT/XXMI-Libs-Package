@@ -476,16 +476,16 @@ static EnumName_t<const wchar_t *, CustomColorSpace> CustomColorSpaceNames[] = {
 // D3D11_BIND_FLAG, but this allows us to use parse_enum_option_string.
 enum class CustomResourceBindFlags {
 	INVALID         = 0x00000000,
-	VERTEX_BUFFER   = 0x00000001,
-	INDEX_BUFFER    = 0x00000002,
-	CONSTANT_BUFFER = 0x00000004,
-	SHADER_RESOURCE = 0x00000008,
-	STREAM_OUTPUT   = 0x00000010,
-	RENDER_TARGET   = 0x00000020,
-	DEPTH_STENCIL   = 0x00000040,
-	UNORDERED_ACCESS= 0x00000080,
-	DECODER         = 0x00000200,
-	VIDEO_ENCODER   = 0x00000400,
+	VERTEX_BUFFER   = D3D11_BIND_VERTEX_BUFFER,
+	INDEX_BUFFER    = D3D11_BIND_INDEX_BUFFER,
+	CONSTANT_BUFFER = D3D11_BIND_CONSTANT_BUFFER,
+	SHADER_RESOURCE = D3D11_BIND_SHADER_RESOURCE,
+	STREAM_OUTPUT   = D3D11_BIND_STREAM_OUTPUT,
+	RENDER_TARGET   = D3D11_BIND_RENDER_TARGET,
+	DEPTH_STENCIL   = D3D11_BIND_DEPTH_STENCIL,
+	UNORDERED_ACCESS= D3D11_BIND_UNORDERED_ACCESS,
+	DECODER         = D3D11_BIND_DECODER,
+	VIDEO_ENCODER   = D3D11_BIND_VIDEO_ENCODER,
 };
 SENSIBLE_ENUM(CustomResourceBindFlags);
 static EnumName_t<const wchar_t *, CustomResourceBindFlags> CustomResourceBindFlagNames[] = {
@@ -500,6 +500,23 @@ static EnumName_t<const wchar_t *, CustomResourceBindFlags> CustomResourceBindFl
 	{L"decoder", CustomResourceBindFlags::DECODER},
 	{L"video_encoder", CustomResourceBindFlags::VIDEO_ENCODER},
 	{NULL, CustomResourceBindFlags::INVALID} // End of list marker
+};
+
+enum class DataCacheBindFlags {
+	INVALID = 0x00000000,
+	VERTEX_BUFFER = D3D11_BIND_VERTEX_BUFFER,
+	INDEX_BUFFER = D3D11_BIND_INDEX_BUFFER,
+	CONSTANT_BUFFER = D3D11_BIND_CONSTANT_BUFFER,
+
+	ALL_MASK = D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER,
+};
+SENSIBLE_ENUM(DataCacheBindFlags);
+static EnumName_t<const wchar_t*, DataCacheBindFlags> DataCacheBindFlagNames[] = {
+	{L"vertex_buffer", DataCacheBindFlags::VERTEX_BUFFER},
+	{L"index_buffer", DataCacheBindFlags::INDEX_BUFFER},
+	{L"constant_buffer", DataCacheBindFlags::CONSTANT_BUFFER},
+	{L"all", DataCacheBindFlags::ALL_MASK},
+	{NULL, DataCacheBindFlags::INVALID} // End of list marker
 };
 
 // The ResourcePool holds a pool of cached resources for when a single copy
@@ -1727,11 +1744,30 @@ class StoreCommand : public CommandListCommand {
 public:
 	ResourceCopyTarget src;
 	CommandListVariable* var = nullptr;
+	ResourceCopyTarget pool_var;
 	unique_ptr<CommandListExpression> offset_expression;
 
 	wstring ini_section;
 
 	void run(CommandListState*) override;
+
+	bool CalculateCopyRegion(
+		const D3D11_BUFFER_DESC& desc,
+		const UINT value_size,
+		UINT64 value_byte_offset,
+		UINT64* copy_offset,
+		UINT64* copy_size,
+		UINT* value_offset);
+	bool ReadValueFromGPU(
+		HackerContext* hacker_context,
+		ID3D11DeviceContext* orig_context,
+		ID3D11Resource* src_resource,
+		UINT64 copy_offset,
+		UINT64 copy_size,
+		UINT value_offset,
+		float& value);
+	bool TryReadValueFromCache(ID3D11Resource* resource, UINT64 byte_offset, float& value);
+	void SetOutputValue(CommandListState* state, float value);
 };
 
 class ClearViewCommand : public CommandListCommand {

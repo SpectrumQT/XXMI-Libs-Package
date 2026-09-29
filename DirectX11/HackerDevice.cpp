@@ -771,7 +771,7 @@ static bool ReplaceHLSLShader(__in UINT64 hash, const wchar_t *pShaderType,
 
 			// TODO: Add #defines for StereoParams and IniParams
 
-			ID3DBlob *errorMsgs; // FIXME: This can leak
+			ID3DBlob *errorMsgs = nullptr;
 			ID3DBlob *compiledOutput = 0;
 			// Pass the real filename and use the standard include handler so that
 			// #include will work with a relative path from the shader itself.
@@ -800,8 +800,9 @@ static bool ReplaceHLSLShader(__in UINT64 hash, const wchar_t *pShaderType,
 				LogInfo("--------------------------------------------- BEGIN ---------------------------------------------\n");
 				fwrite(errMsg, 1, errSize - 1, LogFile);
 				LogInfo("---------------------------------------------- END ----------------------------------------------\n");
-				errorMsgs->Release();
 			}
+			if (errorMsgs)
+				errorMsgs->Release();
 
 			// Cache binary replacement.
 			if (G->CACHE_SHADERS && pCode)
@@ -1049,7 +1050,7 @@ static bool DecompileAndPossiblyPatchShader(__in UINT64 hash,
 
 	// TODO: Add #defines for StereoParams and IniParams
 
-	ID3DBlob *pErrorMsgs;
+	ID3DBlob *pErrorMsgs = nullptr;
 	ID3DBlob *pCompiledOutput = NULL;
 	// Probably unecessary here since this shader is one we freshly decompiled,
 	// but for consistency pass the path here as well so that the standard

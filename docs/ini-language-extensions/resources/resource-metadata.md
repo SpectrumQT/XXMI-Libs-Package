@@ -152,14 +152,18 @@ $object_id = vs-cb1->HashRegion(0, 64) ; Hash of the first 64 bytes visible to t
 
 The value is a CRC32C of the data encoded as a 30-bit float, so it fits an INI variable and can be compared or used as a [FIFO pool](../pools/indexing.md/#fifo-indexing) key. It is derived from the data itself, unlike the [resource identity](#resource-identity), so equal data in different buffers produces the same hash.
 
-Hashing requires a CPU-side copy of the buffer contents. Set `track_region_hashes = 1` in the `[Rendering]` section to capture the data as the game writes it through `Map` or `UpdateSubresource`; the hash of a region is then computed once per data change. A buffer that is written on the GPU, or any buffer when `track_region_hashes` is disabled, has to be read back the first time it is hashed, which stalls the pipeline.
+Hashing requires a CPU-side copy of the buffer contents, so the buffer type has to be listed in `cache_resource_data` in the `[Rendering]` section. Hashing a buffer of a type that is not cached returns an [error value](#error-values).
 
 ```ini
 [Rendering]
-track_region_hashes = 1
+cache_resource_data = constant_buffer ; Any of vertex_buffer, index_buffer and constant_buffer, or all, or none.
 ```
 
-For custom resources, the hash is only available with `track_region_hashes = 1` and when the data was captured from a pipeline slot (`ref` or `copy`). Other custom resources return an [error value](#error-values).
+Cached data is captured as the game writes it through `Map` or `UpdateSubresource`, and the hash of a region is then computed once per data change. A buffer that is written on the GPU has to be read back the first time it is hashed, which stalls the pipeline.
+
+> `track_region_hashes = 1` enables the cache for the buffer types it needs itself, so ini files that only set it keep working.
+
+For custom resources, the hash additionally requires that the data was captured from a pipeline slot (`ref` or `copy`). Other custom resources return an [error value](#error-values).
 
 > **Experimental:** `->HashRegion(...)` is experimental and its behavior may change. **Only CB regions** are really tested.
 

@@ -1,8 +1,8 @@
 # GPU Readback
 
-Suppose the distance from the camera to a character lives in a constant buffer, and the INI script needs it on the CPU side to decide which vertex buffer variant to bind. The [`store`](../commands/README.md/#store) command reads a single 32-bit value back from a GPU resource into an INI variable.
+Suppose the distance from the camera to a character lives in a constant buffer, and the INI script needs it on the CPU side to decide which vertex buffer variant to bind. The [`store`](../commands/README.md/#store) command reads a single 32-bit value back from a GPU resource into an INI variable or a [pool variable](../pools/variables.md).
 
-> ⚠️ **`store` is VERY expensive.** Every call forces the CPU to wait until the GPU has finished all queued work and copied the value back, which throws away the CPU/GPU parallelism the game relies on. A `store` that runs on every draw call, or even once per frame for several objects, **will kill the frame rate**. Treat it as a last resort, and never let it run unconditionally in a `[TextureOverride]` or `[ShaderOverride]` section: always gate it so it executes rarely, as shown in [Reading Sparingly](#reading-sparingly).
+> ⚠️ **`store` is VERY expensive** unless the buffer is [cached in RAM](#reading-without-a-stall). A readback forces the CPU to wait until the GPU has finished all queued work and copied the value back, which throws away the CPU/GPU parallelism the game relies on. A `store` that runs on every draw call, or even once per frame for several objects, **will kill the frame rate**. Treat it as a last resort, and never let it run unconditionally in a `[TextureOverride]` or `[ShaderOverride]` section: always gate it so it executes rarely, as shown in [Reading Sparingly](#reading-sparingly).
 
 The naive version below reads the value on every draw of the character. It works, but it is exactly the pattern to avoid:
 
@@ -52,6 +52,28 @@ endif
 
 Here [`@vs-cb1`](../resources/resource-metadata.md/#resource-identity) is a cheap identity of the bound buffer, so the readback only happens when the game switches to a different constant buffer.
 
+## Reading Without a Stall
+
+A buffer type listed in `cache_resource_data` is kept in RAM as the game writes it, and `store` then reads the value from that copy instead of the GPU:
+
+```ini
+[Rendering]
+cache_resource_data = constant_buffer
+```
+
+This removes the stall entirely for constant buffers the game fills on the CPU, which is where most per-object values live, so the guards above are no longer needed for them. It does not help with buffers the GPU writes: those are never cached and always take the readback path.
+
+## Storing Into a Pool Variable
+
+The destination can be a pool variable, which is how a readback is kept per object rather than in a single global:
+
+```ini
+[TextureOverrideCharacter]
+hash = 12345678
+$object_id = @vs-cb1
+store = $PoolObjects[$object_id], vs-cb1, 4
+```
+
 ## Reading Computed Results
 
 `store` also reads from custom resources, which makes it possible to fetch a result computed by a custom compute shader:
@@ -79,4 +101,4 @@ Before reaching for `store`, check whether the decision can be made without leav
 
 * [Resource metadata](../resources/resource-metadata.md) such as `->Size`, `->Stride`, `->Format` or `@` identity costs nanoseconds and often distinguishes the cases that a readback would.
 * A custom shader can branch on the value itself, so the choice is made on the GPU instead of the CPU.
-* [`->HashRegion`](../resources/resource-metadata.md/#hashregionbyte_offset-byte_size) tells whether data changed without stalling when `track_region_hashes` captures CPU-written buffers.
+* [`->HashRegion`](../resources/resource-metadata.md/#hashregionbyte_offset-byte_size) tells whether data changed without stalling, for the buffer types listed in `cache_resource_data`.

@@ -71,6 +71,12 @@ $PoolFoo[$index] = $PoolBar[$index] * $scale
 
 For `fifo` and `spatial` pools, assigning a new key allocates an element, evicting the oldest one when the pool is full. See [FIFO Indexing → Assignment](indexing.md/#assignment).
 
+The [`store`](../commands/README.md/#store) command writes its result to a pool variable the same way, which keeps a read-back value per object instead of in a single global:
+
+```ini
+store = $PoolFoo[$object_id], vs-cb1, 4
+```
+
 > Assignment to a pool variable resets the resource of the same element unless `pool_element_type_switch_reset = 0` is set. See [Element Types](declaration.md/#element-types).
 
 ## Full Range Operations

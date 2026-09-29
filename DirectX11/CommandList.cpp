@@ -10178,7 +10178,16 @@ D3D11_BIND_FLAG ResourceCopyTarget::BindFlags(CommandListState *state, D3D11_RES
 		case ResourceCopyTargetType::CUSTOM_RESOURCE:
 		case ResourceCopyTargetType::POOL:
 		{
-			CustomResource* custom_resource = GetCustomResource(state);
+			// Look the pool's template up instead of resolving an element
+			// (passing no state): every element's flags come from the
+			// template, since PropagateFlags updates both and
+			// InitializeResource copies the template's metadata. This is
+			// called from GetResource() to substantiate the *source* of a
+			// copy, before unless_null has had a chance to cancel it, and
+			// resolving an element postpones its expiration and can lazily
+			// create its resource. A statically indexed element is still
+			// returned directly.
+			CustomResource* custom_resource = GetCustomResource(nullptr);
 			if (misc_flags)
 				*misc_flags = custom_resource->misc_flags;
 			return custom_resource->bind_flags;

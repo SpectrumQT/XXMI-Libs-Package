@@ -87,13 +87,14 @@ The frame analysis log lists every slot of the range as the equivalent single-sl
 
 ### Frame Analysis Dump
 
-`dump` accepts a slot range with explicit bounds and dumps each slot in turn. The slot number is appended to the dump file name.
+`dump` accepts a slot range or a pool range and dumps each slot or element in turn. The slot number or element index is appended to the dump file name.
 
 ```ini
 dump = ps-t[0:3]
+dump = PoolFoo[0:3]
 ```
 
-Pool ranges are not supported by `dump`. Other commands do not accept ranges.
+Dumping a pool element does not count as updating it, so it does not postpone [expiration](../pools/declaration.md/#element-expiration). A whole pool (`dump = PoolFoo`) has no resource of its own to dump. Commands other than `dump` do not accept ranges.
 
 ## Examples
 

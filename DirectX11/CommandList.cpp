@@ -1190,9 +1190,11 @@ static bool ParseFrameAnalysisDump(const wchar_t *section,
 	if (!operation->target.ParseTarget(target, true, ini_namespace, pre_command_list->scope, true, true))
 		goto bail;
 
-	if (operation->target.evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_RANGE)
+	// A whole pool has no resource of its own to dump, only its elements do:
+	if (operation->target.type == ResourceCopyTargetType::POOL
+		&& operation->target.evaluation_mode != ResourceCopyTargetEvaluationMode::POOL_RANGE)
 	{
-		LogOverlayW(LOG_WARNING, L"dump does not support pool ranges: %ls\n", target);
+		LogOverlayW(LOG_WARNING, L"dump needs a pool element or a pool range: %ls\n", target);
 		goto bail;
 	}
 
@@ -2162,22 +2164,40 @@ void FrameAnalysisDumpCommand::run(CommandListState *state)
 
 	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
 
-	// A slot range dumps every slot in turn:
-	int first = (int)target.slot;
+	// A range dumps every slot or pool element in turn:
+	int first = 0;
 	unsigned count = 1;
 	if (target.IsRange() && !target.ResolveRange(state, &first, &count))
 		return;
 
 	for (unsigned i = 0; i < count; i++) {
 		wstring name = target_name;
+		// Each element of a range is named by a local target, rather than
+		// rewriting the command's own, which every context running it shares:
+		ResourceCopyTarget element;
+		ResourceCopyTarget &source = target.IsRange() ? element : target;
+
 		if (target.IsRange()) {
-			target.slot = (unsigned)first + i;
-			name += L"-" + std::to_wstring(target.slot);
+			int index = first + (int)i;
+
+			name += L"-" + std::to_wstring(index);
+			if (target.evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_RANGE) {
+				// GetResource(id, template_lookup, use_ring_index, is_assignment).
+				// Range bounds are element indices on every pool type, so
+				// bypass fifo / spatial key lookup, and dumping an element
+				// does not count as updating it:
+				element.type = ResourceCopyTargetType::CUSTOM_RESOURCE;
+				element.SetCustomResource(target.custom_resource_pool->GetResource((float)index, false, true, false));
+			} else {
+				element.type = target.type;
+				element.shader_type = target.shader_type;
+				element.slot = (unsigned)index;
+			}
 		}
 
-		resource = target.GetResource(state, &view, &stride, &offset, &format, NULL);
+		resource = source.GetResource(state, &view, &stride, &offset, &format, NULL);
 		if (!resource) {
-			COMMAND_LIST_LOG(state, "  No resource to dump (slot %u)\n", target.slot);
+			COMMAND_LIST_LOG(state, "  No resource to dump (%S)\n", name.c_str());
 			continue;
 		}
 

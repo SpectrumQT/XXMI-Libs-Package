@@ -21,7 +21,7 @@ All pool options start with the `pool_` prefix. Any other option in a `[Pool]` s
 | `pool_lazy_initialization`         | `1`     | Initialize elements on first access instead of at parse time. See [Element Initialization](#element-initialization).  |
 | `pool_allocate_slot_on_missing`    | `0`     | `fifo` and `spatial` only: allocate a slot when an unknown key is **read**. See [Lookup Misses](#lookup-misses).      |
 | `pool_spatial_radius`              | `1`     | `spatial` only: reuse an existing slot within this many grid cells. See [Spatial](#spatial).                          |
-| `pool_expiration_timeout_frames`   | *off*   | Expire elements that were not updated for more than N frames. See [Element Expiration](#element-expiration).          |
+| `pool_expiration_timeout_frames`   | `-1`    | Expire elements that were not updated for more than N frames. See [Element Expiration](#element-expiration).          |
 | `pool_expiration_reset_elements`   | `1`     | Reset expired elements to their default values.                                                                        |
 | `pool_expiration_refresh_on_read`  | `0`     | Reading an element also postpones its expiration.                                                                      |
 | `pool_element_type_switch_reset`   | `1`     | Reset an element when it switches between resource and variable. See [Element Types](#element-types).                 |
@@ -194,6 +194,8 @@ When an element expires:
 * With `pool_expiration_reset_elements = 0`, the element keeps its current resource and variable until it is reused.
 
 > `pool_expiration_timeout_frames = 0` expires an element on the first frame it is not updated in.
+
+> A negative timeout, such as the default `-1`, disables expiration.
 
 > `static` pools resolve their elements at parse time, so expiration does not apply to them.
 

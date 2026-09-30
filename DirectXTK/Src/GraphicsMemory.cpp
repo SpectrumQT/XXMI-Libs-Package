@@ -1,33 +1,20 @@
 //--------------------------------------------------------------------------------------
 // File: GraphicsMemory.cpp
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
-// Copyright (c) Microsoft Corporation. All rights reserved.
-//
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #include "pch.h"
 
 #include "GraphicsMemory.h"
+#include "DirectXHelpers.h"
 #include "PlatformHelpers.h"
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
-
-
-namespace
-{
-    template <typename T> __forceinline T AlignUp(T value, size_t alignment)
-    {
-        assert(((alignment - 1) & alignment) == 0);
-        return static_cast<T>( (static_cast<size_t>(value) + alignment - 1) & ~(alignment - 1) );
-    }
-}
 
 
 #if defined(_XBOX_ONE) && defined(_TITLE)
@@ -45,7 +32,7 @@ public:
     {
         if (s_graphicsMemory)
         {
-            throw std::exception("GraphicsMemory is a singleton");
+            throw std::logic_error("GraphicsMemory is a singleton");
         }
 
         s_graphicsMemory = this;
@@ -69,14 +56,22 @@ public:
         s_graphicsMemory = nullptr;
     }
 
-    void Initialize(_In_ ID3D11DeviceX* device, UINT backBufferCount)
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    Impl(Impl&&) = default;
+    Impl& operator=(Impl&&) = default;
+
+    void Initialize(_In_ ID3D11DeviceX* device, unsigned int backBufferCount)
     {
-        assert( device != 0 );
+        if (!device)
+            throw std::invalid_argument("Direct3D device is null");
+
         mDevice = device;
 
-        device->GetImmediateContextX( mDeviceContext.GetAddressOf() );
+        device->GetImmediateContextX(mDeviceContext.GetAddressOf());
 
-        mFrames.resize( backBufferCount );
+        mFrames.resize(backBufferCount);
     }
 
     void* Allocate(_In_opt_ ID3D11DeviceContext* deviceContext, size_t size, int alignment)
@@ -112,7 +107,7 @@ public:
 
     struct MemoryPage
     {
-        MemoryPage() : mPageSize(0), mGrfxMemory(nullptr) {}
+        MemoryPage() noexcept : mPageSize(0), mGrfxMemory(nullptr) {}
 
         void Initialize(size_t reqSize)
         {
@@ -123,10 +118,10 @@ public:
             }
 
             mGrfxMemory = VirtualAlloc(nullptr, mPageSize,
-                                       MEM_LARGE_PAGES | MEM_GRAPHICS | MEM_RESERVE | MEM_COMMIT,
-                                       PAGE_WRITECOMBINE | PAGE_READWRITE | PAGE_GPU_READONLY);
+                MEM_LARGE_PAGES | MEM_GRAPHICS | MEM_RESERVE | MEM_COMMIT,
+                PAGE_WRITECOMBINE | PAGE_READWRITE | PAGE_GPU_READONLY);
             if (!mGrfxMemory)
-                throw  std::bad_alloc();
+                throw std::bad_alloc();
         }
 
         size_t mPageSize;
@@ -135,7 +130,7 @@ public:
 
     struct MemoryFrame
     {
-        MemoryFrame() : mCurOffset(0), mFence(0) {}
+        MemoryFrame() noexcept : mCurOffset(0), mFence(0) {}
 
         ~MemoryFrame() { Clear(); }
 
@@ -173,7 +168,7 @@ public:
 
             void* ptr = static_cast<uint8_t*>(mPages.front().mGrfxMemory) + mCurOffset;
 
-            mCurOffset += static_cast<UINT>( alignedSize );
+            mCurOffset += static_cast<UINT>(alignedSize);
 
             return ptr;
         }
@@ -193,12 +188,12 @@ public:
 
         void Clear()
         {
-            for (auto it = mPages.begin(); it != mPages.end(); ++it)
+            for (auto& it : mPages)
             {
-                if (it->mGrfxMemory)
+                if (it.mGrfxMemory)
                 {
-                    VirtualFree(it->mGrfxMemory, 0, MEM_RELEASE);
-                    it->mGrfxMemory = nullptr;
+                    VirtualFree(it.mGrfxMemory, 0, MEM_RELEASE);
+                    it.mGrfxMemory = nullptr;
                 }
             }
 
@@ -215,7 +210,7 @@ public:
 
     ComPtr<ID3D11DeviceX> mDevice;
     ComPtr<ID3D11DeviceContextX> mDeviceContext;
-    
+
     static GraphicsMemory::Impl* s_graphicsMemory;
 };
 
@@ -235,24 +230,32 @@ public:
     {
         if (s_graphicsMemory)
         {
-            throw std::exception("GraphicsMemory is a singleton");
+            throw std::logic_error("GraphicsMemory is a singleton");
         }
 
         s_graphicsMemory = this;
     }
+
+    Impl(Impl&&) = default;
+    Impl& operator= (Impl&&) = default;
+
+    Impl(Impl const&) = delete;
+    Impl& operator= (Impl const&) = delete;
 
     ~Impl()
     {
         s_graphicsMemory = nullptr;
     }
 
-    void Initialize(_In_ ID3D11Device* device, UINT backBufferCount)
+    void Initialize(_In_ ID3D11Device* device, unsigned int backBufferCount)
     {
-        UNREFERENCED_PARAMETER(device);
+        if (!device)
+            throw std::invalid_argument("Direct3D device is null");
+
         UNREFERENCED_PARAMETER(backBufferCount);
     }
 
-    void* Allocate(_In_opt_ ID3D11DeviceContext* context, size_t size, int alignment)
+    void* Allocate(_In_opt_ ID3D11DeviceContext* context, size_t size, int alignment) noexcept
     {
         UNREFERENCED_PARAMETER(context);
         UNREFERENCED_PARAMETER(size);
@@ -260,9 +263,8 @@ public:
         return nullptr;
     }
 
-    void Commit()
-    {
-    }
+    void Commit() noexcept
+    {}
 
     GraphicsMemory*  mOwner;
 
@@ -276,22 +278,24 @@ GraphicsMemory::Impl* GraphicsMemory::Impl::s_graphicsMemory = nullptr;
 
 //--------------------------------------------------------------------------------------
 
+#ifdef _MSC_VER
 #pragma warning( disable : 4355 )
+#endif
 
 // Public constructor.
 #if defined(_XBOX_ONE) && defined(_TITLE)
-GraphicsMemory::GraphicsMemory(_In_ ID3D11DeviceX* device, UINT backBufferCount)
+GraphicsMemory::GraphicsMemory(_In_ ID3D11DeviceX* device, unsigned int backBufferCount)
 #else
-GraphicsMemory::GraphicsMemory(_In_ ID3D11Device* device, UINT backBufferCount)
+GraphicsMemory::GraphicsMemory(_In_ ID3D11Device* device, unsigned int backBufferCount)
 #endif
-    : pImpl(new Impl(this))
+    : pImpl(std::make_unique<Impl>(this))
 {
     pImpl->Initialize(device, backBufferCount);
 }
 
 
 // Move constructor.
-GraphicsMemory::GraphicsMemory(GraphicsMemory&& moveFrom)
+GraphicsMemory::GraphicsMemory(GraphicsMemory&& moveFrom) noexcept
     : pImpl(std::move(moveFrom.pImpl))
 {
     pImpl->mOwner = this;
@@ -299,7 +303,7 @@ GraphicsMemory::GraphicsMemory(GraphicsMemory&& moveFrom)
 
 
 // Move assignment.
-GraphicsMemory& GraphicsMemory::operator= (GraphicsMemory&& moveFrom)
+GraphicsMemory& GraphicsMemory::operator= (GraphicsMemory&& moveFrom) noexcept
 {
     pImpl = std::move(moveFrom.pImpl);
     pImpl->mOwner = this;
@@ -308,9 +312,7 @@ GraphicsMemory& GraphicsMemory::operator= (GraphicsMemory&& moveFrom)
 
 
 // Public destructor.
-GraphicsMemory::~GraphicsMemory()
-{
-}
+GraphicsMemory::~GraphicsMemory() = default;
 
 
 void* GraphicsMemory::Allocate(_In_opt_ ID3D11DeviceContext* context, size_t size, int alignment)
@@ -328,7 +330,7 @@ void GraphicsMemory::Commit()
 GraphicsMemory& GraphicsMemory::Get()
 {
     if (!Impl::s_graphicsMemory || !Impl::s_graphicsMemory->mOwner)
-        throw std::exception("GraphicsMemory singleton not created");
+        throw std::logic_error("GraphicsMemory singleton not created");
 
     return *Impl::s_graphicsMemory->mOwner;
 }

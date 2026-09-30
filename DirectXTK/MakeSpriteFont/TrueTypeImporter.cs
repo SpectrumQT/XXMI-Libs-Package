@@ -1,13 +1,9 @@
 // DirectXTK MakeSpriteFont tool
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
-// Copyright (c) Microsoft Corporation. All rights reserved.
-//
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 
 using System;
 using System.Collections.Generic;
@@ -134,7 +130,7 @@ namespace MakeSpriteFont
             return points * 96 / 72;
         }
 
-        
+
         // Rasterizes a single character glyph.
         static Glyph ImportGlyph(char character, Font font, Brush brush, StringFormat stringFormat, Bitmap bitmap, Graphics graphics)
         {
@@ -201,8 +197,8 @@ namespace MakeSpriteFont
 
                         if (NativeMethods.GetCharABCWidthsFloat(hdc, character, character, result))
                         {
-                            return result[0].A + 
-                                   result[0].B + 
+                            return result[0].A +
+                                   result[0].B +
                                    result[0].C;
                         }
                         else

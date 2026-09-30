@@ -1,21 +1,13 @@
 //--------------------------------------------------------------------------------------
 // File: PostProcess.h
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
-// Copyright (c) Microsoft Corporation. All rights reserved.
-//
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #pragma once
-
-#if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
-#error Post-processing not supported for Windows Phone 8.x; requires Direct3D hardware Feature Level 10.0 or better
-#endif
 
 #if defined(_XBOX_ONE) && defined(_TITLE)
 #include <d3d11_x.h>
@@ -23,179 +15,235 @@
 #include <d3d11_1.h>
 #endif
 
-#include <DirectXMath.h>
+#include <cstdint>
 #include <memory>
 #include <functional>
+
+#include <DirectXMath.h>
+
+#ifndef DIRECTX_TOOLKIT_API
+#ifdef DIRECTX_TOOLKIT_EXPORT
+#ifdef __GNUC__
+#define DIRECTX_TOOLKIT_API __attribute__ ((dllexport))
+#else
+#define DIRECTX_TOOLKIT_API __declspec(dllexport)
+#endif
+#elif defined(DIRECTX_TOOLKIT_IMPORT)
+#ifdef __GNUC__
+#define DIRECTX_TOOLKIT_API __attribute__ ((dllimport))
+#else
+#define DIRECTX_TOOLKIT_API __declspec(dllimport)
+#endif
+#else
+#define DIRECTX_TOOLKIT_API
+#endif
+#endif
 
 
 namespace DirectX
 {
-    //----------------------------------------------------------------------------------
-    // Abstract interface representing a post-process pass
-    class IPostProcess
+    inline namespace DX11
     {
-    public:
-        virtual ~IPostProcess() { }
-
-        virtual void __cdecl Process(_In_ ID3D11DeviceContext* deviceContext, _In_opt_ std::function<void __cdecl()> setCustomState = nullptr) = 0;
-    };
-
-
-    //----------------------------------------------------------------------------------
-    // Basic post-process
-    class BasicPostProcess : public IPostProcess
-    {
-    public:
-        enum Effect
+        //------------------------------------------------------------------------------
+        // Abstract interface representing a post-process pass
+        class DIRECTX_TOOLKIT_API IPostProcess
         {
-            Copy,
-            Monochrome,
-            Sepia,
-            DownScale_2x2,
-            DownScale_4x4,
-            GaussianBlur_5x5,
-            BloomExtract,
-            BloomBlur,
-            Effect_Max
+        public:
+            virtual ~IPostProcess() = default;
+
+            IPostProcess(const IPostProcess&) = delete;
+            IPostProcess& operator=(const IPostProcess&) = delete;
+
+            virtual void __cdecl Process(
+                _In_ ID3D11DeviceContext* deviceContext,
+                _In_ std::function<void __cdecl()> setCustomState = nullptr) = 0;
+
+        protected:
+            IPostProcess() = default;
+            IPostProcess(IPostProcess&&) = default;
+            IPostProcess& operator=(IPostProcess&&) = default;
         };
 
-        explicit BasicPostProcess(_In_ ID3D11Device* device);
-        BasicPostProcess(BasicPostProcess&& moveFrom);
-        BasicPostProcess& operator= (BasicPostProcess&& moveFrom);
 
-        BasicPostProcess(BasicPostProcess const&) = delete;
-        BasicPostProcess& operator= (BasicPostProcess const&) = delete;
-
-        virtual ~BasicPostProcess();
-
-        // IPostProcess methods.
-        void __cdecl Process(_In_ ID3D11DeviceContext* deviceContext, _In_opt_ std::function<void __cdecl()> setCustomState = nullptr) override;
-
-        // Shader control
-        void __cdecl SetEffect(Effect fx);
-
-        // Properties
-        void __cdecl SetSourceTexture(_In_opt_ ID3D11ShaderResourceView* value);
-
-        // Sets multiplier for GaussianBlur_5x5
-        void __cdecl SetGaussianParameter(float multiplier);
-
-        // Sets parameters for BloomExtract
-        void __cdecl SetBloomExtractParameter(float threshold);
-
-        // Sets parameters for BloomBlur
-        void __cdecl SetBloomBlurParameters(bool horizontal, float size, float brightness);
-
-    private:
-        // Private implementation.
-        class Impl;
-
-        std::unique_ptr<Impl> pImpl;
-    };
-
-
-    //----------------------------------------------------------------------------------
-    // Dual-texure post-process
-    class DualPostProcess : public IPostProcess
-    {
-    public:
-        enum Effect
+        //------------------------------------------------------------------------------
+        // Basic post-process
+        class BasicPostProcess : public IPostProcess
         {
-            Merge,
-            BloomCombine,
-            Effect_Max
+        public:
+            enum Effect : uint32_t
+            {
+                Copy,
+                Monochrome,
+                Sepia,
+                DownScale_2x2,
+                DownScale_4x4,
+                GaussianBlur_5x5,
+                BloomExtract,
+                BloomBlur,
+                Effect_Max
+            };
+
+            DIRECTX_TOOLKIT_API explicit BasicPostProcess(_In_ ID3D11Device* device);
+
+            DIRECTX_TOOLKIT_API BasicPostProcess(BasicPostProcess&&) noexcept;
+            DIRECTX_TOOLKIT_API BasicPostProcess& operator= (BasicPostProcess&&) noexcept;
+
+            BasicPostProcess(BasicPostProcess const&) = delete;
+            BasicPostProcess& operator= (BasicPostProcess const&) = delete;
+
+            DIRECTX_TOOLKIT_API ~BasicPostProcess() override;
+
+            // IPostProcess methods.
+            DIRECTX_TOOLKIT_API void __cdecl Process(
+                _In_ ID3D11DeviceContext* deviceContext,
+                _In_ std::function<void __cdecl()> setCustomState = nullptr) override;
+
+            // Shader control
+            DIRECTX_TOOLKIT_API void __cdecl SetEffect(Effect fx);
+
+            // Properties
+            DIRECTX_TOOLKIT_API void __cdecl SetSourceTexture(_In_opt_ ID3D11ShaderResourceView* value);
+
+            // Sets multiplier for GaussianBlur_5x5
+            DIRECTX_TOOLKIT_API void __cdecl SetGaussianParameter(float multiplier);
+
+            // Sets parameters for BloomExtract
+            DIRECTX_TOOLKIT_API void __cdecl SetBloomExtractParameter(float threshold);
+
+            // Sets parameters for BloomBlur
+            DIRECTX_TOOLKIT_API void __cdecl SetBloomBlurParameters(bool horizontal, float size, float brightness);
+
+        private:
+            // Private implementation.
+            class Impl;
+
+            std::unique_ptr<Impl> pImpl;
         };
 
-        explicit DualPostProcess(_In_ ID3D11Device* device);
-        DualPostProcess(DualPostProcess&& moveFrom);
-        DualPostProcess& operator= (DualPostProcess&& moveFrom);
 
-        DualPostProcess(DualPostProcess const&) = delete;
-        DualPostProcess& operator= (DualPostProcess const&) = delete;
-
-        virtual ~DualPostProcess();
-
-        // IPostProcess methods.
-        void __cdecl Process(_In_ ID3D11DeviceContext* deviceContext, _In_opt_ std::function<void __cdecl()> setCustomState = nullptr) override;
-
-        // Shader control
-        void __cdecl SetEffect(Effect fx);
-
-        // Properties
-        void __cdecl SetSourceTexture(_In_opt_ ID3D11ShaderResourceView* value);
-        void __cdecl SetSourceTexture2(_In_opt_ ID3D11ShaderResourceView* value);
-
-        // Sets parameters for Merge
-        void __cdecl SetMergeParameters(float weight1, float weight2);
-
-        // Sets parameters for BloomCombine
-        void __cdecl SetBloomCombineParameters(float bloom, float base, float bloomSaturation, float baseSaturation);
-
-    private:
-        // Private implementation.
-        class Impl;
-
-        std::unique_ptr<Impl> pImpl;
-    };
-
-
-    //----------------------------------------------------------------------------------
-    // Tone-map post-process
-    class ToneMapPostProcess : public IPostProcess
-    {
-    public:
-        enum Operator           // Tone-mapping operator
+        //------------------------------------------------------------------------------
+        // Dual-texure post-process
+        class DualPostProcess : public IPostProcess
         {
-            None,               // Pass-through
-            Saturate,           // Clamp [0,1]
-            Reinhard,           // x/(1+x)
-            ACESFilmic,
-            Operator_Max
+        public:
+            enum Effect : uint32_t
+            {
+                Merge,
+                BloomCombine,
+                Effect_Max
+            };
+
+            DIRECTX_TOOLKIT_API explicit DualPostProcess(_In_ ID3D11Device* device);
+
+            DIRECTX_TOOLKIT_API DualPostProcess(DualPostProcess&&) noexcept;
+            DIRECTX_TOOLKIT_API DualPostProcess& operator= (DualPostProcess&&) noexcept;
+
+            DualPostProcess(DualPostProcess const&) = delete;
+            DualPostProcess& operator= (DualPostProcess const&) = delete;
+
+            DIRECTX_TOOLKIT_API ~DualPostProcess() override;
+
+            // IPostProcess methods.
+            DIRECTX_TOOLKIT_API void __cdecl Process(
+                _In_ ID3D11DeviceContext* deviceContext,
+                _In_ std::function<void __cdecl()> setCustomState = nullptr) override;
+
+            // Shader control
+            DIRECTX_TOOLKIT_API void __cdecl SetEffect(Effect fx);
+
+            // Properties
+            DIRECTX_TOOLKIT_API void __cdecl SetSourceTexture(_In_opt_ ID3D11ShaderResourceView* value);
+            DIRECTX_TOOLKIT_API void __cdecl SetSourceTexture2(_In_opt_ ID3D11ShaderResourceView* value);
+
+            // Sets parameters for Merge
+            DIRECTX_TOOLKIT_API void __cdecl SetMergeParameters(float weight1, float weight2);
+
+            // Sets parameters for BloomCombine
+            DIRECTX_TOOLKIT_API void __cdecl SetBloomCombineParameters(float bloom, float base, float bloomSaturation, float baseSaturation);
+
+        private:
+            // Private implementation.
+            class Impl;
+
+            std::unique_ptr<Impl> pImpl;
         };
 
-        enum TransferFunction   // Electro-Optical Transfer Function (EOTF)
+
+        //------------------------------------------------------------------------------
+        // Tone-map post-process
+        class ToneMapPostProcess : public IPostProcess
         {
-            Linear,             // Pass-through
-            SRGB,               // sRGB (Rec.709 and approximate sRGB display curve)
-            ST2084,             // HDR10 (Rec.2020 color primaries and ST.2084 display curve)
-            TransferFunction_Max
-        };
+        public:
+            // Tone-mapping operator
+            enum Operator : uint32_t
+            {
+                None,               // Pass-through
+                Saturate,           // Clamp [0,1]
+                Reinhard,           // x/(1+x)
+                ACESFilmic,
+                Operator_Max
+            };
 
-        explicit ToneMapPostProcess(_In_ ID3D11Device* device);
-        ToneMapPostProcess(ToneMapPostProcess&& moveFrom);
-        ToneMapPostProcess& operator= (ToneMapPostProcess&& moveFrom);
+            // Electro-Optical Transfer Function (EOTF)
+            enum TransferFunction : uint32_t
+            {
+                Linear,             // Pass-through
+                SRGB,               // sRGB (Rec.709 and approximate sRGB display curve)
+                ST2084,             // HDR10 (Rec.2020 color primaries and ST.2084 display curve)
+                TransferFunction_Max
+            };
 
-        ToneMapPostProcess(ToneMapPostProcess const&) = delete;
-        ToneMapPostProcess& operator= (ToneMapPostProcess const&) = delete;
+            // Color Rotation Transform for HDR10
+            enum ColorPrimaryRotation : uint32_t
+            {
+                HDTV_to_UHDTV,       // Rec.709 to Rec.2020
+                DCI_P3_D65_to_UHDTV, // DCI-P3-D65 (a.k.a Display P3 or P3D65) to Rec.2020
+                HDTV_to_DCI_P3_D65,  // Rec.709 to DCI-P3-D65 (a.k.a Display P3 or P3D65)
+            };
 
-        virtual ~ToneMapPostProcess();
+            DIRECTX_TOOLKIT_API explicit ToneMapPostProcess(_In_ ID3D11Device* device);
 
-        // IPostProcess methods.
-        void __cdecl Process(_In_ ID3D11DeviceContext* deviceContext, _In_opt_ std::function<void __cdecl()> setCustomState = nullptr) override;
+            DIRECTX_TOOLKIT_API ToneMapPostProcess(ToneMapPostProcess&&) noexcept;
+            DIRECTX_TOOLKIT_API ToneMapPostProcess& operator= (ToneMapPostProcess&&) noexcept;
 
-        // Shader control
-        void __cdecl SetOperator(Operator op);
+            ToneMapPostProcess(ToneMapPostProcess const&) = delete;
+            ToneMapPostProcess& operator= (ToneMapPostProcess const&) = delete;
 
-        void __cdecl SetTransferFunction(TransferFunction func);
+            DIRECTX_TOOLKIT_API ~ToneMapPostProcess() override;
+
+            // IPostProcess methods.
+            DIRECTX_TOOLKIT_API void __cdecl Process(
+                _In_ ID3D11DeviceContext* deviceContext,
+                _In_ std::function<void __cdecl()> setCustomState = nullptr) override;
+
+            // Shader control
+            DIRECTX_TOOLKIT_API void __cdecl SetOperator(Operator op);
+
+            DIRECTX_TOOLKIT_API void __cdecl SetTransferFunction(TransferFunction func);
 
         #if defined(_XBOX_ONE) && defined(_TITLE)
-        // Uses Multiple Render Targets to generate both HDR10 and GameDVR SDR signals
-        void __cdecl SetMRTOutput(bool value = true);
+            // Uses Multiple Render Targets to generate both HDR10 and GameDVR SDR signals
+            DIRECTX_TOOLKIT_API void __cdecl SetMRTOutput(bool value = true);
         #endif
 
-        // Properties
-        void __cdecl SetHDRSourceTexture(_In_opt_ ID3D11ShaderResourceView* value);
+            // Properties
+            DIRECTX_TOOLKIT_API void __cdecl SetHDRSourceTexture(_In_opt_ ID3D11ShaderResourceView* value);
 
-        // Sets exposure value for LDR tonemap operators
-        void SetExposure(float exposureValue);
+            // Sets the Color Rotation Transform for HDR10 signal output
+            DIRECTX_TOOLKIT_API void __cdecl SetColorRotation(ColorPrimaryRotation value);
+            DIRECTX_TOOLKIT_API void __cdecl SetColorRotation(CXMMATRIX value);
 
-        // Sets ST.2084 parameter for how bright white should be in nits
-        void SetST2084Parameter(float paperWhiteNits);
+            // Sets exposure value for LDR tonemap operators
+            DIRECTX_TOOLKIT_API void __cdecl SetExposure(float exposureValue);
 
-    private:
-        // Private implementation.
-        class Impl;
+            // Sets ST.2084 parameter for how bright white should be in nits
+            DIRECTX_TOOLKIT_API void __cdecl SetST2084Parameter(float paperWhiteNits);
 
-        std::unique_ptr<Impl> pImpl;
-    };
+        private:
+            // Private implementation.
+            class Impl;
+
+            std::unique_ptr<Impl> pImpl;
+        };
+    }
 }

@@ -1,13 +1,9 @@
 // DirectXTK MakeSpriteFont tool
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
-// Copyright (c) Microsoft Corporation. All rights reserved.
-//
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 
 using System;
 using System.Drawing;
@@ -174,7 +170,7 @@ namespace MakeSpriteFont
             bitmapData[destX, destY] = Color.FromArgb(0, color);
         }
 
-        
+
         // Converts a bitmap to the specified pixel format.
         public static Bitmap ChangePixelFormat(Bitmap bitmap, PixelFormat format)
         {
@@ -224,7 +220,7 @@ namespace MakeSpriteFont
 
                 set
                 {
-                    Marshal.WriteInt32(PixelAddress(x, y), value.ToArgb()); 
+                    Marshal.WriteInt32(PixelAddress(x, y), value.ToArgb());
                 }
             }
 

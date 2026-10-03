@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vector>
 #include <memory>
 #include <d3d11_1.h>
 #include <dxgi1_2.h>
@@ -56,6 +57,14 @@ private:
 
 	HRESULT UpdateProfilingTexture();
 	void DrawProfilingTexture(float x, float y);
+
+	ID3D11Resource* mProfilingBufferResource = nullptr;
+	std::vector<uint8_t> mProfilingBufferData;
+	UINT mProfilingBufferElementSize = 0;
+	LARGE_INTEGER mProfilingBufferLastUpdate = {};
+
+	HRESULT UpdateProfilingBuffer();
+	void DrawProfilingBuffer(float x, float y);
 
 	// These are all state that we save away before drawing the overlay and
 	// restore again afterwards. Basically everything that DirectTK

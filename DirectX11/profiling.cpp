@@ -1364,6 +1364,82 @@ ID3D11Resource* Profiling::GetSelectedCustomResource()
 	return entry->resource->resource;
 }
 
+DXGI_FORMAT Profiling::GetSelectedCustomResourceFormat()
+{
+	if (mode != Mode::CUSTOM_RESOURCES)
+		return DXGI_FORMAT_UNKNOWN;
+
+	if (active_custom_resource_column < 0 || active_custom_resource_column >= (int)custom_resource_columns.size())
+		return DXGI_FORMAT_UNKNOWN;
+
+	auto& column = custom_resource_columns[active_custom_resource_column];
+
+	if (column.namespace_index < 0 || column.namespace_index >= (int)custom_resource_namespace_list.size())
+		return DXGI_FORMAT_UNKNOWN;
+
+	auto& resources = custom_resource_groups[custom_resource_namespace_list[column.namespace_index]];
+
+	auto sorted_indices = GetSortedResourceIndices(resources);
+
+	if (column.resource_index < 0 || column.resource_index >= (int)sorted_indices.size())
+		return DXGI_FORMAT_UNKNOWN;
+
+	auto* entry = resources[sorted_indices[column.resource_index]];
+
+	if (!entry || !entry->resource)
+		return DXGI_FORMAT_UNKNOWN;
+
+	return entry->resource->override_format;
+}
+
+UINT Profiling::GetSelectedCustomResourceStride()
+{
+	if (mode != Mode::CUSTOM_RESOURCES)
+		return 0;
+
+	if (active_custom_resource_column < 0 || active_custom_resource_column >= (int)custom_resource_columns.size())
+		return 0;
+
+	auto& column = custom_resource_columns[active_custom_resource_column];
+
+	if (column.namespace_index < 0 || column.namespace_index >= (int)custom_resource_namespace_list.size())
+		return 0;
+
+	auto& resources = custom_resource_groups[custom_resource_namespace_list[column.namespace_index]];
+
+	auto sorted_indices = GetSortedResourceIndices(resources);
+
+	if (column.resource_index < 0 || column.resource_index >= (int)sorted_indices.size())
+		return 0;
+
+	auto* entry = resources[sorted_indices[column.resource_index]];
+
+	if (!entry || !entry->resource)
+		return 0;
+
+	auto* resource = entry->resource;
+
+	if (resource->resource)
+	{
+		D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+		resource->resource->GetType(&dimension);
+
+		if (dimension == D3D11_RESOURCE_DIMENSION_BUFFER)
+		{
+			D3D11_BUFFER_DESC desc = {};
+			static_cast<ID3D11Buffer*>(resource->resource)->GetDesc(&desc);
+
+			if (desc.StructureByteStride)
+				return desc.StructureByteStride;
+
+			if (resource->stride)
+				return resource->stride;
+		}
+	}
+
+	return resource->override_stride;
+}
+
 static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER freq, unsigned frames)
 {
 	LARGE_INTEGER present_overhead = {0};

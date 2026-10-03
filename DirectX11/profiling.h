@@ -192,4 +192,6 @@ namespace Profiling {
 	std::wstring SortingHeader(SortMode mode, bool descending);
 
 	ID3D11Resource* GetSelectedCustomResource();
+	DXGI_FORMAT GetSelectedCustomResourceFormat();
+	UINT GetSelectedCustomResourceStride();
 }

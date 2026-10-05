@@ -3,6 +3,9 @@
 #include "lock.h"
 
 #include "CommandList.h"
+#if defined(USING_DIRECTSTORAGE)
+#include "DirectStorageManager.h"
+#endif
 
 #include <DDSTextureLoader.h>
 #include <algorithm>
@@ -6589,8 +6592,29 @@ void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 	EnsureCOM();
 
 	ext = filename.substr(filename.rfind(L"."));
-	if (!_wcsicmp(ext.c_str(), L".dds")) {
-		LogInfoW(L"Loading custom resource %s as DDS, bind_flags=0x%03x\n", filename.c_str(), bind_flags);
+	bool is_gdds = !_wcsicmp(ext.c_str(), L".gdds");
+	if (is_gdds || !_wcsicmp(ext.c_str(), L".dds")) {
+		LogInfoW(L"Loading custom resource %s as %s, bind_flags=0x%03x\n",
+				filename.c_str(), is_gdds ? L"GDDS" : L"DDS", bind_flags);
+
+#ifdef USING_DIRECTSTORAGE
+		if (is_gdds && DirectStorageManager::IsEnabled() && DirectStorageManager::EnsureInitialized(mOrigDevice1)) {
+			ID3D11Texture2D *dsTex = nullptr;
+			hr = DirectStorageManager::GetInstance()->LoadTextureFromFile(
+					mOrigDevice1, filename,
+					(D3D11_BIND_FLAG)bind_flags,
+					(D3D11_RESOURCE_MISC_FLAG)misc_flags,
+					&dsTex);
+			if (SUCCEEDED(hr) && dsTex) {
+				resource = dsTex;
+				device = mOrigDevice1;
+				is_null = false;
+				return;
+			}
+			LogDebugW(L"DirectStorage failed for %s (0x%x), attempting fallback\n", filename.c_str(), hr);
+		}
+#endif
+
 		hr = DirectX::CreateDDSTextureFromFileEx(mOrigDevice1,
 				filename.c_str(), 0,
 				D3D11_USAGE_DEFAULT, bind_flags, 0, misc_flags,

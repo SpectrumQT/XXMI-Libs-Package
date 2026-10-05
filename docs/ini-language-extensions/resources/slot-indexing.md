@@ -94,7 +94,18 @@ dump = ps-t[0:3]
 dump = PoolFoo[0:3]
 ```
 
-Dumping a pool element does not count as updating it, so it does not postpone [expiration](../pools/declaration.md/#element-expiration). A whole pool (`dump = PoolFoo`) has no resource of its own to dump. Commands other than `dump` do not accept ranges.
+Dumping a pool element does not count as updating it, so it does not postpone [expiration](../pools/declaration.md/#element-expiration). A whole pool (`dump = PoolFoo`) has no resource of its own to dump.
+
+### CheckTextureOverride
+
+`CheckTextureOverride` accepts a slot range or a pool range and checks each slot or element in turn, exactly as the equivalent single lines would. Inside the matched `[TextureOverride*]` sections, `this` refers to the slot or element being checked.
+
+```ini
+CheckTextureOverride = ps-t[0:9]  ; Same as CheckTextureOverride = ps-t0 ... ps-t9
+CheckTextureOverride = PoolFoo[0:3]
+```
+
+A single pool element, `CheckTextureOverride = PoolFoo[$i]`, works as any custom resource does. Checking an element does not count as updating it either. A whole pool (`CheckTextureOverride = PoolFoo`) has no resource of its own to check. Commands other than `dump` and `CheckTextureOverride` do not accept ranges.
 
 ## Examples
 

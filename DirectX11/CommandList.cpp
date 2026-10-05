@@ -12895,6 +12895,20 @@ void ConditionalSlotCopyOperation::RunWithSource(CommandListState *state, ID3D11
 		branch->op->RunWithSource(state, src_resource, src_view);
 }
 
+// Whether an expression reads pipeline state (ps-t0, ps-t0->Width, ...).
+// Inside a batch the binds of the run are deferred to its end, so such a
+// condition would see the bindings from before the run rather than the ones
+// the lines above it just made.
+static bool expression_reads_pipeline(CommandListEvaluatable *node)
+{
+	if (auto operand = dynamic_cast<CommandListOperand *>(node))
+		return operand->type == ParamOverrideType::TEXTURE;
+	if (auto op = dynamic_cast<CommandListOperator *>(node))
+		return (op->lhs && expression_reads_pipeline(op->lhs.get()))
+			|| (op->rhs && expression_reads_pipeline(op->rhs.get()));
+	return false;
+}
+
 // An if/elif/else chain is registered in both the pre and the post list of its
 // section, and the optimiser works on one list at a time. Only the half that
 // belongs to the list being optimised may be folded into it, or a chain whose
@@ -12948,6 +12962,9 @@ static bool chain_may_keep_binding(const std::vector<ConditionalSlotBranch> &bra
 static bool collect_conditional_chain(IfCommand *if_cmd, BatchDirection direction, CommandListPhase phase,
 	std::vector<ConditionalSlotBranch> &out)
 {
+	if (expression_reads_pipeline(if_cmd->expression.evaluatable.get()))
+		return false;
+
 	auto op = extract_batchable_branch(branch_commands(if_cmd->true_commands_pre,
 			if_cmd->true_commands_post, phase), direction);
 	if (!op)

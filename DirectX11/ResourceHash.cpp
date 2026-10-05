@@ -2584,7 +2584,7 @@ uint32_t GetSpatialHash(HackerContext* context, ID3D11Buffer* buffer, UINT offse
 	}
 
 	// Calculate the minimal buffer size required to fit requested X Y Z offsets.
-	UINT min_buffer_size = max(offset_x, offset_y, offset_z) * 4 + 4;
+	UINT min_buffer_size = max(max(offset_x, offset_y), offset_z) * 4 + 4;
 
 	// Ensure upper bound does not exceed buffer size.
 	if (min_buffer_size >= handle_info->cached_data_size) {

@@ -12320,6 +12320,63 @@ static ResourceCopyTargetType EquivTarget(ResourceCopyTargetType type)
 	return type;
 }
 
+// The source's own view, if it is a view of dst_resource of the kind the
+// destination takes. A custom resource holds a view of any kind; a pipeline
+// slot needs one of its own kind, which only a QueryInterface can confirm,
+// since the target type a view came from says nothing about what it is.
+//
+// Widening the target type comparison this replaces to also accept a custom
+// resource on either side would be shorter, but SetResource casts a view
+// straight to the destination's type: a shader resource view stored on a
+// resource later bound as cs-u0 would reach CSSetUnorderedAccessViews.
+//
+// SlotRangeCopyOperation::ViewForSlot applies the same rule to ranges and is
+// not reused here: it is a member of the range operation, covers only shader
+// resource and unordered access views, and returns a reference its caller
+// owns, where this borrows the source's.
+static ID3D11View* UsableRefView(ResourceCopyTarget *dst, CommandListState *state,
+		ID3D11View *view, ID3D11Resource *resource)
+{
+	ResourceCopyTargetType type = dst->type;
+	const IID *iid;
+	void *typed = NULL;
+
+	if (!view || !ViewMatchesResource(view, resource))
+		return NULL;
+
+	if (type == ResourceCopyTargetType::THIS_RESOURCE) {
+		if (!state->this_target)
+			return NULL;
+		type = state->this_target->type;
+	}
+
+	switch (EquivTarget(type)) {
+		case ResourceCopyTargetType::CUSTOM_RESOURCE:
+			return view;
+		case ResourceCopyTargetType::SHADER_RESOURCE:
+			iid = &__uuidof(ID3D11ShaderResourceView);
+			break;
+		case ResourceCopyTargetType::RENDER_TARGET:
+			iid = &__uuidof(ID3D11RenderTargetView);
+			break;
+		case ResourceCopyTargetType::DEPTH_STENCIL_TARGET:
+			iid = &__uuidof(ID3D11DepthStencilView);
+			break;
+		case ResourceCopyTargetType::UNORDERED_ACCESS_VIEW:
+			iid = &__uuidof(ID3D11UnorderedAccessView);
+			break;
+		default:
+			return NULL;
+	}
+
+	if (FAILED(view->QueryInterface(*iid, &typed)))
+		return NULL;
+	// The destination borrows the source's reference, as it did when this
+	// was a target type comparison. SetResource() AddRef()s what it stores:
+	((IUnknown*)typed)->Release();
+	return view;
+}
+
 void ResourceCopyOperation::CopyResourceToResource(
 	CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size
 )
@@ -12442,9 +12499,8 @@ void ResourceCopyOperation::CopyResourceToResource(
 		if (G->cache_resource_data != DataCacheBindFlags::INVALID && dst_custom_resource)
 			dst_custom_resource->SetHandleInfo(src_resource, offset, buf_src_size);
 		dst_resource = src_resource;
-		if (src_view && (EquivTarget(src.type) == EquivTarget(dst.type))) {
-			dst_view = src_view;
-		} else if (*pp_cached_view) {
+		dst_view = UsableRefView(&dst, state, src_view, dst_resource);
+		if (!dst_view && *pp_cached_view) {
 			if (ViewMatchesResource(*pp_cached_view, dst_resource)) {
 				dst_view = *pp_cached_view;
 			} else {
@@ -12453,11 +12509,6 @@ void ResourceCopyOperation::CopyResourceToResource(
 				*pp_cached_view = NULL;
 			}
 		}
-		// TODO: If we are referencing to/from a custom resource we
-		// currently don't reference the view, but we could so long as
-		// the bind flags from the original source are compatible with
-		// the bind flags in the final destination. If we implement
-		// this, go read the note in CustomResource::Substantiate()
 	}
 
 	if (!dst_view) {

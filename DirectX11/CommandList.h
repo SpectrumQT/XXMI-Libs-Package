@@ -1204,6 +1204,10 @@ public:
 	void run(CommandListState*) override;
 	// Used by ShaderResourceFetchBatch, which fetched the source itself:
 	void RunWithSource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view);
+	// The slot a batch groups this operation by.
+	// A folded if/elif/else chain overrides it:
+	// the slot it drives is its branches', not its own.
+	virtual const ResourceCopyTarget& BatchTarget(BatchDirection direction) const;
 
 private:
 	void SetOrDeferResource(CommandListState* state, ID3D11Resource* res, ID3D11View* view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_size);

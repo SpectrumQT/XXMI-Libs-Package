@@ -12836,10 +12836,9 @@ static bool is_batchable_fetch(const ResourceCopyOperation *op)
 		&& op->dst.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE;
 }
 
-// The slot side of a batchable operation: dst for binds, src for fetches.
-static const ResourceCopyTarget& slot_target(const ResourceCopyOperation *op, BatchDirection direction)
+const ResourceCopyTarget& ResourceCopyOperation::BatchTarget(BatchDirection direction) const
 {
-	return direction == BatchDirection::Bind ? op->dst : op->src;
+	return direction == BatchDirection::Bind ? dst : src;
 }
 
 // Wraps the operations of a run that fall within [first, last] into a single
@@ -12857,7 +12856,7 @@ static void emit_slot_batch(const std::vector<std::shared_ptr<ResourceCopyOperat
 	// Operations keep their ini order within the batch, so a slot assigned
 	// twice takes the last value just like it would without batching:
 	for (auto &op : run) {
-		unsigned slot = slot_target(op.get(), direction).slot;
+		unsigned slot = op->BatchTarget(direction).slot;
 		if (slot >= first && slot <= last)
 			batch->operations.push_back(op);
 	}
@@ -12867,7 +12866,7 @@ static void emit_slot_batch(const std::vector<std::shared_ptr<ResourceCopyOperat
 		return;
 	}
 
-	batch->shader_type = slot_target(run[0].get(), direction).shader_type;
+	batch->shader_type = run[0]->BatchTarget(direction).shader_type;
 	batch->first_slot = first;
 	batch->count = last - first + 1;
 	batch->prefetch_current_bindings = prefetch_current_bindings;
@@ -12897,7 +12896,7 @@ static void emit_slot_batches(const std::vector<std::shared_ptr<ResourceCopyOper
 	std::vector<unsigned> slots;
 
 	for (auto &op : run) {
-		slots.push_back(slot_target(op.get(), direction).slot);
+		slots.push_back(op->BatchTarget(direction).slot);
 		if (direction == BatchDirection::Bind && (op->options & ResourceCopyOptions::UNLESS_NULL))
 			prefetch_current_bindings = true;
 	}
@@ -12960,7 +12959,7 @@ void merge_shader_resource_batches(CommandList *command_list)
 			continue;
 		}
 
-		wchar_t stage = slot_target(op.get(), direction).shader_type;
+		wchar_t stage = op->BatchTarget(direction).shader_type;
 		if (!run.empty() && (direction != run_direction || stage != run_stage))
 			flush();
 

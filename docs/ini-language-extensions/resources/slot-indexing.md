@@ -87,13 +87,14 @@ The frame analysis log lists every slot of the range as the equivalent single-sl
 
 ### Frame Analysis Dump
 
-`dump` accepts a slot range with explicit bounds and dumps each slot in turn. The slot number is appended to the dump file name.
+`dump` accepts a slot range or a pool range and dumps each slot or element in turn. The slot number or element index is appended to the dump file name.
 
 ```ini
 dump = ps-t[0:3]
+dump = PoolFoo[0:3]
 ```
 
-Pool ranges are not supported by `dump`.
+Dumping a pool element does not count as updating it, so it does not postpone [expiration](../pools/declaration.md/#element-expiration). A whole pool (`dump = PoolFoo`) has no resource of its own to dump.
 
 ### CheckTextureOverride
 
@@ -104,7 +105,7 @@ CheckTextureOverride = ps-t[0:9]  ; Same as CheckTextureOverride = ps-t0 ... ps-
 CheckTextureOverride = PoolFoo[0:3]
 ```
 
-A single pool element, `CheckTextureOverride = PoolFoo[$i]`, works as any custom resource does. Checking an element does not count as updating it, so it does not postpone [expiration](../pools/declaration.md/#element-expiration). A whole pool (`CheckTextureOverride = PoolFoo`) has no resource of its own to check. Other commands do not accept ranges.
+A single pool element, `CheckTextureOverride = PoolFoo[$i]`, works as any custom resource does. Checking an element does not count as updating it either. A whole pool (`CheckTextureOverride = PoolFoo`) has no resource of its own to check. Commands other than `dump` and `CheckTextureOverride` do not accept ranges.
 
 ## Examples
 

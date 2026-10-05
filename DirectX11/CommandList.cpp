@@ -12927,6 +12927,20 @@ static std::shared_ptr<ResourceCopyOperation> extract_batchable_branch(const Com
 	return op;
 }
 
+// A bind batch writes every slot in its range, so a chain that may leave its
+// slot alone - no branch taken, or an unless_null branch whose source turns
+// out to be null - has to ask for the current binding first, exactly as a
+// plain unless_null line does.
+static bool chain_may_keep_binding(const std::vector<ConditionalSlotBranch> &branches)
+{
+	for (auto &branch : branches) {
+		if (!branch.op || (branch.op->options & ResourceCopyOptions::UNLESS_NULL))
+			return true;
+	}
+
+	return false;
+}
+
 // Appends one entry per branch of a simple if/elif/else chain. Fails unless
 // every reachable branch runs exactly one batchable operation on the slot the
 // first branch fixed, or is the final empty else, which means "leave the
@@ -12980,6 +12994,8 @@ static std::shared_ptr<ResourceCopyOperation> fold_conditional_slot_chain(const 
 		return nullptr;
 
 	folded->direction = direction;
+	if (chain_may_keep_binding(folded->branches))
+		folded->options |= ResourceCopyOptions::UNLESS_NULL;
 	folded->ini_line = if_cmd->ini_line;
 	folded->source_if = if_cmd;
 

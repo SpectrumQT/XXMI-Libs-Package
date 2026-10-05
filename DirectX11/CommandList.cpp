@@ -12892,6 +12892,16 @@ void ConditionalSlotCopyOperation::run(CommandListState *state)
 	branch->op->deferred = NULL;
 }
 
+// Fetch direction:
+// ShaderResourceFetchBatch already read the slot,
+// and hands its contents to whichever branch matched.
+void ConditionalSlotCopyOperation::RunWithSource(CommandListState *state, ID3D11Resource *src_resource, ID3D11View *src_view)
+{
+	ConditionalSlotBranch *branch = MatchingBranch(state);
+	if (branch)
+		branch->op->RunWithSource(state, src_resource, src_view);
+}
+
 // An if/elif/else chain is registered in both of its section's lists,
 // and the optimiser works on one list at a time.
 // Only the half that belongs to the list being optimised may be folded into it.
@@ -13100,7 +13110,13 @@ void merge_shader_resource_batches(CommandList *command_list)
 		} else if (auto if_cmd = std::dynamic_pointer_cast<IfCommand>(command)) {
 			// A chain that targets one fixed slot is folded in,
 			// rather than acting as a hard break:
-			op = fold_conditional_slot_chain(if_cmd, BatchDirection::Bind, phase);
+			for (BatchDirection candidate : { BatchDirection::Bind, BatchDirection::Fetch }) {
+				op = fold_conditional_slot_chain(if_cmd, candidate, phase);
+				if (op) {
+					direction = candidate;
+					break;
+				}
+			}
 		}
 
 		if (!op) {

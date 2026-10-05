@@ -1203,7 +1203,7 @@ public:
 
 	void run(CommandListState*) override;
 	// Used by ShaderResourceFetchBatch, which fetched the source itself:
-	void RunWithSource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view);
+	virtual void RunWithSource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view);
 	// The slot a batch groups this operation by.
 	// A folded if/elif/else chain overrides it:
 	// the slot it drives is its branches', not its own.
@@ -1271,6 +1271,7 @@ public:
 	std::shared_ptr<CommandListCommand> source_if;
 
 	void run(CommandListState*) override;
+	void RunWithSource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view) override;
 	const ResourceCopyTarget& BatchTarget(BatchDirection direction) const override;
 
 private:

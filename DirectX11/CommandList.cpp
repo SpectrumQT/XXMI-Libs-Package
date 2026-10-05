@@ -12767,7 +12767,11 @@ void ShaderResourceBindBatch::run(CommandListState *state)
 		if (binding.resource)
 			binding.resource->Release();
 
-		unsigned i = op->dst.slot - first_slot;
+		// Through BatchTarget(), not dst:
+		// a folded if/elif/else chain leaves its own dst unset,
+		// and the slot it drives is its branches'.
+		// Reading dst here would index from slot 0:
+		unsigned i = op->BatchTarget(BatchDirection::Bind).slot - first_slot;
 		if (views[i])
 			views[i]->Release();
 		views[i] = (ID3D11ShaderResourceView*)binding.view;
@@ -12792,7 +12796,9 @@ void ShaderResourceFetchBatch::run(CommandListState *state)
 	GetShaderResourcesBatch(state->mOrigContext1, shader_type, first_slot, count, views);
 
 	for (auto &op : operations) {
-		ID3D11ShaderResourceView *view = views[op->src.slot - first_slot];
+		// Through BatchTarget(), not src,
+		// for the reason the bind batch gives above:
+		ID3D11ShaderResourceView *view = views[op->BatchTarget(BatchDirection::Fetch).slot - first_slot];
 		ID3D11Resource *resource = NULL;
 
 		if (view)
@@ -12839,6 +12845,145 @@ static bool is_batchable_fetch(const ResourceCopyOperation *op)
 const ResourceCopyTarget& ResourceCopyOperation::BatchTarget(BatchDirection direction) const
 {
 	return direction == BatchDirection::Bind ? dst : src;
+}
+
+static bool is_batchable(const ResourceCopyOperation *op, BatchDirection direction)
+{
+	return direction == BatchDirection::Bind ? is_batchable_bind(op) : is_batchable_fetch(op);
+}
+
+// Every branch of a chain has to drive the slot the first branch fixed.
+static bool same_batch_target(const ResourceCopyOperation *op, const ResourceCopyOperation *first,
+	BatchDirection direction)
+{
+	const ResourceCopyTarget &target = op->BatchTarget(direction);
+	const ResourceCopyTarget &fixed = first->BatchTarget(direction);
+
+	return target.shader_type == fixed.shader_type && target.slot == fixed.slot;
+}
+
+// Every branch was checked to drive the same slot,
+// so the first one speaks for the chain.
+const ResourceCopyTarget& ConditionalSlotCopyOperation::BatchTarget(BatchDirection direction) const
+{
+	return branches[0].op->BatchTarget(direction);
+}
+
+ConditionalSlotBranch* ConditionalSlotCopyOperation::MatchingBranch(CommandListState *state)
+{
+	for (auto &branch : branches) {
+		if (!branch.condition || branch.condition->evaluate(state))
+			return branch.op ? &branch : NULL; // NULL op: no branch taken
+	}
+	return NULL;
+}
+
+void ConditionalSlotCopyOperation::run(CommandListState *state)
+{
+	ConditionalSlotBranch *branch = MatchingBranch(state);
+	if (!branch)
+		return; // leave the current binding
+
+	// Hand our own deferred binding to whichever branch matched,
+	// and let its operation run with its own dst/src/options,
+	// exactly as if it had run standalone:
+	branch->op->deferred = deferred;
+	branch->op->run(state);
+	branch->op->deferred = NULL;
+}
+
+// An if/elif/else chain is registered in both of its section's lists,
+// and the optimiser works on one list at a time.
+// Only the half that belongs to the list being optimised may be folded into it.
+// Otherwise a chain whose assignments are all "pre" would be folded again,
+// into the post list, and applied a second time after the draw call.
+enum class CommandListPhase {
+	Pre,
+	Post,
+};
+
+static const CommandList::Commands& branch_commands(const std::shared_ptr<CommandList> &pre,
+	const std::shared_ptr<CommandList> &post, CommandListPhase phase)
+{
+	return (phase == CommandListPhase::Pre ? pre : post)->commands;
+}
+
+// The one batchable operation a branch runs in this phase,
+// or nullptr when the branch is not shaped for folding:
+// it runs nothing, or more than one command,
+// or a command that is not a batchable copy in this direction.
+static std::shared_ptr<ResourceCopyOperation> extract_batchable_branch(const CommandList::Commands &commands,
+	BatchDirection direction)
+{
+	if (commands.size() != 1)
+		return nullptr;
+
+	auto op = std::dynamic_pointer_cast<ResourceCopyOperation>(commands[0]);
+	if (!op || !is_batchable(op.get(), direction))
+		return nullptr;
+
+	return op;
+}
+
+// Appends one entry per branch of a simple if/elif/else chain.
+// Fails unless every reachable branch runs exactly one batchable operation,
+// on the slot the first branch fixed.
+// The final empty else is allowed, and means "leave the current binding",
+// which is the same thing unless_null already does for a batch.
+static bool collect_conditional_chain(IfCommand *if_cmd, BatchDirection direction, CommandListPhase phase,
+	std::vector<ConditionalSlotBranch> &out)
+{
+	auto op = extract_batchable_branch(branch_commands(if_cmd->true_commands_pre,
+			if_cmd->true_commands_post, phase), direction);
+	if (!op)
+		return false;
+
+	// out[0] always carries an operation,
+	// since the empty else below is only appended after a real branch,
+	// so it is the one that fixed the slot:
+	if (!out.empty() && !same_batch_target(op.get(), out[0].op.get(), direction))
+		return false;
+
+	out.push_back({ &if_cmd->expression, op });
+
+	const CommandList::Commands &else_commands = branch_commands(if_cmd->false_commands_pre,
+			if_cmd->false_commands_post, phase);
+	if (else_commands.empty()) {
+		out.push_back({ nullptr, nullptr });
+		return true;
+	}
+
+	if (if_cmd->has_nested_else_if) {
+		auto nested_if = else_commands.size() == 1
+			? std::dynamic_pointer_cast<IfCommand>(else_commands[0]) : nullptr;
+
+		return nested_if && collect_conditional_chain(nested_if.get(), direction, phase, out);
+	}
+
+	auto else_op = extract_batchable_branch(else_commands, direction);
+	if (!else_op || !same_batch_target(else_op.get(), out[0].op.get(), direction))
+		return false;
+
+	out.push_back({ nullptr, else_op });
+	return true;
+}
+
+// Folds an if/elif/else chain whose every reachable branch drives one slot,
+// into a single operation that can take its place inside a batch.
+// Returns nullptr when the chain is not shaped for that.
+static std::shared_ptr<ResourceCopyOperation> fold_conditional_slot_chain(const std::shared_ptr<IfCommand> &if_cmd,
+	BatchDirection direction, CommandListPhase phase)
+{
+	auto folded = std::make_shared<ConditionalSlotCopyOperation>();
+
+	if (!collect_conditional_chain(if_cmd.get(), direction, phase, folded->branches))
+		return nullptr;
+
+	folded->direction = direction;
+	folded->ini_line = if_cmd->ini_line;
+	folded->source_if = if_cmd;
+
+	return folded;
 }
 
 // Wraps the operations of a run that fall within [first, last] into a single
@@ -12931,6 +13076,7 @@ void merge_shader_resource_batches(CommandList *command_list)
 	std::vector<std::shared_ptr<ResourceCopyOperation>> run;
 	BatchDirection run_direction = BatchDirection::Bind;
 	wchar_t run_stage = L'\0';
+	CommandListPhase phase = command_list->post ? CommandListPhase::Post : CommandListPhase::Pre;
 
 	// Ends the current run: a lone operation goes through unchanged, two or
 	// more are handed to emit_slot_batches.
@@ -12951,6 +13097,10 @@ void merge_shader_resource_batches(CommandList *command_list)
 				direction = BatchDirection::Fetch;
 			else if (!is_batchable_bind(op.get()))
 				op = nullptr;
+		} else if (auto if_cmd = std::dynamic_pointer_cast<IfCommand>(command)) {
+			// A chain that targets one fixed slot is folded in,
+			// rather than acting as a hard break:
+			op = fold_conditional_slot_chain(if_cmd, BatchDirection::Bind, phase);
 		}
 
 		if (!op) {

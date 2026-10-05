@@ -694,10 +694,10 @@ static bool ParseCheckTextureOverride(const wchar_t *section,
 
 	// Parse value as consistent with texture filtering and resource copying
 	ret = operation->target.ParseTarget(val->c_str(), true, ini_namespace, pre_command_list->scope, true, true);
-	if (ret && (operation->target.evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_RANGE
-		|| (operation->target.IsRange() && !operation->target.range_start)))
+	if (ret && operation->target.type == ResourceCopyTargetType::POOL && !operation->target.IsRange())
 	{
-		LogOverlayW(LOG_WARNING, L"checktextureoverride supports slot ranges with explicit bounds only: %ls\n", val->c_str());
+		// A whole pool has no resource of its own to check, only its elements do:
+		LogOverlayW(LOG_WARNING, L"checktextureoverride needs a pool element or a pool range: %ls\n", val->c_str());
 		ret = false;
 	}
 	if (ret) {
@@ -1342,6 +1342,7 @@ bool ParseCommandListGeneralCommands(const wchar_t *section,
 #pragma region Commands
 
 static std::string slot_log_name(const ResourceCopyTarget &target, unsigned slot);
+static CustomResource* pool_element(CustomResourcePool *pool, int pool_first, unsigned index, bool is_assignment);
 
 void CheckTextureOverrideCommand::run(CommandListState *state)
 {
@@ -1361,16 +1362,25 @@ void CheckTextureOverrideCommand::run(CommandListState *state)
 	saved_this = state->this_target;
 	for (unsigned s = 0; s < count; s++) {
 		TextureOverrideMatches matches;
-		// Each slot of a range is checked through a local target, rather than
-		// rewriting the command's own, which every context running it shares:
-		ResourceCopyTarget slot_target;
-		ResourceCopyTarget &checked = target.IsRange() ? slot_target : target;
+		// Each slot or element of a range is checked through a local target,
+		// rather than rewriting the command's own, which every context
+		// running it shares:
+		ResourceCopyTarget range_target;
+		ResourceCopyTarget &checked = target.IsRange() ? range_target : target;
 
-		if (target.IsRange()) {
-			slot_target.type = target.type;
-			slot_target.shader_type = target.shader_type;
-			slot_target.slot = (unsigned)first + s;
-			COMMAND_LIST_LOG(state, "  checktextureoverride = %s\n", slot_log_name(slot_target, slot_target.slot).c_str());
+		if (target.evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_RANGE) {
+			// Range bounds are element indices on every pool type, and
+			// checking an element does not count as updating it:
+			CustomResource *element = pool_element(target.custom_resource_pool, first, s, false);
+
+			range_target.type = ResourceCopyTargetType::CUSTOM_RESOURCE;
+			range_target.SetCustomResource(element);
+			COMMAND_LIST_LOG(state, "  checktextureoverride = %S\n", element ? element->name.c_str() : L"null");
+		} else if (target.IsRange()) {
+			range_target.type = target.type;
+			range_target.shader_type = target.shader_type;
+			range_target.slot = (unsigned)first + s;
+			COMMAND_LIST_LOG(state, "  checktextureoverride = %s\n", slot_log_name(range_target, range_target.slot).c_str());
 		}
 
 		state->this_target = &checked;

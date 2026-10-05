@@ -1266,8 +1266,9 @@ class ConditionalSlotCopyOperation : public ResourceCopyOperation {
 public:
 	BatchDirection direction = BatchDirection::Bind;
 	std::vector<ConditionalSlotBranch> branches;
-	// The chain this was folded from, held because `branches` points into its
-	// CommandListExpressions:
+	// The chain this was folded from, held for two reasons:
+	// `branches` points into its CommandListExpressions,
+	// and an operation left out of a batch goes back in as the chain itself:
 	std::shared_ptr<CommandListCommand> source_if;
 
 	void run(CommandListState*) override;

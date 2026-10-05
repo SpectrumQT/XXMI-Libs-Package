@@ -13030,6 +13030,16 @@ static std::shared_ptr<ResourceCopyOperation> fold_conditional_slot_chain(const 
 	return folded;
 }
 
+// An operation that ends up outside any batch goes back into the list as it was.
+// For a folded if/elif/else chain that is the original IfCommand,
+// so it runs and logs exactly as before.
+static std::shared_ptr<CommandListCommand> unbatched(const std::shared_ptr<ResourceCopyOperation> &op)
+{
+	if (auto folded = std::dynamic_pointer_cast<ConditionalSlotCopyOperation>(op))
+		return folded->source_if;
+	return op;
+}
+
 // Wraps the operations of a run that fall within [first, last] into a single
 // bind / fetch batch and appends it to out. A range holding a single
 // operation is not worth a batch, that operation is appended as is.
@@ -13051,7 +13061,7 @@ static void emit_slot_batch(const std::vector<std::shared_ptr<ResourceCopyOperat
 	}
 
 	if (batch->operations.size() < 2) {
-		out.push_back(batch->operations[0]);
+		out.push_back(unbatched(batch->operations[0]));
 		return;
 	}
 
@@ -13126,7 +13136,7 @@ void merge_shader_resource_batches(CommandList *command_list)
 	// more are handed to emit_slot_batches.
 	auto flush = [&]() {
 		if (run.size() == 1)
-			out.push_back(run[0]);
+			out.push_back(unbatched(run[0]));
 		else if (run.size() > 1)
 			emit_slot_batches(run, run_direction, out);
 		run.clear();

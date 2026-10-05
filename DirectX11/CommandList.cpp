@@ -9622,6 +9622,50 @@ bool ResourceCopyTarget::ResolveRange(CommandListState *state, int *first, unsig
 	return true;
 }
 
+// Stream output and render targets are driven a whole array at a time:
+// D3D11 has no call that reads or writes one slot of either,
+// and nothing in HackerContext shadows their state,
+// so the device is the only place the current bindings can be read back from.
+// SOSetTargets() and OMSetRenderTargets() pass straight through.
+//
+// A command that drives one slot therefore reads the array,
+// swaps its one entry, sets the array again,
+// and drops the references the Get call handed it.
+//
+// The two helpers below hold the reference counting that goes with that,
+// rather than each case repeating it.
+// Repeating it is how a stream output bind came to over-release a buffer.
+
+// The slot wanted out of an array that was read with a count of slot + 1,
+// having dropped the references on the slots below it.
+// The one returned still carries the reference the Get call took,
+// which the caller passes on.
+template <typename T>
+static T* take_slot(T **array, unsigned slot)
+{
+	for (unsigned i = 0; i < slot; i++) {
+		if (array[i]) {
+			array[i]->Release();
+			array[i] = NULL;
+		}
+	}
+	return array[slot];
+}
+
+// Drops the references a Get call took on an array of slots,
+// keeping the one the caller has since overwritten with an object of its own:
+// that slot holds a reference the caller still owns,
+// and the Set call has taken its own.
+// With no slot to keep, every reference is dropped.
+template <typename T>
+static void release_slots(T **array, unsigned count, unsigned keep = UINT_MAX)
+{
+	for (unsigned i = 0; i < count; i++) {
+		if (i != keep && array[i])
+			array[i]->Release();
+	}
+}
+
 ID3D11Resource *ResourceCopyTarget::GetResource(
 		CommandListState *state,
 		ID3D11View **view,   // Used by textures, render targets, depth/stencil buffers & UAVs
@@ -9643,7 +9687,6 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 	ID3D11UnorderedAccessView *unordered_view = NULL;
 	D3D11_BIND_FLAG bind_flags = (D3D11_BIND_FLAG)0;
 	D3D11_RESOURCE_MISC_FLAG misc_flags = (D3D11_RESOURCE_MISC_FLAG)0;
-	unsigned i;
 
 	// Shadows the member for the dynamic slot case (ps-t[$i]):
 	unsigned slot = ResolveSlot(state);
@@ -9749,29 +9792,12 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 		// An `so` source reads as offset 0 whatever the game set,
 		// and `->Region` on one measures from the start of the buffer:
 		mOrigContext1->SOGetTargets(slot + 1, so_bufs);
-
-		// Release any buffers we aren't after:
-		for (i = 0; i < slot; i++) {
-			if (so_bufs[i]) {
-				so_bufs[i]->Release();
-				so_bufs[i] = NULL;
-			}
-		}
-
-		return so_bufs[slot];
+		return take_slot(so_bufs, slot);
 
 	case ResourceCopyTargetType::RENDER_TARGET:
 		mOrigContext1->OMGetRenderTargets(slot + 1, render_view, NULL);
 
-		// Release any views we aren't after:
-		for (i = 0; i < slot; i++) {
-			if (render_view[i]) {
-				render_view[i]->Release();
-				render_view[i] = NULL;
-			}
-		}
-
-		if (!render_view[slot])
+		if (!take_slot(render_view, slot))
 			return NULL;
 
 		render_view[slot]->GetResource(&res);
@@ -9962,7 +9988,6 @@ void ResourceCopyTarget::SetResource(
 	ID3D11DepthStencilView *depth_view = NULL;
 	ID3D11UnorderedAccessView *unordered_view = NULL;
 	UINT uav_counter = -1; // TODO: Allow this to be set
-	int i;
 
 	// Shadows the member for the dynamic slot case (ps-t[$i]):
 	unsigned slot = ResolveSlot(state);
@@ -10100,14 +10125,7 @@ void ResourceCopyTarget::SetResource(
 		// so it wants testing in a game that binds several targets.
 		so_offsets[slot] = offset;
 		mOrigContext1->SOSetTargets(D3D11_SO_STREAM_COUNT, so_bufs, so_offsets);
-
-		for (i = 0; i < D3D11_SO_STREAM_COUNT; i++) {
-			// The other slots hold references SOGetTargets() took.
-			// This one holds the caller's, which it still owns,
-			// and SOSetTargets() has taken its own:
-			if (i != slot && so_bufs[i])
-				so_bufs[i]->Release();
-		}
+		release_slots(so_bufs, D3D11_SO_STREAM_COUNT, slot);
 
 		break;
 
@@ -10120,10 +10138,7 @@ void ResourceCopyTarget::SetResource(
 
 		mOrigContext1->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, render_view, depth_view);
 
-		for (i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; i++) {
-			if (i != slot && render_view[i])
-				render_view[i]->Release();
-		}
+		release_slots(render_view, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, slot);
 		if (depth_view)
 			depth_view->Release();
 
@@ -10138,10 +10153,9 @@ void ResourceCopyTarget::SetResource(
 
 		mOrigContext1->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, render_view, depth_view);
 
-		for (i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; i++) {
-			if (render_view[i])
-				render_view[i]->Release();
-		}
+		// Only the depth view was replaced, and it is the caller's,
+		// so no slot of this array is kept:
+		release_slots(render_view, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT);
 		break;
 
 	case ResourceCopyTargetType::UNORDERED_ACCESS_VIEW:

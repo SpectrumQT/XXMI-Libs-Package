@@ -1173,6 +1173,14 @@ struct DeferredBinding {
 	bool assigned = false; // false: unless_null kept the current binding
 };
 
+// Which side of a batchable copy the batch owns:
+// a bind batch drives the destination slot, a fetch batch reads the source.
+// Everything in the optimiser that differs between the two is selected by this.
+enum class BatchDirection {
+	Bind,
+	Fetch,
+};
+
 class ResourceCopyOperation : public CommandListCommand {
 public:
 	ResourceCopyTarget src;

@@ -12837,19 +12837,19 @@ static bool is_batchable_fetch(const ResourceCopyOperation *op)
 }
 
 // The slot side of a batchable operation: dst for binds, src for fetches.
-static const ResourceCopyTarget& slot_target(const ResourceCopyOperation *op, bool bind)
+static const ResourceCopyTarget& slot_target(const ResourceCopyOperation *op, BatchDirection direction)
 {
-	return bind ? op->dst : op->src;
+	return direction == BatchDirection::Bind ? op->dst : op->src;
 }
 
 // Wraps the operations of a run that fall within [first, last] into a single
 // bind / fetch batch and appends it to out. A range holding a single
 // operation is not worth a batch, that operation is appended as is.
-static void emit_slot_batch(const std::vector<std::shared_ptr<ResourceCopyOperation>> &run, bool bind,
+static void emit_slot_batch(const std::vector<std::shared_ptr<ResourceCopyOperation>> &run, BatchDirection direction,
 	unsigned first, unsigned last, bool prefetch_current_bindings, CommandList::Commands &out)
 {
 	std::shared_ptr<ShaderResourceBatch> batch;
-	if (bind)
+	if (direction == BatchDirection::Bind)
 		batch = std::make_shared<ShaderResourceBindBatch>();
 	else
 		batch = std::make_shared<ShaderResourceFetchBatch>();
@@ -12857,7 +12857,7 @@ static void emit_slot_batch(const std::vector<std::shared_ptr<ResourceCopyOperat
 	// Operations keep their ini order within the batch, so a slot assigned
 	// twice takes the last value just like it would without batching:
 	for (auto &op : run) {
-		unsigned slot = slot_target(op.get(), bind).slot;
+		unsigned slot = slot_target(op.get(), direction).slot;
 		if (slot >= first && slot <= last)
 			batch->operations.push_back(op);
 	}
@@ -12867,7 +12867,7 @@ static void emit_slot_batch(const std::vector<std::shared_ptr<ResourceCopyOperat
 		return;
 	}
 
-	batch->shader_type = slot_target(run[0].get(), bind).shader_type;
+	batch->shader_type = slot_target(run[0].get(), direction).shader_type;
 	batch->first_slot = first;
 	batch->count = last - first + 1;
 	batch->prefetch_current_bindings = prefetch_current_bindings;
@@ -12890,32 +12890,33 @@ static void emit_slot_batch(const std::vector<std::shared_ptr<ResourceCopyOperat
 // Since the current bindings are read anyway, gaps cost nothing extra: the
 // gap slots are simply written back with the view they already had, and the
 // whole run becomes one batch spanning from the lowest to the highest slot.
-static void emit_slot_batches(const std::vector<std::shared_ptr<ResourceCopyOperation>> &run, bool bind, CommandList::Commands &out)
+static void emit_slot_batches(const std::vector<std::shared_ptr<ResourceCopyOperation>> &run,
+	BatchDirection direction, CommandList::Commands &out)
 {
 	bool prefetch_current_bindings = false;
 	std::vector<unsigned> slots;
 
 	for (auto &op : run) {
-		slots.push_back(slot_target(op.get(), bind).slot);
-		if (bind && (op->options & ResourceCopyOptions::UNLESS_NULL))
+		slots.push_back(slot_target(op.get(), direction).slot);
+		if (direction == BatchDirection::Bind && (op->options & ResourceCopyOptions::UNLESS_NULL))
 			prefetch_current_bindings = true;
 	}
 	std::sort(slots.begin(), slots.end());
 	slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
 
 	if (prefetch_current_bindings) {
-		emit_slot_batch(run, bind, slots.front(), slots.back(), true, out);
+		emit_slot_batch(run, direction, slots.front(), slots.back(), true, out);
 		return;
 	}
 
 	unsigned first = slots[0];
 	for (size_t i = 1; i < slots.size(); i++) {
 		if (slots[i] != slots[i - 1] + 1) {
-			emit_slot_batch(run, bind, first, slots[i - 1], false, out);
+			emit_slot_batch(run, direction, first, slots[i - 1], false, out);
 			first = slots[i];
 		}
 	}
-	emit_slot_batch(run, bind, first, slots.back(), false, out);
+	emit_slot_batch(run, direction, first, slots.back(), false, out);
 }
 
 // Optimiser pass: walks the command list once and replaces every run of two
@@ -12929,7 +12930,7 @@ void merge_shader_resource_batches(CommandList *command_list)
 {
 	CommandList::Commands out;
 	std::vector<std::shared_ptr<ResourceCopyOperation>> run;
-	bool run_is_bind = false;
+	BatchDirection run_direction = BatchDirection::Bind;
 	wchar_t run_stage = L'\0';
 
 	// Ends the current run: a lone operation goes through unchanged, two or
@@ -12938,26 +12939,32 @@ void merge_shader_resource_batches(CommandList *command_list)
 		if (run.size() == 1)
 			out.push_back(run[0]);
 		else if (run.size() > 1)
-			emit_slot_batches(run, run_is_bind, out);
+			emit_slot_batches(run, run_direction, out);
 		run.clear();
 	};
 
 	for (auto &command : command_list->commands) {
 		auto op = std::dynamic_pointer_cast<ResourceCopyOperation>(command);
-		bool bind = op && is_batchable_bind(op.get());
-		bool fetch = op && !bind && is_batchable_fetch(op.get());
+		BatchDirection direction = BatchDirection::Bind;
 
-		if (!bind && !fetch) {
+		if (op) {
+			if (is_batchable_fetch(op.get()))
+				direction = BatchDirection::Fetch;
+			else if (!is_batchable_bind(op.get()))
+				op = nullptr;
+		}
+
+		if (!op) {
 			flush();
 			out.push_back(command);
 			continue;
 		}
 
-		wchar_t stage = slot_target(op.get(), bind).shader_type;
-		if (!run.empty() && (bind != run_is_bind || stage != run_stage))
+		wchar_t stage = slot_target(op.get(), direction).shader_type;
+		if (!run.empty() && (direction != run_direction || stage != run_stage))
 			flush();
 
-		run_is_bind = bind;
+		run_direction = direction;
 		run_stage = stage;
 		run.push_back(op);
 	}

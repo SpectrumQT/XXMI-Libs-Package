@@ -12881,8 +12881,10 @@ ConditionalSlotBranch* ConditionalSlotCopyOperation::MatchingBranch(CommandListS
 void ConditionalSlotCopyOperation::run(CommandListState *state)
 {
 	ConditionalSlotBranch *branch = MatchingBranch(state);
-	if (!branch)
-		return; // leave the current binding
+	if (!branch) {
+		COMMAND_LIST_LOG(state, "%S: no branch taken, keeping the current binding\n", ini_line.c_str());
+		return;
+	}
 
 	// Hand our own deferred binding to whichever branch matched,
 	// and let its operation run with its own dst/src/options,
@@ -12900,6 +12902,8 @@ void ConditionalSlotCopyOperation::RunWithSource(CommandListState *state, ID3D11
 	ConditionalSlotBranch *branch = MatchingBranch(state);
 	if (branch)
 		branch->op->RunWithSource(state, src_resource, src_view);
+	else
+		COMMAND_LIST_LOG(state, "%S: no branch taken\n", ini_line.c_str());
 }
 
 // Whether an expression reads pipeline state (ps-t0, ps-t0->Width, ...).

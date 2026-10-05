@@ -1354,8 +1354,8 @@ void CheckTextureOverrideCommand::run(CommandListState *state)
 
 	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
 
-	// A slot range checks every slot in turn, as the equivalent single slot
-	// lines would. "this" refers to the slot being checked:
+	// A range checks every slot or element in turn, as the equivalent single
+	// lines would. "this" refers to the one being checked:
 	int first = (int)target.slot;
 	unsigned count = 1;
 	if (target.IsRange() && !target.ResolveRange(state, &first, &count))

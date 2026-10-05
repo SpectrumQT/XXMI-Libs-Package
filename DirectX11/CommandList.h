@@ -1243,6 +1243,38 @@ public:
 	void run(CommandListState*) override;
 };
 
+// One branch of an if/elif/else chain folded into a ConditionalSlotCopyOperation:
+// condition is NULL for the unconditional terminal branch (else, or the "no
+// branch taken" sentinel below), op is NULL when that branch makes no
+// assignment at all (a missing else - leave the current binding, same as
+// unless_null).
+struct ConditionalSlotBranch {
+	CommandListExpression *condition;
+	std::shared_ptr<ResourceCopyOperation> op;
+};
+
+// An if/elif/else chain where every reachable branch targets the same fixed
+// slot, folded by the optimiser into one operation so it can sit inside a
+// ShaderResourceBindBatch/FetchBatch instead of acting as a hard break.
+// Evaluates the conditions at run time and defers to whichever branch's
+// operation matched. Its own dst/src are never used: the copy belongs to the
+// branch, and the slot the batch groups by comes from BatchTarget().
+class ConditionalSlotCopyOperation : public ResourceCopyOperation {
+public:
+	BatchDirection direction = BatchDirection::Bind;
+	std::vector<ConditionalSlotBranch> branches;
+	// The chain this was folded from, held because `branches` points into its
+	// CommandListExpressions:
+	std::shared_ptr<CommandListCommand> source_if;
+
+	void run(CommandListState*) override;
+	const ResourceCopyTarget& BatchTarget(BatchDirection direction) const override;
+
+private:
+	// The branch whose condition holds, or NULL when no branch is taken:
+	ConditionalSlotBranch* MatchingBranch(CommandListState *state);
+};
+
 void merge_shader_resource_batches(CommandList *command_list);
 
 // "<stage>-t[$a:$b] = ref PoolFoo[$c:$d]" / "= ref ResourceFoo" / "= null" and

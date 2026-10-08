@@ -1173,6 +1173,14 @@ struct DeferredBinding {
 	bool assigned = false; // false: unless_null kept the current binding
 };
 
+// Which side of a batchable copy the batch owns:
+// a bind batch drives the destination slot, a fetch batch reads the source.
+// Everything in the optimiser that differs between the two is selected by this.
+enum class BatchDirection {
+	Bind,
+	Fetch,
+};
+
 class ResourceCopyOperation : public CommandListCommand {
 public:
 	ResourceCopyTarget src;
@@ -1195,7 +1203,11 @@ public:
 
 	void run(CommandListState*) override;
 	// Used by ShaderResourceFetchBatch, which fetched the source itself:
-	void RunWithSource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view);
+	virtual void RunWithSource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view);
+	// The slot a batch groups this operation by.
+	// A folded if/elif/else chain overrides it:
+	// the slot it drives is its branches', not its own.
+	virtual const ResourceCopyTarget& BatchTarget(BatchDirection direction) const;
 
 private:
 	void SetOrDeferResource(CommandListState* state, ID3D11Resource* res, ID3D11View* view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_size);
@@ -1230,6 +1242,42 @@ public:
 class ShaderResourceFetchBatch : public ShaderResourceBatch {
 public:
 	void run(CommandListState*) override;
+};
+
+// One branch of an if/elif/else chain folded into a ConditionalSlotCopyOperation:
+// condition is NULL for the unconditional terminal branch,
+// the else, or the "no branch taken" sentinel below.
+// op is NULL when that branch makes no assignment at all:
+// a missing else leaves the current binding, the same as unless_null.
+struct ConditionalSlotBranch {
+	CommandListExpression *condition;
+	std::shared_ptr<ResourceCopyOperation> op;
+};
+
+// A chain of if/elif/else where every reachable branch targets the same slot,
+// always a fixed one, folded by the optimiser into a single operation.
+// It can then sit inside a ShaderResourceBindBatch/FetchBatch,
+// instead of acting as a hard break.
+//
+// The conditions are evaluated at run time, and whichever branch matched runs.
+// Its own dst/src are never used:
+// the copy belongs to the branch, and the batch groups by BatchTarget().
+class ConditionalSlotCopyOperation : public ResourceCopyOperation {
+public:
+	BatchDirection direction = BatchDirection::Bind;
+	std::vector<ConditionalSlotBranch> branches;
+	// The chain this was folded from, held for two reasons:
+	// `branches` points into its CommandListExpressions,
+	// and an operation left out of a batch goes back in as the chain itself:
+	std::shared_ptr<CommandListCommand> source_if;
+
+	void run(CommandListState*) override;
+	void RunWithSource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view) override;
+	const ResourceCopyTarget& BatchTarget(BatchDirection direction) const override;
+
+private:
+	// The branch whose condition holds, or NULL when no branch is taken:
+	ConditionalSlotBranch* MatchingBranch(CommandListState *state);
 };
 
 void merge_shader_resource_batches(CommandList *command_list);

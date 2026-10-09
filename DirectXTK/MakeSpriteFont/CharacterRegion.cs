@@ -1,13 +1,9 @@
 // DirectXTK MakeSpriteFont tool
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
-// Copyright (c) Microsoft Corporation. All rights reserved.
-//
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 
 using System;
 using System.Linq;
@@ -65,7 +61,7 @@ namespace MakeSpriteFont
             }
         }
 
-        
+
         // Default to just the base ASCII character set.
         static CharacterRegion defaultRegion = new CharacterRegion(' ', '~');
     }
@@ -110,7 +106,7 @@ namespace MakeSpriteFont
                 case 2:
                     // Range of characters (eg. "a-z").
                     return new CharacterRegion(split[0], split[1]);
-             
+
                 default:
                     throw new ArgumentException();
             }

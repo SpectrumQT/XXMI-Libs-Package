@@ -62,6 +62,12 @@ struct OriginalShaderInfo;
 bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type, std::string *shader_model, UINT64 hash, std::wstring *tagline, std::vector<uint32_t> *match_ids_out = NULL, bool link = true);
 void save_shader_regex_cache_bin(UINT64 hash, const wchar_t *shader_type, vector<byte> *bytecode);
 bool unlink_shader_regex_command_lists_and_filter_index(UINT64 shader_hash);
+// For the shader of a D3D12 game, which there is no assembly text of for a
+// pattern to match: links the groups that name any shader model of its type
+// ("vs", "ps", ...) and either have no patterns or say with dx12_match_* keys
+// what the shader has to declare, which it does. True if there was one.
+struct Dx12ShaderInfo;
+bool link_shader_regex_groups_dx12(const Dx12ShaderInfo *shader);
 
 // Works out and applies the ShaderRegex outcome for one shader registered in
 // G->mReloadedShaders: links the command lists of the matched groups to its
@@ -134,6 +140,14 @@ public:
 	ShaderRegexTemps temp_regs;
 	float filter_index;
 
+	// The dx12_match_* keys: registers of space 0 the shader of a D3D12
+	// game has to declare (t0-t127, b0-b63, u0-u63), how many render
+	// targets it writes and how many bytes its constant buffers have
+	bool dx12_match;
+	UINT64 dx12_srv[2], dx12_cbv, dx12_uav;
+	FuzzyMatch dx12_targets;
+	FuzzyMatch dx12_cb_bytes[16];
+
 	CommandList command_list;
 	CommandList post_command_list;
 	std::shared_ptr<RunLinkedCommandList> link;
@@ -141,9 +155,14 @@ public:
 
 	void apply_regex_patterns(std::string *asm_text, bool *match, bool *patch);
 	void link_command_lists_and_filter_index(UINT64 shader_hash);
+	bool dx12_matches(const Dx12ShaderInfo *shader) const;
 
 	ShaderRegexGroup() :
-		filter_index(FLT_MAX)
+		filter_index(FLT_MAX),
+		dx12_match(false),
+		dx12_srv(),
+		dx12_cbv(0),
+		dx12_uav(0)
 	{}
 };
 

@@ -3,6 +3,7 @@
 #include <time.h>
 
 #include "Bridge.h"
+#include "DrawPath.h"
 #include "Dx12CommandQueue.h"
 #include "Dx12Device.h"
 #include "Dx12SwapChain.h"
@@ -73,8 +74,11 @@ static void submit()
 
 void Dx12SwapChainBuffersReleased(Dx12SwapChain *swap_chain, bool destroyed)
 {
-	if (swap_chain != presenting)
+	Dx12ShimLock();
+	if (swap_chain != presenting) {
+		Dx12ShimUnlock();
 		return;
+	}
 
 	// Nothing that refers to the buffers may be left to execute
 	submit();
@@ -91,6 +95,7 @@ void Dx12SwapChainBuffersReleased(Dx12SwapChain *swap_chain, bool destroyed)
 	resolution_known = false;
 	if (destroyed)
 		presenting = NULL;
+	Dx12ShimUnlock();
 }
 
 static bool begin(Dx12SwapChain *swap_chain)
@@ -132,7 +137,8 @@ static void frame_actions()
 	G->gSystemTickCount = ticks;
 	G->gFPSCounter.Update(ticks);
 
-	RunCommandList(device, dx12_shim->hacker_context, &G->present_command_list, NULL, false);
+	if (!dx12_mods_disabled)
+		RunCommandList(device, dx12_shim->hacker_context, &G->present_command_list, NULL, false);
 
 	G->analyse_frame = false;
 
@@ -141,8 +147,10 @@ static void frame_actions()
 	CurrentTransition.UpdatePresets(device);
 	CurrentTransition.UpdateTransitions(device);
 
-	if (G->gReloadConfigPending)
+	if (G->gReloadConfigPending) {
 		ReloadConfig(device);
+		Dx12DrawPathConfigReloaded();
+	}
 
 	if (G->gConfigInitialized) {
 		if (G->gTime - G->gSettingsSaveTime > G->gSettingsAutoSaveInterval)
@@ -150,6 +158,7 @@ static void frame_actions()
 	} else if (G->gTime > G->gConfigInitializationDelay) {
 		G->gConfigInitialized = true;
 		ReloadConfig(device);
+		Dx12DrawPathConfigReloaded();
 	}
 
 	G->frame_no++;
@@ -169,21 +178,25 @@ static void frame_actions()
 
 void Dx12PresentBegin(Dx12SwapChain *swap_chain)
 {
-	if (!begin(swap_chain))
-		return;
-
-	if (resolution_known)
-		dx12_shim->shim_context->RSSetViewports(1, &viewport);
-	frame_actions();
-	submit();
+	Dx12ShimLock();
+	if (begin(swap_chain)) {
+		if (resolution_known)
+			dx12_shim->shim_context->RSSetViewports(1, &viewport);
+		frame_actions();
+		Dx12ShimFramePresented();
+		Dx12DrawPathFramePresented();
+		submit();
+	}
+	Dx12ShimUnlock();
 }
 
 void Dx12PresentEnd(Dx12SwapChain *swap_chain)
 {
-	if (!dx12_shim || swap_chain != presenting)
-		return;
-
-	G->bb_is_upscaling_bb = !!G->SCREEN_UPSCALING && G->upscaling_command_list_using_explicit_bb_flip;
-	RunCommandList(dx12_shim->hacker_device, dx12_shim->hacker_context, &G->post_present_command_list, NULL, true);
-	submit();
+	Dx12ShimLock();
+	if (dx12_shim && swap_chain == presenting && !dx12_mods_disabled) {
+		G->bb_is_upscaling_bb = !!G->SCREEN_UPSCALING && G->upscaling_command_list_using_explicit_bb_flip;
+		RunCommandList(dx12_shim->hacker_device, dx12_shim->hacker_context, &G->post_present_command_list, NULL, true);
+		submit();
+	}
+	Dx12ShimUnlock();
 }

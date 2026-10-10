@@ -180,6 +180,27 @@ static HRESULT create_resource(ShimResource *resource, const D3D12_RESOURCE_DESC
 	return S_OK;
 }
 
+bool ShimBufferToGpu(ShimResource *resource)
+{
+	D3D12_RESOURCE_DESC desc = {};
+
+	if (!resource->cpu_only)
+		return true;
+
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = resource->shadow.size();
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	if (!desc.Width || FAILED(create_resource(resource, &desc)))
+		return false;
+
+	resource->cpu_only = false;
+	return ShimWriteBuffer(resource, 0, resource->shadow.data(), resource->shadow.size());
+}
+
 HRESULT STDMETHODCALLTYPE ShimDevice::CreateBuffer(const D3D11_BUFFER_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData, ID3D11Buffer **ppBuffer)
 {
 	const UINT address_binds = D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER;
@@ -196,6 +217,10 @@ HRESULT STDMETHODCALLTYPE ShimDevice::CreateBuffer(const D3D11_BUFFER_DESC *pDes
 
 	buffer = new ShimBuffer();
 	buffer->mDesc = *pDesc;
+	// D3D11 reports no stride for a buffer that is not structured, and the
+	// engine compares descriptions to tell whether a copy needs a new buffer
+	if (!(pDesc->MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED))
+		buffer->mDesc.StructureByteStride = 0;
 	r = &buffer->r;
 	r->dimension = D3D11_RESOURCE_DIMENSION_BUFFER;
 

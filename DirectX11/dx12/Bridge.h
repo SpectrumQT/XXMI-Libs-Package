@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include <d3d11_1.h>
 
 #include "Dx12Common.h"
@@ -22,11 +24,27 @@
 // every submission signals the next value, and whatever was retired while
 // recording for a submission is only freed once its value has been reached.
 //
-// All of this is used from one thread at a time: the one presenting, where
-// the engine does its work for now.
+// The engine and everything here only do one thing at a time. With the game
+// recording command lists on several threads and presenting on another, that
+// takes a lock: whoever calls into the engine or the shim holds Dx12ShimLock.
+//
+// Besides the frame's own work at present, the engine gets to run for draws
+// of the game it has overrides for (DrawPath). What it draws then goes to the
+// game's command list, which is executed whenever the game sees fit, and the
+// following keeps that safe:
+//
+//   - Our own list is submitted before the lock is let go of, so whatever a
+//     mod resource needed done to it has been executed by the time a game
+//     list recorded later can use it.
+//   - Every submission leaves our resources in the common state, from where
+//     D3D12 lets a list read them without a barrier. The game's lists never
+//     get barriers of ours: they are executed in an order we do not know.
+//   - What a game list uses is pinned to it (Dx12ShimPin), and lives until
+//     that list has been executed.
 
 class Dx12CommandQueue;
 class Dx12Device;
+class Dx12GraphicsCommandList;
 class HackerContext;
 class HackerDevice;
 class ShimContext;
@@ -47,11 +65,20 @@ struct Dx12Shim {
 // NULL until Dx12ShimCreate succeeded
 extern Dx12Shim *dx12_shim;
 
+// Set when the DLL is being unloaded. What the engine keeps in static
+// variables is released after that, when neither the D3D12 objects behind it
+// nor our own state can be relied on any more, so from then on the objects
+// of the shim are left to the process going away.
+extern bool dx12_unloading;
+
 bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue);
 // For when the swap chain being presented is on another queue than before
 void Dx12ShimSetQueue(Dx12CommandQueue *queue);
 
 void Dx12ShimNotImplemented(const char *method, bool *reported);
+
+void Dx12ShimLock();
+void Dx12ShimUnlock();
 
 // Moves what the debug layer has said since the last call to our log. Does
 // nothing unless the device was created with dx12_debug_layer.
@@ -100,3 +127,22 @@ void Dx12ShimFreeDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE type, D3D12_CPU_DESCRIPTO
 // several ways by one draw.
 void Dx12ShimTransition(ShimResource *resource, D3D12_RESOURCE_STATES state);
 void Dx12ShimForgetResource(ShimResource *resource);
+
+// Keeps the object alive until the game's list has been executed, or has been
+// reset without being executed
+void Dx12ShimPin(Dx12GraphicsCommandList *list, IUnknown *object);
+// For the queue proxy, after it has handed lists with pins to the queue, and
+// for a list that drops what it recorded
+void Dx12ShimPinsExecuted(ID3D12CommandQueue *queue, std::vector<IUnknown*> *pins);
+void Dx12ShimPinsAbandoned(std::vector<IUnknown*> *pins);
+
+// Makes a resource of ours usable by a game list that is being recorded.
+// False if it has no D3D12 resource.
+bool Dx12ShimUseOnGameList(ShimResource *resource, Dx12GraphicsCommandList *list);
+// As Dx12ShimBufferAddress, for a game list. size is how much can be read
+// from the address, which for a buffer without a resource is its size rounded
+// up to what a constant buffer view takes.
+UINT64 Dx12ShimGameBufferAddress(ID3D11Buffer *buffer, Dx12GraphicsCommandList *list, UINT *size);
+
+// Once per present, with the lock held
+void Dx12ShimFramePresented();

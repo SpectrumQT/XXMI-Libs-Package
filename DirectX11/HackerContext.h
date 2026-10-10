@@ -308,6 +308,18 @@ protected:
 	UINT64 mCurrentComputeShader;
 
 public:
+	// On D3D12 there are no Draw* and Dispatch methods of ours for the
+	// game to call: dx12/DrawPath.cpp tells us of the game's calls with
+	// these, along with the shaders the Set*Shader methods would have seen
+	void Dx12BeforeDraw(DrawContext &data, const UINT64 *shader_hashes);
+	void Dx12AfterDraw(DrawContext &data);
+	bool Dx12BeforeDispatch(DispatchContext *context, UINT64 shader_hash);
+	void Dx12AfterDispatch(DispatchContext *context);
+	// The shader of the type ('v', 'p', ...) in the game's draw or dispatch
+	// that is being handled, which has no D3D11 object to look up. 0 if
+	// there is none or this is not D3D12.
+	UINT64 Dx12CurrentShader(wchar_t shader_type);
+
 	HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pContext1);
 	~HackerContext();
 

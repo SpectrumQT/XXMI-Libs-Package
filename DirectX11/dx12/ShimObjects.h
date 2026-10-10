@@ -64,7 +64,7 @@ public:
 	{
 		ULONG ref = InterlockedDecrement(&mRef);
 
-		if (!ref)
+		if (!ref && !dx12_unloading)
 			delete this;
 		return ref;
 	}
@@ -98,15 +98,17 @@ struct ShimResource {
 	D3D12_RESOURCE_DESC desc;
 	// Of the whole resource, as left by the commands recorded so far
 	D3D12_RESOURCE_STATES state;
-	// Buffers go back to the common state by themselves when a submission
-	// has been executed. Rather than depend on when exactly that applies,
-	// the ones touched are put back there at the end of every submission,
-	// which is what touched_epoch is for.
+	// Every submission leaves the resources it used in the common state,
+	// see Bridge.h. touched_epoch tells which those are.
 	UINT touched_epoch;
 
 	// Belongs to the game, like a back buffer. Not referenced: whoever
 	// made the wrapper clears resource when the game lets go of it.
 	bool foreign;
+	// Where a constant buffer of the game is, if that is memory a list of
+	// ours can read whatever the game is doing with it. Dx12ShimBufferAddress
+	// returns it.
+	UINT64 foreign_va;
 
 	// Buffers whose contents come from the CPU and are only used where
 	// D3D12 takes an address (vertex, index and constant buffers) have no
@@ -125,6 +127,11 @@ struct ShimResource {
 	UINT64 upload_version;
 	UINT upload_epoch;
 	UINT64 version;
+	// The same for use by the game's lists, where the upload has to
+	// outlive our submissions. Referenced.
+	ID3D12Resource *game_upload;
+	UINT64 game_upload_va;
+	UINT64 game_upload_version;
 	// Whether Unmap has anything to do
 	bool mapped_for_write;
 

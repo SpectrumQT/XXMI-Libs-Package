@@ -42,7 +42,7 @@ static const wchar_t *const csv_names[CSV_COUNT] = {
 	L"dx12_report.txt",
 };
 static const char *const csv_headers[CSV_COUNT] = {
-	"hash,stage,bytes,kind,reflected,srv_t64_t127,srv_t0_t63,cbv,uav\n",
+	"hash,stage,bytes,kind,reflected,srv_t64_t127,srv_t0_t63,cbv,uav,targets,cb_sizes\n",
 	"frame,resource,source,width,height,mips,array,format,flags,cube,data_hash,hash_as_is,hash_bc_typeless,hash_unreal\n",
 	"frame,resource,offset,bytes,data_hash,hash_vb,hash_ib,hash_vb_srv,hash_ib_srv\n",
 	"frame,list,draw,type,count,instances,start,base_vertex,vs,ps,cs,ib,ib_offset,ib_hash,"
@@ -110,9 +110,31 @@ static FILE* csv(int which)
 	return csv_files[which];
 }
 
+void Dx12DumpNote(const char *format, ...)
+{
+	char line[1024];
+	va_list args;
+	FILE *report;
+
+	va_start(args, format);
+	vsnprintf_s(line, _TRUNCATE, format, args);
+	va_end(args);
+
+	Dx12LogInfo("%s", line);
+
+	AcquireSRWLockExclusive(&lock);
+	report = csv(CSV_REPORT);
+	if (report) {
+		fputs(line, report);
+		fflush(report);
+	}
+	ReleaseSRWLockExclusive(&lock);
+}
+
 void Dx12DumpShader(Dx12ShaderStage stage, const Dx12ShaderInfo *info)
 {
 	FILE *file;
+	UINT reg;
 
 	AcquireSRWLockExclusive(&lock);
 
@@ -126,9 +148,15 @@ void Dx12DumpShader(Dx12ShaderStage stage, const Dx12ShaderInfo *info)
 
 	file = csv(CSV_SHADERS);
 	if (file) {
-		fprintf(file, "%016llx,%s,%u,%s,%d,%016llx,%016llx,%016llx,%016llx\n",
+		fprintf(file, "%016llx,%s,%u,%s,%d,%016llx,%016llx,%016llx,%016llx,%u,",
 			info->hash, dx12_stage_names[stage], info->size, info->dxil ? "dxil" : "dxbc", info->reflected,
-			info->srv[1], info->srv[0], info->cbv, info->uav);
+			info->srv[1], info->srv[0], info->cbv, info->uav, info->targets);
+		// What dx12_match_cbN_size of a ShaderRegex section goes by
+		for (reg = 0; reg < DX12_CB_SIZES; reg++) {
+			if (info->cb_bytes[reg])
+				fprintf(file, "b%u=%u ", reg, info->cb_bytes[reg]);
+		}
+		fputc('\n', file);
 	}
 
 	ReleaseSRWLockExclusive(&lock);

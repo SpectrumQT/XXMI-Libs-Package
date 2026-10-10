@@ -32,6 +32,15 @@ public:
 
 	Dx12CmdState mState;
 
+	// What mods had this list use, see Dx12ShimPin
+	std::vector<IUnknown*> mPins;
+
+	// Whether the engine has anything to do for draws with mPipeline,
+	// see Dx12DrawWanted
+	ID3D12PipelineState *mWantedPipeline;
+	UINT mWantedGeneration;
+	bool mWanted;
+
 	// The resource states this list leaves behind, in recording order.
 	// They only become true when the list is executed, which is when the
 	// queue hands them to the resource tracker.

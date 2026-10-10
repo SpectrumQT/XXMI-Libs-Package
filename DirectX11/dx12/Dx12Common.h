@@ -84,8 +84,14 @@ struct Dx12Stats {
 	volatile LONG64 lists_closed;
 	volatile LONG64 lists_executed;
 	volatile LONG64 execute_calls;
+	volatile LONG64 blas_builds;
+	volatile LONG64 dispatch_rays;
 };
 extern Dx12Stats dx12_stats;
+
+// The last frame the game built an acceleration structure or dispatched rays
+// in, 0 if never: whether it is ray tracing, which changes how it skins
+extern volatile UINT dx12_raytracing_frame;
 
 // Presents so far, for telling how long ago something happened
 extern volatile UINT dx12_frame;

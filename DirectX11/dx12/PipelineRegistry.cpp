@@ -3,7 +3,9 @@
 #include <unordered_map>
 
 #include "util.h"
+#include "../globals.h"
 
+#include "DxilMetadata.h"
 #include "HashDump.h"
 #include "ResourceTracker.h"
 
@@ -11,6 +13,7 @@ const char *const dx12_stage_names[DX12_STAGE_COUNT] = { "vs", "ps", "gs", "hs",
 
 static SRWLOCK shader_lock = SRWLOCK_INIT;
 static std::unordered_map<UINT64, Dx12ShaderInfo*> shaders;
+static std::vector<const Dx12ShaderInfo*> shader_list;
 
 static SRWLOCK pipeline_lock = SRWLOCK_INIT;
 static std::unordered_map<ID3D12PipelineState*, Dx12PipelineInfo*> pipelines;
@@ -61,6 +64,38 @@ static bool find_part(Blob container, const char *fourcc, Blob *part)
 	}
 
 	return false;
+}
+
+static bool same_string(Blob blob, UINT32 a, UINT32 b)
+{
+	for (; a < blob.size && b < blob.size; a++, b++) {
+		if (blob.data[a] != blob.data[b])
+			return false;
+		if (!blob.data[a])
+			return true;
+	}
+	return false;
+}
+
+// The output signature: a count, 4 bytes that are not used, and an element for
+// each output that starts with the offset of its semantic name. OSG1, which
+// DXIL has, puts a stream number before that and is 8 bytes longer.
+static UINT32 count_targets(Blob part, bool wide)
+{
+	static const char name[] = "SV_Target";
+	UINT32 count, offset, i, targets = 0;
+	size_t size = wide ? 32 : 24;
+
+	if (!read32(part, 0, &count) || count > 64)
+		return 0;
+
+	for (i = 0; i < count; i++) {
+		if (!read32(part, 8 + i * size + (wide ? 4 : 0), &offset))
+			return 0;
+		if (offset < part.size && part.size - offset >= sizeof(name) && !_stricmp((const char*)part.data + offset, name))
+			targets++;
+	}
+	return targets;
 }
 
 static void mark_registers(UINT64 *mask, unsigned words, UINT32 first, UINT32 count)
@@ -125,9 +160,12 @@ static bool reflect_psv0(Blob psv, Dx12ShaderInfo *info)
 static bool reflect_rdef(Blob rdef, Dx12ShaderInfo *info)
 {
 	UINT32 count, offset, version, type, reg, reg_count, space, i;
+	UINT32 cb_count, cb_offset, name, cb_name, cb_size, j;
 	size_t pos, record_size;
 
 	if (!read32(rdef, 8, &count) || !read32(rdef, 12, &offset) || !read32(rdef, 16, &version) || count > 65536)
+		return false;
+	if (!read32(rdef, 0, &cb_count) || !read32(rdef, 4, &cb_offset) || cb_count > 65536)
 		return false;
 	record_size = (version & 0xffff) == 0x0501 ? 40 : 32;
 
@@ -143,6 +181,20 @@ static bool reflect_rdef(Blob rdef, Dx12ShaderInfo *info)
 		switch (type) {
 			case D3D_SIT_CBUFFER:
 				mark_registers(&info->cbv, 1, reg, reg_count ? reg_count : 1);
+				// The sizes are with the constant buffers, a list
+				// of 24 byte records that starts with the name
+				// and has the size at offset 12
+				if (reg >= DX12_CB_SIZES || !read32(rdef, pos, &name))
+					break;
+				for (j = 0; j < cb_count; j++) {
+					if (!read32(rdef, (size_t)cb_offset + j * 24, &cb_name)
+					    || !read32(rdef, (size_t)cb_offset + j * 24 + 12, &cb_size))
+						break;
+					if (same_string(rdef, name, cb_name)) {
+						info->cb_bytes[reg] = cb_size;
+						break;
+					}
+				}
 				break;
 			case D3D_SIT_TBUFFER:
 			case D3D_SIT_TEXTURE:
@@ -171,7 +223,9 @@ static bool reflect_rdef(Blob rdef, Dx12ShaderInfo *info)
 static const Dx12ShaderInfo* shader_info(Dx12ShaderStage stage, const D3D12_SHADER_BYTECODE *bytecode)
 {
 	Dx12ShaderInfo *info, *existing = NULL;
+	std::vector<Dx12DxilCBuffer> cbuffers;
 	Blob container, part;
+	BYTE *copy = NULL;
 	UINT64 hash;
 
 	if (!bytecode->pShaderBytecode || !bytecode->BytecodeLength)
@@ -191,21 +245,44 @@ static const Dx12ShaderInfo* shader_info(Dx12ShaderStage stage, const D3D12_SHAD
 
 	info = new Dx12ShaderInfo();
 	info->hash = hash;
+	info->stage = stage;
 	info->size = (UINT32)bytecode->BytecodeLength;
 
 	container.data = (const BYTE*)bytecode->pShaderBytecode;
 	container.size = bytecode->BytecodeLength;
 	info->dxil = find_part(container, "DXIL", &part);
+	if (info->dxil && Dx12ReadDxilCBuffers(part.data, part.size, &cbuffers)) {
+		for (const Dx12DxilCBuffer &cbuffer : cbuffers) {
+			if (!cbuffer.space && cbuffer.reg < DX12_CB_SIZES)
+				info->cb_bytes[cbuffer.reg] = cbuffer.bytes;
+		}
+	}
+	if (stage == DX12_STAGE_PS) {
+		if (find_part(container, "OSG1", &part))
+			info->targets = count_targets(part, true);
+		else if (find_part(container, "OSGN", &part))
+			info->targets = count_targets(part, false);
+	}
 	if (find_part(container, "PSV0", &part))
 		info->reflected = reflect_psv0(part, info);
 	else if (find_part(container, "RDEF", &part))
 		info->reflected = reflect_rdef(part, info);
 
+	if (G->hunting) {
+		copy = (BYTE*)malloc(info->size);
+		if (copy)
+			memcpy(copy, bytecode->pShaderBytecode, info->size);
+		info->bytecode = copy;
+	}
+
 	AcquireSRWLockExclusive(&shader_lock);
 	auto inserted = shaders.emplace(hash, info);
+	if (inserted.second)
+		shader_list.push_back(info);
 	ReleaseSRWLockExclusive(&shader_lock);
 
 	if (!inserted.second) {
+		free(copy);
 		delete info;
 		return inserted.first->second;
 	}
@@ -524,6 +601,27 @@ void Dx12RegisterPipeline(void **ppPipelineState, const D3D12_PIPELINE_STATE_STR
 #undef SUBOBJECT
 
 	register_pipeline(ppPipelineState, info);
+}
+
+const Dx12ShaderInfo* Dx12FindShader(UINT64 hash)
+{
+	const Dx12ShaderInfo *info = NULL;
+
+	AcquireSRWLockShared(&shader_lock);
+	auto i = shaders.find(hash);
+	if (i != shaders.end())
+		info = i->second;
+	ReleaseSRWLockShared(&shader_lock);
+
+	return info;
+}
+
+void Dx12GetShaders(size_t from, std::vector<const Dx12ShaderInfo*> *found)
+{
+	AcquireSRWLockShared(&shader_lock);
+	if (from < shader_list.size())
+		found->insert(found->end(), shader_list.begin() + from, shader_list.end());
+	ReleaseSRWLockShared(&shader_lock);
 }
 
 const Dx12PipelineInfo* Dx12FindPipeline(ID3D12PipelineState *pipeline)

@@ -59,7 +59,7 @@ CLASSES = {
     'Dx12GraphicsCommandList': ('ID3D12GraphicsCommandList10', [
         'GetDevice', 'Close', 'Reset', 'ClearState',
         'DrawInstanced', 'DrawIndexedInstanced', 'Dispatch', 'ExecuteIndirect',
-        'DispatchMesh', 'DispatchRays', 'ExecuteBundle',
+        'DispatchMesh', 'DispatchRays', 'ExecuteBundle', 'BuildRaytracingAccelerationStructure',
         'SetDescriptorHeaps', 'OMSetRenderTargets', 'BeginRenderPass',
         'SetPipelineState', 'SetPipelineState1',
         'SetGraphicsRootSignature', 'SetComputeRootSignature',
@@ -74,7 +74,7 @@ CLASSES = {
         'CopyTextureRegion', 'CopyResource', 'CopyBufferRegion',
     ]),
     'Dx12DescriptorHeap': ('ID3D12DescriptorHeap', [
-        'GetDevice', 'GetCPUDescriptorHandleForHeapStart',
+        'GetDevice', 'GetCPUDescriptorHandleForHeapStart', 'GetDesc',
     ]),
     'Dx12PipelineLibrary': ('ID3D12PipelineLibrary1', [
         'GetDevice', 'LoadGraphicsPipeline', 'LoadComputePipeline', 'LoadPipeline',

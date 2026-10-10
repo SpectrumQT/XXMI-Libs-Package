@@ -18,6 +18,9 @@ public:
 // Copy CPU memory into a resource of ours. For a texture the data is one
 // whole subresource with rows row_pitch apart.
 bool ShimWriteBuffer(ShimResource *resource, UINT64 offset, const void *data, UINT64 size);
+// Gives a buffer that only had its contents in CPU memory a resource with
+// those contents, for the GPU to write to
+bool ShimBufferToGpu(ShimResource *resource);
 bool ShimWriteSubresource(ShimResource *resource, UINT subresource, const void *data, UINT row_pitch, UINT slice_pitch);
 
 static inline UINT64 ShimAlign(UINT64 value, UINT64 alignment)

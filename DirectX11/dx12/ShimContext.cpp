@@ -1,5 +1,6 @@
 #include "ShimContext.h"
 
+#include "DrawPath.h"
 #include "ShimDevice.h"
 
 template <class Slot, class Object>
@@ -150,12 +151,16 @@ void ShimContext::GetConstantBuffers(Dx12ShaderStage stage, UINT start, UINT cou
 {
 	ShimStageState *state = &mState.stages[stage];
 	ShimResourceDesc desc;
+	ID3D11Buffer *buffer;
 	UINT i, slot;
 
 	for (i = 0; i < count; i++) {
 		slot = start + i;
+		buffer = slot < SHIM_CBV_SLOTS ? state->cbs[slot] : NULL;
+		if (!buffer && slot < SHIM_CBV_SLOTS && Dx12InDrawScope())
+			buffer = Dx12ScopeConstantBuffer(stage, slot);
 		if (buffers)
-			get(slot < SHIM_CBV_SLOTS ? state->cbs[slot] : NULL, &buffers[i]);
+			get(buffer, &buffers[i]);
 		if (first)
 			first[i] = slot < SHIM_CBV_SLOTS ? state->cb_first[slot] : 0;
 		if (!constants)
@@ -163,8 +168,8 @@ void ShimContext::GetConstantBuffers(Dx12ShaderStage stage, UINT start, UINT cou
 
 		constants[i] = slot < SHIM_CBV_SLOTS ? state->cb_count[slot] : 0;
 		// D3D11 reports the size of the buffer when no range was set
-		if (!constants[i] && slot < SHIM_CBV_SLOTS && state->cbs[slot]) {
-			ShimGetResourceDesc(state->cbs[slot], &desc);
+		if (!constants[i] && buffer) {
+			ShimGetResourceDesc(buffer, &desc);
 			constants[i] = desc.byte_width / 16;
 		}
 	}
@@ -211,10 +216,16 @@ void ShimContext::SetShaderResources(Dx12ShaderStage stage, UINT start, UINT cou
 
 void ShimContext::GetShaderResources(Dx12ShaderStage stage, UINT start, UINT count, ID3D11ShaderResourceView **views)
 {
+	ID3D11ShaderResourceView *view;
 	UINT i;
 
-	for (i = 0; i < count; i++)
-		get(start + i < SHIM_SRV_SLOTS ? mState.stages[stage].srvs[start + i] : NULL, &views[i]);
+	for (i = 0; i < count; i++) {
+		view = start + i < SHIM_SRV_SLOTS ? mState.stages[stage].srvs[start + i] : NULL;
+		// What a mod has not bound over is still the game's
+		if (!view && start + i < SHIM_SRV_SLOTS && Dx12InDrawScope())
+			view = Dx12ScopeShaderResource(stage, start + i);
+		get(view, &views[i]);
+	}
 }
 
 void ShimContext::SetSamplers(Dx12ShaderStage stage, UINT start, UINT count, ID3D11SamplerState *const *samplers)
@@ -292,10 +303,15 @@ void STDMETHODCALLTYPE ShimContext::CSSetUnorderedAccessViews(UINT StartSlot, UI
 
 void STDMETHODCALLTYPE ShimContext::CSGetUnorderedAccessViews(UINT StartSlot, UINT NumUAVs, ID3D11UnorderedAccessView **ppUnorderedAccessViews)
 {
+	ID3D11UnorderedAccessView *view;
 	UINT i;
 
-	for (i = 0; i < NumUAVs; i++)
-		get(StartSlot + i < SHIM_UAV_SLOTS ? mState.cs_uavs[StartSlot + i] : NULL, &ppUnorderedAccessViews[i]);
+	for (i = 0; i < NumUAVs; i++) {
+		view = StartSlot + i < SHIM_UAV_SLOTS ? mState.cs_uavs[StartSlot + i] : NULL;
+		if (!view && StartSlot + i < SHIM_UAV_SLOTS && Dx12InDrawScope())
+			view = Dx12ScopeUnorderedAccess(StartSlot + i);
+		get(view, &ppUnorderedAccessViews[i]);
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -324,17 +340,26 @@ void STDMETHODCALLTYPE ShimContext::IASetVertexBuffers(UINT StartSlot, UINT NumB
 
 void STDMETHODCALLTYPE ShimContext::IAGetVertexBuffers(UINT StartSlot, UINT NumBuffers, ID3D11Buffer **ppVertexBuffers, UINT *pStrides, UINT *pOffsets)
 {
+	ID3D11Buffer *buffer;
+	UINT i, stride, offset;
 	bool valid;
-	UINT i;
 
 	for (i = 0; i < NumBuffers; i++) {
 		valid = StartSlot + i < ARRAYSIZE(mState.vbs);
+		buffer = valid ? mState.vbs[StartSlot + i] : NULL;
+		stride = valid ? mState.vb_strides[StartSlot + i] : 0;
+		offset = valid ? mState.vb_offsets[StartSlot + i] : 0;
+		if (!buffer && valid && Dx12InDrawScope()) {
+			buffer = Dx12ScopeVertexBuffer(StartSlot + i, &stride);
+			offset = 0;
+		}
+
 		if (ppVertexBuffers)
-			get(valid ? mState.vbs[StartSlot + i] : NULL, &ppVertexBuffers[i]);
+			get(buffer, &ppVertexBuffers[i]);
 		if (pStrides)
-			pStrides[i] = valid ? mState.vb_strides[StartSlot + i] : 0;
+			pStrides[i] = stride;
 		if (pOffsets)
-			pOffsets[i] = valid ? mState.vb_offsets[StartSlot + i] : 0;
+			pOffsets[i] = offset;
 	}
 }
 
@@ -347,12 +372,21 @@ void STDMETHODCALLTYPE ShimContext::IASetIndexBuffer(ID3D11Buffer *pIndexBuffer,
 
 void STDMETHODCALLTYPE ShimContext::IAGetIndexBuffer(ID3D11Buffer **pIndexBuffer, DXGI_FORMAT *Format, UINT *Offset)
 {
+	ID3D11Buffer *buffer = mState.ib;
+	DXGI_FORMAT format = mState.ib_format;
+	UINT offset = mState.ib_offset;
+
+	if (!buffer && Dx12InDrawScope()) {
+		buffer = Dx12ScopeIndexBuffer(&format);
+		offset = 0;
+	}
+
 	if (pIndexBuffer)
-		get(mState.ib, pIndexBuffer);
+		get(buffer, pIndexBuffer);
 	if (Format)
-		*Format = mState.ib_format;
+		*Format = format;
 	if (Offset)
-		*Offset = mState.ib_offset;
+		*Offset = offset;
 }
 
 void STDMETHODCALLTYPE ShimContext::IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY Topology)
@@ -529,25 +563,33 @@ void STDMETHODCALLTYPE ShimContext::RSGetScissorRects(UINT *pNumRects, D3D11_REC
 
 void STDMETHODCALLTYPE ShimContext::Draw(UINT VertexCount, UINT StartVertexLocation)
 {
-	if (Dx12ShimPrepareDraw(&mState, false))
+	if (Dx12InDrawScope())
+		Dx12ScopeDraw(false, VertexCount, 1, StartVertexLocation, 0, 0);
+	else if (Dx12ShimPrepareDraw(&mState, false))
 		Dx12ShimList()->DrawInstanced(VertexCount, 1, StartVertexLocation, 0);
 }
 
 void STDMETHODCALLTYPE ShimContext::DrawInstanced(UINT VertexCountPerInstance, UINT InstanceCount, UINT StartVertexLocation, UINT StartInstanceLocation)
 {
-	if (Dx12ShimPrepareDraw(&mState, false))
+	if (Dx12InDrawScope())
+		Dx12ScopeDraw(false, VertexCountPerInstance, InstanceCount, StartVertexLocation, 0, StartInstanceLocation);
+	else if (Dx12ShimPrepareDraw(&mState, false))
 		Dx12ShimList()->DrawInstanced(VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
 }
 
 void STDMETHODCALLTYPE ShimContext::DrawIndexed(UINT IndexCount, UINT StartIndexLocation, INT BaseVertexLocation)
 {
-	if (Dx12ShimPrepareDraw(&mState, true))
+	if (Dx12InDrawScope())
+		Dx12ScopeDraw(true, IndexCount, 1, StartIndexLocation, BaseVertexLocation, 0);
+	else if (Dx12ShimPrepareDraw(&mState, true))
 		Dx12ShimList()->DrawIndexedInstanced(IndexCount, 1, StartIndexLocation, BaseVertexLocation, 0);
 }
 
 void STDMETHODCALLTYPE ShimContext::DrawIndexedInstanced(UINT IndexCountPerInstance, UINT InstanceCount, UINT StartIndexLocation, INT BaseVertexLocation, UINT StartInstanceLocation)
 {
-	if (Dx12ShimPrepareDraw(&mState, true)) {
+	if (Dx12InDrawScope()) {
+		Dx12ScopeDraw(true, IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
+	} else if (Dx12ShimPrepareDraw(&mState, true)) {
 		Dx12ShimList()->DrawIndexedInstanced(IndexCountPerInstance, InstanceCount, StartIndexLocation,
 			BaseVertexLocation, StartInstanceLocation);
 	}
@@ -555,8 +597,20 @@ void STDMETHODCALLTYPE ShimContext::DrawIndexedInstanced(UINT IndexCountPerInsta
 
 void STDMETHODCALLTYPE ShimContext::Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ)
 {
-	if (Dx12ShimPrepareDispatch(&mState))
-		Dx12ShimList()->Dispatch(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
+	// A compute shader of a mod has nothing to do with what the game's
+	// list is in the middle of, so it runs on our list like any other
+	// and with that before the game's draw. The game's own cannot be run
+	// again: its pipeline state would have to be on our list.
+	if (Dx12InDrawScope() && !mState.stages[DX12_STAGE_CS].shader) {
+		Dx12ScopeUnsupported("to dispatch without a compute shader of its own");
+		return;
+	}
+	if (!Dx12ShimPrepareDispatch(&mState))
+		return;
+
+	Dx12ShimList()->Dispatch(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
+	if (Dx12InDrawScope())
+		Dx12ScopeDispatched();
 }
 
 void STDMETHODCALLTYPE ShimContext::ClearRenderTargetView(ID3D11RenderTargetView *pRenderTargetView, const FLOAT ColorRGBA[4])
@@ -604,10 +658,42 @@ static bool prepare_uav_clear(ShimView *view, D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
 void STDMETHODCALLTYPE ShimContext::ClearUnorderedAccessViewUint(ID3D11UnorderedAccessView *pUnorderedAccessView, const UINT Values[4])
 {
 	ShimView *view = ShimViewOf(pUnorderedAccessView);
+	D3D12_UNORDERED_ACCESS_VIEW_DESC words = {};
+	D3D12_CPU_DESCRIPTOR_HANDLE cpu, shown;
 	D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+	UINT stride;
 
-	if (prepare_uav_clear(view, &gpu))
-		Dx12ShimList()->ClearUnorderedAccessViewUint(gpu, view->handle, view->resource->resource, Values, 0, NULL);
+	if (!view || !view->resource->resource)
+		return;
+
+	if (view->resource->dimension != D3D11_RESOURCE_DIMENSION_BUFFER || view->format != DXGI_FORMAT_UNKNOWN) {
+		if (prepare_uav_clear(view, &gpu))
+			Dx12ShimList()->ClearUnorderedAccessViewUint(gpu, view->handle, view->resource->resource, Values, 0, NULL);
+		return;
+	}
+
+	// D3D12 does not clear through the view of a structured buffer, where
+	// D3D11 writes the first value to every 32 bits of it
+	const D3D11_BUFFER_UAV &buffer = static_cast<ShimUnorderedAccessView*>(pUnorderedAccessView)->mDesc.Buffer;
+	stride = static_cast<ShimBuffer*>(view->resource11)->mDesc.StructureByteStride;
+	if ((buffer.Flags & D3D11_BUFFER_UAV_FLAG_RAW) || !stride || stride % 4)
+		return;
+	words.Format = DXGI_FORMAT_R32_UINT;
+	words.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+	words.Buffer.FirstElement = (UINT64)buffer.FirstElement * stride / 4;
+	words.Buffer.NumElements = buffer.NumElements * (stride / 4);
+
+	cpu = Dx12ShimAllocDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	shown = Dx12ShimAllocViews(1, &gpu);
+	if (cpu.ptr && shown.ptr) {
+		dx12_shim->device->CreateUnorderedAccessView(view->resource->resource, NULL, &words, cpu);
+		dx12_shim->device->CopyDescriptorsSimple(1, shown, cpu, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+		Dx12ShimBindHeaps();
+		Dx12ShimList()->ClearUnorderedAccessViewUint(gpu, cpu, view->resource->resource, Values, 0, NULL);
+	}
+	if (cpu.ptr)
+		Dx12ShimFreeDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, cpu);
 }
 
 void STDMETHODCALLTYPE ShimContext::ClearUnorderedAccessViewFloat(ID3D11UnorderedAccessView *pUnorderedAccessView, const FLOAT Values[4])
@@ -774,7 +860,7 @@ static bool create_readback(ShimResource *resource)
 
 static void copy_buffer(ID3D11Resource *dst11, UINT64 dst_offset, ID3D11Resource *src11, UINT64 src_offset, UINT64 size)
 {
-	static bool to_cpu_reported, from_staging_reported;
+	static bool from_staging_reported;
 	ShimResource *dst = ShimResourceOf(dst11), *src = ShimResourceOf(src11);
 	ShimResourceDesc dst_desc, src_desc;
 	bool src_in_shadow;
@@ -792,19 +878,20 @@ static void copy_buffer(ID3D11Resource *dst11, UINT64 dst_offset, ID3D11Resource
 		return;
 	}
 
+	// A constant or dynamic buffer has its contents uploaded from the CPU
+	// for every draw. One the GPU fills in is a resource from then on.
+	if (dst->cpu_only && !src_in_shadow && dst_desc.usage != D3D11_USAGE_STAGING && !ShimBufferToGpu(dst))
+		return;
+
 	if (dst->cpu_only) {
 		if (src_in_shadow) {
 			memcpy(dst->shadow.data() + dst_offset, src->shadow.data() + src_offset, (size_t)size);
 			dst->version++;
-		} else if (dst_desc.usage == D3D11_USAGE_STAGING && src->resource && create_readback(dst)) {
+		} else if (src->resource && create_readback(dst)) {
 			Dx12ShimTransition(src, D3D12_RESOURCE_STATE_COPY_SOURCE);
 			Dx12ShimList()->CopyBufferRegion(dst->readback, dst_offset, src->resource, src_offset, size);
 			dst->readback_fence = Dx12ShimPendingFence();
 			dst->readback_pending = true;
-		} else {
-			// Its contents are uploaded from the CPU for every
-			// draw, so they would have to be read back first
-			Dx12ShimNotImplemented("Copying from a GPU buffer to a constant or dynamic buffer", &to_cpu_reported);
 		}
 		return;
 	}

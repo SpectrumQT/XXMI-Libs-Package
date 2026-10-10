@@ -2,7 +2,9 @@
 
 #include <vector>
 
+#include "Bridge.h"
 #include "BufferHash.h"
+#include "DrawPath.h"
 #include "Dx12Device.h"
 #include "HashDump.h"
 #include "ResourceTracker.h"
@@ -25,7 +27,10 @@ Dx12GraphicsCommandList::Dx12GraphicsCommandList(Dx12Device *device, ID3D12Graph
 	mDevice(device),
 	mRef(1),
 	mDraws(0),
-	mDispatches(0)
+	mDispatches(0),
+	mWantedPipeline(NULL),
+	mWantedGeneration(0),
+	mWanted(false)
 {
 	mVersion = Dx12QueryNewest(orig, list_iids, ARRAYSIZE(list_iids), (void**)&mOrig);
 	mDevice->AddRef();
@@ -92,6 +97,7 @@ ULONG STDMETHODCALLTYPE Dx12GraphicsCommandList::Release()
 		return ref;
 	}
 
+	Dx12ShimPinsAbandoned(&mPins);
 	delete this;
 	orig->Release();
 	device->Release();
@@ -120,6 +126,9 @@ HRESULT STDMETHODCALLTYPE Dx12GraphicsCommandList::Reset(ID3D12CommandAllocator 
 	mDraws = mDispatches = 0;
 	Dx12ResetCmdState(&mState, pInitialState);
 	mTransitions.clear();
+	// Still there if the list was never executed
+	if (!mPins.empty())
+		Dx12ShimPinsAbandoned(&mPins);
 
 	return mOrig->Reset(pAllocator, pInitialState);
 }
@@ -135,6 +144,8 @@ void STDMETHODCALLTYPE Dx12GraphicsCommandList::DrawInstanced(UINT VertexCountPe
 	if (dx12_dump_draws)
 		Dx12DumpDraw(this, "draw", VertexCountPerInstance, InstanceCount, StartVertexLocation, 0);
 	mDraws++;
+	if (Dx12DrawWanted(this) && Dx12Draw(this, false, VertexCountPerInstance, InstanceCount, StartVertexLocation, 0, StartInstanceLocation))
+		return;
 	mOrig->DrawInstanced(VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
 }
 
@@ -143,6 +154,8 @@ void STDMETHODCALLTYPE Dx12GraphicsCommandList::DrawIndexedInstanced(UINT IndexC
 	if (dx12_dump_draws)
 		Dx12DumpDraw(this, "indexed", IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation);
 	mDraws++;
+	if (Dx12DrawWanted(this) && Dx12Draw(this, true, IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation, StartInstanceLocation))
+		return;
 	mOrig->DrawIndexedInstanced(IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
 }
 
@@ -151,6 +164,8 @@ void STDMETHODCALLTYPE Dx12GraphicsCommandList::Dispatch(UINT ThreadGroupCountX,
 	if (dx12_dump_draws)
 		Dx12DumpDraw(this, "dispatch", ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ, 0);
 	mDispatches++;
+	if (Dx12DrawWanted(this) && Dx12Dispatch(this, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ))
+		return;
 	mOrig->Dispatch(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
 }
 
@@ -173,7 +188,17 @@ void STDMETHODCALLTYPE Dx12GraphicsCommandList::DispatchMesh(UINT ThreadGroupCou
 void STDMETHODCALLTYPE Dx12GraphicsCommandList::DispatchRays(const D3D12_DISPATCH_RAYS_DESC *pDesc)
 {
 	mDispatches++;
+	// + 1 so that frame 0 counts as seen
+	dx12_raytracing_frame = dx12_frame + 1;
+	InterlockedIncrement64(&dx12_stats.dispatch_rays);
 	mOrig->DispatchRays(pDesc);
+}
+
+void STDMETHODCALLTYPE Dx12GraphicsCommandList::BuildRaytracingAccelerationStructure(const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC *pDesc, UINT NumPostbuildInfoDescs, const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC *pPostbuildInfoDescs)
+{
+	dx12_raytracing_frame = dx12_frame + 1;
+	InterlockedIncrement64(&dx12_stats.blas_builds);
+	mOrig->BuildRaytracingAccelerationStructure(pDesc, NumPostbuildInfoDescs, pPostbuildInfoDescs);
 }
 
 // The draws of a bundle were counted when the bundle was recorded.

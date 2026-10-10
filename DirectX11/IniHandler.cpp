@@ -16,6 +16,7 @@
 #include "Hunting.h"
 #include "ShaderRegex.h"
 #include "cursor.h"
+#include "dx12/Bridge.h"
 #include <chrono>
 #include <mutex>
 #include <atomic>
@@ -2610,6 +2611,7 @@ static void warn_deprecated_shaderoverride_options(const wchar_t *id, ShaderOver
 // function. Used by ParseCommandList to find any unrecognised lines.
 wchar_t *ShaderOverrideIniKeys[] = {
 	L"hash",
+	L"hash_dx12",
 	L"allow_duplicate_hash",
 	L"depth_filter",
 	L"model",
@@ -2623,8 +2625,8 @@ static void ParseShaderOverrideSections()
 	wchar_t setting[MAX_PATH];
 	const wchar_t *id;
 	ShaderOverride *override;
-	UINT64 hash;
-	bool duplicate, found;
+	UINT64 hash, hash_dx12;
+	bool duplicate, found, found_dx12;
 	bool disable_scissor;
 
 	// Lock entire routine. This can be re-inited live.  These shaderoverrides
@@ -2643,6 +2645,16 @@ static void ParseShaderOverrideSections()
 		LogInfo("[%S]\n", id);
 
 		hash = GetIniHash(id, L"Hash", 0, &found);
+		// A D3D12 game compiles its shaders differently, so their
+		// hashes are not the D3D11 ones. A section can name both.
+		hash_dx12 = GetIniHash(id, L"hash_dx12", 0, &found_dx12);
+		if (dx12_shim) {
+			if (found_dx12)
+				hash = hash_dx12;
+			found |= found_dx12;
+		} else if (!found && found_dx12) {
+			continue;
+		}
 		if (!found) {
 			IniWarningW(L"Section missing Hash=\n - [%ls]\n", id);
 			continue;
@@ -2739,10 +2751,58 @@ wchar_t *ShaderRegexIniKeys[] = {
 	L"shader_model",
 	L"temps",
 	L"filter_index",
+	L"dx12_match_registers",
+	L"dx12_match_render_targets",
+	L"dx12_match_cb0_size", L"dx12_match_cb1_size", L"dx12_match_cb2_size", L"dx12_match_cb3_size",
+	L"dx12_match_cb4_size", L"dx12_match_cb5_size", L"dx12_match_cb6_size", L"dx12_match_cb7_size",
+	L"dx12_match_cb8_size", L"dx12_match_cb9_size", L"dx12_match_cb10_size", L"dx12_match_cb11_size",
+	L"dx12_match_cb12_size", L"dx12_match_cb13_size", L"dx12_match_cb14_size", L"dx12_match_cb15_size",
 	// L"type" =asm/hlsl? I'd rather not encourage autofixes on HLSL
 	//         shaders, because there is too much potential for trouble
 	NULL
 };
+
+static void parse_fuzzy_numeric_match_expression(const wchar_t *setting, FuzzyMatch *matcher);
+
+// The patterns of a group cannot be matched against the DXIL of a D3D12 game,
+// so a group says with these what such a shader has to declare instead
+static void parse_shader_regex_dx12_matches(const wchar_t *section, ShaderRegexGroup *regex_group)
+{
+	wchar_t setting[MAX_PATH], key[32];
+	std::string registers;
+	unsigned reg, i;
+	int len;
+
+	if (GetIniStringAndLog(section, L"dx12_match_registers", NULL, &registers)) {
+		regex_group->dx12_match = true;
+		for (const std::string &name : split_string(&registers, ' ')) {
+			if (name.empty())
+				continue;
+			len = 0;
+			if (sscanf_s(name.c_str() + 1, "%u%n", &reg, &len) != 1 || (size_t)len != name.size() - 1)
+				reg = UINT_MAX;
+			if ((name[0] == 't' || name[0] == 'T') && reg < 128)
+				regex_group->dx12_srv[reg / 64] |= 1ull << (reg % 64);
+			else if ((name[0] == 'b' || name[0] == 'B') && reg < 64)
+				regex_group->dx12_cbv |= 1ull << reg;
+			else if ((name[0] == 'u' || name[0] == 'U') && reg < 64)
+				regex_group->dx12_uav |= 1ull << reg;
+			else
+				IniWarningW(L"Not a register (t0-t127, b0-b63, u0-u63): %S\n - [%ls]\n", name.c_str(), section);
+		}
+	}
+	if (GetIniStringAndLog(section, L"dx12_match_render_targets", 0, setting, MAX_PATH)) {
+		regex_group->dx12_match = true;
+		parse_fuzzy_numeric_match_expression(setting, &regex_group->dx12_targets);
+	}
+	for (i = 0; i < ARRAYSIZE(regex_group->dx12_cb_bytes); i++) {
+		swprintf_s(key, ARRAYSIZE(key), L"dx12_match_cb%u_size", i);
+		if (GetIniStringAndLog(section, key, 0, setting, MAX_PATH)) {
+			regex_group->dx12_match = true;
+			parse_fuzzy_numeric_match_expression(setting, &regex_group->dx12_cb_bytes[i]);
+		}
+	}
+}
 static bool parse_shader_regex_section_main(const std::wstring *section_id, ShaderRegexGroup *regex_group)
 {
 	std::string setting;
@@ -2760,6 +2820,7 @@ static bool parse_shader_regex_section_main(const std::wstring *section_id, Shad
 	regex_group->ini_section = *section_id;
 
 	regex_group->filter_index = GetIniFloat(section_id->c_str(), L"filter_index", FLT_MAX, NULL);
+	parse_shader_regex_dx12_matches(section_id->c_str(), regex_group);
 
 	ParseCommandList(section_id->c_str(), &regex_group->command_list, &regex_group->post_command_list, ShaderRegexIniKeys);
 	return true;

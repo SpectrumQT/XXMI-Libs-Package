@@ -51,6 +51,17 @@ struct Dx12CmdState {
 
 void Dx12ResetCmdState(Dx12CmdState *state, ID3D12PipelineState *pipeline);
 
+// Where the root signature that is set has a stage read register reg of
+// space 0 from: a root descriptor, or a descriptor table at offset
+// descriptors from its start.
+struct Dx12RegisterLocation {
+	UINT parameter;
+	bool table;
+	UINT offset;
+};
+bool Dx12LocateRegister(const Dx12CmdState *state, Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE_TYPE type,
+		UINT reg, Dx12RegisterLocation *location);
+
 // Finds what a draw (or a dispatch, for DX12_STAGE_CS) would read through
 // register reg of space 0: a t, u or b register depending on type.
 //

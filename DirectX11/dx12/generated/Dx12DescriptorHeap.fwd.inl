@@ -21,11 +21,6 @@ HRESULT STDMETHODCALLTYPE Dx12DescriptorHeap::SetName(LPCWSTR Name)
 	return mOrig->SetName(Name);
 }
 
-D3D12_DESCRIPTOR_HEAP_DESC STDMETHODCALLTYPE Dx12DescriptorHeap::GetDesc()
-{
-	return mOrig->GetDesc();
-}
-
 D3D12_GPU_DESCRIPTOR_HANDLE STDMETHODCALLTYPE Dx12DescriptorHeap::GetGPUDescriptorHandleForHeapStart()
 {
 	return mOrig->GetGPUDescriptorHandleForHeapStart();

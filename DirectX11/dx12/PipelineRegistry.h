@@ -27,9 +27,12 @@ enum Dx12ShaderStage {
 };
 extern const char *const dx12_stage_names[DX12_STAGE_COUNT];
 
+const UINT DX12_CB_SIZES = 16;
+
 // One per distinct bytecode, never freed
 struct Dx12ShaderInfo {
 	UINT64 hash;
+	Dx12ShaderStage stage;
 	UINT32 size;
 	// DXIL (shader model 6) as opposed to the DXBC that D3D11 also takes
 	bool dxil;
@@ -42,6 +45,15 @@ struct Dx12ShaderInfo {
 	UINT64 srv[2];
 	UINT64 cbv;
 	UINT64 uav;
+	// How many bytes the shader declares for the constant buffers b0-b15 of
+	// space 0, which is all that tells where a buffer bound by address
+	// ends. 0 where it has none or that could not be read.
+	UINT32 cb_bytes[DX12_CB_SIZES];
+	// How many render targets a pixel shader writes
+	UINT32 targets;
+	// A copy of the shader as the game gave it, size bytes. Only kept
+	// with hunting on, for marking a shader to write it to ShaderFixes.
+	const BYTE *bytecode;
 };
 
 struct Dx12RootRange {
@@ -90,6 +102,10 @@ void Dx12RegisterPipeline(void **ppPipelineState, const D3D12_COMPUTE_PIPELINE_S
 void Dx12RegisterPipeline(void **ppPipelineState, const D3D12_PIPELINE_STATE_STREAM_DESC *desc);
 
 const Dx12PipelineInfo* Dx12FindPipeline(ID3D12PipelineState *pipeline);
+const Dx12ShaderInfo* Dx12FindShader(UINT64 hash);
+// Appends the shaders seen since the first from of them, in the order they
+// were first seen in
+void Dx12GetShaders(size_t from, std::vector<const Dx12ShaderInfo*> *found);
 const Dx12RootSignatureInfo* Dx12FindRootSignature(ID3D12RootSignature *signature);
 
 void Dx12GetPipelineCounts(size_t *pipelines, size_t *root_signatures, size_t *shaders);

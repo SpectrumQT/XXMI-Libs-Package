@@ -12,6 +12,7 @@
 
 Dx12Stats dx12_stats;
 volatile UINT dx12_frame;
+volatile UINT dx12_raytracing_frame;
 
 uint32_t Dx12Crc32cWriteCombined(uint32_t hash, const BYTE *src, size_t length)
 {
@@ -64,7 +65,7 @@ void Dx12FramePresented()
 	static unsigned frames, reports;
 	ULONGLONG now = GetTickCount64();
 	double seconds, per_frame;
-	LONG64 draws, dispatches, closed, executed, calls;
+	LONG64 draws, dispatches, closed, executed, calls, blas, rays;
 
 	dx12_frame++;
 	Dx12DumpFramePresented();
@@ -86,6 +87,8 @@ void Dx12FramePresented()
 	closed = InterlockedExchange64(&dx12_stats.lists_closed, 0);
 	executed = InterlockedExchange64(&dx12_stats.lists_executed, 0);
 	calls = InterlockedExchange64(&dx12_stats.execute_calls, 0);
+	blas = InterlockedExchange64(&dx12_stats.blas_builds, 0);
+	rays = InterlockedExchange64(&dx12_stats.dispatch_rays, 0);
 	seconds = (now - last_report) / 1000.0;
 	per_frame = 1.0 / frames;
 
@@ -98,6 +101,10 @@ void Dx12FramePresented()
 		Dx12LogDebug("%u frames in %.1fs (%.1f fps), per frame: %.0f draws, %.0f dispatches, %.1f command lists closed, %.1f executed in %.1f calls\n",
 			frames, seconds, frames / seconds, draws * per_frame, dispatches * per_frame,
 			closed * per_frame, executed * per_frame, calls * per_frame);
+	}
+	if (blas || rays) {
+		Dx12LogInfo("Ray tracing: %.1f acceleration structure builds and %.1f DispatchRays per frame\n",
+			blas * per_frame, rays * per_frame);
 	}
 	Dx12HashReport(reports <= 12);
 	if (LogFile)

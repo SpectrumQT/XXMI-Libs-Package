@@ -4,6 +4,7 @@
 #include "D3D11Wrapper.h"
 #include "util_min.h"
 #include "globals.h"
+#include "dx12/Bridge.h"
 #include "dx12/Dx12Hooks.h"
 
 HINSTANCE migoto_handle;
@@ -369,6 +370,7 @@ BOOL WINAPI DllMain(
 			break;
 
 		case DLL_PROCESS_DETACH:
+			dx12_unloading = true;
 			RemoveHooks();
 			if (tls_idx != TLS_OUT_OF_INDEXES) {
 				// FIXME: If we are being dynamically unloaded

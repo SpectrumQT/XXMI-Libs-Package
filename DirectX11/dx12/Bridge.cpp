@@ -4,6 +4,7 @@
 #include <map>
 #include <vector>
 
+#include "Dx12CommandList.h"
 #include "Dx12CommandQueue.h"
 #include "Dx12Device.h"
 #include "ShimContext.h"
@@ -17,6 +18,7 @@
 #include "../HackerDevice.h"
 
 Dx12Shim *dx12_shim;
+bool dx12_unloading;
 UINT dx12_shim_epoch = 1;
 UINT dx12_shim_view_increment;
 
@@ -44,7 +46,35 @@ struct Retired {
 };
 static std::deque<Retired> retired;
 
-static std::vector<ShimResource*> touched_buffers;
+// Waiting for a couple of presents to go by, for when there is no telling
+// from a fence that the GPU is done with them
+struct Late {
+	IUnknown *object;
+	UINT frame;
+};
+static std::deque<Late> late;
+
+static std::vector<ShimResource*> touched;
+
+static CRITICAL_SECTION shim_lock;
+static INIT_ONCE shim_lock_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK init_shim_lock(PINIT_ONCE once, PVOID parameter, PVOID *context)
+{
+	InitializeCriticalSection(&shim_lock);
+	return TRUE;
+}
+
+void Dx12ShimLock()
+{
+	InitOnceExecuteOnce(&shim_lock_once, init_shim_lock, NULL, NULL);
+	EnterCriticalSection(&shim_lock);
+}
+
+void Dx12ShimUnlock()
+{
+	LeaveCriticalSection(&shim_lock);
+}
 
 void Dx12ShimNotImplemented(const char *method, bool *reported)
 {
@@ -408,9 +438,9 @@ void Dx12ShimTransition(ShimResource *resource, D3D12_RESOURCE_STATES state)
 	if (!resource->resource)
 		return;
 
-	if (resource->dimension == D3D11_RESOURCE_DIMENSION_BUFFER && resource->touched_epoch != dx12_shim_epoch) {
+	if (!resource->foreign && resource->touched_epoch != dx12_shim_epoch) {
 		resource->touched_epoch = dx12_shim_epoch;
-		touched_buffers.push_back(resource);
+		touched.push_back(resource);
 	}
 
 	if (resource->state == state) {
@@ -441,12 +471,125 @@ void Dx12ShimForgetResource(ShimResource *resource)
 {
 	size_t i;
 
-	for (i = 0; i < touched_buffers.size(); i++) {
-		if (touched_buffers[i] == resource) {
-			touched_buffers.erase(touched_buffers.begin() + i);
+	for (i = 0; i < touched.size(); i++) {
+		if (touched[i] == resource) {
+			touched.erase(touched.begin() + i);
 			return;
 		}
 	}
+}
+
+// -----------------------------------------------------------------------------
+// Game lists
+
+const UINT64 GAME_UPLOAD_BLOCK_SIZE = 1 << 20;
+
+// The upload buffer being handed out for game lists. Those that are full are
+// only kept alive by the lists and buffers using them.
+static UploadPage game_upload;
+
+void Dx12ShimPin(Dx12GraphicsCommandList *list, IUnknown *object)
+{
+	if (!list->mPins.empty() && list->mPins.back() == object)
+		return;
+	object->AddRef();
+	list->mPins.push_back(object);
+}
+
+void Dx12ShimPinsExecuted(ID3D12CommandQueue *queue, std::vector<IUnknown*> *pins)
+{
+	Dx12ShimLock();
+	if (dx12_shim && queue == shim.queue) {
+		shim.queue->Signal(fence, ++fence_signalled);
+		for (IUnknown *object : *pins)
+			retired.push_back({ object, fence_signalled });
+	} else {
+		for (IUnknown *object : *pins)
+			late.push_back({ object, dx12_frame });
+	}
+	pins->clear();
+	Dx12ShimUnlock();
+}
+
+void Dx12ShimPinsAbandoned(std::vector<IUnknown*> *pins)
+{
+	for (IUnknown *object : *pins)
+		object->Release();
+	pins->clear();
+}
+
+void Dx12ShimFramePresented()
+{
+	while (!late.empty() && dx12_frame - late.front().frame >= 3) {
+		retired.push_back({ late.front().object, Dx12ShimPendingFence() });
+		late.pop_front();
+	}
+}
+
+bool Dx12ShimUseOnGameList(ShimResource *resource, Dx12GraphicsCommandList *list)
+{
+	if (!resource->resource || resource->foreign)
+		return false;
+
+	Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COMMON);
+	Dx12ShimPin(list, resource->resource);
+	return true;
+}
+
+UINT64 Dx12ShimGameBufferAddress(ID3D11Buffer *buffer, Dx12GraphicsCommandList *list, UINT *size)
+{
+	ShimResource *resource = ShimResourceOf(buffer);
+	UINT64 bytes, start;
+	UploadPage page;
+	BYTE *cpu;
+
+	if (!resource->cpu_only) {
+		if (!Dx12ShimUseOnGameList(resource, list))
+			return 0;
+		*size = (UINT)min(resource->desc.Width, (UINT64)UINT_MAX);
+		return resource->resource->GetGPUVirtualAddress();
+	}
+
+	bytes = (resource->shadow.size() + 255) & ~(UINT64)255;
+	*size = (UINT)bytes;
+	if (!bytes)
+		return 0;
+
+	if (resource->game_upload && resource->game_upload_version == resource->version) {
+		Dx12ShimPin(list, resource->game_upload);
+		return resource->game_upload_va;
+	}
+
+	if (bytes > GAME_UPLOAD_BLOCK_SIZE / 4) {
+		if (!create_upload_buffer(bytes, &page))
+			return 0;
+		start = 0;
+	} else {
+		if (!game_upload.buffer || game_upload.used + bytes > GAME_UPLOAD_BLOCK_SIZE) {
+			if (!create_upload_buffer(GAME_UPLOAD_BLOCK_SIZE, &page))
+				return 0;
+			if (game_upload.buffer)
+				game_upload.buffer->Release();
+			game_upload = page;
+		}
+		page = game_upload;
+		page.buffer->AddRef();
+		start = game_upload.used;
+		game_upload.used += bytes;
+	}
+
+	cpu = page.cpu + start;
+	memcpy(cpu, resource->shadow.data(), resource->shadow.size());
+	memset(cpu + resource->shadow.size(), 0, bytes - resource->shadow.size());
+
+	if (resource->game_upload)
+		resource->game_upload->Release();
+	resource->game_upload = page.buffer;
+	resource->game_upload_va = page.va + start;
+	resource->game_upload_version = resource->version;
+
+	Dx12ShimPin(list, resource->game_upload);
+	return resource->game_upload_va;
 }
 
 // -----------------------------------------------------------------------------
@@ -528,11 +671,11 @@ void Dx12ShimSubmit()
 		return;
 	}
 
-	for (ShimResource *resource : touched_buffers) {
-		// The list is in use, so this cannot add to touched_buffers
-		Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COMMON);
-	}
-	touched_buffers.clear();
+	// By index: the first transition of a resource in a submission is
+	// what adds it, which none of these is
+	for (size_t i = 0; i < touched.size(); i++)
+		Dx12ShimTransition(touched[i], D3D12_RESOURCE_STATE_COMMON);
+	touched.clear();
 
 	shim_list->Close();
 	lists[0] = shim_list;

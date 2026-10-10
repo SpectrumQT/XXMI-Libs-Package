@@ -28,5 +28,9 @@ void Dx12DumpTexture(ID3D12Resource *texture, const char *source);
 void Dx12DumpBuffer(ID3D12Resource *buffer, UINT64 offset, const Dx12BufferHash *hash);
 void Dx12DumpDraw(Dx12GraphicsCommandList *list, const char *type, UINT count, UINT instances, UINT start, INT base_vertex);
 
+// A line for the log that also goes to dx12_report.txt, as what the draw path
+// has to say is needed most from sessions of a game run without a log
+void Dx12DumpNote(const char *format, ...);
+
 void Dx12DumpFramePresented();
 void Dx12HashReport(bool info);

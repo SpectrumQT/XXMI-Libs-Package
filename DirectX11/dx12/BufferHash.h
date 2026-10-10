@@ -16,6 +16,8 @@
 struct Dx12BufferHash {
 	UINT64 bytes;
 	uint32_t data_hash;
+	// dx12_frame when the copy was recorded
+	UINT frame;
 };
 
 // For the command list proxy, before it forwards the call

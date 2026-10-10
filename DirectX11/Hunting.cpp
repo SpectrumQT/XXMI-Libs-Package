@@ -19,6 +19,8 @@
 #include "profiling.h"
 #include "FrameAnalysis.h"
 #include "ShaderRegex.h"
+#include "dx12/Bridge.h"
+#include "dx12/DrawPath.h"
 
 // bo3b: For this routine, we have a lot of warnings in x64, from converting a size_t result into the needed
 //  DWORD type for the Write calls.  These are writing 256 byte strings, so there is never a chance that it 
@@ -1216,6 +1218,12 @@ static void EnableFix(HackerDevice *device, void *private_data)
 	G->fix_enabled = true;
 }
 
+static void ToggleDx12Mods(HackerDevice *device, void *private_data)
+{
+	if (dx12_shim)
+		Dx12ToggleMods();
+}
+
 static void _AnalyseFrameStop()
 {
 	G->analyse_frame = false;
@@ -1726,6 +1734,14 @@ static void MarkShaderEnd(HackerDevice *device, char *long_type, char *short_typ
 	if (G->marking_actions & MarkingAction::CLIPBOARD)
 		HashToClipboard(long_type, selected);
 
+	// Neither screenshots nor a decompiler for D3D12 shaders yet
+	if (dx12_shim) {
+		if (G->marking_actions & MarkingAction::DUMP_MASK)
+			Dx12DumpMarkedShader(selected, short_type);
+		LeaveCriticalSection(&G->mCriticalSection);
+		return;
+	}
+
 	MarkingScreenShots(device, selected, short_type);
 
 	// We always test if a shader is already dumped even if neither HLSL or
@@ -1988,6 +2004,10 @@ void ParseHuntingSection()
 	// find the effect again later.
 	G->config_reloadable = RegisterIniKeyBinding(L"Hunting", L"reload_config", FlagConfigReload, NULL, noRepeat, NULL);
 	G->config_reloadable = RegisterIniKeyBinding(L"Hunting", L"wipe_user_config", FlagConfigReload, NULL, noRepeat, (void*)true);
+
+	// For comparing a D3D12 game with and without what mods do to it.
+	// Like reload_config this is not only for hunting.
+	RegisterIniKeyBinding(L"Hunting", L"disable_dx12_mods", ToggleDx12Mods, NULL, noRepeat, NULL);
 
 	// We're interested in performance measurements even in release mode
 	// (possibly even especially in release mode), particularly if we want

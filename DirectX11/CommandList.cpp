@@ -17,6 +17,7 @@
 #include "profiling.h"
 #include "Hunting.h"
 #include "cursor.h"
+#include "dx12/Bridge.h"
 #include "dx12/PresentPass.h"
 
 #include <D3DCompiler.h>
@@ -3392,8 +3393,19 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
 			break;
 	}
 
-	if (!shader)
-		return -0.0;  // Negative zero means no shader bound.
+	if (!shader) {
+		// The shaders of a D3D12 game are known by hash alone
+		UINT64 hash = mHackerContext->Dx12CurrentShader(shader_target.shader_type);
+		if (!hash)
+			return -0.0;  // Negative zero means no shader bound.
+		if (shader_target.evaluation_mode != ShaderTargetEvaluationMode::SHADER)
+			return 0.0;
+
+		ShaderOverrideMap::iterator override = lookup_shaderoverride(hash);
+		if (override == G->mShaderOverrideMap.end())
+			return 0.0;
+		return override->second.filter_index != FLT_MAX ? override->second.filter_index : 1.0f;
+	}
 
 	ShaderMap::iterator shader_it = lookup_shader_hash(shader);
 
@@ -3941,6 +3953,8 @@ float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device
 			return 0;
 		case ParamOverrideType::STEREO_AVAILABLE:
 			return 0;
+		case ParamOverrideType::DX12:
+			return dx12_shim ? 1.0f : 0.0f;
 		// XXX: If updating this list, be sure to also update
 		// XXX: operand_allowed_in_context()
 	}
@@ -6018,6 +6032,7 @@ static bool operand_allowed_in_context(ParamOverrideType type, CommandListScope 
 		case ParamOverrideType::SLI:
 		case ParamOverrideType::STEREO_ACTIVE:
 		case ParamOverrideType::STEREO_AVAILABLE:
+		case ParamOverrideType::DX12:
 			return true;
 	}
 	return false;

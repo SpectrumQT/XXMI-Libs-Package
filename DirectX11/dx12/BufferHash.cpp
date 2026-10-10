@@ -135,7 +135,7 @@ void Dx12CopyBufferRegion(ID3D12Resource *dst, UINT64 dst_offset, ID3D12Resource
 	InterlockedIncrement64(&dx12_buffer_stats.hashed);
 	InterlockedAdd64(&dx12_buffer_stats.hashed_bytes, bytes);
 
-	Dx12BufferHash result = { bytes, hash };
+	Dx12BufferHash result = { bytes, hash, dx12_frame };
 	Dx12DumpBuffer(dst, dst_offset, &result);
 }
 
@@ -150,6 +150,7 @@ bool Dx12FindBufferHash(ID3D12Resource *resource, UINT64 offset, Dx12BufferHash 
 		if (range != i->second.end() && range->second.valid) {
 			hash->bytes = range->second.bytes;
 			hash->data_hash = range->second.data_hash;
+			hash->frame = range->second.frame;
 			found = true;
 		}
 	}

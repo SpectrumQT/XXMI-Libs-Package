@@ -12,6 +12,7 @@ void *Dx12DescriptorHeap::sVtbl;
 #ifdef _WIN64
 
 SIZE_T dx12_heap_cpu_base[1 << DX12_HEAP_INDEX_BITS];
+SIZE_T dx12_heap_mirror_base[1 << DX12_HEAP_INDEX_BITS];
 Dx12DescriptorHeap *dx12_heap_proxies[1 << DX12_HEAP_INDEX_BITS];
 
 static SRWLOCK heap_index_lock = SRWLOCK_INIT;
@@ -40,19 +41,25 @@ static void free_heap_index(int index)
 {
 	AcquireSRWLockExclusive(&heap_index_lock);
 	dx12_heap_cpu_base[index] = 0;
+	dx12_heap_mirror_base[index] = 0;
 	free_heap_indices.push_back(index);
 	ReleaseSRWLockExclusive(&heap_index_lock);
 }
 
 #endif
 
-Dx12DescriptorHeap::Dx12DescriptorHeap(Dx12Device *device, ID3D12DescriptorHeap *orig) :
+Dx12DescriptorHeap::Dx12DescriptorHeap(Dx12Device *device, ID3D12DescriptorHeap *orig, UINT reserve) :
 	mOrig(orig),
 	mDevice(device),
 	mRef(1),
 	mIndex(-1),
 	mGpuStart(0),
-	mSlots(NULL)
+	mSlots(NULL),
+	mReserve(reserve),
+	mMirror(NULL),
+	mReserveNext(0),
+	mReserveFrame(0),
+	mReserveUsed()
 {
 	D3D12_DESCRIPTOR_HEAP_DESC desc = orig->GetDesc();
 
@@ -61,7 +68,7 @@ Dx12DescriptorHeap::Dx12DescriptorHeap(Dx12Device *device, ID3D12DescriptorHeap 
 	sVtbl = *(void**)this;
 	mEncodedStart.ptr = 0;
 	mType = desc.Type;
-	mCount = desc.NumDescriptors;
+	mCount = desc.NumDescriptors - mReserve;
 	mIncrement = mDevice->mOrig->GetDescriptorHandleIncrementSize(desc.Type);
 	if (desc.Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE)
 		mGpuStart = mOrig->GetGPUDescriptorHandleForHeapStart().ptr;
@@ -87,6 +94,15 @@ Dx12DescriptorHeap::Dx12DescriptorHeap(Dx12Device *device, ID3D12DescriptorHeap 
 	if (mType != D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)
 		mSlots = (Dx12DescriptorSlot*)calloc(mCount, sizeof(Dx12DescriptorSlot));
 	dx12_heap_proxies[mIndex] = this;
+
+	if (mReserve) {
+		desc.NumDescriptors = mCount;
+		desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+		if (SUCCEEDED(mDevice->mOrig->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&mMirror))))
+			dx12_heap_mirror_base[mIndex] = mMirror->GetCPUDescriptorHandleForHeapStart().ptr;
+		else
+			mReserve = 0;
+	}
 #endif
 }
 
@@ -98,6 +114,8 @@ Dx12DescriptorHeap::~Dx12DescriptorHeap()
 		free_heap_index(mIndex);
 	}
 #endif
+	if (mMirror)
+		mMirror->Release();
 	free(mSlots);
 }
 
@@ -172,6 +190,58 @@ HRESULT STDMETHODCALLTYPE Dx12DescriptorHeap::GetDevice(REFIID riid, void **ppvD
 D3D12_CPU_DESCRIPTOR_HANDLE STDMETHODCALLTYPE Dx12DescriptorHeap::GetCPUDescriptorHandleForHeapStart()
 {
 	return mEncodedStart;
+}
+
+D3D12_DESCRIPTOR_HEAP_DESC STDMETHODCALLTYPE Dx12DescriptorHeap::GetDesc()
+{
+	D3D12_DESCRIPTOR_HEAP_DESC desc = mOrig->GetDesc();
+
+	desc.NumDescriptors = mCount;
+	return desc;
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE Dx12DescriptorHeap::MirrorCpuHandle(UINT64 gpu)
+{
+	D3D12_CPU_DESCRIPTOR_HANDLE handle = mMirror->GetCPUDescriptorHandleForHeapStart();
+
+	handle.ptr += (SIZE_T)(gpu - mGpuStart);
+	return handle;
+}
+
+bool Dx12DescriptorHeap::AllocReserved(UINT count, D3D12_CPU_DESCRIPTOR_HANDLE *cpu, D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
+{
+	UINT i, in_use = 0, skipped = 0, bucket;
+
+	if (!mReserve || !mGpuStart || count > mReserve)
+		return false;
+
+	if (mReserveFrame != dx12_frame) {
+		// Nothing was used in the frames that went by since
+		UINT gone = min(dx12_frame - mReserveFrame, DX12_RESERVE_FRAMES);
+		for (i = 1; i <= gone; i++)
+			mReserveUsed[(mReserveFrame + i) % DX12_RESERVE_FRAMES] = 0;
+		mReserveFrame = dx12_frame;
+	}
+
+	// A table does not wrap around
+	if (mReserveNext + count > mReserve)
+		skipped = mReserve - mReserveNext;
+
+	for (i = 0; i < DX12_RESERVE_FRAMES; i++)
+		in_use += mReserveUsed[i];
+	if (in_use + skipped + count > mReserve)
+		return false;
+
+	bucket = dx12_frame % DX12_RESERVE_FRAMES;
+	mReserveUsed[bucket] += skipped + count;
+	if (skipped)
+		mReserveNext = 0;
+
+	*cpu = mOrig->GetCPUDescriptorHandleForHeapStart();
+	cpu->ptr += (SIZE_T)(mCount + mReserveNext) * mIncrement;
+	gpu->ptr = mGpuStart + (UINT64)(mCount + mReserveNext) * mIncrement;
+	mReserveNext += count;
+	return true;
 }
 
 #include "generated/Dx12DescriptorHeap.fwd.inl"

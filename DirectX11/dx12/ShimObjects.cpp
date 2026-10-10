@@ -137,6 +137,9 @@ void ShimDestroyResource(ShimResource *resource)
 		Dx12ShimDeferRelease(resource->readback);
 		resource->readback->Release();
 	}
+	// The lists using it have their own references
+	if (resource->game_upload)
+		resource->game_upload->Release();
 }
 
 void ShimDestroyView(ShimView *view)
@@ -254,6 +257,9 @@ UINT64 Dx12ShimBufferAddress(ID3D11Buffer *buffer, D3D12_RESOURCE_STATES state)
 {
 	ShimResource *resource = ShimResourceOf(buffer);
 	BYTE *upload;
+
+	if (resource->foreign)
+		return resource->foreign_va;
 
 	if (!resource->cpu_only) {
 		if (!resource->resource)

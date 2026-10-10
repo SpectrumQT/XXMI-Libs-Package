@@ -175,6 +175,31 @@ static Proxy* wrap_child(Dx12Device *device, REFIID riid, void **ppv)
 	return proxy;
 }
 
+// wrap_child for a heap, which may have descriptors the game did not ask for.
+// A heap that cannot be wrapped must not have any: the game would be told of
+// them.
+static Dx12DescriptorHeap* wrap_heap(Dx12Device *device, REFIID riid, void **ppv, UINT reserve)
+{
+	IUnknown *unknown = (IUnknown*)*ppv;
+	ID3D12DescriptorHeap *orig = NULL;
+	Dx12DescriptorHeap *proxy;
+
+	if (FAILED(unknown->QueryInterface(IID_PPV_ARGS(&orig))))
+		return NULL;
+
+	proxy = new Dx12DescriptorHeap(device, orig, reserve);
+	orig->Release();
+
+	if (!proxy->Usable(riid)) {
+		proxy->Abandon();
+		return NULL;
+	}
+
+	unknown->Release();
+	*ppv = proxy;
+	return proxy;
+}
+
 HRESULT STDMETHODCALLTYPE Dx12Device::CreateCommandQueue(const D3D12_COMMAND_QUEUE_DESC *pDesc, REFIID riid, void **ppCommandQueue)
 {
 	HRESULT hr = mOrig->CreateCommandQueue(pDesc, riid, ppCommandQueue);
@@ -231,17 +256,72 @@ HRESULT STDMETHODCALLTYPE Dx12Device::CreateCommandList1(UINT nodeMask, D3D12_CO
 
 HRESULT STDMETHODCALLTYPE Dx12Device::CreateDescriptorHeap(const D3D12_DESCRIPTOR_HEAP_DESC *pDescriptorHeapDesc, REFIID riid, void **ppvHeap)
 {
-	HRESULT hr = mOrig->CreateDescriptorHeap(pDescriptorHeapDesc, riid, ppvHeap);
+	D3D12_DESCRIPTOR_HEAP_DESC desc;
+	UINT reserve = 0;
+	HRESULT hr = E_FAIL;
+
+	// See Dx12DescriptorHeap::mReserve. The game may have asked for all
+	// the descriptors the hardware allows in one heap, and then it has to
+	// do without.
+	if (pDescriptorHeapDesc && ppvHeap
+	    && pDescriptorHeapDesc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
+	    && (pDescriptorHeapDesc->Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE)) {
+		desc = *pDescriptorHeapDesc;
+		desc.NumDescriptors += DX12_HEAP_RESERVE;
+		hr = mOrig->CreateDescriptorHeap(&desc, riid, ppvHeap);
+		if (SUCCEEDED(hr))
+			reserve = DX12_HEAP_RESERVE;
+		else
+			Dx12LogInfo("*** No room for %u more descriptors in a heap of %u, mods cannot replace textures bound through it\n",
+				DX12_HEAP_RESERVE, pDescriptorHeapDesc->NumDescriptors);
+	}
+	if (!reserve)
+		hr = mOrig->CreateDescriptorHeap(pDescriptorHeapDesc, riid, ppvHeap);
 
 	if (SUCCEEDED(hr) && ppvHeap && *ppvHeap) {
 		void *orig = *ppvHeap;
-		Dx12DescriptorHeap *proxy = wrap_child<Dx12DescriptorHeap, ID3D12DescriptorHeap>(this, riid, ppvHeap);
+		Dx12DescriptorHeap *proxy = wrap_heap(this, riid, ppvHeap, reserve);
 		Dx12LogDebug("Dx12DescriptorHeap %p created to wrap ID3D12DescriptorHeap %p (type %d, %u descriptors, flags 0x%x)\n",
 			proxy, orig, pDescriptorHeapDesc->Type, pDescriptorHeapDesc->NumDescriptors, pDescriptorHeapDesc->Flags);
 	}
 
 	return hr;
 }
+
+#ifdef _WIN64
+// CopyDescriptors for the destination ranges that have a mirror, when not all
+// of them do. Sources are the original device's handles.
+static void mirror_descriptors(ID3D12Device *device, UINT dest_range_count, const D3D12_CPU_DESCRIPTOR_HANDLE *dest_ranges,
+		const UINT *dest_sizes, UINT src_range_count, const D3D12_CPU_DESCRIPTOR_HANDLE *src_ranges, const UINT *src_sizes,
+		D3D12_DESCRIPTOR_HEAP_TYPE type)
+{
+	UINT increment = device->GetDescriptorHandleIncrementSize(type);
+	UINT dest_range, src_range = 0, src_offset = 0, i, size;
+	D3D12_CPU_DESCRIPTOR_HANDLE mirror, src;
+	bool has_mirror;
+
+	for (dest_range = 0; dest_range < dest_range_count; dest_range++) {
+		has_mirror = Dx12MirrorCpuHandle(dest_ranges[dest_range], &mirror);
+		size = dest_sizes ? dest_sizes[dest_range] : 1;
+
+		for (i = 0; i < size; i++) {
+			while (src_range < src_range_count && src_offset >= (src_sizes ? src_sizes[src_range] : 1)) {
+				src_range++;
+				src_offset = 0;
+			}
+			if (src_range >= src_range_count)
+				return;
+
+			if (has_mirror) {
+				src.ptr = src_ranges[src_range].ptr + (SIZE_T)src_offset * increment;
+				device->CopyDescriptorsSimple(1, mirror, src, type);
+				mirror.ptr += increment;
+			}
+			src_offset++;
+		}
+	}
+}
+#endif
 
 void STDMETHODCALLTYPE Dx12Device::CopyDescriptors(UINT NumDestDescriptorRanges, const D3D12_CPU_DESCRIPTOR_HANDLE *pDestDescriptorRangeStarts, const UINT *pDestDescriptorRangeSizes, UINT NumSrcDescriptorRanges, const D3D12_CPU_DESCRIPTOR_HANDLE *pSrcDescriptorRangeStarts, const UINT *pSrcDescriptorRangeSizes, D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapsType)
 {
@@ -250,7 +330,7 @@ void STDMETHODCALLTYPE Dx12Device::CopyDescriptors(UINT NumDestDescriptorRanges,
 	// the usual sizes are translated on the stack.
 	D3D12_CPU_DESCRIPTOR_HANDLE stack[128], *handles = stack;
 	std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> large;
-	UINT i;
+	UINT i, mirrored = 0;
 
 	if (!pDestDescriptorRangeStarts || !pSrcDescriptorRangeStarts) {
 		mOrig->CopyDescriptors(NumDestDescriptorRanges, pDestDescriptorRangeStarts, pDestDescriptorRangeSizes,
@@ -273,6 +353,18 @@ void STDMETHODCALLTYPE Dx12Device::CopyDescriptors(UINT NumDestDescriptorRanges,
 
 	mOrig->CopyDescriptors(NumDestDescriptorRanges, handles, pDestDescriptorRangeSizes,
 		NumSrcDescriptorRanges, handles + NumDestDescriptorRanges, pSrcDescriptorRangeSizes, DescriptorHeapsType);
+
+	// Once more for the destinations that have a mirror, which usually is
+	// all of them or none
+	for (i = 0; i < NumDestDescriptorRanges; i++)
+		mirrored += Dx12MirrorCpuHandle(pDestDescriptorRangeStarts[i], &handles[i]);
+	if (mirrored == NumDestDescriptorRanges) {
+		mOrig->CopyDescriptors(NumDestDescriptorRanges, handles, pDestDescriptorRangeSizes,
+			NumSrcDescriptorRanges, handles + NumDestDescriptorRanges, pSrcDescriptorRangeSizes, DescriptorHeapsType);
+	} else if (mirrored) {
+		mirror_descriptors(mOrig, NumDestDescriptorRanges, pDestDescriptorRangeStarts, pDestDescriptorRangeSizes,
+			NumSrcDescriptorRanges, handles + NumDestDescriptorRanges, pSrcDescriptorRangeSizes, DescriptorHeapsType);
+	}
 #else
 	mOrig->CopyDescriptors(NumDestDescriptorRanges, pDestDescriptorRangeStarts, pDestDescriptorRangeSizes,
 		NumSrcDescriptorRanges, pSrcDescriptorRangeStarts, pSrcDescriptorRangeSizes, DescriptorHeapsType);
@@ -281,26 +373,42 @@ void STDMETHODCALLTYPE Dx12Device::CopyDescriptors(UINT NumDestDescriptorRanges,
 
 void STDMETHODCALLTYPE Dx12Device::CopyDescriptorsSimple(UINT NumDescriptors, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptorRangeStart, D3D12_CPU_DESCRIPTOR_HANDLE SrcDescriptorRangeStart, D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapsType)
 {
+	D3D12_CPU_DESCRIPTOR_HANDLE mirror;
+
 	Dx12ShadowCopyDescriptorsSimple(NumDescriptors, DestDescriptorRangeStart, SrcDescriptorRangeStart);
 	mOrig->CopyDescriptorsSimple(NumDescriptors, Dx12OrigCpuHandle(DestDescriptorRangeStart), Dx12OrigCpuHandle(SrcDescriptorRangeStart), DescriptorHeapsType);
+	if (Dx12MirrorCpuHandle(DestDescriptorRangeStart, &mirror))
+		mOrig->CopyDescriptorsSimple(NumDescriptors, mirror, Dx12OrigCpuHandle(SrcDescriptorRangeStart), DescriptorHeapsType);
 }
 
 void STDMETHODCALLTYPE Dx12Device::CreateConstantBufferView(const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
 {
+	D3D12_CPU_DESCRIPTOR_HANDLE mirror;
+
 	Dx12ShadowConstantBufferView(pDesc, DestDescriptor);
 	mOrig->CreateConstantBufferView(pDesc, Dx12OrigCpuHandle(DestDescriptor));
+	if (Dx12MirrorCpuHandle(DestDescriptor, &mirror))
+		mOrig->CreateConstantBufferView(pDesc, mirror);
 }
 
 void STDMETHODCALLTYPE Dx12Device::CreateShaderResourceView(ID3D12Resource *pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
 {
+	D3D12_CPU_DESCRIPTOR_HANDLE mirror;
+
 	Dx12ShadowShaderResourceView(pResource, pDesc, DestDescriptor);
 	mOrig->CreateShaderResourceView(pResource, pDesc, Dx12OrigCpuHandle(DestDescriptor));
+	if (Dx12MirrorCpuHandle(DestDescriptor, &mirror))
+		mOrig->CreateShaderResourceView(pResource, pDesc, mirror);
 }
 
 void STDMETHODCALLTYPE Dx12Device::CreateUnorderedAccessView(ID3D12Resource *pResource, ID3D12Resource *pCounterResource, const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
 {
+	D3D12_CPU_DESCRIPTOR_HANDLE mirror;
+
 	Dx12ShadowUnorderedAccessView(pResource, pDesc, DestDescriptor);
 	mOrig->CreateUnorderedAccessView(pResource, pCounterResource, pDesc, Dx12OrigCpuHandle(DestDescriptor));
+	if (Dx12MirrorCpuHandle(DestDescriptor, &mirror))
+		mOrig->CreateUnorderedAccessView(pResource, pCounterResource, pDesc, mirror);
 }
 
 void STDMETHODCALLTYPE Dx12Device::CreateRenderTargetView(ID3D12Resource *pResource, const D3D12_RENDER_TARGET_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)

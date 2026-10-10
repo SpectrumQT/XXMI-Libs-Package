@@ -48,6 +48,8 @@
     <ClCompile Include="dx12\Dx12Device.cpp" />
     <ClCompile Include="dx12\Dx12SwapChain.cpp" />
     <ClCompile Include="dx12\Bridge.cpp" />
+    <ClCompile Include="dx12\DrawPath.cpp" />
+    <ClCompile Include="dx12\DxilMetadata.cpp" />
     <ClCompile Include="dx12\PresentPass.cpp" />
     <ClCompile Include="dx12\ShimContext.cpp" />
     <ClCompile Include="dx12\ShimDevice.cpp" />
@@ -106,6 +108,8 @@
     <ClInclude Include="dx12\Dx12Device.h" />
     <ClInclude Include="dx12\Dx12SwapChain.h" />
     <ClInclude Include="dx12\Bridge.h" />
+    <ClInclude Include="dx12\DrawPath.h" />
+    <ClInclude Include="dx12\DxilMetadata.h" />
     <ClInclude Include="dx12\PresentPass.h" />
     <ClInclude Include="dx12\ShimContext.h" />
     <ClInclude Include="dx12\ShimDevice.h" />

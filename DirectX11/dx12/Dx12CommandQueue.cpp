@@ -2,6 +2,7 @@
 
 #include <vector>
 
+#include "Bridge.h"
 #include "Dx12CommandList.h"
 #include "Dx12Device.h"
 #include "ResourceTracker.h"
@@ -90,6 +91,7 @@ void STDMETHODCALLTYPE Dx12CommandQueue::ExecuteCommandLists(UINT NumCommandList
 {
 	ID3D12CommandList *stack[64], **lists = stack;
 	std::vector<ID3D12CommandList*> large;
+	bool pins = false;
 	UINT i;
 
 	if (!ppCommandLists) {
@@ -114,12 +116,20 @@ void STDMETHODCALLTYPE Dx12CommandQueue::ExecuteCommandLists(UINT NumCommandList
 		for (const Dx12Transition &transition : proxy->mTransitions)
 			Dx12ApplyTransition(transition.resource, transition.subresource, transition.state);
 		proxy->mTransitions.clear();
+		pins |= !proxy->mPins.empty();
 	}
 
 	InterlockedIncrement64(&dx12_stats.execute_calls);
 	InterlockedAdd64(&dx12_stats.lists_executed, NumCommandLists);
 
 	mOrig->ExecuteCommandLists(NumCommandLists, lists);
+
+	if (pins) {
+		for (i = 0; i < NumCommandLists; i++) {
+			if (lists[i] != ppCommandLists[i])
+				Dx12ShimPinsExecuted(mOrig, &static_cast<Dx12GraphicsCommandList*>(ppCommandLists[i])->mPins);
+		}
+	}
 }
 
 #include "generated/Dx12CommandQueue.fwd.inl"

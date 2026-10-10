@@ -16,13 +16,12 @@ static const D3D12_SHADER_VISIBILITY stage_visibility[DX12_STAGE_COUNT] = {
 	D3D12_SHADER_VISIBILITY_ALL,
 };
 
-bool Dx12ResolveRegister(const Dx12CmdState *state, Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE_TYPE type,
-		UINT reg, Dx12DescriptorSlot *view)
+bool Dx12LocateRegister(const Dx12CmdState *state, Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE_TYPE type,
+		UINT reg, Dx12RegisterLocation *location)
 {
 	const Dx12RootArguments *arguments = stage == DX12_STAGE_CS ? &state->compute : &state->graphics;
 	const Dx12RootSignatureInfo *signature;
 	D3D12_ROOT_PARAMETER_TYPE descriptor_type;
-	const Dx12DescriptorSlot *slot;
 	size_t i;
 
 	if (!arguments->signature)
@@ -47,13 +46,9 @@ bool Dx12ResolveRegister(const Dx12CmdState *state, Dx12ShaderStage stage, D3D12
 		if (parameter->type == descriptor_type) {
 			if (parameter->space || parameter->reg != reg)
 				continue;
-			if (!(arguments->set & (1ull << i)))
-				return false;
-
-			memset(view, 0, sizeof(*view));
-			view->kind = type == D3D12_DESCRIPTOR_RANGE_TYPE_SRV ? DX12_VIEW_SRV
-				: type == D3D12_DESCRIPTOR_RANGE_TYPE_UAV ? DX12_VIEW_UAV : DX12_VIEW_CBV;
-			view->offset = arguments->values[i];
+			location->parameter = (UINT)i;
+			location->table = false;
+			location->offset = 0;
 			return true;
 		}
 
@@ -63,17 +58,40 @@ bool Dx12ResolveRegister(const Dx12CmdState *state, Dx12ShaderStage stage, D3D12
 		for (const Dx12RootRange &range : parameter->ranges) {
 			if (range.type != type || range.space || reg < range.base || reg - range.base >= range.count)
 				continue;
-			if (!(arguments->set & (1ull << i)))
-				return false;
-
-			slot = Dx12SlotFromGpuHandle(state->view_heap, arguments->values[i], range.offset + (reg - range.base));
-			if (!slot || slot->kind == DX12_VIEW_NONE)
-				return false;
-
-			*view = *slot;
+			location->parameter = (UINT)i;
+			location->table = true;
+			location->offset = range.offset + (reg - range.base);
 			return true;
 		}
 	}
 
 	return false;
+}
+
+bool Dx12ResolveRegister(const Dx12CmdState *state, Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE_TYPE type,
+		UINT reg, Dx12DescriptorSlot *view)
+{
+	const Dx12RootArguments *arguments = stage == DX12_STAGE_CS ? &state->compute : &state->graphics;
+	const Dx12DescriptorSlot *slot;
+	Dx12RegisterLocation location;
+
+	if (!Dx12LocateRegister(state, stage, type, reg, &location))
+		return false;
+	if (!(arguments->set & (1ull << location.parameter)))
+		return false;
+
+	if (!location.table) {
+		memset(view, 0, sizeof(*view));
+		view->kind = type == D3D12_DESCRIPTOR_RANGE_TYPE_SRV ? DX12_VIEW_SRV
+			: type == D3D12_DESCRIPTOR_RANGE_TYPE_UAV ? DX12_VIEW_UAV : DX12_VIEW_CBV;
+		view->offset = arguments->values[location.parameter];
+		return true;
+	}
+
+	slot = Dx12SlotFromGpuHandle(state->view_heap, arguments->values[location.parameter], location.offset);
+	if (!slot || slot->kind == DX12_VIEW_NONE)
+		return false;
+
+	*view = *slot;
+	return true;
 }

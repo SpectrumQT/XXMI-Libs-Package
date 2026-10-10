@@ -17,6 +17,7 @@
 #include "profiling.h"
 #include "Hunting.h"
 #include "cursor.h"
+#include "dx12/PresentPass.h"
 
 #include <D3DCompiler.h>
 
@@ -2424,7 +2425,7 @@ void Draw3DMigotoOverlayCommand::run(CommandListState *state)
 	COMMAND_LIST_LOG(state, "[%S] special = draw_3dmigoto_overlay\n", ini_section.c_str());
 
 	HackerSwapChain *mHackerSwapChain = state->mHackerDevice->GetHackerSwapChain();
-	if (mHackerSwapChain->mOverlay) {
+	if (mHackerSwapChain && mHackerSwapChain->mOverlay) {
 		mHackerSwapChain->mOverlay->DrawOverlay();
 		G->suppress_overlay = true;
 	}
@@ -10142,7 +10143,7 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 					mHackerSwapChain->GetBuffer(0, __uuidof(ID3D11Resource), (void**)&res);
 				else
 					mHackerSwapChain->GetOrigSwapChain1()->GetBuffer(0, __uuidof(ID3D11Resource), (void**)&res);
-			} else
+			} else if (!(res = Dx12ShimBackBuffer()))
 				COMMAND_LIST_LOG(state, "  Unable to get access to swap chain\n");
 		}
 		return res;
@@ -10152,7 +10153,7 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 			HackerSwapChain *mHackerSwapChain = mHackerDevice->GetHackerSwapChain();
 			if (mHackerSwapChain)
 				mHackerSwapChain->GetOrigSwapChain1()->GetBuffer(0, __uuidof(ID3D11Resource), (void**)&res);
-			else
+			else if (!(res = Dx12ShimBackBuffer()))
 				COMMAND_LIST_LOG(state, "  Unable to get access to real swap chain\n");
 		}
 		return res;
@@ -10162,7 +10163,7 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 			HackerSwapChain *mHackerSwapChain = mHackerDevice->GetHackerSwapChain();
 			if (mHackerSwapChain)
 				mHackerSwapChain->GetBuffer(0, __uuidof(ID3D11Resource), (void**)&res);
-			else
+			else if (!(res = Dx12ShimBackBuffer()))
 				COMMAND_LIST_LOG(state, "  Unable to get access to fake swap chain\n");
 		}
 		return res;

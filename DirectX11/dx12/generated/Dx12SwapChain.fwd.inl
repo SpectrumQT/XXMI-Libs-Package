@@ -41,11 +41,6 @@ HRESULT STDMETHODCALLTYPE Dx12SwapChain::GetDesc(DXGI_SWAP_CHAIN_DESC *pDesc)
 	return mOrig->GetDesc(pDesc);
 }
 
-HRESULT STDMETHODCALLTYPE Dx12SwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags)
-{
-	return mOrig->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
-}
-
 HRESULT STDMETHODCALLTYPE Dx12SwapChain::ResizeTarget(const DXGI_MODE_DESC *pNewTargetParameters)
 {
 	return mOrig->ResizeTarget(pNewTargetParameters);

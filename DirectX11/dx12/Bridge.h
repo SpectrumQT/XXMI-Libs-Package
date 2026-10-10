@@ -1,0 +1,102 @@
+#pragma once
+
+#include <d3d11_1.h>
+
+#include "Dx12Common.h"
+
+// The 3DMigoto engine (command lists, resource loading, overrides) only knows
+// D3D11. On D3D12 it is given a D3D11 device and context of our own making,
+// the shim, which turn what it asks for into D3D12 objects and commands:
+//
+//   ShimDevice, ShimObjects   D3D11 objects backed by D3D12 ones
+//   ShimContext               the bindings the engine has set, and the calls
+//                             that act on them
+//   ShimPipeline              what a draw needs made out of those bindings:
+//                             root signature, pipeline state, descriptors
+//   Bridge (this)             where the resulting commands go, and the
+//                             lifetime of everything they refer to
+//
+// The commands are recorded to a command list of our own that is executed on
+// the game's queue when the frame is presented (PresentPass). Anything those
+// commands use must outlive their execution, which is tracked with one fence:
+// every submission signals the next value, and whatever was retired while
+// recording for a submission is only freed once its value has been reached.
+//
+// All of this is used from one thread at a time: the one presenting, where
+// the engine does its work for now.
+
+class Dx12CommandQueue;
+class Dx12Device;
+class HackerContext;
+class HackerDevice;
+class ShimContext;
+class ShimDevice;
+struct ShimResource;
+
+struct Dx12Shim {
+	ID3D12Device *device;
+	// The game's queue our commands are executed on
+	ID3D12CommandQueue *queue;
+
+	ShimDevice *shim_device;
+	ShimContext *shim_context;
+	HackerDevice *hacker_device;
+	HackerContext *hacker_context;
+};
+
+// NULL until Dx12ShimCreate succeeded
+extern Dx12Shim *dx12_shim;
+
+bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue);
+// For when the swap chain being presented is on another queue than before
+void Dx12ShimSetQueue(Dx12CommandQueue *queue);
+
+void Dx12ShimNotImplemented(const char *method, bool *reported);
+
+// Moves what the debug layer has said since the last call to our log. Does
+// nothing unless the device was created with dx12_debug_layer.
+void Dx12LogDebugMessages();
+
+// The command list to record to. Stays valid until the next submission.
+ID3D12GraphicsCommandList* Dx12ShimList();
+// Has the queue execute what was recorded, if anything
+void Dx12ShimSubmit();
+// The same, and does not return before the GPU is done with it
+void Dx12ShimSubmitAndWait();
+
+// The fence value that will be signalled once the commands being recorded now
+// have been executed
+UINT64 Dx12ShimPendingFence();
+bool Dx12ShimFenceReached(UINT64 value);
+// Counts submissions. Memory from Dx12ShimUpload and descriptors from
+// Dx12ShimAllocViews are gone when it changes.
+extern UINT dx12_shim_epoch;
+
+// Releases the object once nothing recorded so far can still be using it
+void Dx12ShimDeferRelease(IUnknown *object);
+
+// Memory the GPU can read, valid for the commands of this submission. *buffer
+// and *offset say where it is for a copy, *va for a view.
+BYTE* Dx12ShimUpload(UINT64 size, UINT64 alignment, ID3D12Resource **buffer, UINT64 *offset, UINT64 *va);
+
+// Descriptors a shader can be given, valid for the commands of this
+// submission. Both make their heap one of the two current ones, which the
+// next Dx12ShimBindHeaps sets on the list.
+D3D12_CPU_DESCRIPTOR_HANDLE Dx12ShimAllocViews(UINT count, D3D12_GPU_DESCRIPTOR_HANDLE *gpu);
+// Makes sure the next count calls of Dx12ShimSamplerTable end up in one heap
+void Dx12ShimReserveSamplers(UINT count);
+// A table of count samplers, reused if the same table was asked for before
+D3D12_GPU_DESCRIPTOR_HANDLE Dx12ShimSamplerTable(const D3D12_CPU_DESCRIPTOR_HANDLE *samplers, UINT count);
+void Dx12ShimBindHeaps();
+extern UINT dx12_shim_view_increment;
+
+// Descriptors that stay where they are for as long as the view or sampler
+// they belong to lives. Not visible to shaders: Dx12ShimAllocViews gets a copy.
+D3D12_CPU_DESCRIPTOR_HANDLE Dx12ShimAllocDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE type);
+void Dx12ShimFreeDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE type, D3D12_CPU_DESCRIPTOR_HANDLE handle);
+
+// Records the barrier that takes a resource of ours to the state, if it is
+// not there already. Read states accumulate, as a resource may be read in
+// several ways by one draw.
+void Dx12ShimTransition(ShimResource *resource, D3D12_RESOURCE_STATES state);
+void Dx12ShimForgetResource(ShimResource *resource);

@@ -1,0 +1,649 @@
+#include "Bridge.h"
+
+#include <deque>
+#include <map>
+#include <vector>
+
+#include "Dx12CommandQueue.h"
+#include "Dx12Device.h"
+#include "ShimContext.h"
+#include "ShimDevice.h"
+#include "ShimPipeline.h"
+
+#include "util.h"
+
+#include "../globals.h"
+#include "../HackerContext.h"
+#include "../HackerDevice.h"
+
+Dx12Shim *dx12_shim;
+UINT dx12_shim_epoch = 1;
+UINT dx12_shim_view_increment;
+
+static Dx12Shim shim;
+
+struct Allocator {
+	ID3D12CommandAllocator *allocator;
+	// Of the last submission recorded with it
+	UINT64 fence;
+};
+
+static std::vector<Allocator> allocators;
+static size_t current_allocator;
+static ID3D12GraphicsCommandList *shim_list;
+static bool list_open;
+static bool list_used;
+
+static ID3D12Fence *fence;
+static UINT64 fence_signalled;
+static HANDLE fence_event;
+
+struct Retired {
+	IUnknown *object;
+	UINT64 fence;
+};
+static std::deque<Retired> retired;
+
+static std::vector<ShimResource*> touched_buffers;
+
+void Dx12ShimNotImplemented(const char *method, bool *reported)
+{
+	if (*reported)
+		return;
+	*reported = true;
+	Dx12LogInfo("*** %s is not implemented on D3D12\n", method);
+}
+
+void Dx12LogDebugMessages()
+{
+	static const char *const severities[] = { "corruption", "error", "warning", "info", "message" };
+	static unsigned logged;
+	ID3D12InfoQueue *queue;
+	D3D12_MESSAGE *message;
+	std::vector<BYTE> storage;
+	UINT64 count, i;
+	SIZE_T length;
+
+	if (!G->dx12_debug_layer || FAILED(shim.device->QueryInterface(IID_PPV_ARGS(&queue))))
+		return;
+
+	count = queue->GetNumStoredMessages();
+	for (i = 0; i < count; i++) {
+		length = 0;
+		queue->GetMessage(i, NULL, &length);
+		storage.resize(length);
+		message = (D3D12_MESSAGE*)storage.data();
+		if (FAILED(queue->GetMessage(i, message, &length)))
+			continue;
+		// A mistake repeated every frame would fill the disk
+		if (logged++ < 1000)
+			Dx12LogInfo("debug layer %s %d: %s\n", severities[min(message->Severity, 4)], message->ID, message->pDescription);
+	}
+	queue->ClearStoredMessages();
+	queue->Release();
+}
+
+// -----------------------------------------------------------------------------
+// Upload memory
+
+const UINT64 UPLOAD_PAGE_SIZE = 4 << 20;
+const size_t UPLOAD_PAGES_KEPT = 8;
+
+struct UploadPage {
+	ID3D12Resource *buffer;
+	BYTE *cpu;
+	UINT64 va;
+	UINT64 used;
+	UINT64 fence;
+};
+static std::vector<UploadPage> upload_active;
+static std::vector<UploadPage> upload_idle;
+
+static bool create_upload_buffer(UINT64 size, UploadPage *page)
+{
+	D3D12_HEAP_PROPERTIES heap = {};
+	D3D12_RESOURCE_DESC desc = {};
+	D3D12_RANGE no_read = {};
+
+	heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = size;
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+	*page = {};
+	if (FAILED(shim.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+			D3D12_RESOURCE_STATE_GENERIC_READ, NULL, IID_PPV_ARGS(&page->buffer)))) {
+		Dx12LogInfo("*** Failed to create a %llu byte upload buffer\n", size);
+		return false;
+	}
+	if (FAILED(page->buffer->Map(0, &no_read, (void**)&page->cpu))) {
+		page->buffer->Release();
+		return false;
+	}
+	page->va = page->buffer->GetGPUVirtualAddress();
+	return true;
+}
+
+BYTE* Dx12ShimUpload(UINT64 size, UINT64 alignment, ID3D12Resource **buffer, UINT64 *offset, UINT64 *va)
+{
+	UINT64 completed, start;
+	UploadPage page;
+	size_t i;
+
+	if (size > UPLOAD_PAGE_SIZE / 4) {
+		if (!create_upload_buffer(size, &page))
+			return NULL;
+		Dx12ShimDeferRelease(page.buffer);
+		page.buffer->Release();
+		if (buffer)
+			*buffer = page.buffer;
+		if (offset)
+			*offset = 0;
+		if (va)
+			*va = page.va;
+		return page.cpu;
+	}
+
+	start = UPLOAD_PAGE_SIZE;
+	if (!upload_active.empty())
+		start = (upload_active.back().used + alignment - 1) / alignment * alignment;
+
+	if (start + size > UPLOAD_PAGE_SIZE) {
+		completed = fence->GetCompletedValue();
+		for (i = 0; i < upload_idle.size(); i++) {
+			if (upload_idle[i].fence <= completed)
+				break;
+		}
+		if (i < upload_idle.size()) {
+			page = upload_idle[i];
+			upload_idle.erase(upload_idle.begin() + i);
+		} else if (!create_upload_buffer(UPLOAD_PAGE_SIZE, &page)) {
+			return NULL;
+		}
+		page.used = 0;
+		upload_active.push_back(page);
+		start = 0;
+	}
+
+	UploadPage &active = upload_active.back();
+	active.used = start + size;
+	if (buffer)
+		*buffer = active.buffer;
+	if (offset)
+		*offset = start;
+	if (va)
+		*va = active.va + start;
+	return active.cpu + start;
+}
+
+static void retire_upload_pages()
+{
+	UINT64 completed = fence->GetCompletedValue();
+	size_t i;
+
+	for (UploadPage &page : upload_active) {
+		page.fence = fence_signalled;
+		upload_idle.push_back(page);
+	}
+	upload_active.clear();
+
+	for (i = upload_idle.size(); i-- > 0 && upload_idle.size() > UPLOAD_PAGES_KEPT;) {
+		if (upload_idle[i].fence > completed)
+			continue;
+		upload_idle[i].buffer->Release();
+		upload_idle.erase(upload_idle.begin() + i);
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Descriptors shaders can use
+
+const UINT VIEW_PAGE_SIZE = 4096;
+const UINT SAMPLER_PAGE_SIZE = D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE;
+
+struct DescriptorPage {
+	ID3D12DescriptorHeap *heap;
+	D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+	D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+	UINT used;
+	UINT64 fence;
+};
+
+struct DescriptorPages {
+	D3D12_DESCRIPTOR_HEAP_TYPE type;
+	UINT size;
+	UINT increment;
+	// heap is NULL until the first allocation
+	DescriptorPage current;
+	std::vector<DescriptorPage> idle;
+};
+static DescriptorPages view_pages = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, VIEW_PAGE_SIZE };
+static DescriptorPages sampler_pages = { D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, SAMPLER_PAGE_SIZE };
+
+static std::map<std::vector<SIZE_T>, UINT> sampler_tables;
+static ID3D12DescriptorHeap *bound_view_heap;
+static ID3D12DescriptorHeap *bound_sampler_heap;
+
+static bool next_descriptor_page(DescriptorPages *pages)
+{
+	UINT64 completed = fence->GetCompletedValue();
+	D3D12_DESCRIPTOR_HEAP_DESC desc = {};
+	DescriptorPage page = {};
+	size_t i;
+
+	if (pages->current.heap) {
+		pages->current.fence = Dx12ShimPendingFence();
+		pages->idle.push_back(pages->current);
+		pages->current = {};
+	}
+
+	for (i = 0; i < pages->idle.size(); i++) {
+		if (pages->idle[i].fence <= completed) {
+			pages->current = pages->idle[i];
+			pages->current.used = 0;
+			pages->idle.erase(pages->idle.begin() + i);
+			return true;
+		}
+	}
+
+	desc.Type = pages->type;
+	desc.NumDescriptors = pages->size;
+	desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+	if (FAILED(shim.device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&page.heap)))) {
+		Dx12LogInfo("*** Failed to create a shader visible descriptor heap of type %d\n", pages->type);
+		return false;
+	}
+	page.cpu = page.heap->GetCPUDescriptorHandleForHeapStart();
+	page.gpu = page.heap->GetGPUDescriptorHandleForHeapStart();
+	pages->current = page;
+	return true;
+}
+
+static bool reserve_descriptors(DescriptorPages *pages, UINT count)
+{
+	if (pages->current.heap && pages->current.used + count <= pages->size)
+		return true;
+	return count <= pages->size && next_descriptor_page(pages);
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE Dx12ShimAllocViews(UINT count, D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
+{
+	D3D12_CPU_DESCRIPTOR_HANDLE cpu = {};
+
+	*gpu = {};
+	if (!reserve_descriptors(&view_pages, count))
+		return cpu;
+
+	cpu.ptr = view_pages.current.cpu.ptr + (SIZE_T)view_pages.current.used * view_pages.increment;
+	gpu->ptr = view_pages.current.gpu.ptr + (UINT64)view_pages.current.used * view_pages.increment;
+	view_pages.current.used += count;
+	return cpu;
+}
+
+void Dx12ShimReserveSamplers(UINT count)
+{
+	ID3D12DescriptorHeap *heap = sampler_pages.current.heap;
+
+	reserve_descriptors(&sampler_pages, count);
+	if (sampler_pages.current.heap != heap)
+		sampler_tables.clear();
+}
+
+D3D12_GPU_DESCRIPTOR_HANDLE Dx12ShimSamplerTable(const D3D12_CPU_DESCRIPTOR_HANDLE *samplers, UINT count)
+{
+	DescriptorPage *page = &sampler_pages.current;
+	D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+	D3D12_GPU_DESCRIPTOR_HANDLE gpu = {};
+	std::vector<SIZE_T> key(count);
+	UINT i, start;
+
+	if (!page->heap || page->used + count > sampler_pages.size)
+		return gpu;
+
+	for (i = 0; i < count; i++)
+		key[i] = samplers[i].ptr;
+
+	auto found = sampler_tables.find(key);
+	if (found != sampler_tables.end()) {
+		start = found->second;
+	} else {
+		start = page->used;
+		page->used += count;
+		cpu.ptr = page->cpu.ptr + (SIZE_T)start * sampler_pages.increment;
+		shim.device->CopyDescriptors(1, &cpu, &count, count, samplers, NULL, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+		sampler_tables[key] = start;
+	}
+
+	gpu.ptr = page->gpu.ptr + (UINT64)start * sampler_pages.increment;
+	return gpu;
+}
+
+void Dx12ShimBindHeaps()
+{
+	ID3D12DescriptorHeap *heaps[2];
+	UINT count = 0;
+
+	if (view_pages.current.heap == bound_view_heap && sampler_pages.current.heap == bound_sampler_heap)
+		return;
+
+	bound_view_heap = view_pages.current.heap;
+	bound_sampler_heap = sampler_pages.current.heap;
+	if (bound_view_heap)
+		heaps[count++] = bound_view_heap;
+	if (bound_sampler_heap)
+		heaps[count++] = bound_sampler_heap;
+	if (count)
+		Dx12ShimList()->SetDescriptorHeaps(count, heaps);
+}
+
+// -----------------------------------------------------------------------------
+// Descriptors of views and samplers
+
+struct DescriptorPool {
+	UINT chunk;
+	UINT increment;
+	std::vector<ID3D12DescriptorHeap*> heaps;
+	std::vector<SIZE_T> free;
+};
+static DescriptorPool pools[D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES] = { { 4096 }, { 256 }, { 256 }, { 64 } };
+
+D3D12_CPU_DESCRIPTOR_HANDLE Dx12ShimAllocDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE type)
+{
+	DescriptorPool *pool = &pools[type];
+	D3D12_DESCRIPTOR_HEAP_DESC desc = {};
+	D3D12_CPU_DESCRIPTOR_HANDLE handle = {};
+	ID3D12DescriptorHeap *heap;
+	SIZE_T start;
+	UINT i;
+
+	if (pool->free.empty()) {
+		desc.Type = type;
+		desc.NumDescriptors = pool->chunk;
+		if (FAILED(shim.device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&heap)))) {
+			Dx12LogInfo("*** Failed to create a descriptor heap of type %d\n", type);
+			return handle;
+		}
+		pool->heaps.push_back(heap);
+		start = heap->GetCPUDescriptorHandleForHeapStart().ptr;
+		for (i = pool->chunk; i-- > 0;)
+			pool->free.push_back(start + (SIZE_T)i * pool->increment);
+	}
+
+	handle.ptr = pool->free.back();
+	pool->free.pop_back();
+	return handle;
+}
+
+void Dx12ShimFreeDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE type, D3D12_CPU_DESCRIPTOR_HANDLE handle)
+{
+	if (!handle.ptr)
+		return;
+
+	pools[type].free.push_back(handle.ptr);
+	// The next sampler to get this descriptor must not be taken for the
+	// one that had it
+	if (type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)
+		sampler_tables.clear();
+}
+
+// -----------------------------------------------------------------------------
+// Resource states
+
+const D3D12_RESOURCE_STATES READ_STATES = D3D12_RESOURCE_STATE_GENERIC_READ
+	| D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
+
+static bool read_only(D3D12_RESOURCE_STATES state)
+{
+	return state && !(state & ~READ_STATES);
+}
+
+void Dx12ShimTransition(ShimResource *resource, D3D12_RESOURCE_STATES state)
+{
+	D3D12_RESOURCE_BARRIER barrier = {};
+
+	if (!resource->resource)
+		return;
+
+	if (resource->dimension == D3D11_RESOURCE_DIMENSION_BUFFER && resource->touched_epoch != dx12_shim_epoch) {
+		resource->touched_epoch = dx12_shim_epoch;
+		touched_buffers.push_back(resource);
+	}
+
+	if (resource->state == state) {
+		if (state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+			barrier.UAV.pResource = resource->resource;
+			Dx12ShimList()->ResourceBarrier(1, &barrier);
+		}
+		return;
+	}
+
+	if (read_only(resource->state) && read_only(state)) {
+		if ((resource->state & state) == state)
+			return;
+		state |= resource->state;
+	}
+
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barrier.Transition.pResource = resource->resource;
+	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	barrier.Transition.StateBefore = resource->state;
+	barrier.Transition.StateAfter = state;
+	Dx12ShimList()->ResourceBarrier(1, &barrier);
+	resource->state = state;
+}
+
+void Dx12ShimForgetResource(ShimResource *resource)
+{
+	size_t i;
+
+	for (i = 0; i < touched_buffers.size(); i++) {
+		if (touched_buffers[i] == resource) {
+			touched_buffers.erase(touched_buffers.begin() + i);
+			return;
+		}
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Command list and fence
+
+void Dx12ShimDeferRelease(IUnknown *object)
+{
+	object->AddRef();
+	retired.push_back({ object, Dx12ShimPendingFence() });
+}
+
+static void release_retired()
+{
+	UINT64 completed = fence->GetCompletedValue();
+
+	while (!retired.empty() && retired.front().fence <= completed) {
+		retired.front().object->Release();
+		retired.pop_front();
+	}
+}
+
+UINT64 Dx12ShimPendingFence()
+{
+	return fence_signalled + 1;
+}
+
+bool Dx12ShimFenceReached(UINT64 value)
+{
+	return fence->GetCompletedValue() >= value;
+}
+
+ID3D12GraphicsCommandList* Dx12ShimList()
+{
+	UINT64 completed;
+	Allocator allocator;
+	size_t i;
+
+	list_used = true;
+	if (list_open)
+		return shim_list;
+
+	completed = fence->GetCompletedValue();
+	for (i = 0; i < allocators.size(); i++) {
+		if (allocators[i].fence <= completed)
+			break;
+	}
+	if (i == allocators.size()) {
+		allocator.fence = 0;
+		// Recording to the allocator of an executing list is not an
+		// option, so there is nothing to fall back to
+		if (FAILED(shim.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator.allocator)))) {
+			Dx12LogInfo("*** Failed to create a command allocator\n");
+			DoubleBeepExit();
+		}
+		allocators.push_back(allocator);
+	}
+
+	current_allocator = i;
+	allocators[i].allocator->Reset();
+	shim_list->Reset(allocators[i].allocator, NULL);
+	list_open = true;
+	bound_view_heap = NULL;
+	bound_sampler_heap = NULL;
+	return shim_list;
+}
+
+void Dx12ShimSubmit()
+{
+	ID3D12CommandList *lists[1];
+
+	if (!list_used) {
+		// Nothing recorded since the last submission can be using
+		// what was retired since
+		if (!retired.empty() && fence->GetCompletedValue() >= fence_signalled) {
+			for (Retired &entry : retired)
+				entry.object->Release();
+			retired.clear();
+		}
+		return;
+	}
+
+	for (ShimResource *resource : touched_buffers) {
+		// The list is in use, so this cannot add to touched_buffers
+		Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COMMON);
+	}
+	touched_buffers.clear();
+
+	shim_list->Close();
+	lists[0] = shim_list;
+	shim.queue->ExecuteCommandLists(1, lists);
+	shim.queue->Signal(fence, ++fence_signalled);
+
+	allocators[current_allocator].fence = fence_signalled;
+	list_open = false;
+	list_used = false;
+	dx12_shim_epoch++;
+
+	retire_upload_pages();
+	release_retired();
+}
+
+void Dx12ShimSubmitAndWait()
+{
+	Dx12ShimSubmit();
+
+	if (fence->GetCompletedValue() >= fence_signalled)
+		return;
+
+	if (FAILED(fence->SetEventOnCompletion(fence_signalled, fence_event))
+	    || WaitForSingleObject(fence_event, 10000) != WAIT_OBJECT_0)
+		Dx12LogInfo("*** Gave up waiting for the GPU to reach fence value %llu\n", fence_signalled);
+
+	release_retired();
+}
+
+void Dx12ShimSetQueue(Dx12CommandQueue *queue)
+{
+	if (shim.queue == queue->mOrig)
+		return;
+
+	// The fence must have been signalled by the old queue before the new
+	// one may signal a higher value
+	Dx12ShimSubmitAndWait();
+
+	Dx12LogInfo("Shim commands now go to ID3D12CommandQueue %p\n", queue->mOrig);
+	shim.queue->Release();
+	shim.queue = queue->mOrig;
+	shim.queue->AddRef();
+}
+
+bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue)
+{
+	static bool failed;
+	Allocator allocator = {};
+	UINT type;
+
+	if (dx12_shim)
+		return true;
+	if (failed)
+		return false;
+	failed = true;
+
+	// Our objects are created on the original device: they are not the
+	// game's, so nothing about them belongs in what the proxies record.
+	shim.device = device->mOrig;
+	shim.queue = queue->mOrig;
+
+	if (shim.queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
+		Dx12LogInfo("*** The swap chain's queue is not a direct queue, mods will not be applied\n");
+		return false;
+	}
+
+	if (FAILED(shim.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))
+	    || FAILED(shim.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator.allocator)))
+	    || FAILED(shim.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.allocator, NULL, IID_PPV_ARGS(&shim_list)))) {
+		Dx12LogInfo("*** Failed to create the command list for mods, they will not be applied\n");
+		return false;
+	}
+	fence_event = CreateEvent(NULL, FALSE, FALSE, NULL);
+	allocators.push_back(allocator);
+	list_open = true;
+
+	shim.device->AddRef();
+	shim.queue->AddRef();
+
+	for (type = 0; type < D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES; type++)
+		pools[type].increment = shim.device->GetDescriptorHandleIncrementSize((D3D12_DESCRIPTOR_HEAP_TYPE)type);
+	view_pages.increment = pools[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV].increment;
+	sampler_pages.increment = pools[D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER].increment;
+	dx12_shim_view_increment = view_pages.increment;
+
+	// Everything from here on finds the device through this
+	dx12_shim = &shim;
+	if (!Dx12ShimPipelineInit()) {
+		dx12_shim = NULL;
+		return false;
+	}
+
+	shim.shim_device = new ShimDevice();
+	shim.shim_context = new ShimContext();
+
+	shim.hacker_device = new HackerDevice(shim.shim_device, shim.shim_context);
+	// Not HackerContextFactory: frame analysis reads back what the game
+	// renders in ways the shim has no answer to yet
+	shim.hacker_context = new HackerContext(shim.shim_device, shim.shim_context);
+	shim.hacker_device->SetHackerContext(shim.hacker_context);
+	// The constructor leaves it uninitialised, and the engine takes
+	// anything but NULL for a D3D11 swap chain
+	shim.hacker_device->SetHackerSwapChain(NULL);
+	shim.hacker_context->SetHackerDevice(shim.hacker_device);
+
+	shim.hacker_device->Create3DMigotoResources();
+	shim.hacker_context->Bind3DMigotoResources();
+	if (!G->constants_run)
+		shim.hacker_context->InitIniParams();
+
+	Dx12LogInfo("HackerDevice %p and HackerContext %p created on the D3D11 shim of ID3D12Device %p, commands go to ID3D12CommandQueue %p\n",
+		shim.hacker_device, shim.hacker_context, shim.device, shim.queue);
+	return true;
+}

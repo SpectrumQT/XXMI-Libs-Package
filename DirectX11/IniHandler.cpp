@@ -4755,6 +4755,7 @@ void LoadConfigFile()
 	G->texture_hash_version = GetIniInt(L"Rendering", L"texture_hash", 0, NULL);
 	G->dx12 = GetIniEnumClass(L"Rendering", L"dx12", Dx12Mode::AUTO, NULL, Dx12ModeNames);
 	G->dx12_dump_hashes = GetIniBool(L"Hunting", L"dx12_dump_hashes", false, NULL);
+	G->dx12_debug_layer = GetIniBool(L"Rendering", L"dx12_debug_layer", false, NULL);
 
 	if (GetIniStringAndLog(L"Rendering", L"override_directory", 0, G->SHADER_PATH, MAX_PATH))
 	{

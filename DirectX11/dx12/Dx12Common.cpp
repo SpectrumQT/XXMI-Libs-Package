@@ -7,6 +7,7 @@
 #include "../globals.h"
 #include "../IniHandler.h"
 
+#include "Bridge.h"
 #include "HashDump.h"
 
 Dx12Stats dx12_stats;
@@ -68,7 +69,9 @@ void Dx12FramePresented()
 	dx12_frame++;
 	Dx12DumpFramePresented();
 
-	if (!G->gConfigInitialized
+	// Without the shim there is no engine to load the mods, but what the
+	// game uses can still be compared with them
+	if (!dx12_shim && !G->gConfigInitialized
 	    && (GetSystemTicks() - G->ticks_at_launch) / 1'000'000.0f > G->gConfigInitializationDelay)
 		LoadSkippedIncludes();
 

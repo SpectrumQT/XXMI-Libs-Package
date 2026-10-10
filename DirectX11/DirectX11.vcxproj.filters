@@ -47,6 +47,12 @@
     <ClCompile Include="dx12\Dx12DescriptorHeap.cpp" />
     <ClCompile Include="dx12\Dx12Device.cpp" />
     <ClCompile Include="dx12\Dx12SwapChain.cpp" />
+    <ClCompile Include="dx12\Bridge.cpp" />
+    <ClCompile Include="dx12\PresentPass.cpp" />
+    <ClCompile Include="dx12\ShimContext.cpp" />
+    <ClCompile Include="dx12\ShimDevice.cpp" />
+    <ClCompile Include="dx12\ShimObjects.cpp" />
+    <ClCompile Include="dx12\ShimPipeline.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="d3d11Wrapper.def" />
@@ -99,6 +105,12 @@
     <ClInclude Include="dx12\Dx12DescriptorHeap.h" />
     <ClInclude Include="dx12\Dx12Device.h" />
     <ClInclude Include="dx12\Dx12SwapChain.h" />
+    <ClInclude Include="dx12\Bridge.h" />
+    <ClInclude Include="dx12\PresentPass.h" />
+    <ClInclude Include="dx12\ShimContext.h" />
+    <ClInclude Include="dx12\ShimDevice.h" />
+    <ClInclude Include="dx12\ShimObjects.h" />
+    <ClInclude Include="dx12\ShimPipeline.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="DirectX11.rc" />

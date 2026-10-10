@@ -23,6 +23,29 @@ static bool dx12_enabled()
 	return G->bIntendedTargetExe && G->dx12 != Dx12Mode::OFF;
 }
 
+// The debug layer has to be enabled before the device is created. What it has
+// to say is collected from the device's info queue, see Dx12LogDebugMessages.
+static void enable_debug_layer()
+{
+	static bool enabled;
+	HRESULT (WINAPI *get_debug_interface)(REFIID, void**);
+	ID3D12Debug *debug = NULL;
+
+	if (enabled || !dx12_enabled() || !G->dx12_debug_layer)
+		return;
+	enabled = true;
+
+	*(FARPROC*)&get_debug_interface = GetProcAddress(GetModuleHandleW(L"d3d12.dll"), "D3D12GetDebugInterface");
+	if (!get_debug_interface || FAILED(get_debug_interface(IID_PPV_ARGS(&debug)))) {
+		Dx12LogInfo("*** dx12_debug_layer: the debug layer is not available, it comes with the Graphics Tools optional feature of Windows\n");
+		return;
+	}
+
+	debug->EnableDebugLayer();
+	debug->Release();
+	Dx12LogInfo("dx12_debug_layer: debug layer enabled\n");
+}
+
 static void log_device_created(const char *func, IUnknown *adapter, D3D_FEATURE_LEVEL feature_level,
 		REFIID riid, void **ppDevice, HRESULT hr)
 {
@@ -182,6 +205,7 @@ static HRESULT STDMETHODCALLTYPE Hooked_DeviceFactory_CreateDevice(ID3D12DeviceF
 		return E_FAIL;
 	}
 
+	enable_debug_layer();
 	hr = orig(This, adapter, FeatureLevel, riid, ppvDevice);
 	device_created("ID3D12DeviceFactory::CreateDevice", adapter, FeatureLevel, riid, ppvDevice, hr);
 
@@ -216,7 +240,10 @@ static HRESULT STDMETHODCALLTYPE Hooked_SDKConfiguration1_CreateDeviceFactory(ID
 static HRESULT WINAPI Hooked_D3D12CreateDevice(IUnknown *pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel,
 		REFIID riid, void **ppDevice)
 {
-	HRESULT hr = fnOrigD3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
+	HRESULT hr;
+
+	enable_debug_layer();
+	hr = fnOrigD3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
 
 	device_created("D3D12CreateDevice", pAdapter, MinimumFeatureLevel, riid, ppDevice, hr);
 

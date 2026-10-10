@@ -4,6 +4,7 @@
 
 #include "Dx12CommandQueue.h"
 #include "Dx12Device.h"
+#include "PresentPass.h"
 
 // {6216F1D1-6BC6-4B1C-8CB5-7D5F8A18C381}
 const GUID Dx12SwapChain::ProxyIID = { 0x6216f1d1, 0x6bc6, 0x4b1c, { 0x8c, 0xb5, 0x7d, 0x5f, 0x8a, 0x18, 0xc3, 0x81 } };
@@ -88,6 +89,7 @@ ULONG STDMETHODCALLTYPE Dx12SwapChain::Release()
 	}
 
 	Dx12LogInfo("Dx12SwapChain %p destroyed\n", this);
+	Dx12SwapChainBuffersReleased(this, true);
 	delete this;
 	orig->Release();
 	queue->Release();
@@ -111,18 +113,36 @@ HRESULT STDMETHODCALLTYPE Dx12SwapChain::GetDevice(REFIID riid, void **ppDevice)
 
 HRESULT STDMETHODCALLTYPE Dx12SwapChain::Present(UINT SyncInterval, UINT Flags)
 {
-	if (!(Flags & DXGI_PRESENT_TEST))
-		Dx12FramePresented();
+	HRESULT hr;
 
-	return mOrig->Present(SyncInterval, Flags);
+	if (Flags & DXGI_PRESENT_TEST)
+		return mOrig->Present(SyncInterval, Flags);
+
+	Dx12PresentBegin(this);
+	Dx12FramePresented();
+	hr = mOrig->Present(SyncInterval, Flags);
+	Dx12PresentEnd(this);
+	return hr;
 }
 
 HRESULT STDMETHODCALLTYPE Dx12SwapChain::Present1(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters)
 {
-	if (!(PresentFlags & DXGI_PRESENT_TEST))
-		Dx12FramePresented();
+	HRESULT hr;
 
-	return mOrig->Present1(SyncInterval, PresentFlags, pPresentParameters);
+	if (PresentFlags & DXGI_PRESENT_TEST)
+		return mOrig->Present1(SyncInterval, PresentFlags, pPresentParameters);
+
+	Dx12PresentBegin(this);
+	Dx12FramePresented();
+	hr = mOrig->Present1(SyncInterval, PresentFlags, pPresentParameters);
+	Dx12PresentEnd(this);
+	return hr;
+}
+
+HRESULT STDMETHODCALLTYPE Dx12SwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags)
+{
+	Dx12SwapChainBuffersReleased(this, false);
+	return mOrig->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
 }
 
 HRESULT STDMETHODCALLTYPE Dx12SwapChain::ResizeBuffers1(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT SwapChainFlags, const UINT *pCreationNodeMask, IUnknown *const *ppPresentQueue)
@@ -131,6 +151,8 @@ HRESULT STDMETHODCALLTYPE Dx12SwapChain::ResizeBuffers1(UINT BufferCount, UINT W
 	std::vector<IUnknown*> queues;
 	HRESULT hr;
 	UINT i;
+
+	Dx12SwapChainBuffersReleased(this, false);
 
 	if (!ppPresentQueue)
 		return mOrig->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask, ppPresentQueue);

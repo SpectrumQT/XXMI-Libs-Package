@@ -1,5 +1,6 @@
 #include "DrawPath.h"
 
+#include <algorithm>
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
@@ -338,6 +339,9 @@ const UINT64 REACH_MAX_BYTES = 64 << 20;
 // at once
 const UINT64 REACH_FRAME_BYTES = 32 << 20;
 const size_t REACH_MAX_PENDING = 32;
+// Per frame as well: what was copied is gone through at present, with the
+// lock held
+const UINT64 REACH_FINISH_BYTES = 8 << 20;
 // An upload recorded this recently may not have been executed yet
 const UINT REACH_UPLOAD_AGE = 3;
 
@@ -453,7 +457,11 @@ static const Dx12BufferHash* vertex_reach(ID3D12Resource *vb, UINT64 vb_offset, 
 		reach_frame = dx12_frame;
 		reach_frame_bytes = 0;
 	}
-	if (pending_reaches.size() >= REACH_MAX_PENDING || reach_frame_bytes > REACH_FRAME_BYTES)
+	if (pending_reaches.size() >= REACH_MAX_PENDING)
+		return NULL;
+	// The first of a frame goes ahead whatever its size, or a mesh larger
+	// than the budget would never be looked at
+	if (reach_frame_bytes && reach_frame_bytes + key.ib_bytes + vb_bytes > REACH_FRAME_BYTES)
 		return NULL;
 	reach_frame_bytes += key.ib_bytes + vb_bytes;
 
@@ -475,7 +483,8 @@ static const Dx12BufferHash* vertex_reach(ID3D12Resource *vb, UINT64 vb_offset, 
 // Where the sections of a mesh end that the mods name: a mod made for the
 // D3D11 game expects the vertex buffer to end with the vertices of its last
 // section, and a D3D12 build of the mesh may have more sections than that.
-static std::unordered_set<UINT> section_ends;
+// In ascending order, each once.
+static std::vector<UINT> section_ends;
 static UINT section_ends_config;
 
 static void collect_section_ends()
@@ -489,9 +498,11 @@ static void collect_section_ends()
 		for (const TextureOverride &texture_override : entry.second) {
 			if (texture_override.match_first_index.op == FuzzyMatchOp::EQUAL
 			    && texture_override.match_index_count.op == FuzzyMatchOp::EQUAL)
-				section_ends.insert(texture_override.match_first_index.val + texture_override.match_index_count.val);
+				section_ends.push_back(texture_override.match_first_index.val + texture_override.match_index_count.val);
 		}
 	}
+	std::sort(section_ends.begin(), section_ends.end());
+	section_ends.erase(std::unique(section_ends.begin(), section_ends.end()), section_ends.end());
 }
 
 static bool reach_matches(const Dx12BufferHash *hash)
@@ -527,11 +538,12 @@ static void finish_reach(const ReachKey *key, VertexReach *reach)
 {
 	D3D12_RANGE range = { 0, (SIZE_T)(key->ib_bytes + reach->vb_bytes) }, nothing = {};
 	UINT64 last = 0, limit = reach->vb_bytes / key->stride;
+	size_t next_end = 0;
 	// Vertices used up to the end of each section, which never go down
 	std::vector<UINT64> ends;
 	Dx12BufferHash hash = {}, matched = {};
 	BYTE *data = NULL;
-	UINT32 index;
+	UINT32 index, count;
 	UINT i;
 
 	reach->state = REACH_FAILED;
@@ -544,7 +556,11 @@ static void finish_reach(const ReachKey *key, VertexReach *reach)
 			// The highest value is a strip restart, not a vertex
 			if (index != (key->index_bytes == 2 ? 0xffffu : 0xffffffffu))
 				last = max(last, (UINT64)index);
-			if (section_ends.count(i / key->index_bytes + 1) && (ends.empty() || ends.back() != last + 1))
+
+			count = i / key->index_bytes + 1;
+			while (next_end < section_ends.size() && section_ends[next_end] < count)
+				next_end++;
+			if (next_end < section_ends.size() && section_ends[next_end] == count && (ends.empty() || ends.back() != last + 1))
 				ends.push_back(last + 1);
 		}
 		if (ends.empty() || ends.back() != last + 1)
@@ -584,17 +600,25 @@ static void finish_reach(const ReachKey *key, VertexReach *reach)
 
 static void update_reaches()
 {
+	UINT64 finished = 0, bytes;
 	size_t i;
 
 	for (i = 0; i < pending_reaches.size();) {
 		auto found = reaches.find(pending_reaches[i]);
 
-		if (found != reaches.end() && !Dx12ShimFenceReached(found->second.fence)) {
-			i++;
-			continue;
-		}
-		if (found != reaches.end())
+		if (found != reaches.end()) {
+			if (!Dx12ShimFenceReached(found->second.fence)) {
+				i++;
+				continue;
+			}
+			// The rest waits for the next frame. Until then their
+			// buffers go by the hash of all of them, as before.
+			bytes = found->first.ib_bytes + found->second.vb_bytes;
+			if (finished && finished + bytes > REACH_FINISH_BYTES)
+				break;
+			finished += bytes;
 			finish_reach(&found->first, &found->second);
+		}
 		pending_reaches.erase(pending_reaches.begin() + i);
 	}
 

@@ -4753,6 +4753,7 @@ void LoadConfigFile()
 
 	G->shader_hash_type = GetIniEnumClass(L"Rendering", L"shader_hash", ShaderHashType::FNV, NULL, ShaderHashNames);
 	G->texture_hash_version = GetIniInt(L"Rendering", L"texture_hash", 0, NULL);
+	G->dx12 = GetIniEnumClass(L"Rendering", L"dx12", Dx12Mode::AUTO, NULL, Dx12ModeNames);
 
 	if (GetIniStringAndLog(L"Rendering", L"override_directory", 0, G->SHADER_PATH, MAX_PATH))
 	{

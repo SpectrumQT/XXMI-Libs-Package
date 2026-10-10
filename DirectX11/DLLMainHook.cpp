@@ -4,6 +4,7 @@
 #include "D3D11Wrapper.h"
 #include "util_min.h"
 #include "globals.h"
+#include "dx12/Dx12Hooks.h"
 
 HINSTANCE migoto_handle;
 
@@ -162,7 +163,7 @@ static HRESULT HookD3D11(HINSTANCE our_dll)
 // ----------------------------------------------------------------------------
 static void RemoveHooks()
 {
-	remove_outer_swap_chain_hooks();
+	remove_vtable_hooks();
 	cHookMgr.UnhookAll();
 }
 
@@ -356,6 +357,10 @@ BOOL WINAPI DllMain(
 				return false;
 			if (FAILED(HookDXGIFactories()))
 				return false;
+
+			// Only possible if d3d12.dll is already in the process.
+			// Hooked_LoadLibraryExW catches it otherwise.
+			Dx12HookExports();
 
 			tls_idx = TlsAlloc();
 			if (tls_idx == TLS_OUT_OF_INDEXES)

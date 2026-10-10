@@ -32,6 +32,13 @@
     <ClCompile Include="Override.cpp" />
     <ClCompile Include="HackerInputLayout.cpp" />
     <ClCompile Include="ByteCodeReader.cpp" />
+    <ClCompile Include="dx12\Dx12Hooks.cpp" />
+    <ClCompile Include="dx12\Dx12CommandList.cpp" />
+    <ClCompile Include="dx12\Dx12CommandQueue.cpp" />
+    <ClCompile Include="dx12\Dx12Common.cpp" />
+    <ClCompile Include="dx12\Dx12DescriptorHeap.cpp" />
+    <ClCompile Include="dx12\Dx12Device.cpp" />
+    <ClCompile Include="dx12\Dx12SwapChain.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="d3d11Wrapper.def" />
@@ -69,6 +76,13 @@
     <ClInclude Include="HackerInputLayout.h" />
     <ClInclude Include="d3d11TokenizedProgramFormat.hpp" />
     <ClInclude Include="ByteCodeReader.h" />
+    <ClInclude Include="dx12\Dx12Common.h" />
+    <ClInclude Include="dx12\Dx12Hooks.h" />
+    <ClInclude Include="dx12\Dx12CommandList.h" />
+    <ClInclude Include="dx12\Dx12CommandQueue.h" />
+    <ClInclude Include="dx12\Dx12DescriptorHeap.h" />
+    <ClInclude Include="dx12\Dx12Device.h" />
+    <ClInclude Include="dx12\Dx12SwapChain.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="DirectX11.rc" />

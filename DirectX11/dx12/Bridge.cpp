@@ -61,7 +61,9 @@ static INIT_ONCE shim_lock_once = INIT_ONCE_STATIC_INIT;
 
 static BOOL CALLBACK init_shim_lock(PINIT_ONCE once, PVOID parameter, PVOID *context)
 {
-	InitializeCriticalSection(&shim_lock);
+	// Held for a draw of the game at a time by the threads recording its
+	// command lists, which is short enough to wait out without sleeping
+	InitializeCriticalSectionAndSpinCount(&shim_lock, 4000);
 	return TRUE;
 }
 
@@ -437,6 +439,9 @@ void Dx12ShimTransition(ShimResource *resource, D3D12_RESOURCE_STATES state)
 
 	if (!resource->resource)
 		return;
+
+	if (resource->write_pending)
+		ShimFlushWrite(resource);
 
 	if (!resource->foreign && resource->touched_epoch != dx12_shim_epoch) {
 		resource->touched_epoch = dx12_shim_epoch;

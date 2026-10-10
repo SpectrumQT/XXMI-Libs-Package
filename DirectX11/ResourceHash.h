@@ -939,5 +939,8 @@ void InvalidateTextureOverrideCandidates();
 // could start matching a TextureOverride (handle info registered at its
 // address, hash changed), see texture_override_miss_cache.
 void ForgetTextureOverrideMiss(ID3D11Resource* resource);
+// Whether no TextureOverride section can match the resource, whatever the draw
+// call it is looked up for:
+bool TextureOverrideCandidatesEmpty(ID3D11Resource *resource);
 
 void ClearRegionHashesGlobalCache();

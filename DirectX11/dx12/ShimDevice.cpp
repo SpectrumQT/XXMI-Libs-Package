@@ -147,6 +147,14 @@ bool ShimWriteSubresource(ShimResource *resource, UINT subresource, const void *
 	return true;
 }
 
+void ShimFlushWrite(ShimResource *resource)
+{
+	// First, as writing goes through Dx12ShimTransition itself
+	resource->write_pending = false;
+	// The rows of a shadow are as far apart as those of the upload
+	ShimWriteSubresource(resource, 0, resource->shadow.data(), 0, 0);
+}
+
 static D3D12_RESOURCE_FLAGS resource_flags(UINT bind_flags)
 {
 	D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE;

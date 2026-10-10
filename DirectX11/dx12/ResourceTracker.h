@@ -53,3 +53,7 @@ void Dx12SetTextureDataHash(ID3D12Resource *resource, bool has_data_hash, uint32
 void Dx12MarkCubeTexture(ID3D12Resource *resource);
 
 bool Dx12FindBuffer(UINT64 va, ID3D12Resource **resource, UINT64 *offset);
+// For remembering what Dx12FindBuffer said about an address: a number that
+// has changed if a buffer was created or destroyed there since, and may have
+// changed without that. Taken before asking.
+UINT64 Dx12FindBufferStamp(UINT64 va);

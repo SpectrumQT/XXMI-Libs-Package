@@ -134,6 +134,11 @@ struct ShimResource {
 	UINT64 game_upload_version;
 	// Whether Unmap has anything to do
 	bool mapped_for_write;
+	// Textures: the shadow has been written since it was last copied to
+	// the resource. Left until something is about to use the resource, as
+	// IniParams is written for many a draw of the game that reads none of
+	// it, and each copy costs a submission. See ShimFlushWrite.
+	bool write_pending;
 
 	// Staging buffers: what was copied into them from the GPU lands in
 	// this readback buffer, and reaches shadow when the engine maps them

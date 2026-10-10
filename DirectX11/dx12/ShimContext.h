@@ -10,7 +10,14 @@ class ShimContext final : public ID3D11DeviceContext1
 public:
 	volatile LONG mRef;
 	ShimPrivateData mPrivate;
-	ShimState mState;
+	// What the frame's own command lists have bound, and what the mods
+	// bind for a draw of the game: the engine starts on each of those with
+	// a context that has nothing of the frame's on it. See DrawPath.
+	ShimState mFrameState, mScopeState;
+	ShimState *mState;
+	// Set by whatever changes a binding, for the draw path to tell whether
+	// a draw left mScopeState as it found it
+	bool mChanged;
 
 	ShimContext();
 

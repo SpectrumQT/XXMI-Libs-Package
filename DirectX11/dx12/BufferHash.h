@@ -24,6 +24,12 @@ struct Dx12BufferHash {
 void Dx12CopyBufferRegion(ID3D12Resource *dst, UINT64 dst_offset, ID3D12Resource *src, UINT64 src_offset, UINT64 bytes);
 
 bool Dx12FindBufferHash(ID3D12Resource *resource, UINT64 offset, Dx12BufferHash *hash);
+// For remembering what Dx12FindBufferHash said about a range: a number that
+// has changed if anything was written to these bytes of the resource, or
+// forgotten about them, since. It may change without that as well. Taken
+// before asking, or what was written in between goes unnoticed. False if the
+// range is too large to be told apart from the rest of its resource.
+bool Dx12BufferHashStamp(ID3D12Resource *resource, UINT64 offset, UINT64 bytes, UINT64 *stamp);
 void Dx12ForgetBufferHashes(ID3D12Resource *resource);
 
 // The hash HackerDevice::CreateBuffer would have calculated for a default

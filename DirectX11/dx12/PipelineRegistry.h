@@ -78,6 +78,10 @@ struct Dx12RootParameter {
 
 struct Dx12RootSignatureInfo {
 	std::vector<Dx12RootParameter> parameters;
+	// For DrawPath: whether a register is one its shaders can be given
+	// something for, with the register it was worked out for. 0 if it
+	// has not been.
+	mutable volatile LONG ini_params = 0;
 };
 
 struct Dx12InputElement {
@@ -89,9 +93,26 @@ struct Dx12InputElement {
 	bool per_instance;
 };
 
+// What DrawPath has worked out about the draws made with a pipeline state,
+// kept with it to be found without a lookup. Written with the lock of the
+// draw path held and read without: generation is 0 while the rest is being
+// written.
+struct Dx12DrawFilter {
+	volatile LONG generation;
+	UINT override_generation;
+	bool only_checks;
+	bool ib;
+	BYTE cb_count;
+	UINT vbs;
+	struct {
+		BYTE stage, slot;
+	} cbs[8];
+};
+
 struct Dx12PipelineInfo {
 	const Dx12ShaderInfo *shaders[DX12_STAGE_COUNT];
 	std::vector<Dx12InputElement> input_layout;
+	mutable Dx12DrawFilter filter = {};
 };
 
 // For the methods creating these objects, on success. ppv is what the game

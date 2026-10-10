@@ -2016,6 +2016,26 @@ void RunCommandList(HackerDevice *mHackerDevice,
 		HackerContext *mHackerContext,
 		CommandList *command_list, DrawCallInfo *call_info,
 		bool post);
+
+// The slots a command list may run checktextureoverride on, see
+// CommandListOnlyChecksTextureOverrides():
+struct CommandListCheckedSlots {
+	UINT vbs;
+	bool ib;
+	unsigned cb_count;
+	struct {
+		wchar_t shader_type;
+		unsigned slot;
+	} cbs[8];
+};
+
+// Whether running the command list can do nothing but look up the
+// TextureOverride sections of fixed vertex, index and constant buffer slots,
+// whatever its conditions evaluate to. If so and none of those slots (added to
+// slots) holds something a TextureOverride section could match, running the
+// list has no effect. The D3D12 draw path uses this to tell the draws of the
+// game it has no need to stop for.
+bool CommandListOnlyChecksTextureOverrides(CommandList *command_list, CommandListCheckedSlots *slots, unsigned depth = 0);
 void RunResourceCommandList(HackerDevice *mHackerDevice,
 		HackerContext *mHackerContext,
 		CommandList *command_list, ID3D11Resource **resource,

@@ -84,6 +84,36 @@ struct BufferRange {
 static SRWLOCK buffer_lock = SRWLOCK_INIT;
 static std::map<UINT64, BufferRange> buffers;
 
+// See Dx12FindBufferStamp. A counter per 64 MiB of address space, shared with
+// whatever else hashes to it, and one for buffers covering too many of those.
+const UINT VA_STAMP_SHIFT = 26;
+const UINT64 VA_STAMP_MAX_SPAN = 64;
+static volatile LONG64 va_stamps[1024];
+static volatile LONG64 va_stamp_all;
+
+static volatile LONG64* va_stamp(UINT64 granule)
+{
+	return &va_stamps[(granule * 0x9e3779b97f4a7c15ull) >> 54];
+}
+
+// With buffer_lock held
+static void stamp_buffer(UINT64 va, UINT64 end)
+{
+	UINT64 first = va >> VA_STAMP_SHIFT, last = (end > va ? end - 1 : va) >> VA_STAMP_SHIFT;
+
+	if (last - first >= VA_STAMP_MAX_SPAN) {
+		InterlockedIncrement64(&va_stamp_all);
+		return;
+	}
+	for (; first <= last; first++)
+		InterlockedIncrement64(va_stamp(first));
+}
+
+UINT64 Dx12FindBufferStamp(UINT64 va)
+{
+	return (UINT64)va_stamp_all + (UINT64)*va_stamp(va >> VA_STAMP_SHIFT);
+}
+
 static ResourceShard* shard_of(ID3D12Resource *resource)
 {
 	return &shards[((UINT64)(uintptr_t)resource * 0x9e3779b97f4a7c15ull) >> 58];
@@ -106,8 +136,10 @@ static void resource_destroyed(void *object)
 	if (va) {
 		AcquireSRWLockExclusive(&buffer_lock);
 		auto range = buffers.find(va);
-		if (range != buffers.end() && range->second.resource == resource)
+		if (range != buffers.end() && range->second.resource == resource) {
+			stamp_buffer(va, range->second.end);
 			buffers.erase(range);
+		}
 		ReleaseSRWLockExclusive(&buffer_lock);
 
 		Dx12ForgetBufferHashes(resource);
@@ -146,7 +178,13 @@ void Dx12TrackResource(REFIID riid, void **ppvResource, LONG initial_state)
 
 	if (info.va) {
 		AcquireSRWLockExclusive(&buffer_lock);
+		// One that was at the address before and is still in the map
+		// may have reached further
+		auto previous = buffers.find(info.va);
+		if (previous != buffers.end())
+			stamp_buffer(info.va, previous->second.end);
 		buffers[info.va] = { info.va + info.desc.Width, resource };
+		stamp_buffer(info.va, info.va + info.desc.Width);
 		ReleaseSRWLockExclusive(&buffer_lock);
 	}
 

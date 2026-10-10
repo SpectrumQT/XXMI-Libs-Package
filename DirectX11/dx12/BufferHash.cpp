@@ -29,6 +29,54 @@ static SRWLOCK lock = SRWLOCK_INIT;
 // Ranges of one resource by their offset. They do not overlap.
 static std::unordered_map<ID3D12Resource*, std::map<UINT64, BufferRange>> ranges;
 
+// See Dx12BufferHashStamp. A counter per 64 KiB of a resource that is counted
+// up by what is written there, shared with whatever else hashes to it, and
+// one per resource for what covers too many of those to count them all up.
+const UINT STAMP_SHIFT = 16;
+const UINT64 STAMP_MAX_SPAN = 16;
+static volatile LONG64 range_stamps[8192];
+static volatile LONG64 resource_stamps[1024];
+
+static volatile LONG64* range_stamp(ID3D12Resource *resource, UINT64 granule)
+{
+	UINT64 hash = ((UINT64)(uintptr_t)resource ^ (granule * 0x9e3779b97f4a7c15ull)) * 0xff51afd7ed558ccdull;
+
+	return &range_stamps[hash >> 51];
+}
+
+static volatile LONG64* resource_stamp(ID3D12Resource *resource)
+{
+	return &resource_stamps[((UINT64)(uintptr_t)resource * 0x9e3779b97f4a7c15ull) >> 54];
+}
+
+// With the lock held, so that whoever finds the stamp unchanged afterwards
+// has seen all of the change or none of it
+static void stamp_write(ID3D12Resource *resource, UINT64 offset, UINT64 bytes)
+{
+	UINT64 first = offset >> STAMP_SHIFT, last = (offset + (bytes ? bytes - 1 : 0)) >> STAMP_SHIFT;
+
+	if (last - first >= STAMP_MAX_SPAN) {
+		InterlockedIncrement64(resource_stamp(resource));
+		return;
+	}
+	for (; first <= last; first++)
+		InterlockedIncrement64(range_stamp(resource, first));
+}
+
+bool Dx12BufferHashStamp(ID3D12Resource *resource, UINT64 offset, UINT64 bytes, UINT64 *stamp)
+{
+	UINT64 first = offset >> STAMP_SHIFT, last = (offset + (bytes ? bytes - 1 : 0)) >> STAMP_SHIFT;
+
+	if (last - first >= STAMP_MAX_SPAN)
+		return false;
+
+	// The counters only go up, so their sum is the same only if each is
+	*stamp = (UINT64)*resource_stamp(resource);
+	for (; first <= last; first++)
+		*stamp += (UINT64)*range_stamp(resource, first);
+	return true;
+}
+
 uint32_t Dx12BufferDescHash(const Dx12BufferHash *hash, UINT bind_flags)
 {
 	D3D11_BUFFER_DESC desc = {};
@@ -75,6 +123,10 @@ static bool note_write(ID3D12Resource *resource, UINT64 offset, UINT64 bytes)
 	range.frame = frame;
 	range.valid = false;
 	hash_it = range.hot < HOT_LIMIT;
+
+	// Whatever was erased overlaps the write, and so shares a counter
+	// with it
+	stamp_write(resource, offset, bytes);
 
 	ReleaseSRWLockExclusive(&lock);
 
@@ -128,6 +180,7 @@ void Dx12CopyBufferRegion(ID3D12Resource *dst, UINT64 dst_offset, ID3D12Resource
 		if (range != resource->second.end() && range->second.bytes == bytes) {
 			range->second.data_hash = hash;
 			range->second.valid = true;
+			stamp_write(dst, dst_offset, bytes);
 		}
 	}
 	ReleaseSRWLockExclusive(&lock);
@@ -163,5 +216,6 @@ void Dx12ForgetBufferHashes(ID3D12Resource *resource)
 {
 	AcquireSRWLockExclusive(&lock);
 	ranges.erase(resource);
+	InterlockedIncrement64(resource_stamp(resource));
 	ReleaseSRWLockExclusive(&lock);
 }

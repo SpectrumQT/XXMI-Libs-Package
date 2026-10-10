@@ -2032,6 +2032,22 @@ void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverri
 	}
 }
 
+bool TextureOverrideCandidatesEmpty(ID3D11Resource *resource)
+{
+	TextureOverrideCandidates *candidates;
+	bool empty;
+
+	if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
+		return true;
+
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+	candidates = get_texture_override_candidates(resource);
+	empty = !candidates || (!candidates->hash_matches && candidates->fuzzy_matches.empty());
+	LeaveCriticalSection(&G->mCriticalSection);
+
+	return empty;
+}
+
 bool TextureOverrideLess(const struct TextureOverride &lhs, const struct TextureOverride &rhs)
 {
 	// For texture create time overrides we want the highest priority

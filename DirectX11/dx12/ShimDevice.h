@@ -22,6 +22,9 @@ bool ShimWriteBuffer(ShimResource *resource, UINT64 offset, const void *data, UI
 // those contents, for the GPU to write to
 bool ShimBufferToGpu(ShimResource *resource);
 bool ShimWriteSubresource(ShimResource *resource, UINT subresource, const void *data, UINT row_pitch, UINT slice_pitch);
+// Copies the shadow of a texture with write_pending to it. Dx12ShimTransition
+// does, which whatever uses a resource goes through first.
+void ShimFlushWrite(ShimResource *resource);
 
 static inline UINT64 ShimAlign(UINT64 value, UINT64 alignment)
 {

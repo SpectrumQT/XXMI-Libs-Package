@@ -27,7 +27,19 @@ static struct {
 	unsigned draws, skipped, mod_draws, mod_dispatches;
 	unsigned vertex_buffers_matched, constant_buffers_matched;
 	unsigned reaches_known, reaches_failed;
+	unsigned buffers_remembered, buffers_looked_up;
+	unsigned lookups_missing, lookups_unsettled, lookups_unstamped, lookups_new;
+	// Only counted with dx12_dump_hashes, in QueryPerformanceCounter ticks
+	UINT64 wait_ticks, before_ticks, buffer_ticks, draw_ticks, after_ticks;
 } stats;
+
+static UINT64 ticks()
+{
+	LARGE_INTEGER now;
+
+	QueryPerformanceCounter(&now);
+	return now.QuadPart;
+}
 
 // -----------------------------------------------------------------------------
 // Which draws to look at
@@ -116,6 +128,8 @@ struct Published {
 	UINT64 reach_bytes;
 	uint32_t reach_hash;
 	UINT config;
+	// Buffers: counts the times any of the above changed
+	UINT version;
 
 	UINT frame;
 };
@@ -123,7 +137,8 @@ struct Published {
 static std::unordered_map<PublishedKey, Published, PublishedKeyHash> published;
 // Counts configurations, as which of the hashes a resource could have had
 // under D3D11 is the one to use depends on what the mods ask for
-static UINT config_generation = 1;
+// Read by the threads recording without the lock, see draw_is_boring
+static volatile UINT config_generation = 1;
 
 static void set_resource_hash(ID3D11Resource *resource, D3D11_RESOURCE_DIMENSION type, uint32_t hash, uint32_t data_hash,
 		const D3D11_TEXTURE2D_DESC *desc)
@@ -330,6 +345,9 @@ struct VertexReach {
 };
 
 static std::map<ReachKey, VertexReach> reaches;
+// Counts the times entries of reaches or published were erased, after which
+// what publish_buffer remembers about them is not to be looked at
+static UINT buffer_cache_generation = 1;
 static std::vector<ReachKey> pending_reaches;
 static UINT reach_frame;
 static UINT64 reach_frame_bytes;
@@ -413,22 +431,44 @@ static bool start_reach(const ReachKey *key, VertexReach *reach, UINT64 vb_bytes
 	return true;
 }
 
+// What vertex_reach went by besides its arguments
+struct ReachLookup {
+	// The answer is the same the next time, unless one of the buffers
+	// changes or the entry of reaches is erased
+	bool settled;
+	VertexReach *reach;
+	// How far it got with the index buffer
+	bool ib_asked, ib_found, ib_hashed;
+	ID3D12Resource *ib;
+	UINT64 ib_offset;
+	Dx12BufferHash ib_upload;
+};
+
 // What is known about a vertex buffer drawn with the index buffer of the view,
 // or NULL. Sets off finding out if it is not known.
 static const Dx12BufferHash* vertex_reach(ID3D12Resource *vb, UINT64 vb_offset, UINT64 vb_bytes, UINT stride,
-		const Dx12BufferHash *vb_upload, const D3D12_INDEX_BUFFER_VIEW *view)
+		const Dx12BufferHash *vb_upload, const D3D12_INDEX_BUFFER_VIEW *view, ReachLookup *lookup)
 {
-	Dx12BufferHash ib_upload;
+	Dx12BufferHash &ib_upload = lookup->ib_upload;
 	ReachKey key = {};
 
+	*lookup = {};
+	lookup->settled = true;
 	if (!stride || !view->BufferLocation || !view->SizeInBytes || vb_bytes < stride)
 		return NULL;
 	if (view->Format != DXGI_FORMAT_R16_UINT && view->Format != DXGI_FORMAT_R32_UINT)
 		return NULL;
 	// Only for what was uploaded once and left alone: anything else is
 	// not a mesh a mod could have a hash for
-	if (!Dx12FindBuffer(view->BufferLocation, &key.ib, &key.ib_offset) || !Dx12FindBufferHash(key.ib, key.ib_offset, &ib_upload))
+	lookup->ib_asked = true;
+	if (!Dx12FindBuffer(view->BufferLocation, &key.ib, &key.ib_offset))
 		return NULL;
+	lookup->ib_found = true;
+	lookup->ib = key.ib;
+	lookup->ib_offset = key.ib_offset;
+	if (!Dx12FindBufferHash(key.ib, key.ib_offset, &ib_upload))
+		return NULL;
+	lookup->ib_hashed = true;
 
 	key.vb = vb;
 	key.vb_offset = vb_offset;
@@ -441,13 +481,20 @@ static const Dx12BufferHash* vertex_reach(ID3D12Resource *vb, UINT64 vb_offset, 
 		VertexReach *reach = &found->second;
 
 		reach->frame = dx12_frame;
-		if (reach->state == REACH_PENDING)
+		if (reach->state == REACH_PENDING) {
+			lookup->settled = false;
 			return NULL;
-		if (reach->vb_upload == vb_upload->data_hash && reach->ib_upload == ib_upload.data_hash)
+		}
+		if (reach->vb_upload == vb_upload->data_hash && reach->ib_upload == ib_upload.data_hash) {
+			lookup->reach = reach;
 			return reach->state == REACH_KNOWN ? &reach->hash : NULL;
+		}
 		reaches.erase(found);
+		buffer_cache_generation++;
 	}
 
+	// From here on it depends on when it is asked
+	lookup->settled = false;
 	if (dx12_frame - vb_upload->frame < REACH_UPLOAD_AGE || dx12_frame - ib_upload.frame < REACH_UPLOAD_AGE)
 		return NULL;
 	vb_bytes = min(vb_bytes, vb_upload->bytes);
@@ -624,6 +671,7 @@ static void update_reaches()
 
 	if (dx12_frame & 255)
 		return;
+	buffer_cache_generation++;
 	for (auto j = reaches.begin(); j != reaches.end();) {
 		if (j->second.state != REACH_PENDING && dx12_frame - j->second.frame > 600)
 			j = reaches.erase(j);
@@ -666,31 +714,223 @@ static Published* publish_resource(ID3D12Resource *resource)
 	return entry;
 }
 
+// Nearly every draw has its vertex buffer asked about, mostly the same buffers
+// frame after frame, and the answer takes several lookups under locks shared
+// with the threads recording. So what publish_buffer worked out is remembered
+// along with the stamps of its lookups, which tell whether it would come to
+// the same again.
+struct BufferCacheEntry {
+	// What was asked. The index buffer is 0 where there is none.
+	UINT64 va, bytes, ib_va;
+	UINT kind, stride, ib_bytes, ib_format;
+
+	UINT generation, config;
+	Published *entry;
+	UINT entry_version;
+	VertexReach *reach;
+
+	// What the stamp is of
+	ID3D12Resource *resource, *ib;
+	UINT64 offset, span, ib_offset, ib_span;
+	bool ib_asked, ib_found;
+	UINT64 stamp;
+
+	// No TextureOverride section can match the buffer
+	bool boring;
+};
+
+// Written with the lock held. The threads recording read it without, to tell
+// whether a draw is worth stopping for: seq is odd while data is being
+// written, and has changed if it was written since.
+struct BufferCacheSlot {
+	volatile LONG seq;
+	BufferCacheEntry data;
+};
+// In buckets of this many: with one slot each, the few percent of a frame's
+// buffers that share theirs with another would be looked up for every draw
+const UINT BUFFER_CACHE_WAYS = 4;
+static BufferCacheSlot buffer_cache[32768];
+
+// The first slot of the bucket
+static BufferCacheSlot* buffer_cache_slot(BufferCacheEntry *asked, UINT64 va, UINT64 bytes, UINT kind, UINT stride,
+		const D3D12_INDEX_BUFFER_VIEW *indices)
+{
+	asked->va = va;
+	asked->bytes = bytes;
+	asked->kind = kind;
+	asked->stride = stride;
+	if (indices) {
+		asked->ib_va = indices->BufferLocation;
+		asked->ib_bytes = indices->SizeInBytes;
+		asked->ib_format = indices->Format;
+	}
+	return &buffer_cache[(((va ^ (asked->ib_va * 0x9e3779b97f4a7c15ull) ^ bytes ^ ((UINT64)stride << 40) ^ ((UINT64)kind << 60))
+		* 0xff51afd7ed558ccdull) >> 49) & ~(UINT64)(BUFFER_CACHE_WAYS - 1)];
+}
+
+static bool same_buffer_asked(const BufferCacheEntry *a, const BufferCacheEntry *b)
+{
+	return a->va == b->va && a->bytes == b->bytes && a->ib_va == b->ib_va && a->kind == b->kind
+		&& a->stride == b->stride && a->ib_bytes == b->ib_bytes && a->ib_format == b->ib_format;
+}
+
+// The slot of the bucket that is for what is asked, or to put it in
+static BufferCacheSlot* buffer_cache_way(BufferCacheSlot *bucket, const BufferCacheEntry *asked, bool store)
+{
+	static UINT next;
+	UINT way;
+
+	for (way = 0; way < BUFFER_CACHE_WAYS; way++) {
+		if (same_buffer_asked(&bucket[way].data, asked))
+			return &bucket[way];
+	}
+	if (!store)
+		return NULL;
+	for (way = 0; way < BUFFER_CACHE_WAYS; way++) {
+		if (!bucket[way].data.generation)
+			return &bucket[way];
+	}
+	return &bucket[next++ % BUFFER_CACHE_WAYS];
+}
+
+static bool buffer_cache_stamp(const BufferCacheEntry *cached, UINT64 *stamp)
+{
+	UINT64 part;
+
+	*stamp = Dx12FindBufferStamp(cached->va);
+	if (!Dx12BufferHashStamp(cached->resource, cached->offset, cached->span, &part))
+		return false;
+	*stamp += part;
+	if (!cached->ib_asked)
+		return true;
+
+	*stamp += Dx12FindBufferStamp(cached->ib_va);
+	if (!cached->ib_found)
+		return true;
+	if (!Dx12BufferHashStamp(cached->ib, cached->ib_offset, cached->ib_span, &part))
+		return false;
+	*stamp += part;
+	return true;
+}
+
+static bool same_buffer_hash(bool found, const Dx12BufferHash *hash, ID3D12Resource *resource, UINT64 offset)
+{
+	Dx12BufferHash now = {};
+
+	if (Dx12FindBufferHash(resource, offset, &now) != found)
+		return false;
+	return !found || (now.bytes == hash->bytes && now.data_hash == hash->data_hash && now.frame == hash->frame);
+}
+
+// The stamp is only good for lookups made after it was taken, so they are
+// made once more
+static void remember_buffer(BufferCacheEntry *cached, bool has_hash, const Dx12BufferHash *data, const ReachLookup *lookup)
+{
+	ID3D12Resource *resource;
+	UINT64 offset;
+
+	cached->generation = 0;
+	if (!buffer_cache_stamp(cached, &cached->stamp))
+		return;
+
+	if (!Dx12FindBuffer(cached->va, &resource, &offset) || resource != cached->resource || offset != cached->offset)
+		return;
+	if (!same_buffer_hash(has_hash, data, cached->resource, cached->offset))
+		return;
+	if (cached->ib_asked) {
+		if (Dx12FindBuffer(cached->ib_va, &resource, &offset) != cached->ib_found)
+			return;
+		if (cached->ib_found) {
+			if (resource != cached->ib || offset != cached->ib_offset)
+				return;
+			if (!same_buffer_hash(lookup->ib_hashed, &lookup->ib_upload, cached->ib, cached->ib_offset))
+				return;
+		}
+	}
+
+	cached->generation = buffer_cache_generation;
+}
+
 // stride and indices are for a vertex buffer
 static Published* publish_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride, const D3D12_INDEX_BUFFER_VIEW *indices)
 {
 	D3D12_RESOURCE_DESC desc = {};
 	const Dx12BufferHash *reach = NULL;
 	Dx12BufferHash data = {};
+	ReachLookup lookup = {};
+	BufferCacheEntry *cached, asked = {};
+	BufferCacheSlot *bucket, *slot;
 	ID3D12Resource *resource;
 	Published *entry;
-	UINT64 offset;
+	UINT64 offset, stamp;
 	uint32_t hash;
 	bool has_hash;
 
-	if (!Dx12FindBuffer(va, &resource, &offset))
+	bucket = buffer_cache_slot(&asked, va, bytes, kind, stride, indices);
+	slot = buffer_cache_way(bucket, &asked, false);
+	cached = slot ? &slot->data : NULL;
+
+	// In this order: the pointers are only good with the generation
+	if (cached && cached->generation == buffer_cache_generation && cached->config == config_generation
+	    && cached->entry->version == cached->entry_version
+	    && buffer_cache_stamp(cached, &stamp) && stamp == cached->stamp) {
+		stats.buffers_remembered++;
+		cached->entry->frame = dx12_frame;
+		if (cached->reach)
+			cached->reach->frame = dx12_frame;
+		return cached->entry;
+	}
+	stats.buffers_looked_up++;
+
+	if (!Dx12FindBuffer(va, &resource, &offset)) {
+		stats.lookups_missing++;
 		return NULL;
+	}
 	has_hash = Dx12FindBufferHash(resource, offset, &data);
+	lookup.settled = true;
 	if (has_hash && indices)
-		reach = vertex_reach(resource, offset, bytes, stride, &data, indices);
+		reach = vertex_reach(resource, offset, bytes, stride, &data, indices, &lookup);
 
 	entry = &published[{ resource, offset, kind }];
 	entry->frame = dx12_frame;
 
+	if (lookup.settled) {
+		asked.resource = resource;
+		asked.offset = offset;
+		asked.span = has_hash ? data.bytes : 1;
+		asked.ib_asked = lookup.ib_asked;
+		asked.ib_found = lookup.ib_found;
+		asked.ib = lookup.ib;
+		asked.ib_offset = lookup.ib_offset;
+		asked.ib_span = lookup.ib_hashed ? lookup.ib_upload.bytes : 1;
+		asked.reach = lookup.reach;
+		asked.entry = entry;
+		asked.config = config_generation;
+	}
+
 	if (entry->resource && entry->bytes == bytes) {
 		if (entry->has_data_hash == has_hash && entry->data_hash == data.data_hash && entry->config == config_generation
-		    && entry->reach_bytes == (reach ? reach->bytes : 0) && entry->reach_hash == (reach ? reach->data_hash : 0))
+		    && entry->reach_bytes == (reach ? reach->bytes : 0) && entry->reach_hash == (reach ? reach->data_hash : 0)) {
+			if (lookup.settled) {
+				asked.entry_version = entry->version;
+				remember_buffer(&asked, has_hash, &data, &lookup);
+				if (asked.generation)
+					asked.boring = TextureOverrideCandidatesEmpty(entry->resource);
+				else
+					stats.lookups_unstamped++;
+				// What could not be remembered still replaces
+				// what was, which no longer goes
+				slot = buffer_cache_way(bucket, &asked, asked.generation != 0);
+				if (slot) {
+					InterlockedIncrement(&slot->seq);
+					slot->data = asked;
+					InterlockedIncrement(&slot->seq);
+				}
+			} else {
+				stats.lookups_unsettled++;
+			}
 			return entry;
+		}
 	} else {
 		release_published(entry);
 		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -705,6 +945,8 @@ static Published* publish_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride
 	entry->reach_bytes = reach ? reach->bytes : 0;
 	entry->reach_hash = reach ? reach->data_hash : 0;
 	entry->config = config_generation;
+	entry->version++;
+	stats.lookups_new++;
 
 	// Without a hash for the data there is nothing a mod could have
 	// matched under D3D11 either
@@ -729,8 +971,20 @@ struct PublishedConstants {
 	ShimBuffer *buffer;
 	UINT config;
 	bool matched;
+	// No TextureOverride section can match it
+	bool boring;
 };
 static std::unordered_map<UINT64, PublishedConstants> published_constants;
+
+// The ones that are boring, for the threads recording to find without the
+// lock: stage, register, size and the configuration that goes for in a word
+static volatile LONG64 boring_constants[256];
+
+static volatile LONG64* boring_constants_slot(Dx12ShaderStage stage, UINT slot, UINT bytes, LONG64 *word)
+{
+	*word = (LONG64)((UINT64)bytes | (UINT64)slot << 32 | (UINT64)stage << 40 | (UINT64)(config_generation & 0xfffff) << 44);
+	return &boring_constants[(((UINT64)bytes | (UINT64)slot << 32 | (UINT64)stage << 40) * 0x9e3779b97f4a7c15ull) >> 56];
+}
 
 static uint32_t constant_buffer_hash(UINT bytes)
 {
@@ -741,6 +995,33 @@ static uint32_t constant_buffer_hash(UINT bytes)
 	desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 	desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 	return crc32c_hw(0, &desc, sizeof(desc));
+}
+
+static uint32_t pick_constant_buffer_hash(UINT bytes);
+
+static PublishedConstants* publish_constants(Dx12ShaderStage stage, UINT slot, UINT bytes)
+{
+	PublishedConstants *entry = &published_constants[(UINT64)stage << 40 | (UINT64)slot << 32 | bytes];
+	D3D12_RESOURCE_DESC desc = {};
+	LONG64 word;
+
+	if (!entry->buffer) {
+		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		desc.Width = bytes;
+		entry->buffer = static_cast<ShimBuffer*>(new_game_buffer(&desc, (bytes + 255) & ~255u, D3D11_BIND_CONSTANT_BUFFER));
+	}
+
+	if (entry->config != config_generation) {
+		uint32_t hash = pick_constant_buffer_hash(bytes);
+
+		entry->config = config_generation;
+		entry->matched = !!G->mTextureOverrideMap.count(hash);
+		set_resource_hash(entry->buffer, D3D11_RESOURCE_DIMENSION_BUFFER, hash, 0, NULL);
+		entry->boring = TextureOverrideCandidatesEmpty(entry->buffer);
+	}
+	if (entry->boring)
+		InterlockedExchange64(boring_constants_slot(stage, slot, bytes, &word), word);
+	return entry;
 }
 
 static uint32_t pick_constant_buffer_hash(UINT bytes)
@@ -776,6 +1057,7 @@ static View* new_game_view(Published *entry)
 
 static void forget_unused_published()
 {
+	buffer_cache_generation++;
 	for (auto i = published.begin(); i != published.end();) {
 		if (dx12_frame - i->second.frame > 600) {
 			release_published(&i->second);
@@ -804,10 +1086,6 @@ struct Dx12DrawScope {
 	// signature is NULL if the game's is not known.
 	const Dx12PipelineInfo *pipeline;
 	const Dx12RootSignatureInfo *signature;
-
-	// What the shim context had bound before, which is the business of
-	// the frame's own command lists
-	ShimState saved;
 
 	// What has been changed on the list and is to be put back
 	UINT vbs_changed;
@@ -848,14 +1126,18 @@ ID3D11Buffer* Dx12ScopeVertexBuffer(UINT slot, UINT *stride)
 {
 	const D3D12_VERTEX_BUFFER_VIEW *view;
 	Published *entry;
+	UINT64 start;
 
 	*stride = 0;
 	if (scope->compute || slot >= ARRAYSIZE(scope->list->mState.vertex_buffers))
 		return NULL;
 
 	view = &scope->list->mState.vertex_buffers[slot];
+	start = G->dx12_dump_hashes ? ticks() : 0;
 	entry = publish_buffer(view->BufferLocation, view->SizeInBytes, PUBLISHED_VERTEX_BUFFER, view->StrideInBytes,
 		&scope->list->mState.index_buffer);
+	if (start)
+		stats.buffer_ticks += ticks() - start;
 	if (!entry)
 		return NULL;
 
@@ -883,7 +1165,6 @@ ID3D11Buffer* Dx12ScopeIndexBuffer(DXGI_FORMAT *format)
 ID3D11Buffer* Dx12ScopeConstantBuffer(Dx12ShaderStage stage, UINT slot)
 {
 	const Dx12ShaderInfo *shader;
-	D3D12_RESOURCE_DESC desc = {};
 	Dx12ResourceInfo info;
 	ID3D12Resource *resource;
 	Dx12DescriptorSlot view;
@@ -902,21 +1183,8 @@ ID3D11Buffer* Dx12ScopeConstantBuffer(Dx12ShaderStage stage, UINT slot)
 		return NULL;
 	bytes = shader->cb_bytes[slot];
 
-	PublishedConstants *entry = &published_constants[(UINT64)stage << 40 | (UINT64)slot << 32 | bytes];
-	if (!entry->buffer) {
-		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		desc.Width = bytes;
-		entry->buffer = static_cast<ShimBuffer*>(new_game_buffer(&desc, (bytes + 255) & ~255u, D3D11_BIND_CONSTANT_BUFFER));
-	}
+	PublishedConstants *entry = publish_constants(stage, slot, bytes);
 	buffer = entry->buffer;
-
-	if (entry->config != config_generation) {
-		uint32_t hash = pick_constant_buffer_hash(bytes);
-
-		entry->config = config_generation;
-		entry->matched = !!G->mTextureOverrideMap.count(hash);
-		set_resource_hash(buffer, D3D11_RESOURCE_DIMENSION_BUFFER, hash, 0, NULL);
-	}
 	stats.constant_buffers_matched += entry->matched;
 
 	// Upload memory is all a list of ours can count on being able to
@@ -1199,14 +1467,15 @@ static const Dx12ShaderStage compute_stages[] = { DX12_STAGE_CS };
 // call left on the list goes first: the mod may have unbound it since.
 static void apply_overrides()
 {
-	const ShimState *mod = &dx12_shim->shim_context->mState;
+	const ShimState *mod = dx12_shim->shim_context->mState;
 	const Dx12CmdState *game = &scope->list->mState;
 	const Dx12ShaderStage *stages = scope->compute ? compute_stages : graphics_stages;
 	size_t stage_count = scope->compute ? ARRAYSIZE(compute_stages) : ARRAYSIZE(graphics_stages);
 	ID3D12GraphicsCommandList *list = scope->list->mOrig;
 	D3D12_VERTEX_BUFFER_VIEW vb;
 	D3D12_INDEX_BUFFER_VIEW ib;
-	UINT slot, size;
+	UINT slot, size, word, mask;
+	unsigned long bit;
 	size_t i;
 
 	restore_list();
@@ -1214,14 +1483,12 @@ static void apply_overrides()
 	for (i = 0; i < stage_count; i++) {
 		const ShimStageState *bound = &mod->stages[stages[i]];
 
-		for (slot = 0; slot < SHIM_SRV_SLOTS; slot++) {
-			if (bound->srvs[slot])
-				apply_shader_resource(stages[i], slot, bound->srvs[slot]);
+		for (word = 0; word < ARRAYSIZE(bound->srv_mask); word++) {
+			for (mask = bound->srv_mask[word]; _BitScanForward(&bit, mask); mask &= mask - 1)
+				apply_shader_resource(stages[i], word * 32 + bit, bound->srvs[word * 32 + bit]);
 		}
-		for (slot = 0; slot < SHIM_CBV_SLOTS; slot++) {
-			if (bound->cbs[slot])
-				apply_constant_buffer(stages[i], slot, bound);
-		}
+		for (mask = bound->cb_mask; _BitScanForward(&bit, mask); mask &= mask - 1)
+			apply_constant_buffer(stages[i], bit, bound);
 	}
 	for (const ChangedParameter &changed : scope->parameters) {
 		if (changed.type == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
@@ -1263,7 +1530,7 @@ static void apply_overrides()
 
 void Dx12ScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT base_vertex, UINT start_instance)
 {
-	const ShimState *mod = &dx12_shim->shim_context->mState;
+	const ShimState *mod = dx12_shim->shim_context->mState;
 	ID3D12GraphicsCommandList *list = scope->list->mOrig;
 
 	if (scope->compute) {
@@ -1289,6 +1556,25 @@ void Dx12ScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT bas
 	}
 }
 
+// What the engine finds bound when it starts on a draw of the game: nothing
+// but IniParams and the like, which it keeps bound on a D3D11 context whatever
+// the game does. The context is only put back to that after a draw that
+// changed a binding, which few of them do.
+static ID3D11ShaderResourceView *scope_ini_params;
+static int scope_ini_params_reg;
+static bool scope_state_ready;
+
+static void reset_scope_state()
+{
+	dx12_shim->shim_context->ClearState();
+	dx12_shim->hacker_context->Bind3DMigotoResources();
+
+	// All that Bind3DMigotoResources goes by
+	scope_ini_params = dx12_shim->hacker_device->mIniResourceView;
+	scope_ini_params_reg = G->IniParamsReg;
+	scope_state_ready = true;
+}
+
 static void open_scope(Dx12DrawScope *opened, Dx12GraphicsCommandList *list, const Dx12PipelineInfo *pipeline, bool compute)
 {
 	ID3D12RootSignature *signature = compute ? list->mState.compute.signature : list->mState.graphics.signature;
@@ -1303,12 +1589,12 @@ static void open_scope(Dx12DrawScope *opened, Dx12GraphicsCommandList *list, con
 	opened->topology_changed = false;
 	opened->parameters.clear();
 
-	// Not ClearState: the references stay with what is saved
-	opened->saved = context->mState;
-	context->ResetState();
-	// IniParams and the like, which the engine keeps bound on a D3D11
-	// context whatever the game does
-	dx12_shim->hacker_context->Bind3DMigotoResources();
+	// What the frame's own command lists have bound is theirs
+	context->mState = &context->mScopeState;
+	if (!scope_state_ready || scope_ini_params != dx12_shim->hacker_device->mIniResourceView
+	    || scope_ini_params_reg != G->IniParamsReg)
+		reset_scope_state();
+	context->mChanged = false;
 
 	scope = opened;
 }
@@ -1318,8 +1604,9 @@ static void close_scope()
 	ShimContext *context = dx12_shim->shim_context;
 
 	restore_list();
-	context->ClearState();
-	context->mState = scope->saved;
+	if (context->mChanged)
+		reset_scope_state();
+	context->mState = &context->mFrameState;
 	scope = NULL;
 
 	// Whatever the mod's resources needed done before the game's list
@@ -1328,10 +1615,234 @@ static void close_scope()
 }
 
 // -----------------------------------------------------------------------------
+// The draws not worth stopping for
+//
+// A mod that goes by meshes rather than shaders has a command list run for
+// every draw that asks for the TextureOverride section of its vertex buffer,
+// which few have. Rather than wait on each other for the engine to find that
+// out, the threads recording find out themselves where it is certain: the
+// command lists of the shaders can do nothing but ask about buffers
+// (Dx12DrawFilter, per pipeline state), and each of those buffers was asked
+// about before with nothing changed since (the buffer cache and
+// boring_constants).
+
+static volatile LONG fast_draws, fast_draws_pending;
+
+// Why the others were, for the report
+enum SlowReason {
+	SLOW_SETTINGS,
+	SLOW_FILTER,
+	SLOW_LISTS,
+	SLOW_INI_PARAMS,
+	SLOW_VB_UNKNOWN,
+	SLOW_VB_WANTED,
+	SLOW_VB_CHANGED,
+	SLOW_IB,
+	SLOW_CB,
+	SLOW_REASONS,
+	SLOW_NOT = SLOW_REASONS,
+};
+static volatile LONG slow_draws[SLOW_REASONS];
+
+static bool stage_of_shader_type(wchar_t shader_type, Dx12ShaderStage *stage)
+{
+	switch (shader_type) {
+	case L'v': *stage = DX12_STAGE_VS; return true;
+	case L'p': *stage = DX12_STAGE_PS; return true;
+	case L'g': *stage = DX12_STAGE_GS; return true;
+	case L'h': *stage = DX12_STAGE_HS; return true;
+	case L'd': *stage = DX12_STAGE_DS; return true;
+	case L'c': *stage = DX12_STAGE_CS; return true;
+	}
+	return false;
+}
+
+// With the lock held
+static void work_out_filter(const Dx12PipelineInfo *pipeline)
+{
+	Dx12DrawFilter *filter = &pipeline->filter;
+	CommandListCheckedSlots slots = {};
+	bool only_checks = true;
+	Dx12ShaderStage stage;
+	unsigned i;
+
+	InterlockedExchange(&filter->generation, 0);
+
+	// The shaders HackerContext::BeforeDraw looks up
+	for (Dx12ShaderStage graphics_stage : graphics_stages) {
+		const Dx12ShaderInfo *shader = pipeline->shaders[graphics_stage];
+
+		if (!shader && graphics_stage != DX12_STAGE_VS && graphics_stage != DX12_STAGE_PS)
+			continue;
+		auto found = lookup_shaderoverride(shader ? shader->hash : 0);
+		if (found == G->mShaderOverrideMap.end())
+			continue;
+		if (found->second.depth_filter != DepthBufferFilter::NONE
+		    || !CommandListOnlyChecksTextureOverrides(&found->second.command_list, &slots)
+		    || !CommandListOnlyChecksTextureOverrides(&found->second.post_command_list, &slots)) {
+			only_checks = false;
+			break;
+		}
+	}
+
+	for (i = 0; only_checks && i < slots.cb_count; i++) {
+		if (!stage_of_shader_type(slots.cbs[i].shader_type, &stage) || slots.cbs[i].slot > 255) {
+			only_checks = false;
+			break;
+		}
+		filter->cbs[i].stage = (BYTE)stage;
+		filter->cbs[i].slot = (BYTE)slots.cbs[i].slot;
+	}
+
+	filter->only_checks = only_checks;
+	filter->vbs = slots.vbs;
+	filter->ib = slots.ib;
+	filter->cb_count = (BYTE)slots.cb_count;
+	filter->override_generation = G->shader_override_generation;
+	InterlockedExchange(&filter->generation, (LONG)config_generation);
+}
+
+// IniParams is bound for every draw the engine looks at, which matters if a
+// shader of the game can be given something for its register
+static bool ini_params_reach_shaders(const Dx12RootSignatureInfo *signature)
+{
+	int reg = G->IniParamsReg;
+	LONG state = signature->ini_params;
+	Dx12RegisterLocation location;
+	bool located = false;
+
+	if (reg < 0)
+		return false;
+	if ((state >> 1) == reg + 1)
+		return state & 1;
+
+	for (Dx12ShaderStage stage : graphics_stages)
+		located |= Dx12LocateRegister(signature, stage, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, reg, &location);
+	InterlockedExchange(&signature->ini_params, (reg + 1) << 1 | (LONG)located);
+	return located;
+}
+
+static SlowReason buffer_is_boring(UINT64 va, UINT64 bytes, UINT kind, UINT stride, const D3D12_INDEX_BUFFER_VIEW *indices)
+{
+	BufferCacheEntry asked = {}, cached;
+	BufferCacheSlot *slot = buffer_cache_slot(&asked, va, bytes, kind, stride, indices);
+	UINT64 stamp;
+	LONG seq;
+	UINT way;
+
+	for (way = 0; way < BUFFER_CACHE_WAYS; way++, slot++) {
+		seq = slot->seq;
+		if (seq & 1)
+			continue;
+		cached = slot->data;
+		if (slot->seq != seq || !same_buffer_asked(&cached, &asked))
+			continue;
+
+		// None of the pointers are followed, so the generation they
+		// are good for does not matter. What they pointed to going
+		// away does not change what the buffer is.
+		if (!cached.generation || cached.config != config_generation)
+			return SLOW_VB_UNKNOWN;
+		if (!cached.boring)
+			return SLOW_VB_WANTED;
+		if (!buffer_cache_stamp(&cached, &stamp) || stamp != cached.stamp)
+			return SLOW_VB_CHANGED;
+		return SLOW_NOT;
+	}
+	return SLOW_VB_UNKNOWN;
+}
+
+// Without the lock. SLOW_NOT only if the engine would look at the draw and
+// leave it at that.
+static SlowReason draw_is_boring(Dx12GraphicsCommandList *list, const Dx12PipelineInfo *pipeline)
+{
+	SlowReason reason;
+	const Dx12CmdState *game = &list->mState;
+	const Dx12DrawFilter *filter = &pipeline->filter;
+	const Dx12RootSignatureInfo *signature;
+	Dx12DrawFilter worked_out;
+	unsigned long slot;
+	LONG generation;
+	LONG64 word;
+	UINT vbs, i;
+
+	if (G->hunting == HUNTING_MODE_ENABLED || !G->fix_enabled || G->track_region_hashes || G->track_implicit_index_buffers)
+		return SLOW_SETTINGS;
+
+	generation = filter->generation;
+	if (!generation || generation != (LONG)config_generation)
+		return SLOW_FILTER;
+	memcpy(&worked_out, filter, sizeof(worked_out));
+	if (filter->generation != generation || worked_out.override_generation != G->shader_override_generation)
+		return SLOW_FILTER;
+	if (!worked_out.only_checks)
+		return SLOW_LISTS;
+
+	signature = game->graphics.signature ? Dx12FindRootSignature(game->graphics.signature) : NULL;
+	if (signature && ini_params_reach_shaders(signature))
+		return SLOW_INI_PARAMS;
+
+	// What is not there is not looked up, see the Dx12Scope functions
+	for (vbs = worked_out.vbs; _BitScanForward(&slot, vbs); vbs &= vbs - 1) {
+		if (slot >= ARRAYSIZE(game->vertex_buffers) || !game->vertex_buffers[slot].BufferLocation)
+			continue;
+		reason = buffer_is_boring(game->vertex_buffers[slot].BufferLocation, game->vertex_buffers[slot].SizeInBytes,
+				PUBLISHED_VERTEX_BUFFER, game->vertex_buffers[slot].StrideInBytes, &game->index_buffer);
+		if (reason != SLOW_NOT)
+			return reason;
+	}
+	if (worked_out.ib && game->index_buffer.BufferLocation
+	    && buffer_is_boring(game->index_buffer.BufferLocation, game->index_buffer.SizeInBytes, PUBLISHED_INDEX_BUFFER, 0, NULL) != SLOW_NOT)
+		return SLOW_IB;
+
+	for (i = 0; i < worked_out.cb_count; i++) {
+		Dx12ShaderStage stage = (Dx12ShaderStage)worked_out.cbs[i].stage;
+		const Dx12ShaderInfo *shader = stage == DX12_STAGE_CS ? NULL : pipeline->shaders[stage];
+		UINT cb = worked_out.cbs[i].slot;
+
+		if (!shader || cb >= DX12_CB_SIZES || !shader->cb_bytes[cb])
+			continue;
+		if (*boring_constants_slot(stage, cb, shader->cb_bytes[cb], &word) != word)
+			return SLOW_CB;
+	}
+	return SLOW_NOT;
+}
+
+// With the scope of a draw the engine looked at open: has everything the
+// filter goes by asked about, as the command lists may not have got to all of
+// it, for draw_is_boring to find the answers
+static void prime_filter(const Dx12PipelineInfo *pipeline)
+{
+	const Dx12DrawFilter *filter = &pipeline->filter;
+	unsigned long slot;
+	DXGI_FORMAT format;
+	UINT vbs, i, stride;
+
+	if (!filter->only_checks)
+		return;
+
+	for (vbs = filter->vbs; _BitScanForward(&slot, vbs); vbs &= vbs - 1)
+		Dx12ScopeVertexBuffer(slot, &stride);
+	if (filter->ib)
+		Dx12ScopeIndexBuffer(&format);
+	for (i = 0; i < filter->cb_count; i++) {
+		Dx12ShaderStage stage = (Dx12ShaderStage)filter->cbs[i].stage;
+		const Dx12ShaderInfo *shader = stage == DX12_STAGE_CS ? NULL : pipeline->shaders[stage];
+		UINT cb = filter->cbs[i].slot;
+
+		if (shader && cb < DX12_CB_SIZES && shader->cb_bytes[cb])
+			publish_constants(stage, cb, shader->cb_bytes[cb]);
+	}
+}
+
+// -----------------------------------------------------------------------------
 // The calls of the game
 
 void HackerContext::Dx12BeforeDraw(DrawContext &data, const UINT64 *shader_hashes)
 {
+	// The draws that were not stopped for count as well
+	draw_number += InterlockedExchange(&fast_draws_pending, 0);
+
 	mCurrentVertexShader = shader_hashes[DX12_STAGE_VS];
 	mCurrentPixelShader = shader_hashes[DX12_STAGE_PS];
 	mCurrentGeometryShader = shader_hashes[DX12_STAGE_GS];
@@ -1404,18 +1915,38 @@ bool Dx12Draw(Dx12GraphicsCommandList *list, bool indexed, UINT count, UINT inst
 {
 	const Dx12PipelineInfo *pipeline = Dx12FindPipeline(list->mState.pipeline);
 	UINT64 hashes[DX12_STAGE_COUNT] = {};
+	UINT64 times[5] = {};
+	bool timed = G->dx12_dump_hashes;
+	SlowReason reason;
 	int stage;
 
 	if (!pipeline)
 		return false;
+	reason = draw_is_boring(list, pipeline);
+	if (reason == SLOW_NOT) {
+		InterlockedIncrement(&fast_draws);
+		InterlockedIncrement(&fast_draws_pending);
+		return false;
+	}
+	if (timed)
+		InterlockedIncrement(&slow_draws[reason]);
+
 	for (stage = 0; stage < DX12_STAGE_COUNT; stage++)
 		hashes[stage] = pipeline->shaders[stage] ? pipeline->shaders[stage]->hash : 0;
 
+	if (timed)
+		times[0] = ticks();
 	Dx12ShimLock();
 	if (!dx12_shim || scope) {
 		Dx12ShimUnlock();
 		return false;
 	}
+	if (timed)
+		times[1] = ticks();
+
+	if (pipeline->filter.generation != (LONG)config_generation
+	    || pipeline->filter.override_generation != G->shader_override_generation)
+		work_out_filter(pipeline);
 
 	DrawContext c = indexed
 		? DrawContext(DrawCall::DrawIndexedInstanced, 0, count, instances, base_vertex, start, start_instance, NULL, 0)
@@ -1424,6 +1955,8 @@ bool Dx12Draw(Dx12GraphicsCommandList *list, bool indexed, UINT count, UINT inst
 	open_scope(&scope_storage, list, pipeline, false);
 
 	dx12_shim->hacker_context->Dx12BeforeDraw(c, hashes);
+	if (timed)
+		times[2] = ticks();
 	stats.draws++;
 	stats.skipped += c.call_info.skip;
 	if (!c.call_info.skip) {
@@ -1433,9 +1966,19 @@ bool Dx12Draw(Dx12GraphicsCommandList *list, bool indexed, UINT count, UINT inst
 		else
 			list->mOrig->DrawInstanced(count, instances, start, start_instance);
 	}
+	if (timed)
+		times[3] = ticks();
 	dx12_shim->hacker_context->Dx12AfterDraw(c);
 
+	prime_filter(pipeline);
 	close_scope();
+	if (timed) {
+		times[4] = ticks();
+		stats.wait_ticks += times[1] - times[0];
+		stats.before_ticks += times[2] - times[1];
+		stats.draw_ticks += times[3] - times[2];
+		stats.after_ticks += times[4] - times[3];
+	}
 	Dx12ShimUnlock();
 	return true;
 }
@@ -1533,7 +2076,9 @@ void Dx12DrawPathConfigReloaded()
 	regex_linked_shaders = 0;
 
 	// Which part of a vertex buffer counts depended on what the mods
-	// ask for
+	// ask for, as does all that was worked out from their sections
+	config_generation++;
+	buffer_cache_generation++;
 	for (auto i = reaches.begin(); i != reaches.end();) {
 		if (i->second.state != REACH_PENDING)
 			i = reaches.erase(i);
@@ -1541,6 +2086,8 @@ void Dx12DrawPathConfigReloaded()
 			++i;
 	}
 }
+
+static UINT reported_epoch;
 
 static void link_shader_regex()
 {
@@ -1558,6 +2105,9 @@ static void link_shader_regex()
 void Dx12DrawPathFramePresented()
 {
 	bool all = G->hunting == HUNTING_MODE_ENABLED && !dx12_mods_disabled;
+	LARGE_INTEGER frequency;
+	LONG reasons[SLOW_REASONS];
+	double per_frame;
 	HashSet *hashes;
 
 	if (G->hunting == HUNTING_MODE_ENABLED)
@@ -1565,15 +2115,35 @@ void Dx12DrawPathFramePresented()
 
 	link_shader_regex();
 	update_reaches();
+	// Of the frame that ended, whose count the engine has reset
+	InterlockedExchange(&fast_draws_pending, 0);
 
 	if (G->dx12_dump_hashes && !(dx12_frame % 300)) {
 		Dx12DumpNote("Frame %u, since the last of these lines: the engine saw %u draws and skipped %u, mods drew %u times and dispatched %u; "
 			"vertex buffers newly matched %u, constant buffer lookups matched %u, index reach worked out %u, failed %u, pending %Iu; "
-			"%Iu shaders linked to ShaderRegex, %Iu ShaderOverride hashes\n",
+			"%Iu shaders linked to ShaderRegex, %Iu ShaderOverride hashes; %u submissions of our own list\n",
 			dx12_frame, stats.draws, stats.skipped, stats.mod_draws, stats.mod_dispatches,
 			stats.vertex_buffers_matched, stats.constant_buffers_matched, stats.reaches_known, stats.reaches_failed,
-			pending_reaches.size(), regex_linked_shaders, G->mShaderOverrideMap.size());
+			pending_reaches.size(), regex_linked_shaders, G->mShaderOverrideMap.size(),
+			dx12_shim_epoch - reported_epoch);
+		QueryPerformanceFrequency(&frequency);
+		per_frame = 1000.0 / frequency.QuadPart / 300;
+		Dx12DumpNote("  Per frame the draws took %.2f ms waiting for the lock, %.2f ms before the draw (%.2f ms of that asking about "
+			"vertex buffers), %.2f ms applying and drawing, %.2f ms after; %u buffers were answered as before, %u looked up; "
+			"%u more draws were not stopped for\n",
+			stats.wait_ticks * per_frame, stats.before_ticks * per_frame, stats.buffer_ticks * per_frame,
+			stats.draw_ticks * per_frame, stats.after_ticks * per_frame, stats.buffers_remembered, stats.buffers_looked_up,
+			(unsigned)InterlockedExchange(&fast_draws, 0));
+		for (LONG &count : reasons)
+			count = InterlockedExchange(&slow_draws[&count - reasons], 0);
+		Dx12DumpNote("  The others were stopped for because of: settings %d, a pipeline not looked at yet %d, command lists doing more "
+			"than asking %d, IniParams %d, a vertex buffer not known %d, wanted by a mod %d, written since %d, the index buffer %d, "
+			"a constant buffer %d; of the buffers looked up %u were none known, %u not settled, %u too large to watch, %u new\n",
+			reasons[SLOW_SETTINGS], reasons[SLOW_FILTER], reasons[SLOW_LISTS], reasons[SLOW_INI_PARAMS], reasons[SLOW_VB_UNKNOWN],
+			reasons[SLOW_VB_WANTED], reasons[SLOW_VB_CHANGED], reasons[SLOW_IB], reasons[SLOW_CB],
+			stats.lookups_missing, stats.lookups_unsettled, stats.lookups_unstamped, stats.lookups_new);
 		stats = {};
+		reported_epoch = dx12_shim_epoch;
 	}
 
 	if (seen_override_generation != G->shader_override_generation) {

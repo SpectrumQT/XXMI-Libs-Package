@@ -12,6 +12,10 @@ struct ShimStageState {
 	UINT cb_count[SHIM_CBV_SLOTS];
 	ID3D11ShaderResourceView *srvs[SHIM_SRV_SLOTS];
 	ID3D11SamplerState *samplers[SHIM_SAMPLER_SLOTS];
+	// A bit per slot of cbs and srvs that has something bound, for going
+	// through the few that do
+	UINT cb_mask;
+	UINT srv_mask[(SHIM_SRV_SLOTS + 31) / 32];
 };
 
 struct ShimState {

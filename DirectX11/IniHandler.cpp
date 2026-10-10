@@ -4754,6 +4754,7 @@ void LoadConfigFile()
 	G->shader_hash_type = GetIniEnumClass(L"Rendering", L"shader_hash", ShaderHashType::FNV, NULL, ShaderHashNames);
 	G->texture_hash_version = GetIniInt(L"Rendering", L"texture_hash", 0, NULL);
 	G->dx12 = GetIniEnumClass(L"Rendering", L"dx12", Dx12Mode::AUTO, NULL, Dx12ModeNames);
+	G->dx12_dump_hashes = GetIniBool(L"Hunting", L"dx12_dump_hashes", false, NULL);
 
 	if (GetIniStringAndLog(L"Rendering", L"override_directory", 0, G->SHADER_PATH, MAX_PATH))
 	{
@@ -5504,4 +5505,26 @@ void ReloadConfig(HackerDevice *device)
 	std::chrono::duration<float> duration = stop - start;
 
 	LogOverlayW(LOG_INFO, L"> Reloaded config in %.3fs\n", duration.count());
+}
+
+// With skip_early_includes_load the mods are only loaded by the reload at the
+// first present of a D3D11 swap chain. A game on D3D12 never presents one, so
+// this is that reload without the parts that need a HackerDevice.
+void LoadSkippedIncludes()
+{
+	CriticalSectionGuard(&G->mCriticalSection);
+	ShaderRegexConfigUpdate shader_regex_config_update;
+
+	if (G->gConfigInitialized)
+		return;
+	G->gConfigInitialized = true;
+
+	ClearKeyBindings();
+	G->iniParamsReserved = 0;
+	clear_command_list_profiling();
+	ResetUnknownSettingsCache();
+
+	LoadConfigFile();
+
+	G->current_unknown_settings_hash = HashUnknownSettings();
 }

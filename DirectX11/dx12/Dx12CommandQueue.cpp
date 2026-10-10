@@ -4,6 +4,7 @@
 
 #include "Dx12CommandList.h"
 #include "Dx12Device.h"
+#include "ResourceTracker.h"
 
 // {1B67B403-353E-45FD-B468-760207CA7886}
 const GUID Dx12CommandQueue::ProxyIID = { 0x1b67b403, 0x353e, 0x45fd, { 0xb4, 0x68, 0x76, 0x02, 0x07, 0xca, 0x78, 0x86 } };
@@ -101,8 +102,19 @@ void STDMETHODCALLTYPE Dx12CommandQueue::ExecuteCommandLists(UINT NumCommandList
 		lists = large.data();
 	}
 
-	for (i = 0; i < NumCommandLists; i++)
+	for (i = 0; i < NumCommandLists; i++) {
 		lists[i] = Dx12Unwrap<Dx12GraphicsCommandList>(ppCommandLists[i]);
+		if (lists[i] == ppCommandLists[i])
+			continue;
+
+		// From here on the states the list was recorded to leave its
+		// resources in are the ones they have, as far as anything
+		// executed later is concerned
+		Dx12GraphicsCommandList *proxy = static_cast<Dx12GraphicsCommandList*>(ppCommandLists[i]);
+		for (const Dx12Transition &transition : proxy->mTransitions)
+			Dx12ApplyTransition(transition.resource, transition.subresource, transition.state);
+		proxy->mTransitions.clear();
+	}
 
 	InterlockedIncrement64(&dx12_stats.execute_calls);
 	InterlockedAdd64(&dx12_stats.lists_executed, NumCommandLists);

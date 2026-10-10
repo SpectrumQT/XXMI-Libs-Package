@@ -2,6 +2,7 @@
 
 #include <vector>
 
+#include "DescriptorShadow.h"
 #include "Dx12Device.h"
 
 // {634844CE-5C5A-4D3A-8685-27FD24F26C9D}
@@ -11,6 +12,7 @@ void *Dx12DescriptorHeap::sVtbl;
 #ifdef _WIN64
 
 SIZE_T dx12_heap_cpu_base[1 << DX12_HEAP_INDEX_BITS];
+Dx12DescriptorHeap *dx12_heap_proxies[1 << DX12_HEAP_INDEX_BITS];
 
 static SRWLOCK heap_index_lock = SRWLOCK_INIT;
 static std::vector<int> free_heap_indices;
@@ -48,16 +50,24 @@ Dx12DescriptorHeap::Dx12DescriptorHeap(Dx12Device *device, ID3D12DescriptorHeap 
 	mOrig(orig),
 	mDevice(device),
 	mRef(1),
-	mIndex(-1)
+	mIndex(-1),
+	mGpuStart(0),
+	mSlots(NULL)
 {
+	D3D12_DESCRIPTOR_HEAP_DESC desc = orig->GetDesc();
+
 	mOrig->AddRef();
 	mDevice->AddRef();
 	sVtbl = *(void**)this;
 	mEncodedStart.ptr = 0;
+	mType = desc.Type;
+	mCount = desc.NumDescriptors;
+	mIncrement = mDevice->mOrig->GetDescriptorHandleIncrementSize(desc.Type);
+	if (desc.Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE)
+		mGpuStart = mOrig->GetGPUDescriptorHandleForHeapStart().ptr;
 
 #ifdef _WIN64
-	D3D12_DESCRIPTOR_HEAP_DESC desc = mOrig->GetDesc();
-	UINT64 size = (UINT64)desc.NumDescriptors * mDevice->mOrig->GetDescriptorHandleIncrementSize(desc.Type);
+	UINT64 size = (UINT64)mCount * mIncrement;
 
 	// The largest shader visible heap D3D12 allows is well below this, but
 	// there is no limit on the size of the others.
@@ -73,15 +83,22 @@ Dx12DescriptorHeap::Dx12DescriptorHeap(Dx12Device *device, ID3D12DescriptorHeap 
 	}
 
 	mEncodedStart.ptr = (DX12_HEAP_HANDLE_TAG << DX12_HEAP_TAG_SHIFT) | ((SIZE_T)mIndex << DX12_HEAP_OFFSET_BITS);
+
+	if (mType != D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)
+		mSlots = (Dx12DescriptorSlot*)calloc(mCount, sizeof(Dx12DescriptorSlot));
+	dx12_heap_proxies[mIndex] = this;
 #endif
 }
 
 Dx12DescriptorHeap::~Dx12DescriptorHeap()
 {
 #ifdef _WIN64
-	if (mIndex >= 0)
+	if (mIndex >= 0) {
+		dx12_heap_proxies[mIndex] = NULL;
 		free_heap_index(mIndex);
+	}
 #endif
+	free(mSlots);
 }
 
 bool Dx12DescriptorHeap::Usable(REFIID riid)

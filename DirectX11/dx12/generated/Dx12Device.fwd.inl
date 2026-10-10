@@ -31,16 +31,6 @@ HRESULT STDMETHODCALLTYPE Dx12Device::CreateCommandAllocator(D3D12_COMMAND_LIST_
 	return mOrig->CreateCommandAllocator(type, riid, ppCommandAllocator);
 }
 
-HRESULT STDMETHODCALLTYPE Dx12Device::CreateGraphicsPipelineState(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc, REFIID riid, void **ppPipelineState)
-{
-	return mOrig->CreateGraphicsPipelineState(pDesc, riid, ppPipelineState);
-}
-
-HRESULT STDMETHODCALLTYPE Dx12Device::CreateComputePipelineState(const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc, REFIID riid, void **ppPipelineState)
-{
-	return mOrig->CreateComputePipelineState(pDesc, riid, ppPipelineState);
-}
-
 HRESULT STDMETHODCALLTYPE Dx12Device::CheckFeatureSupport(D3D12_FEATURE Feature, void *pFeatureSupportData, UINT FeatureSupportDataSize)
 {
 	return mOrig->CheckFeatureSupport(Feature, pFeatureSupportData, FeatureSupportDataSize);
@@ -51,44 +41,9 @@ UINT STDMETHODCALLTYPE Dx12Device::GetDescriptorHandleIncrementSize(D3D12_DESCRI
 	return mOrig->GetDescriptorHandleIncrementSize(DescriptorHeapType);
 }
 
-HRESULT STDMETHODCALLTYPE Dx12Device::CreateRootSignature(UINT nodeMask, const void *pBlobWithRootSignature, SIZE_T blobLengthInBytes, REFIID riid, void **ppvRootSignature)
-{
-	return mOrig->CreateRootSignature(nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid, ppvRootSignature);
-}
-
-void STDMETHODCALLTYPE Dx12Device::CreateConstantBufferView(const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
-{
-	mOrig->CreateConstantBufferView(pDesc, Dx12OrigCpuHandle(DestDescriptor));
-}
-
-void STDMETHODCALLTYPE Dx12Device::CreateShaderResourceView(ID3D12Resource *pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
-{
-	mOrig->CreateShaderResourceView(pResource, pDesc, Dx12OrigCpuHandle(DestDescriptor));
-}
-
-void STDMETHODCALLTYPE Dx12Device::CreateUnorderedAccessView(ID3D12Resource *pResource, ID3D12Resource *pCounterResource, const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
-{
-	mOrig->CreateUnorderedAccessView(pResource, pCounterResource, pDesc, Dx12OrigCpuHandle(DestDescriptor));
-}
-
-void STDMETHODCALLTYPE Dx12Device::CreateRenderTargetView(ID3D12Resource *pResource, const D3D12_RENDER_TARGET_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
-{
-	mOrig->CreateRenderTargetView(pResource, pDesc, Dx12OrigCpuHandle(DestDescriptor));
-}
-
-void STDMETHODCALLTYPE Dx12Device::CreateDepthStencilView(ID3D12Resource *pResource, const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
-{
-	mOrig->CreateDepthStencilView(pResource, pDesc, Dx12OrigCpuHandle(DestDescriptor));
-}
-
 void STDMETHODCALLTYPE Dx12Device::CreateSampler(const D3D12_SAMPLER_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
 {
 	mOrig->CreateSampler(pDesc, Dx12OrigCpuHandle(DestDescriptor));
-}
-
-void STDMETHODCALLTYPE Dx12Device::CopyDescriptorsSimple(UINT NumDescriptors, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptorRangeStart, D3D12_CPU_DESCRIPTOR_HANDLE SrcDescriptorRangeStart, D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapsType)
-{
-	mOrig->CopyDescriptorsSimple(NumDescriptors, Dx12OrigCpuHandle(DestDescriptorRangeStart), Dx12OrigCpuHandle(SrcDescriptorRangeStart), DescriptorHeapsType);
 }
 
 D3D12_RESOURCE_ALLOCATION_INFO STDMETHODCALLTYPE Dx12Device::GetResourceAllocationInfo(UINT visibleMask, UINT numResourceDescs, const D3D12_RESOURCE_DESC *pResourceDescs)
@@ -101,24 +56,9 @@ D3D12_HEAP_PROPERTIES STDMETHODCALLTYPE Dx12Device::GetCustomHeapProperties(UINT
 	return mOrig->GetCustomHeapProperties(nodeMask, heapType);
 }
 
-HRESULT STDMETHODCALLTYPE Dx12Device::CreateCommittedResource(const D3D12_HEAP_PROPERTIES *pHeapProperties, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riidResource, void **ppvResource)
-{
-	return mOrig->CreateCommittedResource(pHeapProperties, HeapFlags, pDesc, InitialResourceState, pOptimizedClearValue, riidResource, ppvResource);
-}
-
 HRESULT STDMETHODCALLTYPE Dx12Device::CreateHeap(const D3D12_HEAP_DESC *pDesc, REFIID riid, void **ppvHeap)
 {
 	return mOrig->CreateHeap(pDesc, riid, ppvHeap);
-}
-
-HRESULT STDMETHODCALLTYPE Dx12Device::CreatePlacedResource(ID3D12Heap *pHeap, UINT64 HeapOffset, const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riid, void **ppvResource)
-{
-	return mOrig->CreatePlacedResource(pHeap, HeapOffset, pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
-}
-
-HRESULT STDMETHODCALLTYPE Dx12Device::CreateReservedResource(const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riid, void **ppvResource)
-{
-	return mOrig->CreateReservedResource(pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
 }
 
 HRESULT STDMETHODCALLTYPE Dx12Device::CreateSharedHandle(ID3D12DeviceChild *pObject, const SECURITY_ATTRIBUTES *pAttributes, DWORD Access, LPCWSTR Name, HANDLE *pHandle)
@@ -176,19 +116,9 @@ LUID STDMETHODCALLTYPE Dx12Device::GetAdapterLuid()
 	return mOrig->GetAdapterLuid();
 }
 
-HRESULT STDMETHODCALLTYPE Dx12Device::CreatePipelineLibrary(const void *pLibraryBlob, SIZE_T BlobLength, REFIID riid, void **ppPipelineLibrary)
-{
-	return mOrig->CreatePipelineLibrary(pLibraryBlob, BlobLength, riid, ppPipelineLibrary);
-}
-
 HRESULT STDMETHODCALLTYPE Dx12Device::SetEventOnMultipleFenceCompletion(ID3D12Fence *const *ppFences, const UINT64 *pFenceValues, UINT NumFences, D3D12_MULTIPLE_FENCE_WAIT_FLAGS Flags, HANDLE hEvent)
 {
 	return mOrig->SetEventOnMultipleFenceCompletion(ppFences, pFenceValues, NumFences, Flags, hEvent);
-}
-
-HRESULT STDMETHODCALLTYPE Dx12Device::CreatePipelineState(const D3D12_PIPELINE_STATE_STREAM_DESC *pDesc, REFIID riid, void **ppPipelineState)
-{
-	return mOrig->CreatePipelineState(pDesc, riid, ppPipelineState);
 }
 
 HRESULT STDMETHODCALLTYPE Dx12Device::OpenExistingHeapFromAddress(const void *pAddress, REFIID riid, void **ppvHeap)
@@ -206,19 +136,9 @@ HRESULT STDMETHODCALLTYPE Dx12Device::CreateProtectedResourceSession(const D3D12
 	return mOrig->CreateProtectedResourceSession(pDesc, riid, ppSession);
 }
 
-HRESULT STDMETHODCALLTYPE Dx12Device::CreateCommittedResource1(const D3D12_HEAP_PROPERTIES *pHeapProperties, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE *pOptimizedClearValue, ID3D12ProtectedResourceSession *pProtectedSession, REFIID riidResource, void **ppvResource)
-{
-	return mOrig->CreateCommittedResource1(pHeapProperties, HeapFlags, pDesc, InitialResourceState, pOptimizedClearValue, pProtectedSession, riidResource, ppvResource);
-}
-
 HRESULT STDMETHODCALLTYPE Dx12Device::CreateHeap1(const D3D12_HEAP_DESC *pDesc, ID3D12ProtectedResourceSession *pProtectedSession, REFIID riid, void **ppvHeap)
 {
 	return mOrig->CreateHeap1(pDesc, pProtectedSession, riid, ppvHeap);
-}
-
-HRESULT STDMETHODCALLTYPE Dx12Device::CreateReservedResource1(const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *pOptimizedClearValue, ID3D12ProtectedResourceSession *pProtectedSession, REFIID riid, void **ppvResource)
-{
-	return mOrig->CreateReservedResource1(pDesc, InitialState, pOptimizedClearValue, pProtectedSession, riid, ppvResource);
 }
 
 D3D12_RESOURCE_ALLOCATION_INFO STDMETHODCALLTYPE Dx12Device::GetResourceAllocationInfo1(UINT visibleMask, UINT numResourceDescs, const D3D12_RESOURCE_DESC *pResourceDescs, D3D12_RESOURCE_ALLOCATION_INFO1 *pResourceAllocationInfo1)
@@ -286,16 +206,6 @@ D3D12_RESOURCE_ALLOCATION_INFO STDMETHODCALLTYPE Dx12Device::GetResourceAllocati
 	return mOrig->GetResourceAllocationInfo2(visibleMask, numResourceDescs, pResourceDescs, pResourceAllocationInfo1);
 }
 
-HRESULT STDMETHODCALLTYPE Dx12Device::CreateCommittedResource2(const D3D12_HEAP_PROPERTIES *pHeapProperties, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC1 *pDesc, D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE *pOptimizedClearValue, ID3D12ProtectedResourceSession *pProtectedSession, REFIID riidResource, void **ppvResource)
-{
-	return mOrig->CreateCommittedResource2(pHeapProperties, HeapFlags, pDesc, InitialResourceState, pOptimizedClearValue, pProtectedSession, riidResource, ppvResource);
-}
-
-HRESULT STDMETHODCALLTYPE Dx12Device::CreatePlacedResource1(ID3D12Heap *pHeap, UINT64 HeapOffset, const D3D12_RESOURCE_DESC1 *pDesc, D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riid, void **ppvResource)
-{
-	return mOrig->CreatePlacedResource1(pHeap, HeapOffset, pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
-}
-
 void STDMETHODCALLTYPE Dx12Device::CreateSamplerFeedbackUnorderedAccessView(ID3D12Resource *pTargetedResource, ID3D12Resource *pFeedbackResource, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
 {
 	mOrig->CreateSamplerFeedbackUnorderedAccessView(pTargetedResource, pFeedbackResource, Dx12OrigCpuHandle(DestDescriptor));
@@ -314,21 +224,6 @@ HRESULT STDMETHODCALLTYPE Dx12Device::CreateShaderCacheSession(const D3D12_SHADE
 HRESULT STDMETHODCALLTYPE Dx12Device::ShaderCacheControl(D3D12_SHADER_CACHE_KIND_FLAGS Kinds, D3D12_SHADER_CACHE_CONTROL_FLAGS Control)
 {
 	return mOrig->ShaderCacheControl(Kinds, Control);
-}
-
-HRESULT STDMETHODCALLTYPE Dx12Device::CreateCommittedResource3(const D3D12_HEAP_PROPERTIES *pHeapProperties, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC1 *pDesc, D3D12_BARRIER_LAYOUT InitialLayout, const D3D12_CLEAR_VALUE *pOptimizedClearValue, ID3D12ProtectedResourceSession *pProtectedSession, UINT32 NumCastableFormats, const DXGI_FORMAT *pCastableFormats, REFIID riidResource, void **ppvResource)
-{
-	return mOrig->CreateCommittedResource3(pHeapProperties, HeapFlags, pDesc, InitialLayout, pOptimizedClearValue, pProtectedSession, NumCastableFormats, pCastableFormats, riidResource, ppvResource);
-}
-
-HRESULT STDMETHODCALLTYPE Dx12Device::CreatePlacedResource2(ID3D12Heap *pHeap, UINT64 HeapOffset, const D3D12_RESOURCE_DESC1 *pDesc, D3D12_BARRIER_LAYOUT InitialLayout, const D3D12_CLEAR_VALUE *pOptimizedClearValue, UINT32 NumCastableFormats, const DXGI_FORMAT *pCastableFormats, REFIID riid, void **ppvResource)
-{
-	return mOrig->CreatePlacedResource2(pHeap, HeapOffset, pDesc, InitialLayout, pOptimizedClearValue, NumCastableFormats, pCastableFormats, riid, ppvResource);
-}
-
-HRESULT STDMETHODCALLTYPE Dx12Device::CreateReservedResource2(const D3D12_RESOURCE_DESC *pDesc, D3D12_BARRIER_LAYOUT InitialLayout, const D3D12_CLEAR_VALUE *pOptimizedClearValue, ID3D12ProtectedResourceSession *pProtectedSession, UINT32 NumCastableFormats, const DXGI_FORMAT *pCastableFormats, REFIID riid, void **ppvResource)
-{
-	return mOrig->CreateReservedResource2(pDesc, InitialLayout, pOptimizedClearValue, pProtectedSession, NumCastableFormats, pCastableFormats, riid, ppvResource);
 }
 
 void STDMETHODCALLTYPE Dx12Device::CreateSampler2(const D3D12_SAMPLER_DESC2 *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)

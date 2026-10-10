@@ -26,26 +26,6 @@ D3D12_COMMAND_LIST_TYPE STDMETHODCALLTYPE Dx12GraphicsCommandList::GetType()
 	return mOrig->GetType();
 }
 
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::ClearState(ID3D12PipelineState *pPipelineState)
-{
-	mOrig->ClearState(pPipelineState);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::CopyBufferRegion(ID3D12Resource *pDstBuffer, UINT64 DstOffset, ID3D12Resource *pSrcBuffer, UINT64 SrcOffset, UINT64 NumBytes)
-{
-	mOrig->CopyBufferRegion(pDstBuffer, DstOffset, pSrcBuffer, SrcOffset, NumBytes);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::CopyTextureRegion(const D3D12_TEXTURE_COPY_LOCATION *pDst, UINT DstX, UINT DstY, UINT DstZ, const D3D12_TEXTURE_COPY_LOCATION *pSrc, const D3D12_BOX *pSrcBox)
-{
-	mOrig->CopyTextureRegion(pDst, DstX, DstY, DstZ, pSrc, pSrcBox);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::CopyResource(ID3D12Resource *pDstResource, ID3D12Resource *pSrcResource)
-{
-	mOrig->CopyResource(pDstResource, pSrcResource);
-}
-
 void STDMETHODCALLTYPE Dx12GraphicsCommandList::CopyTiles(ID3D12Resource *pTiledResource, const D3D12_TILED_RESOURCE_COORDINATE *pTileRegionStartCoordinate, const D3D12_TILE_REGION_SIZE *pTileRegionSize, ID3D12Resource *pBuffer, UINT64 BufferStartOffsetInBytes, D3D12_TILE_COPY_FLAGS Flags)
 {
 	mOrig->CopyTiles(pTiledResource, pTileRegionStartCoordinate, pTileRegionSize, pBuffer, BufferStartOffsetInBytes, Flags);
@@ -54,61 +34,6 @@ void STDMETHODCALLTYPE Dx12GraphicsCommandList::CopyTiles(ID3D12Resource *pTiled
 void STDMETHODCALLTYPE Dx12GraphicsCommandList::ResolveSubresource(ID3D12Resource *pDstResource, UINT DstSubresource, ID3D12Resource *pSrcResource, UINT SrcSubresource, DXGI_FORMAT Format)
 {
 	mOrig->ResolveSubresource(pDstResource, DstSubresource, pSrcResource, SrcSubresource, Format);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::IASetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY PrimitiveTopology)
-{
-	mOrig->IASetPrimitiveTopology(PrimitiveTopology);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::RSSetViewports(UINT NumViewports, const D3D12_VIEWPORT *pViewports)
-{
-	mOrig->RSSetViewports(NumViewports, pViewports);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::RSSetScissorRects(UINT NumRects, const D3D12_RECT *pRects)
-{
-	mOrig->RSSetScissorRects(NumRects, pRects);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::OMSetBlendFactor(const FLOAT BlendFactor[ 4 ])
-{
-	mOrig->OMSetBlendFactor(BlendFactor);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::OMSetStencilRef(UINT StencilRef)
-{
-	mOrig->OMSetStencilRef(StencilRef);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetPipelineState(ID3D12PipelineState *pPipelineState)
-{
-	mOrig->SetPipelineState(pPipelineState);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::ResourceBarrier(UINT NumBarriers, const D3D12_RESOURCE_BARRIER *pBarriers)
-{
-	mOrig->ResourceBarrier(NumBarriers, pBarriers);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetComputeRootSignature(ID3D12RootSignature *pRootSignature)
-{
-	mOrig->SetComputeRootSignature(pRootSignature);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetGraphicsRootSignature(ID3D12RootSignature *pRootSignature)
-{
-	mOrig->SetGraphicsRootSignature(pRootSignature);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetComputeRootDescriptorTable(UINT RootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor)
-{
-	mOrig->SetComputeRootDescriptorTable(RootParameterIndex, BaseDescriptor);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetGraphicsRootDescriptorTable(UINT RootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor)
-{
-	mOrig->SetGraphicsRootDescriptorTable(RootParameterIndex, BaseDescriptor);
 }
 
 void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetComputeRoot32BitConstant(UINT RootParameterIndex, UINT SrcData, UINT DestOffsetIn32BitValues)
@@ -129,46 +54,6 @@ void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetComputeRoot32BitConstants(UIN
 void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetGraphicsRoot32BitConstants(UINT RootParameterIndex, UINT Num32BitValuesToSet, const void *pSrcData, UINT DestOffsetIn32BitValues)
 {
 	mOrig->SetGraphicsRoot32BitConstants(RootParameterIndex, Num32BitValuesToSet, pSrcData, DestOffsetIn32BitValues);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetComputeRootConstantBufferView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation)
-{
-	mOrig->SetComputeRootConstantBufferView(RootParameterIndex, BufferLocation);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetGraphicsRootConstantBufferView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation)
-{
-	mOrig->SetGraphicsRootConstantBufferView(RootParameterIndex, BufferLocation);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetComputeRootShaderResourceView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation)
-{
-	mOrig->SetComputeRootShaderResourceView(RootParameterIndex, BufferLocation);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetGraphicsRootShaderResourceView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation)
-{
-	mOrig->SetGraphicsRootShaderResourceView(RootParameterIndex, BufferLocation);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetComputeRootUnorderedAccessView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation)
-{
-	mOrig->SetComputeRootUnorderedAccessView(RootParameterIndex, BufferLocation);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetGraphicsRootUnorderedAccessView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation)
-{
-	mOrig->SetGraphicsRootUnorderedAccessView(RootParameterIndex, BufferLocation);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::IASetIndexBuffer(const D3D12_INDEX_BUFFER_VIEW *pView)
-{
-	mOrig->IASetIndexBuffer(pView);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::IASetVertexBuffers(UINT StartSlot, UINT NumViews, const D3D12_VERTEX_BUFFER_VIEW *pViews)
-{
-	mOrig->IASetVertexBuffers(StartSlot, NumViews, pViews);
 }
 
 void STDMETHODCALLTYPE Dx12GraphicsCommandList::SOSetTargets(UINT StartSlot, UINT NumViews, const D3D12_STREAM_OUTPUT_BUFFER_VIEW *pViews)
@@ -306,11 +191,6 @@ void STDMETHODCALLTYPE Dx12GraphicsCommandList::CopyRaytracingAccelerationStruct
 	mOrig->CopyRaytracingAccelerationStructure(DestAccelerationStructureData, SourceAccelerationStructureData, Mode);
 }
 
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetPipelineState1(ID3D12StateObject *pStateObject)
-{
-	mOrig->SetPipelineState1(pStateObject);
-}
-
 void STDMETHODCALLTYPE Dx12GraphicsCommandList::RSSetShadingRate(D3D12_SHADING_RATE baseShadingRate, const D3D12_SHADING_RATE_COMBINER *combiners)
 {
 	mOrig->RSSetShadingRate(baseShadingRate, combiners);
@@ -319,16 +199,6 @@ void STDMETHODCALLTYPE Dx12GraphicsCommandList::RSSetShadingRate(D3D12_SHADING_R
 void STDMETHODCALLTYPE Dx12GraphicsCommandList::RSSetShadingRateImage(ID3D12Resource *shadingRateImage)
 {
 	mOrig->RSSetShadingRateImage(shadingRateImage);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::Barrier(UINT32 NumBarrierGroups, const D3D12_BARRIER_GROUP *pBarrierGroups)
-{
-	mOrig->Barrier(NumBarrierGroups, pBarrierGroups);
-}
-
-void STDMETHODCALLTYPE Dx12GraphicsCommandList::OMSetFrontAndBackStencilRef(UINT FrontStencilRef, UINT BackStencilRef)
-{
-	mOrig->OMSetFrontAndBackStencilRef(FrontStencilRef, BackStencilRef);
 }
 
 void STDMETHODCALLTYPE Dx12GraphicsCommandList::RSSetDepthBias(FLOAT DepthBias, FLOAT DepthBiasClamp, FLOAT SlopeScaledDepthBias)

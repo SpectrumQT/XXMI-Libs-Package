@@ -4,6 +4,7 @@ void FlagConfigReload(HackerDevice *device, void *private_data);
 void ToggleInput(HackerDevice *device, void *private_data);
 void LoadConfigFile();
 void ReloadConfig(HackerDevice *device);
+void LoadSkippedIncludes();
 void RegisterUnknownSetting(const wchar_t* name, float value);
 bool SavePersistentSettings(bool force = false);
 bool SaveUnknownPersistentSettings();

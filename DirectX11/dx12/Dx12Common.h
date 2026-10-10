@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 #include <d3d12.h>
 #include <dxgi1_5.h>
 
@@ -85,4 +87,12 @@ struct Dx12Stats {
 };
 extern Dx12Stats dx12_stats;
 
+// Presents so far, for telling how long ago something happened
+extern volatile UINT dx12_frame;
+
 void Dx12FramePresented();
+
+// crc32c_hw for memory that may be an upload heap. Those are write combined,
+// where ordinary reads are an order of magnitude slower than the streaming
+// loads this uses.
+uint32_t Dx12Crc32cWriteCombined(uint32_t hash, const BYTE *src, size_t length);

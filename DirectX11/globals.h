@@ -529,6 +529,7 @@ struct Globals
 
 	ShaderHashType shader_hash_type;
 	Dx12Mode dx12;
+	bool dx12_dump_hashes;
 	bool track_region_hashes;
 	DataCacheBindFlags cache_resource_data = (DataCacheBindFlags)0;
 	bool track_implicit_index_buffers;
@@ -777,6 +778,7 @@ struct Globals
 
 		shader_hash_type(ShaderHashType::FNV),
 		dx12(Dx12Mode::AUTO),
+		dx12_dump_hashes(false),
 		track_region_hashes(false),
 		track_implicit_index_buffers(false),
 		any_override_byte_width(false),

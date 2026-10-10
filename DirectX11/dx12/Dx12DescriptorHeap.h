@@ -28,6 +28,7 @@ const unsigned DX12_HEAP_TAG_SHIFT = 56;
 const SIZE_T DX12_HEAP_HANDLE_TAG = 0xd1;
 
 extern SIZE_T dx12_heap_cpu_base[1 << DX12_HEAP_INDEX_BITS];
+extern class Dx12DescriptorHeap *dx12_heap_proxies[1 << DX12_HEAP_INDEX_BITS];
 
 static inline D3D12_CPU_DESCRIPTOR_HANDLE Dx12OrigCpuHandle(D3D12_CPU_DESCRIPTOR_HANDLE handle)
 {
@@ -49,6 +50,8 @@ static inline D3D12_CPU_DESCRIPTOR_HANDLE Dx12OrigCpuHandle(D3D12_CPU_DESCRIPTOR
 
 #endif
 
+struct Dx12DescriptorSlot;
+
 class Dx12DescriptorHeap final : public ID3D12DescriptorHeap
 {
 public:
@@ -63,6 +66,15 @@ public:
 	// encoded handles and so cannot be wrapped
 	int mIndex;
 	D3D12_CPU_DESCRIPTOR_HANDLE mEncodedStart;
+
+	D3D12_DESCRIPTOR_HEAP_TYPE mType;
+	UINT mCount;
+	UINT mIncrement;
+	// 0 unless the heap is shader visible
+	UINT64 mGpuStart;
+	// What each descriptor of the heap refers to, see DescriptorShadow.h.
+	// NULL for sampler heaps.
+	Dx12DescriptorSlot *mSlots;
 
 	Dx12DescriptorHeap(Dx12Device *device, ID3D12DescriptorHeap *orig);
 	~Dx12DescriptorHeap();

@@ -800,6 +800,10 @@ struct ChangedParameter {
 struct Dx12DrawScope {
 	Dx12GraphicsCommandList *list;
 	bool compute;
+	// Of the list, which do not change while the scope is open. The root
+	// signature is NULL if the game's is not known.
+	const Dx12PipelineInfo *pipeline;
+	const Dx12RootSignatureInfo *signature;
 
 	// What the shim context had bound before, which is the business of
 	// the frame's own command lists
@@ -878,8 +882,7 @@ ID3D11Buffer* Dx12ScopeIndexBuffer(DXGI_FORMAT *format)
 
 ID3D11Buffer* Dx12ScopeConstantBuffer(Dx12ShaderStage stage, UINT slot)
 {
-	const Dx12PipelineInfo *pipeline = Dx12FindPipeline(scope->list->mState.pipeline);
-	const Dx12ShaderInfo *shader = pipeline ? pipeline->shaders[stage] : NULL;
+	const Dx12ShaderInfo *shader;
 	D3D12_RESOURCE_DESC desc = {};
 	Dx12ResourceInfo info;
 	ID3D12Resource *resource;
@@ -890,11 +893,12 @@ ID3D11Buffer* Dx12ScopeConstantBuffer(Dx12ShaderStage stage, UINT slot)
 
 	if (!scope || scope->compute != (stage == DX12_STAGE_CS))
 		return NULL;
+	shader = scope->pipeline->shaders[stage];
 	// The shader is what says how much of what is at the address is the
 	// buffer
 	if (!shader || slot >= DX12_CB_SIZES || !shader->cb_bytes[slot])
 		return NULL;
-	if (!Dx12ResolveRegister(&scope->list->mState, stage, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, slot, &view) || !view.offset)
+	if (!scope->signature || !Dx12ResolveRegister(&scope->list->mState, scope->signature, stage, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, slot, &view) || !view.offset)
 		return NULL;
 	bytes = shader->cb_bytes[slot];
 
@@ -930,15 +934,14 @@ static Published* publish_register(Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE
 		return NULL;
 	// A root descriptor has an address for a resource, which says too
 	// little about it to be of use to a mod
-	if (!Dx12ResolveRegister(&scope->list->mState, stage, type, slot, view) || !view->resource)
+	if (!scope->signature || !Dx12ResolveRegister(&scope->list->mState, scope->signature, stage, type, slot, view) || !view->resource)
 		return NULL;
 	return publish_resource(view->resource);
 }
 
 ID3D11ShaderResourceView* Dx12ScopeShaderResource(Dx12ShaderStage stage, UINT slot)
 {
-	const Dx12PipelineInfo *pipeline = scope ? Dx12FindPipeline(scope->list->mState.pipeline) : NULL;
-	const Dx12ShaderInfo *shader = pipeline ? pipeline->shaders[stage] : NULL;
+	const Dx12ShaderInfo *shader = scope ? scope->pipeline->shaders[stage] : NULL;
 	Dx12DescriptorSlot view;
 	Published *entry;
 	ShimShaderResourceView *srv;
@@ -1038,9 +1041,9 @@ static void restore_list()
 
 // The descriptors of a table as the game set it, from the root signature: up
 // to the end of the range reaching furthest. 0 if that has no end.
-static UINT table_size(const Dx12RootArguments *arguments, UINT parameter)
+static UINT table_size(UINT parameter)
 {
-	const Dx12RootSignatureInfo *signature = Dx12FindRootSignature(arguments->signature);
+	const Dx12RootSignatureInfo *signature = scope->signature;
 	UINT size = 0;
 
 	if (!signature || parameter >= signature->parameters.size())
@@ -1080,7 +1083,7 @@ static D3D12_CPU_DESCRIPTOR_HANDLE* table_descriptor(const Dx12RegisterLocation 
 		return NULL;
 	}
 
-	size = table_size(arguments, location->parameter);
+	size = table_size(location->parameter);
 	if (!size) {
 		log_once(&unbounded, "A mod replaces something the game binds through a descriptor table without an end. Ignored.");
 		return NULL;
@@ -1128,7 +1131,7 @@ static bool locate(Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE_TYPE type, UINT
 
 	// Not finding it means the game's shaders do not read the register,
 	// so there is nothing to replace
-	return Dx12LocateRegister(game, stage, type, slot, location)
+	return scope->signature && Dx12LocateRegister(scope->signature, stage, type, slot, location)
 		&& (arguments->set & (1ull << location->parameter));
 }
 
@@ -1286,12 +1289,15 @@ void Dx12ScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT bas
 	}
 }
 
-static void open_scope(Dx12DrawScope *opened, Dx12GraphicsCommandList *list, bool compute)
+static void open_scope(Dx12DrawScope *opened, Dx12GraphicsCommandList *list, const Dx12PipelineInfo *pipeline, bool compute)
 {
+	ID3D12RootSignature *signature = compute ? list->mState.compute.signature : list->mState.graphics.signature;
 	ShimContext *context = dx12_shim->shim_context;
 
 	opened->list = list;
 	opened->compute = compute;
+	opened->pipeline = pipeline;
+	opened->signature = signature ? Dx12FindRootSignature(signature) : NULL;
 	opened->vbs_changed = 0;
 	opened->ib_changed = false;
 	opened->topology_changed = false;
@@ -1299,8 +1305,7 @@ static void open_scope(Dx12DrawScope *opened, Dx12GraphicsCommandList *list, boo
 
 	// Not ClearState: the references stay with what is saved
 	opened->saved = context->mState;
-	memset(&context->mState, 0, sizeof(context->mState));
-	context->ClearState();
+	context->ResetState();
 	// IniParams and the like, which the engine keeps bound on a D3D11
 	// context whatever the game does
 	dx12_shim->hacker_context->Bind3DMigotoResources();
@@ -1416,7 +1421,7 @@ bool Dx12Draw(Dx12GraphicsCommandList *list, bool indexed, UINT count, UINT inst
 		? DrawContext(DrawCall::DrawIndexedInstanced, 0, count, instances, base_vertex, start, start_instance, NULL, 0)
 		: DrawContext(DrawCall::DrawInstanced, count, 0, instances, start, 0, start_instance, NULL, 0);
 
-	open_scope(&scope_storage, list, false);
+	open_scope(&scope_storage, list, pipeline, false);
 
 	dx12_shim->hacker_context->Dx12BeforeDraw(c, hashes);
 	stats.draws++;
@@ -1449,7 +1454,7 @@ bool Dx12Dispatch(Dx12GraphicsCommandList *list, UINT x, UINT y, UINT z)
 		return false;
 	}
 
-	open_scope(&scope_storage, list, true);
+	open_scope(&scope_storage, list, pipeline, true);
 
 	if (dx12_shim->hacker_context->Dx12BeforeDispatch(&c, pipeline->shaders[DX12_STAGE_CS]->hash)) {
 		apply_overrides();

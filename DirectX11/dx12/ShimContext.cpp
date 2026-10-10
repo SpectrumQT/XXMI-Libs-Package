@@ -111,7 +111,12 @@ void STDMETHODCALLTYPE ShimContext::ClearState()
 		assign(mState.vbs[i], (ID3D11Buffer*)NULL);
 	assign(mState.ib, (ID3D11Buffer*)NULL);
 
-	mState = {};
+	ResetState();
+}
+
+void ShimContext::ResetState()
+{
+	memset(&mState, 0, sizeof(mState));
 	for (FLOAT &factor : mState.blend_factor)
 		factor = 1.0f;
 	mState.sample_mask = 0xffffffff;

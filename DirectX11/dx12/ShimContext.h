@@ -14,6 +14,9 @@ public:
 
 	ShimContext();
 
+	// What ClearState leaves, without releasing what was bound
+	void ResetState();
+
 	void SetShader(Dx12ShaderStage stage, ID3D11DeviceChild *shader);
 	void GetShader(Dx12ShaderStage stage, ID3D11DeviceChild **shader, UINT *class_instances);
 	void SetConstantBuffers(Dx12ShaderStage stage, UINT start, UINT count, ID3D11Buffer *const *buffers,

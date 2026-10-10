@@ -51,15 +51,14 @@ struct Dx12CmdState {
 
 void Dx12ResetCmdState(Dx12CmdState *state, ID3D12PipelineState *pipeline);
 
-// Where the root signature that is set has a stage read register reg of
-// space 0 from: a root descriptor, or a descriptor table at offset
-// descriptors from its start.
+// Where a root signature has a stage read register reg of space 0 from: a
+// root descriptor, or a descriptor table at offset descriptors from its start.
 struct Dx12RegisterLocation {
 	UINT parameter;
 	bool table;
 	UINT offset;
 };
-bool Dx12LocateRegister(const Dx12CmdState *state, Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE_TYPE type,
+bool Dx12LocateRegister(const Dx12RootSignatureInfo *signature, Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE_TYPE type,
 		UINT reg, Dx12RegisterLocation *location);
 
 // Finds what a draw (or a dispatch, for DX12_STAGE_CS) would read through
@@ -70,3 +69,7 @@ bool Dx12LocateRegister(const Dx12CmdState *state, Dx12ShaderStage stage, D3D12_
 // descriptor would; for a root descriptor that is just the address in offset.
 bool Dx12ResolveRegister(const Dx12CmdState *state, Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE_TYPE type,
 		UINT reg, Dx12DescriptorSlot *view);
+// For asking about several registers: signature is what Dx12FindRootSignature
+// has for the one that is set for the stage
+bool Dx12ResolveRegister(const Dx12CmdState *state, const Dx12RootSignatureInfo *signature, Dx12ShaderStage stage,
+		D3D12_DESCRIPTOR_RANGE_TYPE type, UINT reg, Dx12DescriptorSlot *view);

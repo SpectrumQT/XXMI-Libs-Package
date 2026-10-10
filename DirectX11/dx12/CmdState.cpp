@@ -16,19 +16,11 @@ static const D3D12_SHADER_VISIBILITY stage_visibility[DX12_STAGE_COUNT] = {
 	D3D12_SHADER_VISIBILITY_ALL,
 };
 
-bool Dx12LocateRegister(const Dx12CmdState *state, Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE_TYPE type,
+bool Dx12LocateRegister(const Dx12RootSignatureInfo *signature, Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE_TYPE type,
 		UINT reg, Dx12RegisterLocation *location)
 {
-	const Dx12RootArguments *arguments = stage == DX12_STAGE_CS ? &state->compute : &state->graphics;
-	const Dx12RootSignatureInfo *signature;
 	D3D12_ROOT_PARAMETER_TYPE descriptor_type;
 	size_t i;
-
-	if (!arguments->signature)
-		return false;
-	signature = Dx12FindRootSignature(arguments->signature);
-	if (!signature)
-		return false;
 
 	switch (type) {
 		case D3D12_DESCRIPTOR_RANGE_TYPE_SRV: descriptor_type = D3D12_ROOT_PARAMETER_TYPE_SRV; break;
@@ -68,14 +60,14 @@ bool Dx12LocateRegister(const Dx12CmdState *state, Dx12ShaderStage stage, D3D12_
 	return false;
 }
 
-bool Dx12ResolveRegister(const Dx12CmdState *state, Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE_TYPE type,
-		UINT reg, Dx12DescriptorSlot *view)
+bool Dx12ResolveRegister(const Dx12CmdState *state, const Dx12RootSignatureInfo *signature, Dx12ShaderStage stage,
+		D3D12_DESCRIPTOR_RANGE_TYPE type, UINT reg, Dx12DescriptorSlot *view)
 {
 	const Dx12RootArguments *arguments = stage == DX12_STAGE_CS ? &state->compute : &state->graphics;
 	const Dx12DescriptorSlot *slot;
 	Dx12RegisterLocation location;
 
-	if (!Dx12LocateRegister(state, stage, type, reg, &location))
+	if (!Dx12LocateRegister(signature, stage, type, reg, &location))
 		return false;
 	if (!(arguments->set & (1ull << location.parameter)))
 		return false;
@@ -94,4 +86,13 @@ bool Dx12ResolveRegister(const Dx12CmdState *state, Dx12ShaderStage stage, D3D12
 
 	*view = *slot;
 	return true;
+}
+
+bool Dx12ResolveRegister(const Dx12CmdState *state, Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE_TYPE type,
+		UINT reg, Dx12DescriptorSlot *view)
+{
+	const Dx12RootArguments *arguments = stage == DX12_STAGE_CS ? &state->compute : &state->graphics;
+	const Dx12RootSignatureInfo *signature = arguments->signature ? Dx12FindRootSignature(arguments->signature) : NULL;
+
+	return signature && Dx12ResolveRegister(state, signature, stage, type, reg, view);
 }

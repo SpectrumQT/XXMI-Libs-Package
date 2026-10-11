@@ -226,13 +226,20 @@ BYTE* Dx12ShimUpload(UINT64 size, UINT64 alignment, ID3D12Resource **buffer, UIN
 static void retire_upload_pages()
 {
 	UINT64 completed = fence->GetCompletedValue();
-	size_t i;
+	size_t i, keep = 0;
 
-	for (UploadPage &page : upload_active) {
-		page.fence = fence_signalled;
-		upload_idle.push_back(page);
+	// Keep filling the last page where this submission left off, or every
+	// submission with something small to upload would take a page of its
+	// own. It gets the fence value of the last submission that used it
+	// when it is retired.
+	if (!upload_active.empty() && upload_active.back().used < UPLOAD_PAGE_SIZE)
+		keep = 1;
+
+	for (i = 0; i + keep < upload_active.size(); i++) {
+		upload_active[i].fence = fence_signalled;
+		upload_idle.push_back(upload_active[i]);
 	}
-	upload_active.clear();
+	upload_active.erase(upload_active.begin(), upload_active.end() - keep);
 
 	for (i = upload_idle.size(); i-- > 0 && upload_idle.size() > UPLOAD_PAGES_KEPT;) {
 		if (upload_idle[i].fence > completed)

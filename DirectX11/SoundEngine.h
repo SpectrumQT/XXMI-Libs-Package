@@ -7,7 +7,7 @@
 
 // Sound playback for the command list, over DirectXTK's XAudio2 wrapper.
 //
-// Nothing here is created until an ini asks for a sound:
+// Nothing here is created until an ini declares a sound:
 // a mod that makes no sound pays for no audio device, no mixer and no thread.
 // Once created the engine is held for the life of the process,
 // since XAudio2 outlives the D3D11 device and has nothing to do with it.
@@ -18,7 +18,8 @@
 // A command list usually runs on the game's render thread, with the update,
 // but a deferred context can run one from elsewhere,
 // so one lock covers the engine and everything it holds.
-// The free functions and Section's methods take it;
+// The free functions and Section's methods take it,
+// bar Section::Preload(), which Declare() calls with it held;
 // Sound and Track never take it themselves.
 namespace SoundEngine {
 
@@ -74,8 +75,6 @@ namespace SoundEngine {
 	};
 
 	// A [Sound*] section: the wav it names, and how the ini wants it played.
-	// Declared while the ini is read, loaded on the first play,
-	// so a section nothing ever plays costs nothing but its name.
 	class Section {
 	public:
 		Section(const std::wstring &name, const std::wstring &path,
@@ -88,6 +87,10 @@ namespace SoundEngine {
 		bool Playing();
 		double PositionMs();
 		double LengthMs();
+
+		// Loads the wav up front, so that no play has to read it in a frame.
+		// Called by Declare() with the lock held.
+		bool Preload();
 
 	private:
 		std::wstring name;
@@ -104,6 +107,9 @@ namespace SoundEngine {
 		bool load_failed = false;
 		Track track; // Unused while overlap is set
 
+		// The wav, read on the first ask.
+		// Preload() makes that the ini being read;
+		// a section whose file would not load plays silently.
 		Sound *Loaded();
 	};
 

@@ -36,12 +36,27 @@ namespace SoundEngine {
 		return key;
 	}
 
+	// Milliseconds the performance counter has advanced since `from`.
+	static double elapsed_ms(const LARGE_INTEGER &from)
+	{
+		LARGE_INTEGER now, freq;
+
+		QueryPerformanceCounter(&now);
+		QueryPerformanceFrequency(&freq);
+
+		return (double)(now.QuadPart - from.QuadPart) * 1000.0 / (double)freq.QuadPart;
+	}
+
 	static DirectX::AudioEngine *get_engine()
 	{
+		LARGE_INTEGER before;
+
 		if (attempted)
 			return engine.get();
 
 		attempted = true;
+
+		QueryPerformanceCounter(&before);
 
 		DirectX::AUDIO_ENGINE_FLAGS flags = DirectX::AudioEngine_Default;
 #if _DEBUG
@@ -58,7 +73,8 @@ namespace SoundEngine {
 		// No audio device is not an error:
 		// DirectXTK runs silent and picks one up later if the user plugs one in,
 		// which Update() notices.
-		LogInfo("Sound: audio engine started%s\n", engine->IsAudioDevicePresent() ? "" : " (no audio device, silent)");
+		LogInfo("Sound: audio engine started in %.1fms%s\n", elapsed_ms(before),
+				engine->IsAudioDevicePresent() ? "" : " (no audio device, silent)");
 		return engine.get();
 	}
 
@@ -74,6 +90,7 @@ namespace SoundEngine {
 	// so that a missing file is a silent sound rather than a dead mod.
 	static Sound *load_locked(const std::wstring &path)
 	{
+		LARGE_INTEGER before;
 		std::wstring key = key_of(path);
 
 		auto cached = sounds.find(key);
@@ -83,6 +100,8 @@ namespace SoundEngine {
 		DirectX::AudioEngine *audio = get_engine();
 		if (!audio)
 			return NULL;
+
+		QueryPerformanceCounter(&before);
 
 		std::unique_ptr<DirectX::SoundEffect> effect;
 		try {
@@ -96,7 +115,8 @@ namespace SoundEngine {
 			return NULL;
 		}
 
-		LogInfo("Sound: loaded %S (%zu ms)\n", path.c_str(), effect->GetSampleDurationMS());
+		LogInfo("Sound: loaded %S: %zu ms of audio, read in %.1fms\n",
+				path.c_str(), effect->GetSampleDurationMS(), elapsed_ms(before));
 
 		auto added = sounds.emplace(key, std::make_unique<Sound>(std::move(effect)));
 		return added.first->second.get();
@@ -143,7 +163,14 @@ namespace SoundEngine {
 		std::lock_guard<std::mutex> held(lock());
 
 		auto added = sections.emplace(key_of(name), std::make_unique<Section>(name, path, volume, pitch, loop, overlap));
-		return added.first->second.get();
+		Section *section = added.first->second.get();
+
+		// The engine and the file are wanted now, while the ini is being read:
+		// a device opening and a file being read are a few ms either way,
+		// and the first play is inside a frame, where that is a hitch.
+		section->Preload();
+
+		return section;
 	}
 
 	Section *Find(const std::wstring &name)
@@ -173,6 +200,11 @@ namespace SoundEngine {
 		loop(loop),
 		overlap(overlap)
 	{
+	}
+
+	bool Section::Preload()
+	{
+		return !!Loaded();
 	}
 
 	Sound *Section::Loaded()

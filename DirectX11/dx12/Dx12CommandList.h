@@ -29,6 +29,9 @@ public:
 	// Since the last Reset. A list is recorded by one thread at a time.
 	UINT mDraws;
 	UINT mDispatches;
+	// Counts the times the list was reset, to tell one recording of it
+	// from the next
+	UINT mResets;
 
 	Dx12CmdState mState;
 

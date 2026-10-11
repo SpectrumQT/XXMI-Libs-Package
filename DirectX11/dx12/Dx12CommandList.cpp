@@ -28,6 +28,7 @@ Dx12GraphicsCommandList::Dx12GraphicsCommandList(Dx12Device *device, ID3D12Graph
 	mRef(1),
 	mDraws(0),
 	mDispatches(0),
+	mResets(0),
 	mWantedPipeline(NULL),
 	mWantedGeneration(0),
 	mWanted(false)
@@ -134,6 +135,7 @@ void Dx12GraphicsCommandList::ForgetInfo()
 HRESULT STDMETHODCALLTYPE Dx12GraphicsCommandList::Reset(ID3D12CommandAllocator *pAllocator, ID3D12PipelineState *pInitialState)
 {
 	mDraws = mDispatches = 0;
+	mResets++;
 	Dx12ResetCmdState(&mState, pInitialState);
 	ForgetInfo();
 	mTransitions.clear();
@@ -227,6 +229,7 @@ void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetDescriptorHeaps(UINT NumDescr
 	UINT i;
 
 	mState.view_heap = mState.sampler_heap = NULL;
+	mState.heap_count = 0;
 
 	if (!ppDescriptorHeaps) {
 		mOrig->SetDescriptorHeaps(NumDescriptorHeaps, ppDescriptorHeaps);
@@ -248,6 +251,12 @@ void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetDescriptorHeaps(UINT NumDescr
 			mState.sampler_heap = proxy;
 		else
 			mState.view_heap = proxy;
+	}
+
+	if (NumDescriptorHeaps <= ARRAYSIZE(mState.heaps)) {
+		mState.heap_count = NumDescriptorHeaps;
+		for (i = 0; i < NumDescriptorHeaps; i++)
+			mState.heaps[i] = heaps[i];
 	}
 
 	mOrig->SetDescriptorHeaps(NumDescriptorHeaps, heaps);

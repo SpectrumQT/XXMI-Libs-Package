@@ -583,38 +583,23 @@ bool Dx12ShimUseOnGameList(ShimResource *resource, Dx12GraphicsCommandList *list
 	return true;
 }
 
-UINT64 Dx12ShimGameBufferAddress(ID3D11Buffer *buffer, Dx12GraphicsCommandList *list, UINT *size)
+// Copies the shadow of a cpu_only buffer to where the game's lists can read
+// it, bytes of it with the padding. alone is for a buffer of its own, where
+// the contents start at the start of a resource.
+static bool upload_for_game_lists(ShimResource *resource, UINT64 bytes, bool alone)
 {
-	ShimResource *resource = ShimResourceOf(buffer);
-	UINT64 bytes, start;
 	UploadPage page;
+	UINT64 start;
 	BYTE *cpu;
 
-	if (!resource->cpu_only) {
-		if (!Dx12ShimUseOnGameList(resource, list))
-			return 0;
-		*size = (UINT)min(resource->desc.Width, (UINT64)UINT_MAX);
-		return resource->resource->GetGPUVirtualAddress();
-	}
-
-	bytes = (resource->shadow.size() + 255) & ~(UINT64)255;
-	*size = (UINT)bytes;
-	if (!bytes)
-		return 0;
-
-	if (resource->game_upload && resource->game_upload_version == resource->version) {
-		Dx12ShimPin(list, resource->game_upload);
-		return resource->game_upload_va;
-	}
-
-	if (bytes > GAME_UPLOAD_BLOCK_SIZE / 4) {
+	if (alone || bytes > GAME_UPLOAD_BLOCK_SIZE / 4) {
 		if (!create_upload_buffer(bytes, &page))
-			return 0;
+			return false;
 		start = 0;
 	} else {
 		if (!game_upload.buffer || game_upload.used + bytes > GAME_UPLOAD_BLOCK_SIZE) {
 			if (!create_upload_buffer(GAME_UPLOAD_BLOCK_SIZE, &page))
-				return 0;
+				return false;
 			if (game_upload.buffer)
 				game_upload.buffer->Release();
 			game_upload = page;
@@ -634,9 +619,69 @@ UINT64 Dx12ShimGameBufferAddress(ID3D11Buffer *buffer, Dx12GraphicsCommandList *
 	resource->game_upload = page.buffer;
 	resource->game_upload_va = page.va + start;
 	resource->game_upload_version = resource->version;
+	return true;
+}
+
+UINT64 Dx12ShimGameBufferAddress(ID3D11Buffer *buffer, Dx12GraphicsCommandList *list, UINT *size)
+{
+	ShimResource *resource = ShimResourceOf(buffer);
+	UINT64 bytes;
+
+	if (!resource->cpu_only) {
+		if (!Dx12ShimUseOnGameList(resource, list))
+			return 0;
+		*size = (UINT)min(resource->desc.Width, (UINT64)UINT_MAX);
+		return resource->resource->GetGPUVirtualAddress();
+	}
+
+	bytes = (resource->shadow.size() + 255) & ~(UINT64)255;
+	*size = (UINT)bytes;
+	if (!bytes)
+		return 0;
+
+	if ((!resource->game_upload || resource->game_upload_version != resource->version)
+	    && !upload_for_game_lists(resource, bytes, false))
+		return 0;
 
 	Dx12ShimPin(list, resource->game_upload);
 	return resource->game_upload_va;
+}
+
+bool Dx12ShimGameBufferView(ID3D11Buffer *buffer, Dx12GraphicsCommandList *list, UINT stride, ID3D12Resource **view_resource,
+		UINT64 *offset, UINT *size)
+{
+	ShimResource *resource = ShimResourceOf(buffer);
+	D3D11_BUFFER_DESC desc;
+	UINT64 bytes;
+
+	if (!stride)
+		return false;
+
+	if (!resource->cpu_only) {
+		if (!Dx12ShimUseOnGameList(resource, list))
+			return false;
+		buffer->GetDesc(&desc);
+		*view_resource = resource->resource;
+		*offset = 0;
+		*size = desc.ByteWidth;
+		return true;
+	}
+
+	bytes = (resource->shadow.size() + 255) & ~(UINT64)255;
+	if (!bytes)
+		return false;
+
+	if (!resource->game_upload || resource->game_upload_version != resource->version
+	    || (resource->game_upload_va - resource->game_upload->GetGPUVirtualAddress()) % stride) {
+		if (!upload_for_game_lists(resource, bytes, true))
+			return false;
+	}
+
+	Dx12ShimPin(list, resource->game_upload);
+	*view_resource = resource->game_upload;
+	*offset = resource->game_upload_va - resource->game_upload->GetGPUVirtualAddress();
+	*size = (UINT)resource->shadow.size();
+	return true;
 }
 
 // -----------------------------------------------------------------------------

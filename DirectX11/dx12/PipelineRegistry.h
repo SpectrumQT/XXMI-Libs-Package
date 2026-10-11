@@ -115,6 +115,8 @@ struct Dx12DrawFilter {
 struct Dx12PipelineInfo {
 	const Dx12ShaderInfo *shaders[DX12_STAGE_COUNT];
 	std::vector<Dx12InputElement> input_layout;
+	// Bit per vertex buffer slot the input layout reads
+	UINT vb_slots = 0;
 	mutable Dx12DrawFilter filter = {};
 };
 

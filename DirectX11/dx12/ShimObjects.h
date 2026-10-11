@@ -145,6 +145,12 @@ struct ShimResource {
 	ID3D12Resource *readback;
 	UINT64 readback_fence;
 	bool readback_pending;
+
+	// Not 0 for a vertex buffer that stands for vertices DrawPath had
+	// skinned for a mod, which are in a buffer only it knows: the buffer
+	// of the game they take the place of. A copy of such a buffer stands
+	// for the same, see copy_buffer.
+	UINT64 skin_va;
 };
 
 void ShimDestroyResource(ShimResource *resource);

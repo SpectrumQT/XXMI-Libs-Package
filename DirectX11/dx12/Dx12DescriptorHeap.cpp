@@ -95,7 +95,9 @@ Dx12DescriptorHeap::Dx12DescriptorHeap(Dx12Device *device, ID3D12DescriptorHeap 
 		mSlots = (Dx12DescriptorSlot*)calloc(mCount, sizeof(Dx12DescriptorSlot));
 	dx12_heap_proxies[mIndex] = this;
 
-	if (mReserve) {
+	// Without a reserve the copy is made in a heap of ours, and from the
+	// mirror all the same
+	if (mGpuStart && mType == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) {
 		desc.NumDescriptors = mCount;
 		desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 		if (SUCCEEDED(mDevice->mOrig->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&mMirror))))

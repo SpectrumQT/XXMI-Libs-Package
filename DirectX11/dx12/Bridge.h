@@ -155,6 +155,11 @@ bool Dx12ShimUseOnGameList(ShimResource *resource, Dx12GraphicsCommandList *list
 // from the address, which for a buffer without a resource is its size rounded
 // up to what a constant buffer view takes.
 UINT64 Dx12ShimGameBufferAddress(ID3D11Buffer *buffer, Dx12GraphicsCommandList *list, UINT *size);
+// The same for a view of elements of stride bytes, which needs the resource
+// and has to start at a whole number of them: size bytes of the buffer's
+// contents are at offset in *resource.
+bool Dx12ShimGameBufferView(ID3D11Buffer *buffer, Dx12GraphicsCommandList *list, UINT stride, ID3D12Resource **resource,
+		UINT64 *offset, UINT *size);
 
 // Once per present, with the lock held
 void Dx12ShimFramePresented();

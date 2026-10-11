@@ -30,6 +30,10 @@ struct Dx12CmdState {
 	// Not referenced, the game keeps the heaps of a list alive
 	Dx12DescriptorHeap *view_heap;
 	Dx12DescriptorHeap *sampler_heap;
+	// The originals of all the heaps the game set, for setting them again.
+	// heap_count is 0 if there were more than fit.
+	ID3D12DescriptorHeap *heaps[4];
+	UINT heap_count;
 
 	D3D12_VERTEX_BUFFER_VIEW vertex_buffers[D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
 	D3D12_INDEX_BUFFER_VIEW index_buffer;

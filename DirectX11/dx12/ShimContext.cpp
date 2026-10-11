@@ -915,6 +915,11 @@ static void copy_buffer(ID3D11Resource *dst11, UINT64 dst_offset, ID3D11Resource
 	ShimResourceDesc dst_desc, src_desc;
 	bool src_in_shadow;
 
+	// The vertices are in no buffer a list of ours could copy from, and
+	// are not there before the game's list is executed. A mod copies them
+	// to draw them again, for which knowing whose they are will do.
+	dst->skin_va = src->foreign ? src->skin_va : 0;
+
 	ShimGetResourceDesc(dst11, &dst_desc);
 	ShimGetResourceDesc(src11, &src_desc);
 	if (src_offset >= src_desc.byte_width || dst_offset >= dst_desc.byte_width)

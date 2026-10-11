@@ -488,6 +488,8 @@ static void set_input_layout(Dx12PipelineInfo *info, const D3D12_INPUT_LAYOUT_DE
 		out->slot = element->InputSlot;
 		out->offset = element->AlignedByteOffset;
 		out->per_instance = element->InputSlotClass == D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA;
+		if (element->InputSlot < 32)
+			info->vb_slots |= 1u << element->InputSlot;
 	}
 }
 

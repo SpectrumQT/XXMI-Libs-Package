@@ -42,6 +42,11 @@ namespace SoundEngine {
 		// recycles it when the sound ends, and lets several overlap.
 		void PlayOneShot(float volume, float speed, float pan);
 
+		// Whether any play of this sound is still sounding.
+		// It is all there is to ask of a one shot:
+		// the engine owns those voices, and keeps only this count per sound.
+		bool InUse() const;
+
 		size_t Samples() const;      // Length in samples
 		size_t Milliseconds() const; // Length in ms
 

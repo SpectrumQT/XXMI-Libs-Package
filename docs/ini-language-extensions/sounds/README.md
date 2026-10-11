@@ -39,7 +39,7 @@ A `[Sound*]` is played in one of two ways, and `overlap` chooses which:
 
 **`overlap = false`** — the section owns one voice for the life of the process. Each `play` restarts that voice, cutting off whatever it was already playing, and because the voice is the DLL's own it can be stopped, started part way in, and asked where it is. This is what a music track wants.
 
-**`overlap = true`** — each `play` takes a voice from the engine, which recycles it once the sound ends. Several plays sound at once, so hits in quick succession pile up rather than cutting each other off. Nothing holds the voice afterwards, so such a sound cannot be stopped, cannot be started part way in, and reads as not playing at position zero. This is what a click or a hit wants.
+**`overlap = true`** — each `play` takes a voice from the engine, which recycles it once the sound ends. Several plays sound at once, so hits in quick succession pile up rather than cutting each other off. Nothing holds those voices afterwards, so such a sound cannot be stopped, cannot be started part way in, and has no single position to report. `Playing` still answers, from the engine's count of the plays of that file still sounding. This is what a click or a hit wants.
 
 Each sounding voice costs a resample and a mix on the audio thread, so hundreds of overlapping plays are a CPU cost like any other. There is no count at which a play is refused.
 
@@ -88,6 +88,6 @@ if SoundMap->Playing && SoundMap->Position > SoundMap->Length - 2000
 endif
 ```
 
-`Position` and `Playing` only answer for a sound that owns its voice; an overlapping one reports `0`.
+`Position` only answers for a sound that owns its voice, since an overlapping one may have several plays sounding at different points; it reports `0`. `Playing` answers for both, but for an overlapping sound it counts every play of that **file**, so two sections naming one `.wav` answer for each other.
 
 The position is in the sound's own time, so `speed` does not change what `Position` and `Length` mean.

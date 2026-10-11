@@ -3911,7 +3911,7 @@ static float HeuristicGetWindowHeight(CommandListState* state)
 
 // What `SoundFoo->Position` and its like read off the section the parser found.
 // A sound that overlaps has no voice of its own to ask,
-// so it answers as one that is not playing.
+// so it can say that it is playing but not where it is.
 static float sound_property_value(SoundEngine::Section *sound, SoundProperty property)
 {
 	switch (property) {

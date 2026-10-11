@@ -428,7 +428,14 @@ namespace SoundEngine {
 	{
 		std::lock_guard<std::mutex> held(lock());
 
-		return overlap ? false : track.Playing();
+		// A one shot has no voice of its own to ask,
+		// so the engine's count of the plays still sounding stands in.
+		// That count belongs to the wav rather than to this section,
+		// so two sections naming one file answer for each other.
+		if (overlap)
+			return sound && sound->InUse();
+
+		return track.Playing();
 	}
 
 	double Section::PositionMs()
@@ -459,6 +466,11 @@ namespace SoundEngine {
 		} catch (const std::exception &e) {
 			LogInfo("Sound: cannot play one shot: %s\n", e.what());
 		}
+	}
+
+	bool Sound::InUse() const
+	{
+		return effect->IsInUse();
 	}
 
 	size_t Sound::Samples() const

@@ -1,6 +1,7 @@
 #include "ShimContext.h"
 
 #include "DrawPath.h"
+#include "ResourceTracker.h"
 #include "ShimDevice.h"
 
 template <class Slot, class Object>
@@ -910,11 +911,27 @@ static bool create_readback(ShimResource *resource)
 			D3D12_RESOURCE_STATE_COPY_DEST, NULL, IID_PPV_ARGS(&resource->readback)));
 }
 
+// A constant buffer of the game has no resource to its name, only the address
+// the draw in the scope has it at (foreign_va). The memory there is the
+// game's to hand out again once its list is done, so it is kept until ours is.
+static ID3D12Resource* game_constants_source(ShimResource *src, UINT64 *offset)
+{
+	ID3D12Resource *resource;
+
+	if (!src->foreign || src->resource || !Dx12FindBuffer(src->foreign_va, &resource, offset))
+		return NULL;
+
+	Dx12ShimDeferRelease(resource);
+	return resource;
+}
+
 static void copy_buffer(ID3D11Resource *dst11, UINT64 dst_offset, ID3D11Resource *src11, UINT64 src_offset, UINT64 size)
 {
 	static bool from_staging_reported;
 	ShimResource *dst = ShimResourceOf(dst11), *src = ShimResourceOf(src11);
 	ShimResourceDesc dst_desc, src_desc;
+	ID3D12Resource *game_constants;
+	UINT64 game_offset;
 	bool src_in_shadow;
 
 	// The vertices are in no buffer a list of ours could copy from, and
@@ -955,6 +972,9 @@ static void copy_buffer(ID3D11Resource *dst11, UINT64 dst_offset, ID3D11Resource
 
 	if (src_in_shadow) {
 		ShimWriteBuffer(dst, dst_offset, src->shadow.data() + src_offset, size);
+	} else if (dst->resource && (game_constants = game_constants_source(src, &game_offset))) {
+		Dx12ShimTransition(dst, D3D12_RESOURCE_STATE_COPY_DEST);
+		Dx12ShimList()->CopyBufferRegion(dst->resource, dst_offset, game_constants, game_offset + src_offset, size);
 	} else if (src->resource && dst->resource && src != dst) {
 		Dx12ShimTransition(src, D3D12_RESOURCE_STATE_COPY_SOURCE);
 		Dx12ShimTransition(dst, D3D12_RESOURCE_STATE_COPY_DEST);

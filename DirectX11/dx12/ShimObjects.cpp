@@ -288,6 +288,14 @@ ShimTexture2D* ShimWrapTexture2D(ID3D12Resource *resource, D3D12_RESOURCE_STATES
 	return texture;
 }
 
+bool Dx12ShimIsGameConstants(ID3D11Resource *resource)
+{
+	ShimResource *r = ShimResourceOf(resource);
+
+	return r->foreign && r->dimension == D3D11_RESOURCE_DIMENSION_BUFFER
+		&& (static_cast<ShimBuffer*>(resource)->mDesc.BindFlags & D3D11_BIND_CONSTANT_BUFFER);
+}
+
 UINT64 Dx12ShimBufferAddress(ID3D11Buffer *buffer, D3D12_RESOURCE_STATES state)
 {
 	ShimResource *resource = ShimResourceOf(buffer);

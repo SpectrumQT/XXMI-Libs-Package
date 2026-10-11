@@ -13105,6 +13105,16 @@ void ResourceCopyOperation::run(CommandListState *state)
 		buf_src_size = (UINT)src.member_args[1].GetValue(state);
 	}
 
+	// A D3D12 constant buffer of the game does not keep its contents: a
+	// reference kept for later draws would be to whatever that draw has in
+	// the slot, so the contents are copied instead.
+	const ResourceCopyOptions ini_options = options;
+	if (dx12_shim && src_resource && (options & ResourceCopyOptions::REFERENCE)
+		&& src.type == ResourceCopyTargetType::CONSTANT_BUFFER
+		&& (dst.type == ResourceCopyTargetType::CUSTOM_RESOURCE || dst.type == ResourceCopyTargetType::POOL)
+		&& Dx12ShimIsGameConstants(src_resource))
+		options = (ResourceCopyOptions)(((int)options & ~(int)ResourceCopyOptions::REFERENCE) | (int)ResourceCopyOptions::COPY);
+
 	switch (dst.type)
 	{
 	case ResourceCopyTargetType::POOL:
@@ -13115,6 +13125,8 @@ void ResourceCopyOperation::run(CommandListState *state)
 		CopyResourceToResource(state, src_resource, src_view, stride, offset, format, buf_src_size);
 		break;
 	}
+
+	options = ini_options;
 
 	if (src_view)
 		src_view->Release();

@@ -180,5 +180,11 @@ UINT64 Dx12ShimGameBufferAddress(ID3D11Buffer *buffer, Dx12GraphicsCommandList *
 bool Dx12ShimGameBufferView(ID3D11Buffer *buffer, Dx12GraphicsCommandList *list, UINT stride, ID3D12Resource **resource,
 		UINT64 *offset, UINT *size);
 
+// Whether the resource is a constant buffer of the game. There is one object
+// for all of those of a stage, register and size, which stands for the one the
+// draw in the scope has there (DrawPath): a reference to it kept for another
+// draw is to that draw's buffer by then.
+bool Dx12ShimIsGameConstants(ID3D11Resource *resource);
+
 // Once per present, with the lock held
 void Dx12ShimFramePresented();

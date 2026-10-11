@@ -3047,6 +3047,8 @@ static void close_scope()
 // boring_constants).
 
 static volatile LONG fast_draws, fast_draws_pending;
+// Dispatches that skin let through the same way, see skin_is_boring
+static volatile LONG fast_skins;
 
 // Why the others were, for the report
 enum SlowReason {
@@ -3135,7 +3137,9 @@ static bool register_guard(CommandListExpression *expression, unsigned *guard)
 }
 
 // With the lock held
-static void work_out_filter(const Dx12PipelineInfo *pipeline)
+// shaders are those the engine is told of, which for a dispatch that skins
+// are not the pipeline's, see Dx12Dispatch
+static void work_out_filter(const Dx12PipelineInfo *pipeline, const Dx12ShaderInfo *const *shaders)
 {
 	Dx12DrawFilter *filter = &pipeline->filter;
 	CommandListCheckedSlots slots = {};
@@ -3147,7 +3151,7 @@ static void work_out_filter(const Dx12PipelineInfo *pipeline)
 
 	// The shaders HackerContext::BeforeDraw looks up
 	for (Dx12ShaderStage graphics_stage : graphics_stages) {
-		const Dx12ShaderInfo *shader = pipeline->shaders[graphics_stage];
+		const Dx12ShaderInfo *shader = shaders[graphics_stage];
 
 		if (!shader && graphics_stage != DX12_STAGE_VS && graphics_stage != DX12_STAGE_PS)
 			continue;
@@ -3238,25 +3242,54 @@ static SlowReason buffer_is_boring(UINT64 va, UINT64 bytes, UINT kind, UINT stri
 	return unhashed_buffer_is_boring(va, bytes, kind) ? SLOW_NOT : SLOW_VB_UNKNOWN;
 }
 
+// A frame being analysed has the dumps of the command lists do something,
+// which the filter takes them not to
+static bool settings_slow()
+{
+	return G->hunting == HUNTING_MODE_ENABLED || !G->fix_enabled || G->track_region_hashes || G->track_implicit_index_buffers
+	    || G->analyse_frame;
+}
+
+// Without the lock: whether the command lists of the pipeline would do nothing
+// but ask about buffers, as of now. The filter as read is left in *worked_out.
+static SlowReason filter_is_boring(const Dx12DrawFilter *filter, Dx12DrawFilter *worked_out)
+{
+	LONG generation;
+	UINT64 guards;
+
+	generation = filter->generation;
+	if (!generation || generation != (LONG)config_generation)
+		return SLOW_FILTER;
+	memcpy(worked_out, filter, sizeof(*worked_out));
+	if (filter->generation != generation || worked_out->override_generation != G->shader_override_generation)
+		return SLOW_FILTER;
+	if (!worked_out->only_checks)
+		return SLOW_LISTS;
+
+	guards = (UINT64)guard_bits;
+	if ((guards & worked_out->guards_zero) || (guards & worked_out->guards_nonzero) != worked_out->guards_nonzero)
+		return SLOW_GUARD;
+	// The bits were those the filter means only if the configuration was
+	// not read again before they were read, which clears them after
+	// moving the generation on
+	if ((LONG)config_generation != generation)
+		return SLOW_FILTER;
+	return SLOW_NOT;
+}
+
 // Without the lock. SLOW_NOT only if the engine would look at the draw and
 // leave it at that.
 static SlowReason draw_is_boring(Dx12GraphicsCommandList *list, const Dx12PipelineInfo *pipeline)
 {
 	SlowReason reason;
 	const Dx12CmdState *game = &list->mState;
-	const Dx12DrawFilter *filter = &pipeline->filter;
 	const Dx12RootSignatureInfo *signature;
 	Dx12DrawFilter worked_out;
 	unsigned long slot;
-	LONG generation;
 	LONG64 word;
-	UINT64 guards;
 	UINT vbs, i;
 
-	// A frame being analysed has the dumps of the command lists do
-	// something, which the filter takes them not to
-	if (G->hunting == HUNTING_MODE_ENABLED || !G->fix_enabled || G->track_region_hashes || G->track_implicit_index_buffers
-	    || G->analyse_frame)
+	if (settings_slow())
 		return SLOW_SETTINGS;
 
 	// A vertex buffer to be swapped for what a mod had skinned
@@ -3266,23 +3299,9 @@ static SlowReason draw_is_boring(Dx12GraphicsCommandList *list, const Dx12Pipeli
 			return SLOW_SKIN;
 	}
 
-	generation = filter->generation;
-	if (!generation || generation != (LONG)config_generation)
-		return SLOW_FILTER;
-	memcpy(&worked_out, filter, sizeof(worked_out));
-	if (filter->generation != generation || worked_out.override_generation != G->shader_override_generation)
-		return SLOW_FILTER;
-	if (!worked_out.only_checks)
-		return SLOW_LISTS;
-
-	guards = (UINT64)guard_bits;
-	if ((guards & worked_out.guards_zero) || (guards & worked_out.guards_nonzero) != worked_out.guards_nonzero)
-		return SLOW_GUARD;
-	// The bits were those the filter means only if the configuration was
-	// not read again before they were read, which clears them after
-	// moving the generation on
-	if ((LONG)config_generation != generation)
-		return SLOW_FILTER;
+	reason = filter_is_boring(&pipeline->filter, &worked_out);
+	if (reason != SLOW_NOT)
+		return reason;
 
 	signature = Dx12ListRootSignature(list, false);
 	if (signature && ini_params_reach_shaders(signature))
@@ -3309,6 +3328,46 @@ static SlowReason draw_is_boring(Dx12GraphicsCommandList *list, const Dx12Pipeli
 		if (!shader || cb >= DX12_CB_SIZES || !shader->cb_bytes[cb])
 			continue;
 		if (*boring_constants_slot(stage, cb, shader->cb_bytes[cb], &word) != word)
+			return SLOW_CB;
+	}
+	return SLOW_NOT;
+}
+
+// Without the lock. SLOW_NOT only if the engine would look at the dispatch
+// that skins and leave it at that, and nothing of ours stands in for what it
+// skins to. The scope of such a dispatch answers for vertex buffer slots 0 and
+// SKIN_BLEND_SLOT, no index buffer and the constant buffers of the compute
+// shader, see the Dx12Scope functions.
+static SlowReason skin_is_boring(const Dx12PipelineInfo *pipeline, const SkinDispatch *skin)
+{
+	Dx12DrawFilter worked_out;
+	SlowReason reason;
+	UINT i;
+
+	if (settings_slow())
+		return SLOW_SETTINGS;
+	// What a mod had skinned to the buffer is to be let go of, see
+	// Dx12Dispatch
+	if (skin_outputs_live && skin_filter_has(skin->output_va))
+		return SLOW_SKIN;
+
+	reason = filter_is_boring(&pipeline->filter, &worked_out);
+	if (reason != SLOW_NOT)
+		return reason;
+
+	if (worked_out.vbs & 1) {
+		reason = buffer_is_boring(skin->source_va, (UINT64)skin->count * skin->stride, PUBLISHED_SKIN_BUFFER, skin->stride, NULL);
+		if (reason != SLOW_NOT)
+			return reason;
+	}
+	if (worked_out.vbs & 1u << SKIN_BLEND_SLOT) {
+		reason = buffer_is_boring(skin->weights_va, (UINT64)skin->count * skin->weight_stride, PUBLISHED_SKIN_BUFFER,
+				skin->weight_stride, NULL);
+		if (reason != SLOW_NOT)
+			return reason;
+	}
+	for (i = 0; i < worked_out.cb_count; i++) {
+		if (worked_out.cbs[i].stage == DX12_STAGE_CS)
 			return SLOW_CB;
 	}
 	return SLOW_NOT;
@@ -3452,7 +3511,7 @@ bool Dx12Draw(Dx12GraphicsCommandList *list, bool indexed, UINT count, UINT inst
 
 	if (pipeline->filter.generation != (LONG)config_generation
 	    || pipeline->filter.override_generation != G->shader_override_generation)
-		work_out_filter(pipeline);
+		work_out_filter(pipeline, pipeline->shaders);
 
 	if (reason == SLOW_SKIN) {
 		// Whether the filter was right, to size it by
@@ -3509,46 +3568,71 @@ bool Dx12Dispatch(Dx12GraphicsCommandList *list, UINT x, UINT y, UINT z)
 	DispatchContext c(x, y, z);
 	SkinDispatch skin;
 
+	bool skinning, unconfirmed = false;
+	SlowReason reason;
+
 	if (!pipeline || !pipeline->shaders[DX12_STAGE_CS])
 		return false;
+
+	// Settled without the lock: the dispatch may be one the engine would
+	// do nothing about, see skin_is_boring
+	skinning = is_skinning_shader(pipeline->shaders[DX12_STAGE_CS]);
+	if (skinning && !resolve_skin(list, Dx12ListRootSignature(list, true), x, y, z, &skin)) {
+		skinning = false;
+		unconfirmed = true;
+	}
+	if (skinning) {
+		reason = skin_is_boring(pipeline, &skin);
+		if (reason == SLOW_NOT) {
+			InterlockedIncrement(&fast_skins);
+			InterlockedIncrement(&fast_draws_pending);
+			return false;
+		}
+		if (G->dx12_dump_hashes)
+			InterlockedIncrement(&slow_draws[reason]);
+	}
 
 	Dx12ShimLock();
 	if (!dx12_shim || scope) {
 		Dx12ShimUnlock();
 		return false;
 	}
+	stats.skin_unconfirmed += unconfirmed;
 
-	if (is_skinning_shader(pipeline->shaders[DX12_STAGE_CS])) {
-		if (resolve_skin(list, Dx12ListRootSignature(list, true), x, y, z, &skin)) {
-			UINT64 hashes[DX12_STAGE_COUNT] = {};
-			DrawContext draw(DrawCall::Draw, skin.count, 0, 0, 0, 0, 0, NULL, 0);
+	if (skinning) {
+		UINT64 hashes[DX12_STAGE_COUNT] = {};
+		const Dx12ShaderInfo *shaders[DX12_STAGE_COUNT] = {};
+		DrawContext draw(DrawCall::Draw, skin.count, 0, 0, 0, 0, 0, NULL, 0);
 
-			// The shader that skins is what a mod's command lists
-			// for vertex shaders are run for
-			hashes[DX12_STAGE_VS] = pipeline->shaders[DX12_STAGE_CS]->hash;
+		// The shader that skins is what a mod's command lists for
+		// vertex shaders are run for
+		shaders[DX12_STAGE_VS] = pipeline->shaders[DX12_STAGE_CS];
+		hashes[DX12_STAGE_VS] = shaders[DX12_STAGE_VS]->hash;
+		if (pipeline->filter.generation != (LONG)config_generation
+		    || pipeline->filter.override_generation != G->shader_override_generation)
+			work_out_filter(pipeline, shaders);
 
-			open_scope(&scope_storage, list, pipeline, true);
-			scope_storage.skin = &skin;
+		open_scope(&scope_storage, list, pipeline, true);
+		scope_storage.skin = &skin;
 
-			dx12_shim->hacker_context->Dx12BeforeDraw(draw, hashes);
-			stats.skin_dispatches++;
-			// Also where a mod skips it: the mod's vertices went to a
-			// buffer of ours, and whatever else the game does with
-			// its own is not to find it without any
-			restore_list();
-			list->mOrig->Dispatch(x, y, z);
-			if (!draw.call_info.skip) {
-				forget_skin_output(skin.output_va);
-				if (G->dx12_dump_hashes)
-					dump_skin_source(&skin, hashes[DX12_STAGE_VS]);
-			}
-			dx12_shim->hacker_context->Dx12AfterDraw(draw);
-
-			close_scope();
-			Dx12ShimUnlock();
-			return true;
+		dx12_shim->hacker_context->Dx12BeforeDraw(draw, hashes);
+		stats.skin_dispatches++;
+		// Also where a mod skips it: the mod's vertices went to a
+		// buffer of ours, and whatever else the game does with its
+		// own is not to find it without any
+		restore_list();
+		list->mOrig->Dispatch(x, y, z);
+		if (!draw.call_info.skip) {
+			forget_skin_output(skin.output_va);
+			if (G->dx12_dump_hashes)
+				dump_skin_source(&skin, hashes[DX12_STAGE_VS]);
 		}
-		stats.skin_unconfirmed++;
+		dx12_shim->hacker_context->Dx12AfterDraw(draw);
+
+		prime_filter(pipeline);
+		close_scope();
+		Dx12ShimUnlock();
+		return true;
 	}
 
 	open_scope(&scope_storage, list, pipeline, true);
@@ -3701,10 +3785,10 @@ void Dx12DrawPathFramePresented()
 		per_frame = 1000.0 / frequency.QuadPart / 300;
 		Dx12DumpNote("  Per frame the draws took %.2f ms waiting for the lock, %.2f ms before the draw (%.2f ms of that asking about "
 			"vertex buffers), %.2f ms applying and drawing, %.2f ms after; %u buffers were answered as before, %u looked up; "
-			"%u more draws were not stopped for\n",
+			"%u more draws and %u dispatches that skin were not stopped for\n",
 			stats.wait_ticks * per_frame, stats.before_ticks * per_frame, stats.buffer_ticks * per_frame,
 			stats.draw_ticks * per_frame, stats.after_ticks * per_frame, stats.buffers_remembered, stats.buffers_looked_up,
-			(unsigned)InterlockedExchange(&fast_draws, 0));
+			(unsigned)InterlockedExchange(&fast_draws, 0), (unsigned)InterlockedExchange(&fast_skins, 0));
 		for (LONG &count : reasons)
 			count = InterlockedExchange(&slow_draws[&count - reasons], 0);
 		Dx12DumpNote("  The others were stopped for because of: settings %d, a pipeline not looked at yet %d, command lists doing more "

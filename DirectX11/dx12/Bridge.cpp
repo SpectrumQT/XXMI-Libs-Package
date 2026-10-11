@@ -2,6 +2,7 @@
 
 #include <deque>
 #include <map>
+#include <unordered_map>
 #include <vector>
 
 #include "Dx12CommandList.h"
@@ -10,6 +11,7 @@
 #include "ShimContext.h"
 #include "ShimDevice.h"
 #include "ShimPipeline.h"
+#include "HashDump.h"
 
 #include "util.h"
 
@@ -99,14 +101,25 @@ void Dx12LogDebugMessages()
 {
 	static const char *const severities[] = { "corruption", "error", "warning", "info", "message" };
 	static unsigned logged;
+	static bool said;
+	static std::unordered_map<int, unsigned> noted;
 	ID3D12InfoQueue *queue;
 	D3D12_MESSAGE *message;
 	std::vector<BYTE> storage;
 	UINT64 count, i;
 	SIZE_T length;
 
-	if (!G->dx12_debug_layer || FAILED(shim.device->QueryInterface(IID_PPV_ARGS(&queue))))
+	if (!G->dx12_debug_layer)
 		return;
+	if (FAILED(shim.device->QueryInterface(IID_PPV_ARGS(&queue)))) {
+		if (!said)
+			Dx12DumpNote("*** dx12_debug_layer: the device has no debug layer, which comes with the Graphics Tools optional feature of Windows\n");
+		said = true;
+		return;
+	}
+	if (!said)
+		Dx12DumpNote("dx12_debug_layer: the debug layer is on, its errors and warnings follow as they come\n");
+	said = true;
 
 	count = queue->GetNumStoredMessages();
 	for (i = 0; i < count; i++) {
@@ -116,9 +129,17 @@ void Dx12LogDebugMessages()
 		message = (D3D12_MESSAGE*)storage.data();
 		if (FAILED(queue->GetMessage(i, message, &length)))
 			continue;
-		// A mistake repeated every frame would fill the disk
-		if (logged++ < 1000)
-			Dx12LogInfo("debug layer %s %d: %s\n", severities[min(message->Severity, 4)], message->ID, message->pDescription);
+		// A mistake repeated every frame would fill the disk, and one
+		// kind of them is not to keep the others out
+		if (message->Severity <= D3D12_MESSAGE_SEVERITY_WARNING) {
+			if (noted[message->ID]++ >= 8)
+				continue;
+			// The log may be off where the report is on
+			Dx12DumpNote("*** debug layer %s %d: %s\n", severities[min(message->Severity, 4)], message->ID, message->pDescription);
+		} else if (logged++ >= 1000) {
+			continue;
+		}
+		Dx12LogInfo("debug layer %s %d: %s\n", severities[min(message->Severity, 4)], message->ID, message->pDescription);
 	}
 	queue->ClearStoredMessages();
 	queue->Release();

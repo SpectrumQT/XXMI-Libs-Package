@@ -267,7 +267,13 @@ namespace SoundEngine {
 
 	void Sound::PlayOneShot(float volume, float pitch, float pan)
 	{
-		effect->Play(volume, pitch, pan);
+		// DirectXTK throws when it cannot get a voice:
+		// a sound too many, not a reason to take the game down with us.
+		try {
+			effect->Play(volume, pitch, pan);
+		} catch (const std::exception &e) {
+			LogInfo("Sound: cannot play one shot: %s\n", e.what());
+		}
 	}
 
 	size_t Sound::Samples() const
@@ -313,9 +319,18 @@ namespace SoundEngine {
 			return false;
 
 		if (!voice) {
-			engine->AllocateVoice(sound->Format(), DirectX::SoundEffectInstance_Default, false, &voice);
+			// Throws once the engine is out of instance voices:
+			// a mod with too many sounds, not a reason to take the game down.
+			try {
+				engine->AllocateVoice(sound->Format(), DirectX::SoundEffectInstance_Default, false, &voice);
+			} catch (const std::exception &e) {
+				LogInfo("Sound: cannot allocate a voice: %s\n", e.what());
+				return false;
+			}
+
 			if (!voice)
 				return false;
+
 			rate = sound->Format()->nSamplesPerSec;
 		}
 

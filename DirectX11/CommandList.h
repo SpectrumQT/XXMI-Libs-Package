@@ -2027,14 +2027,25 @@ struct CommandListCheckedSlots {
 		wchar_t shader_type;
 		unsigned slot;
 	} cbs[8];
+	// Conditions that have to evaluate to non-zero (or to zero) for the
+	// list to do no more than that. Each depends on nothing but IniParams
+	// and variables, so it can be evaluated outside of a draw call and
+	// holds until something assigns to those.
+	unsigned guard_count;
+	struct {
+		CommandListExpression *expression;
+		bool nonzero;
+	} guards[8];
 };
 
 // Whether running the command list can do nothing but look up the
-// TextureOverride sections of fixed vertex, index and constant buffer slots,
-// whatever its conditions evaluate to. If so and none of those slots (added to
-// slots) holds something a TextureOverride section could match, running the
+// TextureOverride sections of fixed vertex, index and constant buffer slots
+// for as long as the guards (added to slots) hold, whatever its other
+// conditions evaluate to. If so and none of those slots (added to slots as
+// well) holds something a TextureOverride section could match, running the
 // list has no effect. The D3D12 draw path uses this to tell the draws of the
-// game it has no need to stop for.
+// game it has no need to stop for. Frame analysis dumps count as nothing,
+// which whoever relies on this has to make sure of.
 bool CommandListOnlyChecksTextureOverrides(CommandList *command_list, CommandListCheckedSlots *slots, unsigned depth = 0);
 void RunResourceCommandList(HackerDevice *mHackerDevice,
 		HackerContext *mHackerContext,

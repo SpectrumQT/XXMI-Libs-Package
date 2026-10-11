@@ -1598,6 +1598,8 @@ static void open_scope(Dx12DrawScope *opened, Dx12GraphicsCommandList *list, con
 	scope = opened;
 }
 
+static void refresh_guards();
+
 static void close_scope()
 {
 	ShimContext *context = dx12_shim->shim_context;
@@ -1607,6 +1609,7 @@ static void close_scope()
 		reset_scope_state();
 	context->mState = &context->mFrameState;
 	scope = NULL;
+	refresh_guards();
 
 	// Whatever the mod's resources needed done before the game's list
 	// can use them, see Bridge.h
@@ -1632,6 +1635,7 @@ enum SlowReason {
 	SLOW_SETTINGS,
 	SLOW_FILTER,
 	SLOW_LISTS,
+	SLOW_GUARD,
 	SLOW_INI_PARAMS,
 	SLOW_VB_UNKNOWN,
 	SLOW_VB_WANTED,
@@ -1656,6 +1660,61 @@ static bool stage_of_shader_type(wchar_t shader_type, Dx12ShaderStage *stage)
 	return false;
 }
 
+// A command list may do more than ask about buffers only if a condition of its
+// own holds, which is rare for the lists that put back what a mod has set.
+// Those conditions (guards, see CommandListCheckedSlots) are evaluated with
+// the lock held whenever the engine has run, and kept as one bit each in a
+// word for the threads recording, which cannot evaluate them: the expressions
+// go away when the configuration is read again. Bit numbers are good while
+// config_generation stays the same.
+static CommandListExpression *guard_expressions[64];
+static unsigned guard_count;
+static volatile LONG64 guard_bits;
+
+static bool guard_holds(unsigned guard)
+{
+	// As IfCommand::run decides
+	return !!guard_expressions[guard]->evaluate(NULL, dx12_shim->hacker_device);
+}
+
+// With the lock held
+static void refresh_guards()
+{
+	LONG64 bits = 0;
+	unsigned i;
+
+	for (i = 0; i < guard_count; i++)
+		bits |= (LONG64)guard_holds(i) << i;
+	if (bits != guard_bits)
+		InterlockedExchange64(&guard_bits, bits);
+}
+
+void Dx12DrawPathEngineRan()
+{
+	refresh_guards();
+}
+
+static bool register_guard(CommandListExpression *expression, unsigned *guard)
+{
+	unsigned i;
+
+	for (i = 0; i < guard_count; i++) {
+		if (guard_expressions[i] == expression) {
+			*guard = i;
+			return true;
+		}
+	}
+	if (guard_count == ARRAYSIZE(guard_expressions))
+		return false;
+
+	guard_expressions[guard_count] = expression;
+	*guard = guard_count++;
+	// No filter refers to the bit yet
+	if (guard_holds(*guard))
+		InterlockedOr64(&guard_bits, 1ll << *guard);
+	return true;
+}
+
 // With the lock held
 static void work_out_filter(const Dx12PipelineInfo *pipeline)
 {
@@ -1663,7 +1722,7 @@ static void work_out_filter(const Dx12PipelineInfo *pipeline)
 	CommandListCheckedSlots slots = {};
 	bool only_checks = true;
 	Dx12ShaderStage stage;
-	unsigned i;
+	unsigned i, guard;
 
 	InterlockedExchange(&filter->generation, 0);
 
@@ -1691,6 +1750,15 @@ static void work_out_filter(const Dx12PipelineInfo *pipeline)
 		}
 		filter->cbs[i].stage = (BYTE)stage;
 		filter->cbs[i].slot = (BYTE)slots.cbs[i].slot;
+	}
+
+	filter->guards_zero = filter->guards_nonzero = 0;
+	for (i = 0; only_checks && i < slots.guard_count; i++) {
+		if (!register_guard(slots.guards[i].expression, &guard)) {
+			only_checks = false;
+			break;
+		}
+		*(slots.guards[i].nonzero ? &filter->guards_nonzero : &filter->guards_zero) |= 1ull << guard;
 	}
 
 	filter->only_checks = only_checks;
@@ -1763,9 +1831,13 @@ static SlowReason draw_is_boring(Dx12GraphicsCommandList *list, const Dx12Pipeli
 	unsigned long slot;
 	LONG generation;
 	LONG64 word;
+	UINT64 guards;
 	UINT vbs, i;
 
-	if (G->hunting == HUNTING_MODE_ENABLED || !G->fix_enabled || G->track_region_hashes || G->track_implicit_index_buffers)
+	// A frame being analysed has the dumps of the command lists do
+	// something, which the filter takes them not to
+	if (G->hunting == HUNTING_MODE_ENABLED || !G->fix_enabled || G->track_region_hashes || G->track_implicit_index_buffers
+	    || G->analyse_frame)
 		return SLOW_SETTINGS;
 
 	generation = filter->generation;
@@ -1776,6 +1848,15 @@ static SlowReason draw_is_boring(Dx12GraphicsCommandList *list, const Dx12Pipeli
 		return SLOW_FILTER;
 	if (!worked_out.only_checks)
 		return SLOW_LISTS;
+
+	guards = (UINT64)guard_bits;
+	if ((guards & worked_out.guards_zero) || (guards & worked_out.guards_nonzero) != worked_out.guards_nonzero)
+		return SLOW_GUARD;
+	// The bits were those the filter means only if the configuration was
+	// not read again before they were read, which clears them after
+	// moving the generation on
+	if ((LONG)config_generation != generation)
+		return SLOW_FILTER;
 
 	signature = Dx12ListRootSignature(list, false);
 	if (signature && ini_params_reach_shaders(signature))
@@ -2078,6 +2159,8 @@ void Dx12DrawPathConfigReloaded()
 	// ask for, as does all that was worked out from their sections
 	config_generation++;
 	buffer_cache_generation++;
+	guard_count = 0;
+	InterlockedExchange64(&guard_bits, 0);
 	for (auto i = reaches.begin(); i != reaches.end();) {
 		if (i->second.state != REACH_PENDING)
 			i = reaches.erase(i);
@@ -2136,9 +2219,11 @@ void Dx12DrawPathFramePresented()
 		for (LONG &count : reasons)
 			count = InterlockedExchange(&slow_draws[&count - reasons], 0);
 		Dx12DumpNote("  The others were stopped for because of: settings %d, a pipeline not looked at yet %d, command lists doing more "
-			"than asking %d, IniParams %d, a vertex buffer not known %d, wanted by a mod %d, written since %d, the index buffer %d, "
+			"than asking %d, a condition of a command list %d (%u watched), IniParams %d, a vertex buffer not known %d, wanted by a mod %d, "
+			"written since %d, the index buffer %d, "
 			"a constant buffer %d; of the buffers looked up %u were none known, %u not settled, %u too large to watch, %u new\n",
-			reasons[SLOW_SETTINGS], reasons[SLOW_FILTER], reasons[SLOW_LISTS], reasons[SLOW_INI_PARAMS], reasons[SLOW_VB_UNKNOWN],
+			reasons[SLOW_SETTINGS], reasons[SLOW_FILTER], reasons[SLOW_LISTS], reasons[SLOW_GUARD], guard_count,
+			reasons[SLOW_INI_PARAMS], reasons[SLOW_VB_UNKNOWN],
 			reasons[SLOW_VB_WANTED], reasons[SLOW_VB_CHANGED], reasons[SLOW_IB], reasons[SLOW_CB],
 			stats.lookups_missing, stats.lookups_unsettled, stats.lookups_unstamped, stats.lookups_new);
 		stats = {};
@@ -2171,4 +2256,6 @@ void Dx12DrawPathFramePresented()
 
 	if (!(dx12_frame & 255))
 		forget_unused_published();
+
+	refresh_guards();
 }

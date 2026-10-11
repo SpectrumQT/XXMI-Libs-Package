@@ -107,6 +107,9 @@ struct Dx12DrawFilter {
 	struct {
 		BYTE stage, slot;
 	} cbs[8];
+	// Bits of the conditions DrawPath watches: the ones that have to be
+	// false and the ones that have to be true for only_checks to hold
+	UINT64 guards_zero, guards_nonzero;
 };
 
 struct Dx12PipelineInfo {

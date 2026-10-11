@@ -196,6 +196,7 @@ void Dx12PresentEnd(Dx12SwapChain *swap_chain)
 	if (dx12_shim && swap_chain == presenting && !dx12_mods_disabled) {
 		G->bb_is_upscaling_bb = !!G->SCREEN_UPSCALING && G->upscaling_command_list_using_explicit_bb_flip;
 		RunCommandList(dx12_shim->hacker_device, dx12_shim->hacker_context, &G->post_present_command_list, NULL, true);
+		Dx12DrawPathEngineRan();
 		submit();
 	}
 	Dx12ShimUnlock();

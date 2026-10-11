@@ -85,6 +85,10 @@ void Dx12DrawPathFramePresented();
 // After the configuration was read again, which threw away what was worked
 // out for the game's shaders
 void Dx12DrawPathConfigReloaded();
+// After command lists were run outside of a draw and of the above, with the
+// lock still held: they may have assigned to what the draws not stopped for
+// go by
+void Dx12DrawPathEngineRan();
 
 // For the key that compares against the game as it is without us: whether
 // nothing of the mods is to reach a frame, neither through the game's draws

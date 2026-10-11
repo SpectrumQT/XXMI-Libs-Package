@@ -61,7 +61,7 @@ bool Dx12DrawPipelineWanted(Dx12GraphicsCommandList *list)
 	const Dx12PipelineInfo *pipeline;
 	bool wanted = false;
 
-	pipeline = state ? Dx12FindPipeline(state) : NULL;
+	pipeline = Dx12ListPipeline(list);
 	if (pipeline) {
 		if (want_all) {
 			wanted = true;
@@ -1577,13 +1577,12 @@ static void reset_scope_state()
 
 static void open_scope(Dx12DrawScope *opened, Dx12GraphicsCommandList *list, const Dx12PipelineInfo *pipeline, bool compute)
 {
-	ID3D12RootSignature *signature = compute ? list->mState.compute.signature : list->mState.graphics.signature;
 	ShimContext *context = dx12_shim->shim_context;
 
 	opened->list = list;
 	opened->compute = compute;
 	opened->pipeline = pipeline;
-	opened->signature = signature ? Dx12FindRootSignature(signature) : NULL;
+	opened->signature = Dx12ListRootSignature(list, compute);
 	opened->vbs_changed = 0;
 	opened->ib_changed = false;
 	opened->topology_changed = false;
@@ -1778,7 +1777,7 @@ static SlowReason draw_is_boring(Dx12GraphicsCommandList *list, const Dx12Pipeli
 	if (!worked_out.only_checks)
 		return SLOW_LISTS;
 
-	signature = game->graphics.signature ? Dx12FindRootSignature(game->graphics.signature) : NULL;
+	signature = Dx12ListRootSignature(list, false);
 	if (signature && ini_params_reach_shaders(signature))
 		return SLOW_INI_PARAMS;
 
@@ -1913,7 +1912,7 @@ static Dx12DrawScope scope_storage;
 bool Dx12Draw(Dx12GraphicsCommandList *list, bool indexed, UINT count, UINT instances, UINT start,
 		INT base_vertex, UINT start_instance)
 {
-	const Dx12PipelineInfo *pipeline = Dx12FindPipeline(list->mState.pipeline);
+	const Dx12PipelineInfo *pipeline = Dx12ListPipeline(list);
 	UINT64 hashes[DX12_STAGE_COUNT] = {};
 	UINT64 times[5] = {};
 	bool timed = G->dx12_dump_hashes;
@@ -1985,7 +1984,7 @@ bool Dx12Draw(Dx12GraphicsCommandList *list, bool indexed, UINT count, UINT inst
 
 bool Dx12Dispatch(Dx12GraphicsCommandList *list, UINT x, UINT y, UINT z)
 {
-	const Dx12PipelineInfo *pipeline = Dx12FindPipeline(list->mState.pipeline);
+	const Dx12PipelineInfo *pipeline = Dx12ListPipeline(list);
 	DispatchContext c(x, y, z);
 
 	if (!pipeline || !pipeline->shaders[DX12_STAGE_CS])

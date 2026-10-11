@@ -40,6 +40,30 @@ extern volatile UINT dx12_draw_generation;
 
 bool Dx12DrawPipelineWanted(Dx12GraphicsCommandList *list);
 
+// Dx12FindPipeline and Dx12FindRootSignature for what is set on the list.
+// Those take a lock that the threads recording would share for every draw.
+static inline const Dx12PipelineInfo* Dx12ListPipeline(Dx12GraphicsCommandList *list)
+{
+	ID3D12PipelineState *pipeline = list->mState.pipeline;
+
+	if (list->mInfoPipeline != pipeline) {
+		list->mInfo = pipeline ? Dx12FindPipeline(pipeline) : NULL;
+		list->mInfoPipeline = pipeline;
+	}
+	return list->mInfo;
+}
+
+static inline const Dx12RootSignatureInfo* Dx12ListRootSignature(Dx12GraphicsCommandList *list, bool compute)
+{
+	ID3D12RootSignature *signature = compute ? list->mState.compute.signature : list->mState.graphics.signature;
+
+	if (list->mInfoSignature[compute] != signature) {
+		list->mSignatureInfo[compute] = signature ? Dx12FindRootSignature(signature) : NULL;
+		list->mInfoSignature[compute] = signature;
+	}
+	return list->mSignatureInfo[compute];
+}
+
 // The check every draw of the game pays for
 static inline bool Dx12DrawWanted(Dx12GraphicsCommandList *list)
 {

@@ -35,6 +35,7 @@ Dx12GraphicsCommandList::Dx12GraphicsCommandList(Dx12Device *device, ID3D12Graph
 	mVersion = Dx12QueryNewest(orig, list_iids, ARRAYSIZE(list_iids), (void**)&mOrig);
 	mDevice->AddRef();
 	Dx12ResetCmdState(&mState, NULL);
+	ForgetInfo();
 	sVtbl = *(void**)this;
 }
 
@@ -121,10 +122,20 @@ HRESULT STDMETHODCALLTYPE Dx12GraphicsCommandList::Close()
 	return mOrig->Close();
 }
 
+void Dx12GraphicsCommandList::ForgetInfo()
+{
+	// No object is at these addresses, so that none set is looked up too
+	mInfoPipeline = (ID3D12PipelineState*)(uintptr_t)-1;
+	mInfoSignature[0] = mInfoSignature[1] = (ID3D12RootSignature*)(uintptr_t)-1;
+	mInfo = NULL;
+	mSignatureInfo[0] = mSignatureInfo[1] = NULL;
+}
+
 HRESULT STDMETHODCALLTYPE Dx12GraphicsCommandList::Reset(ID3D12CommandAllocator *pAllocator, ID3D12PipelineState *pInitialState)
 {
 	mDraws = mDispatches = 0;
 	Dx12ResetCmdState(&mState, pInitialState);
+	ForgetInfo();
 	mTransitions.clear();
 	// Still there if the list was never executed
 	if (!mPins.empty())
@@ -136,6 +147,7 @@ HRESULT STDMETHODCALLTYPE Dx12GraphicsCommandList::Reset(ID3D12CommandAllocator 
 void STDMETHODCALLTYPE Dx12GraphicsCommandList::ClearState(ID3D12PipelineState *pPipelineState)
 {
 	Dx12ResetCmdState(&mState, pPipelineState);
+	ForgetInfo();
 	mOrig->ClearState(pPipelineState);
 }
 

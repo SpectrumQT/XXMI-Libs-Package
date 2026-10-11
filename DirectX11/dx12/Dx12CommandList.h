@@ -41,6 +41,14 @@ public:
 	UINT mWantedGeneration;
 	bool mWanted;
 
+	// What the registry has on the pipeline state and root signatures
+	// last asked about, see Dx12ListPipeline. Forgotten at Reset, as the
+	// game only keeps those alive for a list that is being recorded.
+	ID3D12PipelineState *mInfoPipeline;
+	const Dx12PipelineInfo *mInfo;
+	ID3D12RootSignature *mInfoSignature[2];
+	const Dx12RootSignatureInfo *mSignatureInfo[2];
+
 	// The resource states this list leaves behind, in recording order.
 	// They only become true when the list is executed, which is when the
 	// queue hands them to the resource tracker.
@@ -50,6 +58,7 @@ public:
 
 	bool Usable(REFIID riid);
 	void Abandon();
+	void ForgetInfo();
 
 #include "generated/Dx12GraphicsCommandList.decl.inl"
 };

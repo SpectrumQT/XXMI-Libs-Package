@@ -23,6 +23,16 @@
 // Sound and Track never take it themselves.
 namespace SoundEngine {
 
+	// How far either way a sound can be sped up or slowed down.
+	// XAudio2 builds its voices with a maximum frequency ratio of two,
+	// and DirectXTK holds a one shot's pitch shift to an octave,
+	// so both paths stop at the same place.
+	const float min_speed = 0.5f;
+	const float max_speed = 2.0f;
+
+	// Volume is a multiplier, and this is as loud as XAudio2 will take:
+	const float max_volume = XAUDIO2_MAX_VOLUME_LEVEL;
+
 	// A decoded wav, held once per path however many ini sections name it.
 	class Sound {
 	public:
@@ -30,7 +40,7 @@ namespace SoundEngine {
 
 		// Fire and forget, for a hit or a click: the engine owns the voice,
 		// recycles it when the sound ends, and lets several overlap.
-		void PlayOneShot(float volume, float pitch, float pan);
+		void PlayOneShot(float volume, float speed, float pan);
 
 		size_t Samples() const;      // Length in samples
 		size_t Milliseconds() const; // Length in ms
@@ -54,7 +64,7 @@ namespace SoundEngine {
 
 		// start_ms is where in the sound to begin,
 		// which is what `play = SoundFoo, 500` asks for.
-		bool Start(Sound *sound, bool loop, float volume, double start_ms);
+		bool Start(Sound *sound, bool loop, float volume, float speed, double start_ms);
 		void Stop();
 		bool Playing() const;
 
@@ -78,7 +88,7 @@ namespace SoundEngine {
 	class Section {
 	public:
 		Section(const std::wstring &name, const std::wstring &path,
-				float volume, float pitch, bool loop, bool overlap);
+				float volume, float speed, bool loop, bool overlap);
 
 		// play = SoundFoo, or play = SoundFoo, <ms>
 		void Play(double start_ms);
@@ -96,7 +106,10 @@ namespace SoundEngine {
 		std::wstring name;
 		std::wstring path;
 		float volume;
-		float pitch;
+		// A multiplier on the sound's own rate,
+		// so it is a pitch shift as much as a tempo change:
+		// one voice resampling one buffer is all XAudio2 gives us.
+		float speed;
 		bool loop;
 		// true: every play starts a voice of its own,
 		// so hits can overlap, but none of them can be stopped or placed;
@@ -117,7 +130,7 @@ namespace SoundEngine {
 	// The handle is what a play or stop command holds,
 	// so that running one is not a name lookup.
 	Section *Declare(const std::wstring &name, const std::wstring &path,
-			float volume, float pitch, bool loop, bool overlap);
+			float volume, float speed, bool loop, bool overlap);
 	Section *Find(const std::wstring &name);
 	// Drops every declaration on an ini reload. Sounds already playing stop,
 	// since the sections they belong to are about to be replaced.

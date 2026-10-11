@@ -2181,6 +2181,21 @@ static CustomResourcePool* ParseResourcePoolSection(const wchar_t* section_name)
 	return pool;
 }
 
+// An ini value the audio engine would reject is clamped with a warning,
+// not quietly: a sound at a speed nobody asked for is hard to explain.
+static float GetClampedIniFloat(const wchar_t *section, const wchar_t *key,
+		float def, float low, float high)
+{
+	float val = GetIniFloat(section, key, def, NULL);
+
+	if (val < low || val > high) {
+		IniWarningW(L"  %ls must be between %g and %g\n", key, low, high);
+		val = min(max(val, low), high);
+	}
+
+	return val;
+}
+
 // A [Sound*] section names a wav and how an ini wants it played.
 // The file is resolved the same way a [Resource*] filename is:
 // beside the ini that declared it first, then beside the dll.
@@ -2211,16 +2226,17 @@ static void ParseSoundSection(const wchar_t *section_name)
 		wcscat(path, setting);
 	}
 
-	// volume is a multiplier, pitch is in octaves either way of the original,
-	// which is what XAudio2 takes;
+	// volume and speed are both multipliers, speed on the sound's own rate,
+	// so it is a pitch shift as well;
 	// overlap decides whether a play starts a voice of its own,
 	// or restarts the one the section owns:
-	float volume = GetIniFloat(section_name, L"volume", 1.0f, NULL);
-	float pitch = GetIniFloat(section_name, L"pitch", 0.0f, NULL);
+	float volume = GetClampedIniFloat(section_name, L"volume", 1.0f, 0.0f, SoundEngine::max_volume);
+	float speed = GetClampedIniFloat(section_name, L"speed", 1.0f,
+			SoundEngine::min_speed, SoundEngine::max_speed);
 	bool loop = GetIniBool(section_name, L"loop", false, NULL);
 	bool overlap = GetIniBool(section_name, L"overlap", false, NULL);
 
-	SoundEngine::Declare(section_name, path, volume, pitch, loop, overlap);
+	SoundEngine::Declare(section_name, path, volume, speed, loop, overlap);
 }
 
 static void ParseSoundSections()

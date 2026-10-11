@@ -4,6 +4,7 @@
 #include "Overlay.h"
 
 #include <algorithm>
+#include <cmath>
 #include <mutex>
 #include <unordered_map>
 
@@ -158,11 +159,11 @@ namespace SoundEngine {
 	}
 
 	Section *Declare(const std::wstring &name, const std::wstring &path,
-			float volume, float pitch, bool loop, bool overlap)
+			float volume, float speed, bool loop, bool overlap)
 	{
 		std::lock_guard<std::mutex> held(lock());
 
-		auto added = sections.emplace(key_of(name), std::make_unique<Section>(name, path, volume, pitch, loop, overlap));
+		auto added = sections.emplace(key_of(name), std::make_unique<Section>(name, path, volume, speed, loop, overlap));
 		Section *section = added.first->second.get();
 
 		// The engine and the file are wanted now, while the ini is being read:
@@ -192,11 +193,11 @@ namespace SoundEngine {
 	}
 
 	Section::Section(const std::wstring &name, const std::wstring &path,
-			float volume, float pitch, bool loop, bool overlap) :
+			float volume, float speed, bool loop, bool overlap) :
 		name(name),
 		path(path),
 		volume(volume),
-		pitch(pitch),
+		speed(speed),
 		loop(loop),
 		overlap(overlap)
 	{
@@ -228,11 +229,11 @@ namespace SoundEngine {
 		if (overlap) {
 			// Nothing to seek or restart:
 			// each play is its own voice, which the engine takes back at the end.
-			loaded->PlayOneShot(volume, pitch, 0.0f);
+			loaded->PlayOneShot(volume, speed, 0.0f);
 			return;
 		}
 
-		track.Start(loaded, loop, volume, start_ms);
+		track.Start(loaded, loop, volume, speed, start_ms);
 	}
 
 	void Section::Stop()
@@ -265,8 +266,12 @@ namespace SoundEngine {
 		return loaded ? (double)loaded->Milliseconds() : 0.0;
 	}
 
-	void Sound::PlayOneShot(float volume, float pitch, float pan)
+	void Sound::PlayOneShot(float volume, float speed, float pan)
 	{
+		// DirectXTK asks for the speed as a shift in octaves,
+		// which is the same resampling the other way around:
+		float pitch = speed == 1.0f ? 0.0f : log2f(speed);
+
 		// DirectXTK throws when it cannot get a voice:
 		// a sound too many, not a reason to take the game down with us.
 		try {
@@ -304,7 +309,7 @@ namespace SoundEngine {
 			engine->DestroyVoice(voice);
 	}
 
-	bool Track::Start(Sound *sound, bool loop, float volume, double start_ms)
+	bool Track::Start(Sound *sound, bool loop, float volume, float speed, double start_ms)
 	{
 		XAUDIO2_BUFFER buffer = {};
 		XAUDIO2_BUFFER_WMA wma = {};
@@ -360,6 +365,10 @@ namespace SoundEngine {
 			return false;
 
 		voice->SetVolume(volume);
+		// SamplesPlayed counts the buffer's own samples, not the mixer's,
+		// so the position stays in the sound's own time whatever the speed:
+		voice->SetFrequencyRatio(speed);
+
 		if (FAILED(voice->Start(0)))
 			return false;
 

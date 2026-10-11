@@ -29,6 +29,7 @@ class HackerContext;
 enum class FrameAnalysisOptions;
 class ResourceCopyTarget;
 class ResourceFilterTarget;
+namespace SoundEngine { class Section; }
 
 struct InputLayoutElementOverride {
 	struct Match {
@@ -1994,6 +1995,27 @@ public:
 		float& value);
 	bool TryReadValueFromCache(ID3D11Resource* resource, UINT64 byte_offset, float& value);
 	void SetOutputValue(CommandListState* state, float value);
+};
+
+// play = SoundFoo, or play = SoundFoo, <expression> to begin that many
+// milliseconds in. A [Sound*] with overlap starts a voice of its own each time;
+// one without restarts the single voice it owns.
+class PlaySoundCommand : public CommandListCommand {
+public:
+	SoundEngine::Section *sound = nullptr;
+	// Empty unless the line gave a start offset:
+	std::unique_ptr<CommandListExpression> start_ms = nullptr;
+
+	void run(CommandListState*) override;
+};
+
+// stop = SoundFoo. Nothing to stop on a section that overlaps, since each of
+// its plays belongs to the engine.
+class StopSoundCommand : public CommandListCommand {
+public:
+	SoundEngine::Section *sound = nullptr;
+
+	void run(CommandListState*) override;
 };
 
 class ClearViewCommand : public CommandListCommand {

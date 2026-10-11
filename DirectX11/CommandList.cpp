@@ -3,6 +3,7 @@
 #include "lock.h"
 
 #include "CommandList.h"
+#include "SoundEngine.h"
 
 #include <DDSTextureLoader.h>
 #include <algorithm>
@@ -1275,6 +1276,79 @@ bool ParseStoreCommand(const wchar_t* section,
 	return AddCommandToList(operation.release(), explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
 }
 
+void PlaySoundCommand::run(CommandListState *state)
+{
+	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
+
+	sound->Play(start_ms ? (double)start_ms->evaluate(state) : 0.0);
+}
+
+void StopSoundCommand::run(CommandListState *state)
+{
+	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
+
+	sound->Stop();
+}
+
+// play = SoundFoo
+// play = SoundFoo, <expression>   - begin that many milliseconds in
+static bool ParsePlaySound(const wchar_t *section, const wchar_t *key, wstring *val,
+		CommandList *explicit_command_list, CommandList *pre_command_list, CommandList *post_command_list,
+		const wstring *ini_namespace)
+{
+	// A sound's name cannot contain a comma,
+	// so the first one separates it from the offset:
+	size_t comma = val->find(L',');
+	wstring name = val->substr(0, comma);
+	wstring namespaced_section;
+	std::unique_ptr<CommandListExpression> start_ms;
+
+	SoundEngine::Section *sound = NULL;
+	if (get_namespaced_section_name_lower(&name, ini_namespace, &namespaced_section))
+		sound = SoundEngine::Find(namespaced_section);
+	if (!sound)
+		sound = SoundEngine::Find(name);
+	if (!sound)
+		return false;
+
+	if (comma != wstring::npos) {
+		wstring offset = val->substr(comma + 1);
+
+		start_ms = std::make_unique<CommandListExpression>();
+		if (!start_ms->parse(&offset, ini_namespace, pre_command_list->scope)) {
+			LogOverlayW(LOG_WARNING, L"Invalid start offset \"%ls\"\n - [%ls]\n", offset.c_str(), section);
+			return false;
+		}
+	}
+
+	PlaySoundCommand *operation = new PlaySoundCommand();
+	operation->sound = sound;
+	operation->start_ms = std::move(start_ms);
+
+	return AddCommandToList(operation, explicit_command_list, NULL, pre_command_list, post_command_list, section, key, val);
+}
+
+static bool ParseStopSound(const wchar_t *section, const wchar_t *key, wstring *val,
+		CommandList *explicit_command_list, CommandList *pre_command_list, CommandList *post_command_list,
+		const wstring *ini_namespace)
+{
+	wstring name = *val;
+	wstring namespaced_section;
+
+	SoundEngine::Section *sound = NULL;
+	if (get_namespaced_section_name_lower(&name, ini_namespace, &namespaced_section))
+		sound = SoundEngine::Find(namespaced_section);
+	if (!sound)
+		sound = SoundEngine::Find(name);
+	if (!sound)
+		return false;
+
+	StopSoundCommand *operation = new StopSoundCommand();
+	operation->sound = sound;
+
+	return AddCommandToList(operation, explicit_command_list, NULL, pre_command_list, post_command_list, section, key, val);
+}
+
 bool ParseCommandListGeneralCommands(const wchar_t *section,
 		const wchar_t *key, wstring *val,
 		CommandList *explicit_command_list,
@@ -1311,6 +1385,12 @@ bool ParseCommandListGeneralCommands(const wchar_t *section,
 
 	if (!wcscmp(key, L"reset_per_frame_limits"))
 		return ParseResetPerFrameLimits(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
+
+	if (!wcscmp(key, L"play"))
+		return ParsePlaySound(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
+
+	if (!wcscmp(key, L"stop"))
+		return ParseStopSound(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 
 	if (!wcscmp(key, L"clear"))
 		return ParseClearView(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);

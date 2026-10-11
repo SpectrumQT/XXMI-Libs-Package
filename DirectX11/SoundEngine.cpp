@@ -20,6 +20,7 @@ namespace SoundEngine {
 
 	static std::unique_ptr<DirectX::AudioEngine> engine;
 	static std::unordered_map<std::wstring, std::unique_ptr<Sound>> sounds;
+	static std::unordered_map<std::wstring, std::unique_ptr<Section>> sections;
 	// Set once the engine has been asked for, whether or not it came up:
 	// a machine with no audio device must not be asked again every frame.
 	static bool attempted = false;
@@ -114,10 +115,98 @@ namespace SoundEngine {
 		if (!engine)
 			return;
 
-		// Stops every voice before the sounds they are playing go away:
+		// Stops every voice before the sounds they are playing go away,
+		// and the sections own those voices:
 		engine->Suspend();
+		sections.clear();
 		sounds.clear();
 		engine.reset();
+	}
+
+	Section *Declare(const std::wstring &name, const std::wstring &path,
+			float volume, float pitch, bool loop, bool overlap)
+	{
+		std::lock_guard<std::mutex> held(lock());
+
+		auto added = sections.emplace(name, std::make_unique<Section>(name, path, volume, pitch, loop, overlap));
+		return added.first->second.get();
+	}
+
+	Section *Find(const std::wstring &name)
+	{
+		std::lock_guard<std::mutex> held(lock());
+
+		auto found = sections.find(name);
+		return found == sections.end() ? NULL : found->second.get();
+	}
+
+	void forget_sounds()
+	{
+		std::lock_guard<std::mutex> held(lock());
+
+		// The sections own the voices,
+		// so they go before the sounds those voices are playing:
+		sections.clear();
+		sounds.clear();
+	}
+
+	Section::Section(const std::wstring &name, const std::wstring &path,
+			float volume, float pitch, bool loop, bool overlap) :
+		name(name),
+		path(path),
+		volume(volume),
+		pitch(pitch),
+		loop(loop),
+		overlap(overlap)
+	{
+	}
+
+	Sound *Section::Loaded()
+	{
+		if (sound || load_failed)
+			return sound;
+
+		sound = Load(path);
+		load_failed = !sound;
+		return sound;
+	}
+
+	void Section::Play(double start_ms)
+	{
+		Sound *loaded = Loaded();
+		if (!loaded)
+			return;
+
+		if (overlap) {
+			// Nothing to seek or restart:
+			// each play is its own voice, which the engine takes back at the end.
+			loaded->PlayOneShot(volume, pitch, 0.0f);
+			return;
+		}
+
+		track.Start(loaded, loop, volume, start_ms);
+	}
+
+	void Section::Stop()
+	{
+		if (!overlap)
+			track.Stop();
+	}
+
+	bool Section::Playing()
+	{
+		return overlap ? false : track.Playing();
+	}
+
+	double Section::PositionMs()
+	{
+		return overlap ? 0.0 : track.PositionMs();
+	}
+
+	double Section::LengthMs()
+	{
+		Sound *loaded = Loaded();
+		return loaded ? (double)loaded->Milliseconds() : 0.0;
 	}
 
 	void Sound::PlayOneShot(float volume, float pitch, float pan)
@@ -155,7 +244,7 @@ namespace SoundEngine {
 			engine->DestroyVoice(voice);
 	}
 
-	bool Track::Start(Sound *sound, bool loop, float volume)
+	bool Track::Start(Sound *sound, bool loop, float volume, double start_ms)
 	{
 		XAUDIO2_BUFFER buffer = {};
 		XAUDIO2_BUFFER_WMA wma = {};
@@ -185,6 +274,20 @@ namespace SoundEngine {
 
 		bool have_wma = sound->FillSubmitBuffer(&buffer, &wma);
 		buffer.LoopCount = loop ? XAUDIO2_LOOP_INFINITE : 0;
+
+		// Where in the sound to begin, in samples.
+		// Past the end would be rejected by XAudio2,
+		// so it reads as "from the start" instead:
+		if (start_ms > 0.0) {
+			UINT32 begin = (UINT32)(start_ms * rate / 1000.0);
+			if (begin < sound->Samples()) {
+				buffer.PlayBegin = begin;
+				buffer.PlayLength = 0; // To the end
+			} else {
+				start_ms = 0.0;
+			}
+		}
+		this->start_ms = start_ms;
 
 		if (FAILED(voice->SubmitSourceBuffer(&buffer, have_wma ? &wma : NULL)))
 			return false;
@@ -228,6 +331,6 @@ namespace SoundEngine {
 			return 0.0;
 
 		voice->GetState(&voice_state);
-		return (double)(voice_state.SamplesPlayed - samples_at_start) * 1000.0 / (double)rate;
+		return start_ms + (double)(voice_state.SamplesPlayed - samples_at_start) * 1000.0 / (double)rate;
 	}
 }

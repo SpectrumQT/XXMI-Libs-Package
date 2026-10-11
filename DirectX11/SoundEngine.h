@@ -45,12 +45,16 @@ namespace SoundEngine {
 	public:
 		~Track();
 
-		bool Start(Sound *sound, bool loop, float volume);
+		// start_ms is where in the sound to begin,
+		// which is what `play = SoundFoo, 500` asks for.
+		bool Start(Sound *sound, bool loop, float volume, double start_ms);
 		void Stop();
 		bool Playing() const;
 
-		// Where the track is, counted from the samples XAudio2 has played:
+		// Where the track is in the sound,
+		// counted from the samples XAudio2 has actually played:
 		// the clock to place notes against, not a frame counter.
+		// Includes whatever offset it was started at.
 		double PositionMs() const;
 
 	private:
@@ -59,8 +63,53 @@ namespace SoundEngine {
 		// SamplesPlayed counts from when the voice was created, across stops,
 		// so a position is measured from where the last Start() began:
 		uint64_t samples_at_start = 0;
+		double start_ms = 0.0;
 		bool started = false;
 	};
+
+	// A [Sound*] section: the wav it names, and how the ini wants it played.
+	// Declared while the ini is read, loaded on the first play,
+	// so a section nothing ever plays costs nothing but its name.
+	class Section {
+	public:
+		Section(const std::wstring &name, const std::wstring &path,
+				float volume, float pitch, bool loop, bool overlap);
+
+		// play = SoundFoo, or play = SoundFoo, <ms>
+		void Play(double start_ms);
+		void Stop();
+
+		bool Playing();
+		double PositionMs();
+		double LengthMs();
+
+	private:
+		std::wstring name;
+		std::wstring path;
+		float volume;
+		float pitch;
+		bool loop;
+		// true: every play starts a voice of its own,
+		// so hits can overlap, but none of them can be stopped or placed;
+		// false: one voice, restarted by each play, which a music track needs.
+		bool overlap;
+
+		Sound *sound = nullptr;
+		bool load_failed = false;
+		Track track; // Unused while overlap is set
+
+		Sound *Loaded();
+	};
+
+	// Called as the ini is read.
+	// The handle is what a play or stop command holds,
+	// so that running one is not a name lookup.
+	Section *Declare(const std::wstring &name, const std::wstring &path,
+			float volume, float pitch, bool loop, bool overlap);
+	Section *Find(const std::wstring &name);
+	// Drops every declaration on an ini reload. Sounds already playing stop,
+	// since the sections they belong to are about to be replaced.
+	void forget_sounds();
 
 	// The wav at this path, loaded on the first ask and cached.
 	// NULL with a logged reason if it will not load,

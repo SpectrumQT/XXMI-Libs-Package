@@ -1,4 +1,5 @@
 #include "IniHandler.h"
+#include "SoundEngine.h"
 
 #include <algorithm>
 #include <iterator>
@@ -67,6 +68,7 @@ static Section RegularSections[] = {
 	{L"Pool", true},
 	{L"Resource", true},
 	{L"Filter", true},
+	{L"Sound", true},
 	{L"Key", true},
 	{L"Include", true}, // Prefix so that it may be namespaced to allow included files to include more files with relative paths
 	{L"Preset", true},
@@ -2177,6 +2179,61 @@ static CustomResourcePool* ParseResourcePoolSection(const wchar_t* section_name)
 	pool->Initialize(pool_size);
 
 	return pool;
+}
+
+// A [Sound*] section names a wav and how an ini wants it played.
+// The file is resolved the same way a [Resource*] filename is:
+// beside the ini that declared it first, then beside the dll.
+static void ParseSoundSection(const wchar_t *section_name)
+{
+	wchar_t setting[MAX_PATH];
+	wchar_t path[MAX_PATH];
+
+	if (!GetIniStringAndLog(section_name, L"filename", 0, setting, MAX_PATH)) {
+		IniWarningW(L"[%ls] has no filename\n", section_name);
+		return;
+	}
+
+	wstring namespace_path;
+	get_namespaced_section_path(section_name, &namespace_path);
+	bool found = false;
+	if (!namespace_path.empty()) {
+		GetModuleFileName(migoto_handle, path, MAX_PATH);
+		wcsrchr(path, L'\\')[1] = 0;
+		wcscat(path, namespace_path.c_str());
+		wcscat(path, setting);
+		if (GetFileAttributes(path) != INVALID_FILE_ATTRIBUTES)
+			found = true;
+	}
+	if (!found) {
+		GetModuleFileName(migoto_handle, path, MAX_PATH);
+		wcsrchr(path, L'\\')[1] = 0;
+		wcscat(path, setting);
+	}
+
+	// volume is a multiplier, pitch is in octaves either way of the original,
+	// which is what XAudio2 takes;
+	// overlap decides whether a play starts a voice of its own,
+	// or restarts the one the section owns:
+	float volume = GetIniFloat(section_name, L"volume", 1.0f, NULL);
+	float pitch = GetIniFloat(section_name, L"pitch", 0.0f, NULL);
+	bool loop = GetIniBool(section_name, L"loop", false, NULL);
+	bool overlap = GetIniBool(section_name, L"overlap", false, NULL);
+
+	SoundEngine::Declare(section_name, path, volume, pitch, loop, overlap);
+}
+
+static void ParseSoundSections()
+{
+	SoundEngine::forget_sounds();
+
+	IniSections::iterator lower = ini_sections.lower_bound(wstring(L"Sound"));
+	IniSections::iterator upper = prefix_upper_bound(ini_sections, wstring(L"Sound"));
+
+	for (IniSections::iterator i = lower; i != upper; i++) {
+		LogInfoW(L"[%s]\n", i->first.c_str());
+		ParseSoundSection(i->first.c_str());
+	}
 }
 
 static void ParseResourceSections()
@@ -4938,6 +4995,7 @@ void LoadConfigFile()
 	// Must be done before any command lists that may refer to them:
 	ParseFilterSections();
 	ParseResourceSections();
+	ParseSoundSections();
 
 	// Second pass for the Constants command list:
 	G->constants_command_list.clear();

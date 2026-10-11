@@ -204,6 +204,8 @@ BYTE* Dx12ShimUpload(UINT64 size, UINT64 alignment, ID3D12Resource **buffer, UIN
 			upload_idle.erase(upload_idle.begin() + i);
 		} else if (!create_upload_buffer(UPLOAD_PAGE_SIZE, &page)) {
 			return NULL;
+		} else {
+			InterlockedIncrement64(&dx12_stats.upload_pages_created);
 		}
 		page.used = 0;
 		upload_active.push_back(page);
@@ -237,6 +239,7 @@ static void retire_upload_pages()
 			continue;
 		upload_idle[i].buffer->Release();
 		upload_idle.erase(upload_idle.begin() + i);
+		InterlockedIncrement64(&dx12_stats.upload_pages_released);
 	}
 }
 
@@ -515,9 +518,11 @@ void Dx12ShimPinsExecuted(ID3D12CommandQueue *queue, std::vector<IUnknown*> *pin
 	Dx12ShimLock();
 	if (dx12_shim && queue == shim.queue) {
 		shim.queue->Signal(fence, ++fence_signalled);
+		InterlockedIncrement64(&dx12_stats.pin_signals);
 		for (IUnknown *object : *pins)
 			retired.push_back({ object, fence_signalled });
 	} else {
+		InterlockedIncrement64(&dx12_stats.pin_lates);
 		for (IUnknown *object : *pins)
 			late.push_back({ object, dx12_frame });
 	}
@@ -695,7 +700,6 @@ void Dx12ShimSubmit()
 	lists[0] = shim_list;
 	shim.queue->ExecuteCommandLists(1, lists);
 	shim.queue->Signal(fence, ++fence_signalled);
-
 	allocators[current_allocator].fence = fence_signalled;
 	list_open = false;
 	list_used = false;

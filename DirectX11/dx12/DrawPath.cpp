@@ -2257,6 +2257,11 @@ void Dx12DrawPathFramePresented()
 			reasons[SLOW_INI_PARAMS], reasons[SLOW_VB_UNKNOWN],
 			reasons[SLOW_VB_WANTED], reasons[SLOW_VB_CHANGED], reasons[SLOW_IB], reasons[SLOW_CB],
 			stats.lookups_missing, stats.lookups_unsettled, stats.lookups_unstamped, stats.lookups_new);
+		Dx12DumpNote("  The fence was signalled %lld times for what game lists had pinned, which %lld times were executed on "
+			"another queue than ours; %lld pages of upload memory were created and %lld released\n",
+			InterlockedExchange64(&dx12_stats.pin_signals, 0), InterlockedExchange64(&dx12_stats.pin_lates, 0),
+			InterlockedExchange64(&dx12_stats.upload_pages_created, 0),
+			InterlockedExchange64(&dx12_stats.upload_pages_released, 0));
 		stats = {};
 		reported_epoch = dx12_shim_epoch;
 	}

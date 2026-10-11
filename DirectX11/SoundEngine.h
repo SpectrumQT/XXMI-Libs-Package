@@ -14,6 +14,12 @@
 //
 // sound_engine_update() belongs once a frame, beside the input dispatch:
 // it retires finished one-shots and notices the audio device being pulled out.
+//
+// A command list usually runs on the game's render thread, with the update,
+// but a deferred context can run one from elsewhere,
+// so one lock covers the engine and everything it holds.
+// The free functions and Section's methods take it;
+// Sound and Track never take it themselves.
 namespace SoundEngine {
 
 	// A decoded wav, held once per path however many ini sections name it.
@@ -110,11 +116,6 @@ namespace SoundEngine {
 	// Drops every declaration on an ini reload. Sounds already playing stop,
 	// since the sections they belong to are about to be replaced.
 	void forget_sounds();
-
-	// The wav at this path, loaded on the first ask and cached.
-	// NULL with a logged reason if it will not load,
-	// so that a missing file is a silent sound rather than a dead mod.
-	Sound *Load(const std::wstring &path);
 
 	void sound_engine_update();
 	void sound_engine_shutdown();

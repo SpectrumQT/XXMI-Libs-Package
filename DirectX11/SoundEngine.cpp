@@ -8,10 +8,9 @@
 
 namespace SoundEngine {
 
-	// The engine, the sounds it loaded, and the lock over both.
-	// A command list usually runs on the game's render thread, with the update,
-	// but a deferred context can run one from elsewhere,
-	// and neither DirectXTK's voice pool nor the cache below is safe against that.
+	// The lock over the engine, the sounds it loaded and the sections below.
+	// Which functions take it is laid out in the header;
+	// everything static here assumes it is already held.
 	static std::mutex &lock()
 	{
 		static std::mutex mutex;
@@ -58,10 +57,11 @@ namespace SoundEngine {
 		return !!engine;
 	}
 
-	Sound *Load(const std::wstring &path)
+	// The wav at this path, loaded on the first ask and cached.
+	// NULL with a logged reason if it will not load,
+	// so that a missing file is a silent sound rather than a dead mod.
+	static Sound *load_locked(const std::wstring &path)
 	{
-		std::lock_guard<std::mutex> held(lock());
-
 		auto cached = sounds.find(path);
 		if (cached != sounds.end())
 			return cached->second.get();
@@ -166,13 +166,15 @@ namespace SoundEngine {
 		if (sound || load_failed)
 			return sound;
 
-		sound = Load(path);
+		sound = load_locked(path);
 		load_failed = !sound;
 		return sound;
 	}
 
 	void Section::Play(double start_ms)
 	{
+		std::lock_guard<std::mutex> held(lock());
+
 		Sound *loaded = Loaded();
 		if (!loaded)
 			return;
@@ -189,22 +191,30 @@ namespace SoundEngine {
 
 	void Section::Stop()
 	{
+		std::lock_guard<std::mutex> held(lock());
+
 		if (!overlap)
 			track.Stop();
 	}
 
 	bool Section::Playing()
 	{
+		std::lock_guard<std::mutex> held(lock());
+
 		return overlap ? false : track.Playing();
 	}
 
 	double Section::PositionMs()
 	{
+		std::lock_guard<std::mutex> held(lock());
+
 		return overlap ? 0.0 : track.PositionMs();
 	}
 
 	double Section::LengthMs()
 	{
+		std::lock_guard<std::mutex> held(lock());
+
 		Sound *loaded = Loaded();
 		return loaded ? (double)loaded->Milliseconds() : 0.0;
 	}
@@ -238,8 +248,6 @@ namespace SoundEngine {
 	{
 		Stop();
 
-		std::lock_guard<std::mutex> held(lock());
-
 		if (voice && engine)
 			engine->DestroyVoice(voice);
 	}
@@ -254,8 +262,6 @@ namespace SoundEngine {
 			return false;
 
 		Stop();
-
-		std::lock_guard<std::mutex> held(lock());
 
 		if (!engine)
 			return false;
@@ -302,8 +308,6 @@ namespace SoundEngine {
 
 	void Track::Stop()
 	{
-		std::lock_guard<std::mutex> held(lock());
-
 		if (!voice || !started)
 			return;
 

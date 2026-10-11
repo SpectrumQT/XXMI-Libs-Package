@@ -5,6 +5,9 @@ void ToggleInput(HackerDevice *device, void *private_data);
 void LoadConfigFile();
 void ReloadConfig(HackerDevice *device);
 void LoadSkippedIncludes();
+// Whether [ShaderOverride] sections with a hash_dx12 were read without
+// knowing whether the game is D3D12, and so went by their D3D11 hash
+bool IniDx12HashesProvisional();
 void RegisterUnknownSetting(const wchar_t* name, float value);
 bool SavePersistentSettings(bool force = false);
 bool SaveUnknownPersistentSettings();

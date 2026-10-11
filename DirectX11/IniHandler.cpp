@@ -2619,6 +2619,13 @@ wchar_t *ShaderOverrideIniKeys[] = {
 	L"filter_index",
 	NULL
 };
+static bool dx12_hashes_provisional;
+
+bool IniDx12HashesProvisional()
+{
+	return dx12_hashes_provisional;
+}
+
 static void ParseShaderOverrideSections()
 {
 	IniSections::iterator lower, upper, i;
@@ -2628,6 +2635,8 @@ static void ParseShaderOverrideSections()
 	UINT64 hash, hash_dx12;
 	bool duplicate, found, found_dx12;
 	bool disable_scissor;
+	// Settled by the game presenting, unless the ini says
+	bool dx12 = dx12_shim || G->dx12 == Dx12Mode::ON;
 
 	// Lock entire routine. This can be re-inited live.  These shaderoverrides
 	// are unlikely to be changing much, but for consistency.
@@ -2636,6 +2645,7 @@ static void ParseShaderOverrideSections()
 
 	G->mShaderOverrideMap.clear();
 	G->shader_override_generation++;
+	dx12_hashes_provisional = false;
 
 	lower = ini_sections.lower_bound(wstring(L"ShaderOverride"));
 	upper = prefix_upper_bound(ini_sections, wstring(L"ShaderOverride"));
@@ -2648,12 +2658,16 @@ static void ParseShaderOverrideSections()
 		// A D3D12 game compiles its shaders differently, so their
 		// hashes are not the D3D11 ones. A section can name both.
 		hash_dx12 = GetIniHash(id, L"hash_dx12", 0, &found_dx12);
-		if (dx12_shim) {
+		if (dx12) {
 			if (found_dx12)
 				hash = hash_dx12;
 			found |= found_dx12;
-		} else if (!found && found_dx12) {
-			continue;
+		} else if (found_dx12) {
+			// Read again once the shim is there, see Dx12ShimCreate
+			if (G->dx12 == Dx12Mode::AUTO)
+				dx12_hashes_provisional = true;
+			if (!found)
+				continue;
 		}
 		if (!found) {
 			IniWarningW(L"Section missing Hash=\n - [%ls]\n", id);

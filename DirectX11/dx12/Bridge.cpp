@@ -18,6 +18,7 @@
 #include "../globals.h"
 #include "../HackerContext.h"
 #include "../HackerDevice.h"
+#include "../IniHandler.h"
 
 Dx12Shim *dx12_shim;
 bool dx12_unloading;
@@ -932,3 +933,11 @@ bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue)
 	shim_created = true;
 	return true;
 }
+
+	// The shader overrides were read before the game was known to be
+	// D3D12, and are not read again at the first present when
+	// config_initialization_delay says not to
+	if (G->gConfigInitialized && !G->gReloadConfigPending && IniDx12HashesProvisional()) {
+		Dx12LogInfo("Reloading the configuration for the hash_dx12 of the shader overrides\n");
+		G->gReloadConfigPending = true;
+	}

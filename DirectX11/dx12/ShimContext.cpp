@@ -564,7 +564,7 @@ void STDMETHODCALLTYPE ShimContext::SOGetTargets(UINT NumBuffers, ID3D11Buffer *
 	UINT i;
 
 	for (i = 0; i < NumBuffers; i++)
-		ppSOTargets[i] = NULL;
+		get(!i && Dx12InDrawScope() ? Dx12ScopeStreamOutput() : NULL, &ppSOTargets[i]);
 }
 
 void STDMETHODCALLTYPE ShimContext::RSSetState(ID3D11RasterizerState *pRasterizerState)

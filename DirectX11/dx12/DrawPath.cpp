@@ -1372,6 +1372,7 @@ void Dx12ScopeDispatched()
 }
 
 static bool skin_output_at(UINT64 va);
+static UINT64 skin_output_bytes(UINT64 va);
 static void alias_skin_vertices(Published *vertices, const SkinDispatch *skin);
 
 ID3D11Buffer* Dx12ScopeVertexBuffer(UINT slot, UINT *stride)
@@ -1421,6 +1422,29 @@ ID3D11Buffer* Dx12ScopeVertexBuffer(UINT slot, UINT *stride)
 	*stride = view->StrideInBytes;
 	// For a mod that keeps what it is given to bind it to another draw
 	ShimResourceOf(entry->resource)->skin_va = skin_output_at(view->BufferLocation) ? view->BufferLocation : 0;
+	return static_cast<ShimBuffer*>(entry->resource);
+}
+
+// The buffer a D3D11 renderer would have streamed the skinned vertices out to.
+// A mod copies it after its own draw to bind what that skinned to a draw of
+// another mesh, which the game's buffer is not bound for.
+ID3D11Buffer* Dx12ScopeStreamOutput()
+{
+	const SkinDispatch *skin = scope->skin;
+	Published *entry;
+	UINT64 skinned;
+
+	if (!skin)
+		return NULL;
+	// As large as what the mod had skinned, which is what a draw that goes
+	// by the size of its vertex buffer is to count
+	skinned = skin_output_bytes(skin->output_va);
+	entry = publish_buffer(skin->output_va, skinned ? skinned : (UINT64)skin->count * skin->stride, PUBLISHED_SKIN_BUFFER,
+		skin->stride, NULL);
+	if (!entry)
+		return NULL;
+
+	ShimResourceOf(entry->resource)->skin_va = skinned ? skin->output_va : 0;
 	return static_cast<ShimBuffer*>(entry->resource);
 }
 
@@ -2332,6 +2356,14 @@ static bool skin_output_at(UINT64 va)
 	SkinOutput *output = skin_outputs.empty() ? NULL : find_skin_output(va);
 
 	return output && output->vertices;
+}
+
+// 0 if nothing stands in for the game's buffer at the address
+static UINT64 skin_output_bytes(UINT64 va)
+{
+	SkinOutput *output = skin_outputs.empty() ? NULL : find_skin_output(va);
+
+	return output ? (UINT64)output->vertices * output->stride : 0;
 }
 
 // After outputs were taken out, so that the threads recording do not stop for

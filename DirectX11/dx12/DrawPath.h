@@ -106,6 +106,7 @@ void Dx12DumpMarkedShader(UINT64 hash, const char *type);
 // and what they return is not referenced.
 bool Dx12InDrawScope();
 ID3D11Buffer* Dx12ScopeVertexBuffer(UINT slot, UINT *stride);
+ID3D11Buffer* Dx12ScopeStreamOutput();
 ID3D11Buffer* Dx12ScopeIndexBuffer(DXGI_FORMAT *format);
 ID3D11Buffer* Dx12ScopeConstantBuffer(Dx12ShaderStage stage, UINT slot);
 ID3D11ShaderResourceView* Dx12ScopeShaderResource(Dx12ShaderStage stage, UINT slot);

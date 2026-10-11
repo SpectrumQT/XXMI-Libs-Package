@@ -1531,22 +1531,84 @@ static void restore_list()
 	restore_overrides();
 }
 
-// The descriptors of a table as the game set it, from the root signature: up
-// to the end of the range reaching furthest. 0 if that has no end.
-static UINT table_size(UINT parameter)
+static const Dx12ShaderStage graphics_stages[] = { DX12_STAGE_VS, DX12_STAGE_PS, DX12_STAGE_GS, DX12_STAGE_HS, DX12_STAGE_DS };
+static const Dx12ShaderStage compute_stages[] = { DX12_STAGE_CS };
+
+// The highest register of a range that any of the shaders declares, as a
+// number of registers from the first of the range. 0 if none does.
+static UINT declared_in_range(const Dx12RootRange *range, const Dx12ShaderInfo *const *shaders, size_t shader_count)
+{
+	UINT reg, bits = range->type == D3D12_DESCRIPTOR_RANGE_TYPE_SRV ? 128 : 64, declared = 0;
+	UINT64 mask[2] = {};
+	size_t i;
+
+	for (i = 0; i < shader_count; i++) {
+		switch (range->type) {
+		case D3D12_DESCRIPTOR_RANGE_TYPE_SRV: mask[0] = shaders[i]->srv[0]; mask[1] = shaders[i]->srv[1]; break;
+		case D3D12_DESCRIPTOR_RANGE_TYPE_CBV: mask[0] = shaders[i]->cbv; break;
+		default: mask[0] = shaders[i]->uav; break;
+		}
+		for (reg = range->base; reg < bits && reg - range->base < range->count; reg++) {
+			if (mask[reg / 64] & (1ull << (reg % 64)))
+				declared = max(declared, reg - range->base + 1);
+		}
+	}
+	return declared;
+}
+
+// How many descriptors of a table the draws of the scope can read, from where
+// the game set it: the registers the shaders of the pipeline state declare, or
+// where they do not tell, up to the end of the furthest range of the root
+// signature. False if that has no end.
+static bool table_size(UINT parameter, UINT *size)
 {
 	const Dx12RootSignatureInfo *signature = scope->signature;
-	UINT size = 0;
+	const Dx12ShaderStage *stages = scope->compute ? compute_stages : graphics_stages;
+	size_t stage_count = scope->compute ? ARRAYSIZE(compute_stages) : ARRAYSIZE(graphics_stages);
+	const Dx12ShaderInfo *shaders[DX12_STAGE_COUNT];
+	bool declared = scope->pipeline->shaders_known, bounded = true, visible = false;
+	UINT whole = 0, read = 0;
+	size_t i, shader_count = 0;
 
 	if (!signature || parameter >= signature->parameters.size())
-		return 0;
+		return false;
+	const Dx12RootParameter &table = signature->parameters[parameter];
 
-	for (const Dx12RootRange &range : signature->parameters[parameter].ranges) {
-		if (range.count == UINT_MAX)
-			return 0;
-		size = max(size, range.offset + range.count);
+	for (i = 0; i < stage_count; i++) {
+		const Dx12ShaderInfo *shader = scope->pipeline->shaders[stages[i]];
+
+		if (table.visibility != D3D12_SHADER_VISIBILITY_ALL && table.visibility != visibilities[stages[i]])
+			continue;
+		visible = true;
+		if (!shader)
+			continue;
+		if (!shader->reflected || shader->unbounded_srv || shader->unmasked)
+			declared = false;
+		shaders[shader_count++] = shader;
 	}
-	return size;
+	// For a stage that is none of ours, like a mesh shader
+	declared = declared && visible;
+
+	for (const Dx12RootRange &range : table.ranges) {
+		if (range.count == UINT_MAX)
+			bounded = false;
+		else
+			whole = max(whole, range.offset + range.count);
+
+		if (range.type == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+			declared = false;
+		// Nothing of another space is declared where nothing is unmasked
+		if (!declared || range.space)
+			continue;
+		UINT registers = declared_in_range(&range, shaders, shader_count);
+		if (registers)
+			read = max(read, range.offset + registers);
+	}
+
+	if (!declared && !bounded)
+		return false;
+	*size = declared ? read : whole;
+	return true;
 }
 
 // A game may have made its heap as large as a heap can be, which leaves no
@@ -1558,9 +1620,14 @@ static UINT table_size(UINT parameter)
 // like the reserve is.
 static ID3D12DescriptorHeap *side_heap;
 static UINT side_next, side_frame, side_used[DX12_RESERVE_FRAMES];
+	static const D3D12_SHADER_VISIBILITY visibilities[DX12_STAGE_COUNT] = {
+		D3D12_SHADER_VISIBILITY_VERTEX, D3D12_SHADER_VISIBILITY_PIXEL, D3D12_SHADER_VISIBILITY_GEOMETRY,
+		D3D12_SHADER_VISIBILITY_HULL, D3D12_SHADER_VISIBILITY_DOMAIN, D3D12_SHADER_VISIBILITY_ALL,
+	};
 
 static bool side_alloc(UINT count, D3D12_CPU_DESCRIPTOR_HANDLE *cpu, D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
 {
+	*size = 0;
 	D3D12_DESCRIPTOR_HEAP_DESC desc = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, DX12_HEAP_RESERVE, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE };
 	UINT i, in_use = 0, skipped = 0, increment = scope->list->mState.view_heap->mIncrement;
 
@@ -1621,8 +1688,7 @@ static D3D12_CPU_DESCRIPTOR_HANDLE* table_descriptor(const Dx12RegisterLocation 
 		return NULL;
 	}
 
-	size = table_size(location->parameter);
-	if (!size) {
+	if (!table_size(location->parameter, &size)) {
 		stats.table_unbounded++;
 		log_once(&unbounded, "A mod replaces something the game binds through a descriptor table without an end. Ignored.");
 		return NULL;
@@ -1630,7 +1696,7 @@ static D3D12_CPU_DESCRIPTOR_HANDLE* table_descriptor(const Dx12RegisterLocation 
 	// The game need not have a whole table's worth of descriptors where
 	// it pointed the table, if its shaders do not read that far
 	first = (base - heap->mGpuStart) / heap->mIncrement;
-	if (first + location->offset >= heap->mCount)
+	if (location->offset >= size || first + location->offset >= heap->mCount)
 		return NULL;
 	size = (UINT)min((UINT64)size, heap->mCount - first);
 
@@ -1703,9 +1769,9 @@ static bool prepare_side_tables()
 		    || is_sampler_table(signature, i))
 			continue;
 		base = arguments->values[i];
-		sizes[i] = table_size((UINT)i);
 		first = base >= heap->mGpuStart ? (base - heap->mGpuStart) / heap->mIncrement : heap->mCount;
-		if (!sizes[i] || first >= heap->mCount) {
+		// A table none of the shaders read has nothing to copy
+		if (!table_size((UINT)i, &sizes[i]) || (sizes[i] && first >= heap->mCount)) {
 			if (!no_switch) {
 				Dx12DumpNote("  (%s parameter %zu of %u descriptors is set to %llu descriptors into a heap of %u)\n",
 					scope->compute ? "compute" : "graphics", i, sizes[i], first, heap->mCount);
@@ -1739,7 +1805,12 @@ static bool prepare_side_tables()
 		dx12_shim->device->CopyDescriptorsSimple(sizes[i], cpu, heap->MirrorCpuHandle(arguments->values[i]), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	}
 
-	// After the allocations: side_alloc makes the side heap
+	// After the allocations: side_alloc makes the side heap, which is not
+	// there if no table had anything to copy
+	if (!side_heap) {
+		scope->side_impossible = true;
+		return false;
+	}
 	for (i = 0; i < game->heap_count; i++)
 		heaps[i] = game->heaps[i] == heap->mOrig ? side_heap : game->heaps[i];
 	list->SetDescriptorHeaps(game->heap_count, heaps);
@@ -1747,10 +1818,19 @@ static bool prepare_side_tables()
 	stats.side_switches++;
 	// Tables are to be set after the heaps, the sampler ones as they were
 	for (i = 0; i < count; i++) {
-		if (sizes[i])
-			set_root_argument(list, scope->compute, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, (UINT)i, scope->side_base[i].ptr);
-		else if (is_sampler_table(signature, i) && (arguments->set & (1ull << i)))
-			set_root_argument(list, scope->compute, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, (UINT)i, arguments->values[i]);
+		UINT64 value;
+
+		if (signature->parameters[i].type != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE || !(arguments->set & (1ull << i)))
+			continue;
+		if (is_sampler_table(signature, i))
+			value = arguments->values[i];
+		else if (sizes[i])
+			value = scope->side_base[i].ptr;
+		else
+			// Read by none of the shaders, so anywhere in the heap
+			// that is set will do
+			value = side_heap->GetGPUDescriptorHandleForHeapStart().ptr;
+		set_root_argument(list, scope->compute, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, (UINT)i, value);
 	}
 	return true;
 }
@@ -2554,9 +2634,6 @@ static void finish_skin_dumps()
 		skin_dumps.erase(skin_dumps.begin() + i);
 	}
 }
-
-static const Dx12ShaderStage graphics_stages[] = { DX12_STAGE_VS, DX12_STAGE_PS, DX12_STAGE_GS, DX12_STAGE_HS, DX12_STAGE_DS };
-static const Dx12ShaderStage compute_stages[] = { DX12_STAGE_CS };
 
 // A mod's vertex buffer is drawn with the game's pipeline state, whose input
 // layout is that of the D3D12 renderer's own buffer. Where the D3D11 renderer

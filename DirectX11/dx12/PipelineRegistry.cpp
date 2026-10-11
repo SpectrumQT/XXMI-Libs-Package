@@ -133,18 +133,26 @@ static bool reflect_psv0(Blob psv, Dx12ShaderInfo *info)
 		if (!read32(psv, pos, &type) || !read32(psv, pos + 4, &space)
 		    || !read32(psv, pos + 8, &lower) || !read32(psv, pos + 12, &upper))
 			return false;
-		if (space || upper < lower)
-			continue;
-
 		// PSVResourceType: 2 is a CBV, 3-5 SRVs, 6-9 UAVs
+		if (upper < lower || type < 2)
+			continue;
+		if (space || type > 9) {
+			info->unmasked = true;
+			continue;
+		}
+
 		if (type == 2) {
+			info->unmasked |= upper >= 64;
 			mark_registers(&info->cbv, 1, lower, upper - lower + 1);
-		} else if (type >= 3 && type <= 5) {
-			if (upper == UINT_MAX)
+		} else if (type <= 5) {
+			if (upper == UINT_MAX) {
 				info->unbounded_srv = true;
-			else
+			} else {
+				info->unmasked |= upper >= 128;
 				mark_registers(info->srv, 2, lower, upper - lower + 1);
-		} else if (type >= 6 && type <= 9) {
+			}
+		} else {
+			info->unmasked |= upper >= 64;
 			mark_registers(&info->uav, 1, lower, upper == UINT_MAX ? 64 : upper - lower + 1);
 		}
 	}
@@ -175,11 +183,14 @@ static bool reflect_rdef(Blob rdef, Dx12ShaderInfo *info)
 		space = 0;
 		if (record_size == 40 && !read32(rdef, pos + 32, &space))
 			return false;
-		if (space)
+		if (space) {
+			info->unmasked |= type != D3D_SIT_SAMPLER;
 			continue;
+		}
 
 		switch (type) {
 			case D3D_SIT_CBUFFER:
+				info->unmasked |= !reg_count || (UINT64)reg + reg_count > 64;
 				mark_registers(&info->cbv, 1, reg, reg_count ? reg_count : 1);
 				// The sizes are with the constant buffers, a list
 				// of 24 byte records that starts with the name
@@ -201,10 +212,12 @@ static bool reflect_rdef(Blob rdef, Dx12ShaderInfo *info)
 			case D3D_SIT_STRUCTURED:
 			case D3D_SIT_BYTEADDRESS:
 				// A bind count of 0 is an unbounded array
-				if (!reg_count)
+				if (!reg_count) {
 					info->unbounded_srv = true;
-				else
+				} else {
+					info->unmasked |= (UINT64)reg + reg_count > 128;
 					mark_registers(info->srv, 2, reg, reg_count);
+				}
 				break;
 			case D3D_SIT_UAV_RWTYPED:
 			case D3D_SIT_UAV_RWSTRUCTURED:
@@ -212,7 +225,13 @@ static bool reflect_rdef(Blob rdef, Dx12ShaderInfo *info)
 			case D3D_SIT_UAV_APPEND_STRUCTURED:
 			case D3D_SIT_UAV_CONSUME_STRUCTURED:
 			case D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER:
+				info->unmasked |= !reg_count || (UINT64)reg + reg_count > 64;
 				mark_registers(&info->uav, 1, reg, reg_count ? reg_count : 64);
+				break;
+			case D3D_SIT_SAMPLER:
+				break;
+			default:
+				info->unmasked = true;
 				break;
 		}
 	}
@@ -565,6 +584,7 @@ void Dx12RegisterPipeline(void **ppPipelineState, const D3D12_PIPELINE_STATE_STR
 			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS:
 			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS:
 				SUBOBJECT(D3D12_SHADER_BYTECODE)
+				info->shaders_known = false;
 				break;
 			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT:
 				SUBOBJECT(D3D12_INPUT_LAYOUT_DESC)
@@ -598,6 +618,8 @@ void Dx12RegisterPipeline(void **ppPipelineState, const D3D12_PIPELINE_STATE_STR
 			break;
 		pos += size;
 	}
+	if (desc->SizeInBytes - pos >= sizeof(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE))
+		info->shaders_known = false;
 
 #undef SHADER
 #undef SUBOBJECT

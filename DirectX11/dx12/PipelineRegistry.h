@@ -41,6 +41,9 @@ struct Dx12ShaderInfo {
 	bool reflected;
 	// An SRV range without an upper bound. Any register may be read.
 	bool unbounded_srv;
+	// A view register the masks below have no bit for: of another space
+	// than 0, or past what they reach
+	bool unmasked;
 	// Registers of space 0 the shader declares: t0-t127, b0-b63, u0-u63
 	UINT64 srv[2];
 	UINT64 cbv;
@@ -114,6 +117,9 @@ struct Dx12DrawFilter {
 
 struct Dx12PipelineInfo {
 	const Dx12ShaderInfo *shaders[DX12_STAGE_COUNT];
+	// Whether those are all the shaders it has. Not so with a mesh shader,
+	// or where the description could not be read to its end.
+	bool shaders_known = true;
 	std::vector<Dx12InputElement> input_layout;
 	// Bit per vertex buffer slot the input layout reads
 	UINT vb_slots = 0;

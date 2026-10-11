@@ -454,6 +454,10 @@ static bool start_reach(const ReachKey *key, VertexReach *reach, UINT64 vb_bytes
 		std::swap(barriers[i].Transition.StateBefore, barriers[i].Transition.StateAfter);
 	if (count)
 		list->ResourceBarrier(count, barriers);
+	// The game may be rid of its buffers before our list is executed, if
+	// it drops the list that draws with them
+	Dx12ShimDeferRelease(key->ib);
+	Dx12ShimDeferRelease(key->vb);
 
 	reach->vb_bytes = vb_bytes;
 	reach->fence = Dx12ShimPendingFence();
@@ -2619,6 +2623,8 @@ static void dump_skin_source(const SkinDispatch *skin, UINT64 shader)
 		std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
 		list->ResourceBarrier(1, &barrier);
 	}
+	// As in start_reach
+	Dx12ShimDeferRelease(resource);
 
 	dump.fence = Dx12ShimPendingFence();
 	dump.stride = skin->stride;

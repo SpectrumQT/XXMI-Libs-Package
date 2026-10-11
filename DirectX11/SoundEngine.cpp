@@ -3,6 +3,7 @@
 #include "globals.h"
 #include "Overlay.h"
 
+#include <algorithm>
 #include <mutex>
 #include <unordered_map>
 
@@ -23,6 +24,17 @@ namespace SoundEngine {
 	// Set once the engine has been asked for, whether or not it came up:
 	// a machine with no audio device must not be asked again every frame.
 	static bool attempted = false;
+
+	// Both maps below are keyed in lower case:
+	// an ini may name a sound in whatever case it likes, as it may a resource,
+	// and a path on Windows is case insensitive as well.
+	static std::wstring key_of(const std::wstring &name)
+	{
+		std::wstring key(name);
+
+		std::transform(key.begin(), key.end(), key.begin(), ::towlower);
+		return key;
+	}
 
 	static DirectX::AudioEngine *get_engine()
 	{
@@ -62,7 +74,9 @@ namespace SoundEngine {
 	// so that a missing file is a silent sound rather than a dead mod.
 	static Sound *load_locked(const std::wstring &path)
 	{
-		auto cached = sounds.find(path);
+		std::wstring key = key_of(path);
+
+		auto cached = sounds.find(key);
 		if (cached != sounds.end())
 			return cached->second.get();
 
@@ -78,13 +92,13 @@ namespace SoundEngine {
 			LogInfo("Sound: %s\n", e.what());
 			// Remembered as unloadable:
 			// a per draw call sound must not open a missing file every frame.
-			sounds.emplace(path, nullptr);
+			sounds.emplace(key, nullptr);
 			return NULL;
 		}
 
 		LogInfo("Sound: loaded %S (%zu ms)\n", path.c_str(), effect->GetSampleDurationMS());
 
-		auto added = sounds.emplace(path, std::make_unique<Sound>(std::move(effect)));
+		auto added = sounds.emplace(key, std::make_unique<Sound>(std::move(effect)));
 		return added.first->second.get();
 	}
 
@@ -128,7 +142,7 @@ namespace SoundEngine {
 	{
 		std::lock_guard<std::mutex> held(lock());
 
-		auto added = sections.emplace(name, std::make_unique<Section>(name, path, volume, pitch, loop, overlap));
+		auto added = sections.emplace(key_of(name), std::make_unique<Section>(name, path, volume, pitch, loop, overlap));
 		return added.first->second.get();
 	}
 
@@ -136,7 +150,7 @@ namespace SoundEngine {
 	{
 		std::lock_guard<std::mutex> held(lock());
 
-		auto found = sections.find(name);
+		auto found = sections.find(key_of(name));
 		return found == sections.end() ? NULL : found->second.get();
 	}
 

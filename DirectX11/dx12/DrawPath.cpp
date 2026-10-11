@@ -1242,6 +1242,12 @@ struct Dx12DrawScope {
 	UINT vbs_changed;
 	bool ib_changed;
 	bool topology_changed;
+	// The game's pipeline made again with the input layout of a mod, if
+	// that is what the list has set, see apply_input_layout
+	ID3D12PipelineState *variant;
+	// What the engine was given for the input layout of the game's
+	// pipeline, once it asked (Dx12PublishInputLayout). Not referenced.
+	ID3D11InputLayout *game_layout;
 	std::vector<ChangedParameter> parameters;
 	// A heap of ours is set on the list in place of the game's view heap
 	// (see side_heap), with a copy of every table the game had set. The
@@ -1552,6 +1558,10 @@ static void restore_list()
 	}
 
 	restore_overrides();
+
+	if (scope->variant)
+		list->SetPipelineState(game->pipeline);
+	scope->variant = NULL;
 }
 
 static const Dx12ShaderStage graphics_stages[] = { DX12_STAGE_VS, DX12_STAGE_PS, DX12_STAGE_GS, DX12_STAGE_HS, DX12_STAGE_DS };
@@ -2837,6 +2847,96 @@ static ID3D11Buffer* unpacked_buffer(ID3D11Buffer *buffer, UINT slot, UINT strid
 	return out;
 }
 
+// The engine goes by the input layout the context has set to make one that
+// reads the vertices of a mod as they are (ElementFormat and the like). The
+// game's is part of its pipeline state, and is made up for the engine here.
+void HackerContext::Dx12PublishInputLayout()
+{
+	std::vector<D3D11_INPUT_ELEMENT_DESC> elements;
+	ID3D11InputLayout *layout = NULL;
+
+	if (!scope || scope->compute || scope->skin || scope->game_layout)
+		return;
+
+	for (const Dx12InputElement &input : scope->pipeline->input_layout) {
+		elements.push_back({ input.semantic.c_str(), input.index, input.format, input.slot, input.offset,
+			input.per_instance ? D3D11_INPUT_PER_INSTANCE_DATA : D3D11_INPUT_PER_VERTEX_DATA, input.step_rate });
+	}
+	if (elements.empty() || FAILED(mHackerDevice->CreateCustomInputLayout(elements.data(), (UINT)elements.size(), NULL, 0, &layout)) || !layout) {
+		static bool reported;
+
+		log_once(&reported, "A mod changes the input layout for a draw whose own could not be made up for it. The game's layout is used.");
+		return;
+	}
+
+	IASetInputLayout(layout);
+	scope->game_layout = static_cast<HackerInputLayout*>(layout)->GetOrigInputLayout();
+	layout->Release();
+}
+
+// What became of an input layout of a mod, once for each pipeline it met
+static void note_input_layout(const ShimInputLayout *layout, ID3D12PipelineState *variant)
+{
+	static std::unordered_set<UINT64> noted;
+	const Dx12CmdState *game = &scope->list->mState;
+	char text[1024], part[96];
+
+	if (noted.size() >= 64 || !noted.insert((UINT64)(uintptr_t)scope->pipeline ^ layout->mId * 0x9e3779b97f4a7c15ull).second)
+		return;
+
+	_snprintf_s(text, _TRUNCATE, "Input layout of a mod for vs %016llx: %s. The game's:",
+		scope->pipeline->shaders[DX12_STAGE_VS] ? scope->pipeline->shaders[DX12_STAGE_VS]->hash : 0,
+		!scope->game_layout ? "THE GAME'S WAS NOT PUBLISHED" : variant ? "pipeline made" : "NO PIPELINE");
+	for (const Dx12InputElement &input : scope->pipeline->input_layout) {
+		_snprintf_s(part, _TRUNCATE, " %s%u vb%u+%u fmt %d,", input.semantic.c_str(), input.index, input.slot, input.offset, input.format);
+		strncat_s(text, part, _TRUNCATE);
+	}
+	strncat_s(text, " the mod's:", _TRUNCATE);
+	for (const D3D12_INPUT_ELEMENT_DESC &element : layout->mElements) {
+		_snprintf_s(part, _TRUNCATE, " %s%u vb%u+%u fmt %d,", element.SemanticName, element.SemanticIndex, element.InputSlot,
+			element.AlignedByteOffset, element.Format);
+		strncat_s(text, part, _TRUNCATE);
+	}
+	strncat_s(text, " strides of the game:", _TRUNCATE);
+	for (UINT slot = 0; slot < 8 && slot < ARRAYSIZE(game->vertex_buffers); slot++) {
+		_snprintf_s(part, _TRUNCATE, " %u", game->vertex_buffers[slot].StrideInBytes);
+		strncat_s(text, part, _TRUNCATE);
+	}
+	Dx12DumpNote("%s\n", text);
+}
+
+// An input layout of a mod is what the engine set that is not the game's. On
+// D3D12 that takes the game's pipeline state made again with it, which is set
+// on the list until the layout is another or the scope closes.
+static void apply_input_layout(const ShimState *mod)
+{
+	ID3D12GraphicsCommandList *list = scope->list->mOrig;
+	ID3D12PipelineState *variant = NULL;
+
+	if (scope->game_layout && mod->input_layout && mod->input_layout != scope->game_layout) {
+		const ShimInputLayout *layout = static_cast<const ShimInputLayout*>(mod->input_layout);
+		UINT64 hash = layout->mElements.size();
+
+		for (const D3D12_INPUT_ELEMENT_DESC &element : layout->mElements) {
+			hash = hash * 0x9e3779b97f4a7c15ull ^ fnv_64_buf(element.SemanticName, strlen(element.SemanticName));
+			hash = hash * 0x9e3779b97f4a7c15ull
+				^ fnv_64_buf(&element.SemanticIndex, sizeof(element) - offsetof(D3D12_INPUT_ELEMENT_DESC, SemanticIndex));
+		}
+		variant = Dx12PipelineWithInputLayout(scope->pipeline, dx12_shim->device, hash, layout->mElements.data(),
+				(UINT)layout->mElements.size());
+	}
+
+	if (G->dx12_dump_hashes && mod->input_layout && mod->input_layout != scope->game_layout)
+		note_input_layout(static_cast<const ShimInputLayout*>(mod->input_layout), variant);
+
+	if (variant == scope->variant)
+		return;
+	list->SetPipelineState(variant ? variant : scope->list->mState.pipeline);
+	if (variant)
+		Dx12ShimPin(scope->list, variant);
+	scope->variant = variant;
+}
+
 // Makes the next draw or dispatch on the list use what the mod has bound in
 // place of what the game has, as far as that can be done. Whatever an earlier
 // call left on the list goes first: the mod may have unbound it since.
@@ -2964,6 +3064,8 @@ static void apply_overrides()
 		list->IASetPrimitiveTopology((D3D12_PRIMITIVE_TOPOLOGY)mod->topology);
 		scope->topology_changed = true;
 	}
+
+	apply_input_layout(mod);
 }
 
 // What a draw of a mod came to, once for each kind of them
@@ -3085,6 +3187,8 @@ static void open_scope(Dx12DrawScope *opened, Dx12GraphicsCommandList *list, con
 	opened->vbs_changed = 0;
 	opened->ib_changed = false;
 	opened->topology_changed = false;
+	opened->variant = NULL;
+	opened->game_layout = NULL;
 	opened->parameters.clear();
 	opened->side_impossible = false;
 	opened->heaps_changed = false;

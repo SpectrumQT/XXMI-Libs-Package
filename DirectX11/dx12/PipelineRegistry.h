@@ -55,7 +55,8 @@ struct Dx12ShaderInfo {
 	// How many render targets a pixel shader writes
 	UINT32 targets;
 	// A copy of the shader as the game gave it, size bytes. Only kept
-	// with hunting on, for marking a shader to write it to ShaderFixes.
+	// with hunting on, for marking a shader to write it to ShaderFixes,
+	// or with dx12_keep_shader_bytecode.
 	const BYTE *bytecode;
 };
 
@@ -94,6 +95,7 @@ struct Dx12InputElement {
 	UINT slot;
 	UINT offset;
 	bool per_instance;
+	UINT step_rate;
 };
 
 // What DrawPath has worked out about the draws made with a pipeline state,
@@ -124,7 +126,30 @@ struct Dx12PipelineInfo {
 	// Bit per vertex buffer slot the input layout reads
 	UINT vb_slots = 0;
 	mutable Dx12DrawFilter filter = {};
+
+	// What a graphics pipeline was created from, for creating it again
+	// with another input layout: a pipeline state stream, or a
+	// D3D12_GRAPHICS_PIPELINE_STATE_DESC if not creation_stream. What it
+	// points at was the game's and is gone, but for the root signature,
+	// which is referenced.
+	std::vector<BYTE> creation;
+	bool creation_stream = false;
+	// Of a stream: its size, how much of it could be read, and the type
+	// of the subobject that ended the reading before the end
+	UINT stream_bytes = 0, stream_read = 0, stream_stopped_at = 0;
+	ID3D12RootSignature *root_signature = NULL;
+	// The pipelines created of it that way by the hash of their input
+	// layout, NULL for one that could not be. Referenced. For DrawPath,
+	// with its lock held.
+	mutable std::vector<std::pair<UINT64, ID3D12PipelineState*>> variants;
+
+	~Dx12PipelineInfo();
 };
+
+// Set by whatever needs the shaders of the game's pipelines kept as the game
+// gave them (Dx12ShaderInfo::bytecode) without hunting being on. Goes for the
+// shaders seen from then on.
+extern volatile bool dx12_keep_shader_bytecode;
 
 // For the methods creating these objects, on success. ppv is what the game
 // asked for, which may be nothing at all.
@@ -134,6 +159,11 @@ void Dx12RegisterPipeline(void **ppPipelineState, const D3D12_COMPUTE_PIPELINE_S
 void Dx12RegisterPipeline(void **ppPipelineState, const D3D12_PIPELINE_STATE_STREAM_DESC *desc);
 
 const Dx12PipelineInfo* Dx12FindPipeline(ID3D12PipelineState *pipeline);
+// The game's pipeline with another input layout, which the caller hashed. Not
+// referenced: it lives as long as the game's does. NULL if it cannot be made,
+// for one because the game's shaders were not kept.
+ID3D12PipelineState* Dx12PipelineWithInputLayout(const Dx12PipelineInfo *info, ID3D12Device *device, UINT64 layout_hash,
+		const D3D12_INPUT_ELEMENT_DESC *elements, UINT count);
 const Dx12ShaderInfo* Dx12FindShader(UINT64 hash);
 // Appends the shaders seen since the first from of them, in the order they
 // were first seen in

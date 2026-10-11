@@ -18,6 +18,7 @@
 #include "Hunting.h"
 #include "cursor.h"
 #include "dx12/Bridge.h"
+#include "dx12/PipelineRegistry.h"
 #include "dx12/PresentPass.h"
 
 #include <D3DCompiler.h>
@@ -359,6 +360,9 @@ static void UpdateInputLayout(const wchar_t* ini_section, CommandListState* stat
 	//LogInfo("UpdateInputLayout called\n");
 
 	HackerInputLayout* current_layout = nullptr;
+
+	if (dx12_shim)
+		state->mHackerContext->Dx12PublishInputLayout();
 
 	state->mHackerContext->IAGetInputLayout(reinterpret_cast<ID3D11InputLayout**>(&current_layout));
 
@@ -9551,6 +9555,8 @@ bool ParseCommandListResourceCopyTargetDirective(
 		// Vertex Buffer Layout Override
 		// vb0->ElementFormat(BLENDINDICES, 0) = R16G16B16A16_FLOAT
 		operation = parse_layout_operation(section, dst, val, command_list, ini_namespace);
+		// On D3D12 the layout takes making a pipeline of the game again
+		dx12_keep_shader_bytecode = true;
 		break;
 
 	case ResourceCopyTargetEvaluationMode::VARIABLE:

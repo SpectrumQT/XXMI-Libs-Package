@@ -313,6 +313,9 @@ public:
 	// these, along with the shaders the Set*Shader methods would have seen
 	void Dx12BeforeDraw(DrawContext &data, const UINT64 *shader_hashes);
 	void Dx12AfterDraw(DrawContext &data);
+	// Has the input layout of the pipeline of the game's draw set as the
+	// current one, which D3D12 has no call for
+	void Dx12PublishInputLayout();
 	bool Dx12BeforeDispatch(DispatchContext *context, UINT64 shader_hash);
 	void Dx12AfterDispatch(DispatchContext *context);
 	// The shader of the type ('v', 'p', ...) in the game's draw or dispatch

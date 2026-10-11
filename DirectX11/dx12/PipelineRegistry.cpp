@@ -18,6 +18,8 @@ static std::vector<const Dx12ShaderInfo*> shader_list;
 static SRWLOCK pipeline_lock = SRWLOCK_INIT;
 static std::unordered_map<ID3D12PipelineState*, Dx12PipelineInfo*> pipelines;
 
+volatile bool dx12_keep_shader_bytecode;
+
 static SRWLOCK signature_lock = SRWLOCK_INIT;
 static std::unordered_map<ID3D12RootSignature*, Dx12RootSignatureInfo*> signatures;
 
@@ -287,7 +289,7 @@ static const Dx12ShaderInfo* shader_info(Dx12ShaderStage stage, const D3D12_SHAD
 	else if (find_part(container, "RDEF", &part))
 		info->reflected = reflect_rdef(part, info);
 
-	if (G->hunting) {
+	if (G->hunting || dx12_keep_shader_bytecode) {
 		copy = (BYTE*)malloc(info->size);
 		if (copy)
 			memcpy(copy, bytecode->pShaderBytecode, info->size);
@@ -507,9 +509,29 @@ static void set_input_layout(Dx12PipelineInfo *info, const D3D12_INPUT_LAYOUT_DE
 		out->slot = element->InputSlot;
 		out->offset = element->AlignedByteOffset;
 		out->per_instance = element->InputSlotClass == D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA;
+		out->step_rate = element->InstanceDataStepRate;
 		if (element->InputSlot < 32)
 			info->vb_slots |= 1u << element->InputSlot;
 	}
+}
+
+Dx12PipelineInfo::~Dx12PipelineInfo()
+{
+	for (auto &variant : variants) {
+		if (variant.second)
+			variant.second->Release();
+	}
+	if (root_signature)
+		root_signature->Release();
+}
+
+static void keep_creation(Dx12PipelineInfo *info, const void *creation, size_t size, bool stream, ID3D12RootSignature *signature)
+{
+	info->creation.assign((const BYTE*)creation, (const BYTE*)creation + size);
+	info->creation_stream = stream;
+	info->root_signature = signature;
+	if (signature)
+		signature->AddRef();
 }
 
 void Dx12RegisterPipeline(void **ppPipelineState, const D3D12_GRAPHICS_PIPELINE_STATE_DESC *desc)
@@ -526,6 +548,7 @@ void Dx12RegisterPipeline(void **ppPipelineState, const D3D12_GRAPHICS_PIPELINE_
 	info->shaders[DX12_STAGE_HS] = shader_info(DX12_STAGE_HS, &desc->HS);
 	info->shaders[DX12_STAGE_DS] = shader_info(DX12_STAGE_DS, &desc->DS);
 	set_input_layout(info, &desc->InputLayout);
+	keep_creation(info, desc, sizeof(*desc), false, desc->pRootSignature);
 
 	register_pipeline(ppPipelineState, info);
 }
@@ -550,10 +573,69 @@ struct alignas(void*) StreamSubobject {
 	T value;
 };
 
+// Where the value is in the subobjects that have a pointer in them, which are
+// the only ones looked into
+const size_t STREAM_VALUE = offsetof(StreamSubobject<void*>, value);
+
+// 0 for a subobject this code does not know
+static size_t subobject_size(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type)
+{
+#define SUBOBJECT(T) return sizeof(StreamSubobject<T>);
+	switch (type) {
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS:
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS:
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS:
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS:
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DS:
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS:
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS:
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS: SUBOBJECT(D3D12_SHADER_BYTECODE)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT: SUBOBJECT(D3D12_INPUT_LAYOUT_DESC)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE: SUBOBJECT(ID3D12RootSignature*)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_STREAM_OUTPUT: SUBOBJECT(D3D12_STREAM_OUTPUT_DESC)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND: SUBOBJECT(D3D12_BLEND_DESC)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK: SUBOBJECT(UINT)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER: SUBOBJECT(D3D12_RASTERIZER_DESC)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER1: SUBOBJECT(D3D12_RASTERIZER_DESC1)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER2: SUBOBJECT(D3D12_RASTERIZER_DESC2)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL: SUBOBJECT(D3D12_DEPTH_STENCIL_DESC)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1: SUBOBJECT(D3D12_DEPTH_STENCIL_DESC1)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2: SUBOBJECT(D3D12_DEPTH_STENCIL_DESC2)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_IB_STRIP_CUT_VALUE: SUBOBJECT(D3D12_INDEX_BUFFER_STRIP_CUT_VALUE)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY: SUBOBJECT(D3D12_PRIMITIVE_TOPOLOGY_TYPE)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS: SUBOBJECT(D3D12_RT_FORMAT_ARRAY)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT: SUBOBJECT(DXGI_FORMAT)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC: SUBOBJECT(DXGI_SAMPLE_DESC)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_NODE_MASK: SUBOBJECT(UINT)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CACHED_PSO: SUBOBJECT(D3D12_CACHED_PIPELINE_STATE)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS: SUBOBJECT(D3D12_PIPELINE_STATE_FLAGS)
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VIEW_INSTANCING: SUBOBJECT(D3D12_VIEW_INSTANCING_DESC)
+	}
+#undef SUBOBJECT
+	return 0;
+}
+
+// DX12_STAGE_COUNT for a subobject that is no shader of those stages
+static Dx12ShaderStage subobject_stage(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type)
+{
+	switch (type) {
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS: return DX12_STAGE_VS;
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS: return DX12_STAGE_PS;
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS: return DX12_STAGE_GS;
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS: return DX12_STAGE_HS;
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DS: return DX12_STAGE_DS;
+		case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS: return DX12_STAGE_CS;
+	}
+	return DX12_STAGE_COUNT;
+}
+
 void Dx12RegisterPipeline(void **ppPipelineState, const D3D12_PIPELINE_STATE_STREAM_DESC *desc)
 {
+	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type;
+	ID3D12RootSignature *signature = NULL;
 	Dx12PipelineInfo *info;
-	const BYTE *stream;
+	Dx12ShaderStage stage;
+	const BYTE *stream, *value;
 	size_t pos = 0, size;
 
 	if (!desc || !desc->pPipelineStateSubobjectStream)
@@ -562,69 +644,138 @@ void Dx12RegisterPipeline(void **ppPipelineState, const D3D12_PIPELINE_STATE_STR
 	info = new Dx12PipelineInfo();
 	stream = (const BYTE*)desc->pPipelineStateSubobjectStream;
 
-#define SUBOBJECT(T) \
-	size = sizeof(StreamSubobject<T>); \
-	if (desc->SizeInBytes - pos < size) { \
-		size = 0; \
-		break; \
-	}
-#define SHADER(stage) \
-	SUBOBJECT(D3D12_SHADER_BYTECODE) \
-	info->shaders[stage] = shader_info(stage, &((const StreamSubobject<D3D12_SHADER_BYTECODE>*)(stream + pos))->value);
-
 	while (desc->SizeInBytes - pos >= sizeof(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE)) {
-		size = 0;
-		switch (*(const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE*)(stream + pos)) {
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS: SHADER(DX12_STAGE_VS) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS: SHADER(DX12_STAGE_PS) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS: SHADER(DX12_STAGE_GS) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS: SHADER(DX12_STAGE_HS) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DS: SHADER(DX12_STAGE_DS) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS: SHADER(DX12_STAGE_CS) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS:
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS:
-				SUBOBJECT(D3D12_SHADER_BYTECODE)
-				info->shaders_known = false;
-				break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT:
-				SUBOBJECT(D3D12_INPUT_LAYOUT_DESC)
-				set_input_layout(info, &((const StreamSubobject<D3D12_INPUT_LAYOUT_DESC>*)(stream + pos))->value);
-				break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE: SUBOBJECT(ID3D12RootSignature*) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_STREAM_OUTPUT: SUBOBJECT(D3D12_STREAM_OUTPUT_DESC) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND: SUBOBJECT(D3D12_BLEND_DESC) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK: SUBOBJECT(UINT) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER: SUBOBJECT(D3D12_RASTERIZER_DESC) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER1: SUBOBJECT(D3D12_RASTERIZER_DESC1) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER2: SUBOBJECT(D3D12_RASTERIZER_DESC2) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL: SUBOBJECT(D3D12_DEPTH_STENCIL_DESC) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1: SUBOBJECT(D3D12_DEPTH_STENCIL_DESC1) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2: SUBOBJECT(D3D12_DEPTH_STENCIL_DESC2) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_IB_STRIP_CUT_VALUE: SUBOBJECT(D3D12_INDEX_BUFFER_STRIP_CUT_VALUE) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY: SUBOBJECT(D3D12_PRIMITIVE_TOPOLOGY_TYPE) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS: SUBOBJECT(D3D12_RT_FORMAT_ARRAY) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT: SUBOBJECT(DXGI_FORMAT) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC: SUBOBJECT(DXGI_SAMPLE_DESC) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_NODE_MASK: SUBOBJECT(UINT) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CACHED_PSO: SUBOBJECT(D3D12_CACHED_PIPELINE_STATE) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS: SUBOBJECT(D3D12_PIPELINE_STATE_FLAGS) break;
-			case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VIEW_INSTANCING: SUBOBJECT(D3D12_VIEW_INSTANCING_DESC) break;
-		}
-
+		type = *(const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE*)(stream + pos);
+		size = subobject_size(type);
 		// A subobject this code does not know the size of, or a
 		// truncated stream. Shaders come first in the streams engines
 		// build, so what was found so far is still worth keeping.
-		if (!size)
+		if (!size || desc->SizeInBytes - pos < size)
 			break;
+
+		value = stream + pos + STREAM_VALUE;
+		stage = subobject_stage(type);
+		if (stage != DX12_STAGE_COUNT)
+			info->shaders[stage] = shader_info(stage, (const D3D12_SHADER_BYTECODE*)value);
+		else if (type == D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS || type == D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS)
+			// A stream may have the subobject and no shader in it
+			info->shaders_known &= !((const D3D12_SHADER_BYTECODE*)value)->pShaderBytecode;
+		else if (type == D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT)
+			set_input_layout(info, (const D3D12_INPUT_LAYOUT_DESC*)value);
+		else if (type == D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE)
+			signature = *(ID3D12RootSignature *const*)value;
 		pos += size;
 	}
-	if (desc->SizeInBytes - pos >= sizeof(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE))
+	info->stream_bytes = (UINT)desc->SizeInBytes;
+	info->stream_read = (UINT)pos;
+	if (desc->SizeInBytes - pos >= sizeof(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE)) {
+		info->stream_stopped_at = *(const UINT*)(stream + pos);
 		info->shaders_known = false;
-
-#undef SHADER
-#undef SUBOBJECT
+	} else if (!info->shaders[DX12_STAGE_CS]) {
+		keep_creation(info, stream, pos, true, signature);
+	}
 
 	register_pipeline(ppPipelineState, info);
+}
+
+// The copy of what a pipeline was created from has the game's pointer to a
+// shader, which is gone
+static bool revive_shader(D3D12_SHADER_BYTECODE *bytecode, const Dx12ShaderInfo *shader)
+{
+	if (!bytecode->pShaderBytecode || !bytecode->BytecodeLength)
+		return true;
+	if (!shader || !shader->bytecode)
+		return false;
+
+	bytecode->pShaderBytecode = shader->bytecode;
+	bytecode->BytecodeLength = shader->size;
+	return true;
+}
+
+ID3D12PipelineState* Dx12PipelineWithInputLayout(const Dx12PipelineInfo *info, ID3D12Device *device, UINT64 layout_hash,
+		const D3D12_INPUT_ELEMENT_DESC *elements, UINT count)
+{
+	static UINT reported;
+	std::vector<BYTE> creation;
+	ID3D12PipelineState *pipeline = NULL;
+	ID3D12Device2 *device2 = NULL;
+	const char *failed = NULL;
+	size_t pos, size;
+	HRESULT hr = S_OK;
+
+	for (const auto &variant : info->variants) {
+		if (variant.first == layout_hash)
+			return variant.second;
+	}
+
+	creation = info->creation;
+	if (creation.empty() || !info->shaders_known) {
+		failed = "what the game created it from is not known";
+	} else if (!info->creation_stream) {
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC *desc = (D3D12_GRAPHICS_PIPELINE_STATE_DESC*)creation.data();
+
+		if (!revive_shader(&desc->VS, info->shaders[DX12_STAGE_VS]) || !revive_shader(&desc->PS, info->shaders[DX12_STAGE_PS])
+		    || !revive_shader(&desc->GS, info->shaders[DX12_STAGE_GS]) || !revive_shader(&desc->HS, info->shaders[DX12_STAGE_HS])
+		    || !revive_shader(&desc->DS, info->shaders[DX12_STAGE_DS]))
+			failed = "the game's shaders were not kept";
+		else if (desc->StreamOutput.NumEntries || desc->StreamOutput.NumStrides)
+			failed = "it has a stream output";
+		desc->StreamOutput = {};
+		desc->InputLayout.pInputElementDescs = elements;
+		desc->InputLayout.NumElements = count;
+		desc->CachedPSO = {};
+		if (!failed)
+			hr = device->CreateGraphicsPipelineState(desc, IID_PPV_ARGS(&pipeline));
+	} else {
+		for (pos = 0; !failed && pos < creation.size(); pos += size) {
+			D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type = *(const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE*)(creation.data() + pos);
+			BYTE *value = creation.data() + pos + STREAM_VALUE;
+			Dx12ShaderStage stage = subobject_stage(type);
+
+			size = subobject_size(type);
+			if (stage != DX12_STAGE_COUNT) {
+				if (!revive_shader((D3D12_SHADER_BYTECODE*)value, info->shaders[stage]))
+					failed = "the game's shaders were not kept";
+			} else if (type == D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT) {
+				((D3D12_INPUT_LAYOUT_DESC*)value)->pInputElementDescs = elements;
+				((D3D12_INPUT_LAYOUT_DESC*)value)->NumElements = count;
+			} else if (type == D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CACHED_PSO) {
+				*(D3D12_CACHED_PIPELINE_STATE*)value = {};
+			} else if (type == D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_STREAM_OUTPUT) {
+				D3D12_STREAM_OUTPUT_DESC *output = (D3D12_STREAM_OUTPUT_DESC*)value;
+
+				if (output->NumEntries || output->NumStrides)
+					failed = "it has a stream output";
+				*output = {};
+			} else if (type == D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VIEW_INSTANCING) {
+				if (((D3D12_VIEW_INSTANCING_DESC*)value)->ViewInstanceCount)
+					failed = "it has view instancing";
+			}
+		}
+		if (!failed && FAILED(device->QueryInterface(IID_PPV_ARGS(&device2))))
+			failed = "the device takes no pipeline state streams";
+		if (!failed) {
+			D3D12_PIPELINE_STATE_STREAM_DESC desc = { creation.size(), creation.data() };
+
+			hr = device2->CreatePipelineState(&desc, IID_PPV_ARGS(&pipeline));
+		}
+		if (device2)
+			device2->Release();
+	}
+
+	if (!pipeline && reported < 16) {
+		reported++;
+		if (failed)
+			Dx12DumpNote("*** A mod's input layout cannot be given to a pipeline of the game: %s. The game's layout is used."
+				" (%zu bytes kept, %s, shaders %s, stream of %u bytes read to %u, stopped at subobject %u)\n", failed,
+				info->creation.size(), info->creation_stream ? "a stream" : "a description",
+				info->shaders_known ? "known" : "not all known", info->stream_bytes, info->stream_read, info->stream_stopped_at);
+		else
+			Dx12DumpNote("*** Creating a pipeline of the game again with a mod's input layout failed: 0x%x. The game's layout is used.\n", hr);
+	}
+
+	info->variants.emplace_back(layout_hash, pipeline);
+	return pipeline;
 }
 
 const Dx12ShaderInfo* Dx12FindShader(UINT64 hash)

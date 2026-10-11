@@ -59,6 +59,7 @@
 #include "lock.h"
 
 #include "HackerDXGI.h"
+#include "SoundEngine.h"
 #include "HookedDevice.h"
 #include "HookedDXGI.h"
 
@@ -240,6 +241,10 @@ void HackerSwapChain::RunFrameActions()
 	// point, we should consider making an explicit "pre" command list for
 	// that purpose rather than breaking the existing behaviour.
 	bool newEvent = DispatchInputEvents(mHackerDevice);
+
+	// Retires finished one-shots and picks up an audio device change.
+	// Does nothing at all until an ini has asked for a sound:
+	SoundEngine::sound_engine_update();
 
 	CurrentTransition.UpdatePresets(mHackerDevice);
 	CurrentTransition.UpdateTransitions(mHackerDevice);

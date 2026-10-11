@@ -98,6 +98,12 @@ namespace SoundEngine {
 		double PositionMs();
 		double LengthMs();
 
+		// What the ini asked for, which nothing changes once it is declared,
+		// so these need no lock:
+		float Speed() const { return speed; }
+		float Volume() const { return volume; }
+		bool Overlaps() const { return overlap; }
+
 		// Loads the wav up front, so that no play has to read it in a frame.
 		// Called by Declare() with the lock held.
 		bool Preload();

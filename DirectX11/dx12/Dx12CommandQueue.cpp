@@ -124,6 +124,7 @@ void STDMETHODCALLTYPE Dx12CommandQueue::ExecuteCommandLists(UINT NumCommandList
 		// them
 		pins.insert(pins.end(), proxy->mPins.begin(), proxy->mPins.end());
 		proxy->mPins.clear();
+		memset(proxy->mPinned, 0, sizeof(proxy->mPinned));
 	}
 
 	InterlockedIncrement64(&dx12_stats.execute_calls);

@@ -31,7 +31,8 @@ Dx12GraphicsCommandList::Dx12GraphicsCommandList(Dx12Device *device, ID3D12Graph
 	mResets(0),
 	mWantedPipeline(NULL),
 	mWantedGeneration(0),
-	mWanted(false)
+	mWanted(false),
+	mPinned()
 {
 	mVersion = Dx12QueryNewest(orig, list_iids, ARRAYSIZE(list_iids), (void**)&mOrig);
 	mDevice->AddRef();
@@ -142,6 +143,7 @@ HRESULT STDMETHODCALLTYPE Dx12GraphicsCommandList::Reset(ID3D12CommandAllocator 
 	// Still there if the list was never executed
 	if (!mPins.empty())
 		Dx12ShimPinsAbandoned(&mPins);
+	memset(mPinned, 0, sizeof(mPinned));
 
 	return mOrig->Reset(pAllocator, pInitialState);
 }

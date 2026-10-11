@@ -536,7 +536,9 @@ static UploadPage game_upload;
 
 void Dx12ShimPin(Dx12GraphicsCommandList *list, IUnknown *object)
 {
-	if (!list->mPins.empty() && list->mPins.back() == object)
+	IUnknown **pinned = &list->mPinned[((UINT64)(uintptr_t)object * 0x9e3779b97f4a7c15ull) >> 59];
+
+	if (*pinned == object)
 		return;
 	object->AddRef();
 	list->mPins.push_back(object);
@@ -560,6 +562,7 @@ void Dx12ShimPinsExecuted(ID3D12CommandQueue *queue, std::vector<IUnknown*> *pin
 }
 
 void Dx12ShimPinsAbandoned(std::vector<IUnknown*> *pins)
+	*pinned = object;
 {
 	for (IUnknown *object : *pins)
 		object->Release();
@@ -568,12 +571,12 @@ void Dx12ShimPinsAbandoned(std::vector<IUnknown*> *pins)
 
 void Dx12ShimFramePresented()
 {
-	while (!late.empty() && dx12_frame - late.front().frame >= 3) {
-		retired.push_back({ late.front().object, Dx12ShimPendingFence() });
-		late.pop_front();
 		// What another thread recorded since the queue proxy had our
 		// list executed was promised the value signalled next
 		Dx12ShimSubmit();
+	while (!late.empty() && dx12_frame - late.front().frame >= 3) {
+		retired.push_back({ late.front().object, Dx12ShimPendingFence() });
+		late.pop_front();
 	}
 }
 
@@ -810,9 +813,6 @@ void Dx12ShimSetQueue(Dx12CommandQueue *queue)
 	Dx12ShimSubmitAndWait();
 
 	Dx12LogInfo("Shim commands now go to ID3D12CommandQueue %p\n", queue->mOrig);
-	shim.queue->Release();
-	shim.queue = queue->mOrig;
-	shim.queue->AddRef();
 void Dx12ShimFlush()
 {
 	// Whatever the lists about to be executed depend on was recorded
@@ -826,6 +826,9 @@ void Dx12ShimFlush()
 	Dx12ShimUnlock();
 }
 
+	shim.queue->Release();
+	shim.queue = queue->mOrig;
+	shim.queue->AddRef();
 }
 
 bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue)

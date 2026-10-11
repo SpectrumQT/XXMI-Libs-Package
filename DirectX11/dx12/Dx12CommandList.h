@@ -37,6 +37,9 @@ public:
 
 	// What mods had this list use, see Dx12ShimPin
 	std::vector<IUnknown*> mPins;
+	// Some of those by what they hash to, so that what every draw of a mod
+	// uses is not pinned once for each of them. Emptied along with mPins.
+	IUnknown *mPinned[32];
 
 	// Whether the engine has anything to do for draws with mPipeline,
 	// see Dx12DrawWanted

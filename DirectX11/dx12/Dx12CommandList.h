@@ -35,11 +35,14 @@ public:
 
 	Dx12CmdState mState;
 
-	// What mods had this list use, see Dx12ShimPin
+	// What mods had this list use, see Dx12ShimPin. Kept until the list is
+	// reset: a closed list may be executed more than once.
 	std::vector<IUnknown*> mPins;
 	// Some of those by what they hash to, so that what every draw of a mod
 	// uses is not pinned once for each of them. Emptied along with mPins.
 	IUnknown *mPinned[32];
+	// Whether the list has been executed since it was last reset
+	bool mExecuted;
 
 	// Whether the engine has anything to do for draws with mPipeline,
 	// see Dx12DrawWanted
@@ -57,7 +60,7 @@ public:
 
 	// The resource states this list leaves behind, in recording order.
 	// They only become true when the list is executed, which is when the
-	// queue hands them to the resource tracker.
+	// queue hands them to the resource tracker, each time it is.
 	std::vector<Dx12Transition> mTransitions;
 
 	Dx12GraphicsCommandList(Dx12Device *device, ID3D12GraphicsCommandList *orig);

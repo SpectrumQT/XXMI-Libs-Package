@@ -1,5 +1,6 @@
 #include "Dx12DescriptorHeap.h"
 
+#include <iterator>
 #include <vector>
 
 #include "DescriptorShadow.h"
@@ -48,6 +49,130 @@ static void free_heap_index(int index)
 
 #endif
 
+HRESULT STDMETHODCALLTYPE Dx12DescriptorSpan::QueryInterface(REFIID riid, void **ppvObject)
+{
+	if (!ppvObject)
+		return E_POINTER;
+	if (!IsEqualIID(riid, __uuidof(IUnknown))) {
+		*ppvObject = NULL;
+		return E_NOINTERFACE;
+	}
+	AddRef();
+	*ppvObject = this;
+	return S_OK;
+}
+
+ULONG STDMETHODCALLTYPE Dx12DescriptorSpan::AddRef()
+{
+	return InterlockedIncrement(&mRef);
+}
+
+ULONG STDMETHODCALLTYPE Dx12DescriptorSpan::Release()
+{
+	ULONG ref = InterlockedDecrement(&mRef);
+
+	if (!ref)
+		delete this;
+	return ref;
+}
+
+Dx12DescriptorArena::Dx12DescriptorArena(UINT size) :
+	mSize(size),
+	mLive(0),
+	mNext(0),
+	mTooMany(UINT_MAX),
+	mFullFrame(UINT_MAX)
+{
+	if (size)
+		mFree[0] = size;
+}
+
+Dx12DescriptorArena::~Dx12DescriptorArena()
+{
+	for (Dx12DescriptorSpan *span : mSpans)
+		span->Release();
+}
+
+void Dx12DescriptorArena::Reclaim()
+{
+	size_t kept = 0;
+
+	for (Dx12DescriptorSpan *span : mSpans) {
+		UINT start = span->mStart, count = span->mCount;
+
+		// Only who has a reference makes another, and the one who had
+		// ours for a list had the lock
+		if (span->mRef != 1) {
+			mSpans[kept++] = span;
+			continue;
+		}
+
+		auto next = mFree.lower_bound(start);
+		if (next != mFree.end() && next->first == start + count) {
+			count += next->second;
+			next = mFree.erase(next);
+		}
+		if (next != mFree.begin() && std::prev(next)->first + std::prev(next)->second == start)
+			std::prev(next)->second += count;
+		else
+			mFree.emplace_hint(next, start, count);
+
+		mLive -= span->mCount;
+		mTooMany = UINT_MAX;
+		span->Release();
+	}
+	mSpans.resize(kept);
+}
+
+bool Dx12DescriptorArena::Take(UINT count, UINT *start)
+{
+	UINT rest;
+	int pass;
+
+	if (count >= mTooMany)
+		return false;
+
+	auto from = mFree.lower_bound(mNext);
+	for (pass = 0; pass < 2; pass++) {
+		auto i = pass ? mFree.begin() : from, end = pass ? from : mFree.end();
+
+		for (; i != end; ++i) {
+			if (i->second < count)
+				continue;
+			*start = i->first;
+			rest = i->second - count;
+			mFree.erase(i);
+			if (rest)
+				mFree[*start + count] = rest;
+			mNext = *start + count;
+			return true;
+		}
+	}
+	mTooMany = count;
+	return false;
+}
+
+bool Dx12DescriptorArena::Alloc(UINT count, UINT *start, Dx12DescriptorSpan **span)
+{
+	if (!count || count > mSize)
+		return false;
+
+	if (!Take(count, start)) {
+		if (mFullFrame == dx12_frame)
+			return false;
+		Reclaim();
+		if (!Take(count, start)) {
+			mFullFrame = dx12_frame;
+			return false;
+		}
+	}
+
+	*span = new Dx12DescriptorSpan(*start, count);
+	mSpans.push_back(*span);
+	mLive += count;
+	return true;
+}
+
 Dx12DescriptorHeap::Dx12DescriptorHeap(Dx12Device *device, ID3D12DescriptorHeap *orig, UINT reserve) :
 	mOrig(orig),
 	mDevice(device),
@@ -57,9 +182,7 @@ Dx12DescriptorHeap::Dx12DescriptorHeap(Dx12Device *device, ID3D12DescriptorHeap 
 	mSlots(NULL),
 	mReserve(reserve),
 	mMirror(NULL),
-	mReserveNext(0),
-	mReserveFrame(0),
-	mReserveUsed()
+	mArena(reserve)
 {
 	D3D12_DESCRIPTOR_HEAP_DESC desc = orig->GetDesc();
 
@@ -210,39 +333,17 @@ D3D12_CPU_DESCRIPTOR_HANDLE Dx12DescriptorHeap::MirrorCpuHandle(UINT64 gpu)
 	return handle;
 }
 
-bool Dx12DescriptorHeap::AllocReserved(UINT count, D3D12_CPU_DESCRIPTOR_HANDLE *cpu, D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
+bool Dx12DescriptorHeap::AllocReserved(UINT count, D3D12_CPU_DESCRIPTOR_HANDLE *cpu, D3D12_GPU_DESCRIPTOR_HANDLE *gpu,
+		Dx12DescriptorSpan **span)
 {
-	UINT i, in_use = 0, skipped = 0, bucket;
+	UINT start;
 
-	if (!mReserve || !mGpuStart || count > mReserve)
+	if (!mReserve || !mGpuStart || !mArena.Alloc(count, &start, span))
 		return false;
-
-	if (mReserveFrame != dx12_frame) {
-		// Nothing was used in the frames that went by since
-		UINT gone = min(dx12_frame - mReserveFrame, DX12_RESERVE_FRAMES);
-		for (i = 1; i <= gone; i++)
-			mReserveUsed[(mReserveFrame + i) % DX12_RESERVE_FRAMES] = 0;
-		mReserveFrame = dx12_frame;
-	}
-
-	// A table does not wrap around
-	if (mReserveNext + count > mReserve)
-		skipped = mReserve - mReserveNext;
-
-	for (i = 0; i < DX12_RESERVE_FRAMES; i++)
-		in_use += mReserveUsed[i];
-	if (in_use + skipped + count > mReserve)
-		return false;
-
-	bucket = dx12_frame % DX12_RESERVE_FRAMES;
-	mReserveUsed[bucket] += skipped + count;
-	if (skipped)
-		mReserveNext = 0;
 
 	*cpu = mOrig->GetCPUDescriptorHandleForHeapStart();
-	cpu->ptr += (SIZE_T)(mCount + mReserveNext) * mIncrement;
-	gpu->ptr = mGpuStart + (UINT64)(mCount + mReserveNext) * mIncrement;
-	mReserveNext += count;
+	cpu->ptr += (SIZE_T)(mCount + start) * mIncrement;
+	gpu->ptr = mGpuStart + (UINT64)(mCount + start) * mIncrement;
 	return true;
 }
 

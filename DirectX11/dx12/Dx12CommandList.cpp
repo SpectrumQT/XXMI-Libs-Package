@@ -32,7 +32,8 @@ Dx12GraphicsCommandList::Dx12GraphicsCommandList(Dx12Device *device, ID3D12Graph
 	mWantedPipeline(NULL),
 	mWantedGeneration(0),
 	mWanted(false),
-	mPinned()
+	mPinned(),
+	mExecuted(false)
 {
 	mVersion = Dx12QueryNewest(orig, list_iids, ARRAYSIZE(list_iids), (void**)&mOrig);
 	mDevice->AddRef();
@@ -100,7 +101,7 @@ ULONG STDMETHODCALLTYPE Dx12GraphicsCommandList::Release()
 		return ref;
 	}
 
-	Dx12ShimPinsAbandoned(&mPins);
+	Dx12ShimPinsAbandoned(&mPins, mExecuted);
 	delete this;
 	orig->Release();
 	device->Release();
@@ -140,10 +141,10 @@ HRESULT STDMETHODCALLTYPE Dx12GraphicsCommandList::Reset(ID3D12CommandAllocator 
 	Dx12ResetCmdState(&mState, pInitialState);
 	ForgetInfo();
 	mTransitions.clear();
-	// Still there if the list was never executed
 	if (!mPins.empty())
-		Dx12ShimPinsAbandoned(&mPins);
+		Dx12ShimPinsAbandoned(&mPins, mExecuted);
 	memset(mPinned, 0, sizeof(mPinned));
+	mExecuted = false;
 
 	return mOrig->Reset(pAllocator, pInitialState);
 }
@@ -220,7 +221,16 @@ void STDMETHODCALLTYPE Dx12GraphicsCommandList::BuildRaytracingAccelerationStruc
 // The draws of a bundle were counted when the bundle was recorded.
 void STDMETHODCALLTYPE Dx12GraphicsCommandList::ExecuteBundle(ID3D12GraphicsCommandList *pCommandList)
 {
-	mOrig->ExecuteBundle(Dx12Unwrap<Dx12GraphicsCommandList>(pCommandList));
+	ID3D12GraphicsCommandList *orig = Dx12Unwrap<Dx12GraphicsCommandList>(pCommandList);
+
+	// What the bundle uses of the mods is used by this list's executions
+	if (orig != pCommandList) {
+		Dx12GraphicsCommandList *bundle = static_cast<Dx12GraphicsCommandList*>(pCommandList);
+
+		if (!bundle->mPins.empty())
+			Dx12ShimPinsInherited(this, bundle);
+	}
+	mOrig->ExecuteBundle(orig);
 }
 
 void STDMETHODCALLTYPE Dx12GraphicsCommandList::SetDescriptorHeaps(UINT NumDescriptorHeaps, ID3D12DescriptorHeap *const *ppDescriptorHeaps)

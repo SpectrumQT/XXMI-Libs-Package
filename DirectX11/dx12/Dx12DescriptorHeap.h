@@ -1,5 +1,8 @@
 #pragma once
 
+#include <map>
+#include <vector>
+
 #include "Dx12Common.h"
 
 class Dx12Device;
@@ -76,10 +79,63 @@ static inline D3D12_CPU_DESCRIPTOR_HANDLE Dx12OrigCpuHandle(D3D12_CPU_DESCRIPTOR
 
 struct Dx12DescriptorSlot;
 
-// How many descriptors to add to the game's shader visible view heaps, and
-// for how many frames one of them stays in use
+// How many descriptors to add to the game's shader visible view heaps
 const UINT DX12_HEAP_RESERVE = 1 << 17;
-const UINT DX12_RESERVE_FRAMES = 4;
+
+// What a Dx12DescriptorArena handed out at once. The lists that use the
+// descriptors have it pinned (Dx12ShimPin), and the arena hands them out
+// again once nothing but the arena refers to it: then the lists have been
+// executed and the GPU is done with them.
+class Dx12DescriptorSpan final : public IUnknown
+{
+public:
+	volatile LONG mRef;
+	UINT mStart, mCount;
+
+	Dx12DescriptorSpan(UINT start, UINT count) : mRef(1), mStart(start), mCount(count) {}
+
+	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) override;
+	ULONG STDMETHODCALLTYPE AddRef() override;
+	ULONG STDMETHODCALLTYPE Release() override;
+};
+
+// Descriptors for the game's lists, handed out in spans and taken back in
+// whatever order the lists using them are done with them: a list the game
+// keeps to execute again, or leaves in a pool, may hold on to its spans long
+// after lists recorded later. All with the lock of Bridge.h held.
+class Dx12DescriptorArena
+{
+public:
+	UINT mSize;
+	// Descriptors of the spans not taken back yet
+	UINT mLive;
+	std::vector<Dx12DescriptorSpan*> mSpans;
+	// What is not handed out: the number of descriptors by the first
+	std::map<UINT, UINT> mFree;
+	// Where the span handed out last ends, from where the next is looked
+	// for: what is free before it was too small for one before
+	UINT mNext;
+	// The smallest number of descriptors found not to be had in one piece,
+	// which stays so until something is taken back
+	UINT mTooMany;
+	// The frame in which nothing asked for could be had even after taking
+	// back, where going through the spans again for every draw is no use
+	UINT mFullFrame;
+
+	Dx12DescriptorArena(UINT size = 0);
+	~Dx12DescriptorArena();
+
+	// *start is the index of the first of count descriptors. *span is not
+	// referenced: pin it to the list before anything else, or the arena
+	// takes it back on a later call.
+	bool Alloc(UINT count, UINT *start, Dx12DescriptorSpan **span);
+	// Takes back the spans nothing but the arena refers to. Not before
+	// there is no room left, which keeps it from being done for every span.
+	void Reclaim();
+
+private:
+	bool Take(UINT count, UINT *start);
+};
 
 class Dx12DescriptorHeap final : public ID3D12DescriptorHeap
 {
@@ -111,9 +167,9 @@ public:
 	// the game's, and that copy has to be in the same heap: switching
 	// heaps would cost the game all its other tables.
 	//
-	// Handed out as a ring. What is in it has to stay until the lists
-	// using it have been executed, so a descriptor is not handed out
-	// again for a few frames, and when that leaves none there is no copy.
+	// Handed out by a Dx12DescriptorArena: what is in it stays until the
+	// lists using it have been executed, and when that leaves none there
+	// is no copy.
 	//
 	// Descriptors cannot be read back from a shader visible heap, so what
 	// such a copy is made from is mMirror: a heap that is not shader
@@ -121,11 +177,10 @@ public:
 	// writes to this one. NULL without a reserve.
 	UINT mReserve;
 	ID3D12DescriptorHeap *mMirror;
-	UINT mReserveNext;
-	UINT mReserveFrame;
-	UINT mReserveUsed[DX12_RESERVE_FRAMES];
-	// With the lock of Bridge.h held
-	bool AllocReserved(UINT count, D3D12_CPU_DESCRIPTOR_HANDLE *cpu, D3D12_GPU_DESCRIPTOR_HANDLE *gpu);
+	Dx12DescriptorArena mArena;
+	// With the lock of Bridge.h held. *span as for Dx12DescriptorArena::Alloc.
+	bool AllocReserved(UINT count, D3D12_CPU_DESCRIPTOR_HANDLE *cpu, D3D12_GPU_DESCRIPTOR_HANDLE *gpu,
+			Dx12DescriptorSpan **span);
 	// The descriptor of mMirror for the one a GPU handle of this heap
 	// refers to
 	D3D12_CPU_DESCRIPTOR_HANDLE MirrorCpuHandle(UINT64 gpu);

@@ -25,6 +25,10 @@ bool ShimWriteSubresource(ShimResource *resource, UINT subresource, const void *
 // Copies the shadow of a texture with write_pending to it. Dx12ShimTransition
 // does, which whatever uses a resource goes through first.
 void ShimFlushWrite(ShimResource *resource);
+// Gives the resource a fresh D3D12 resource with the contents of the one it
+// has, which the game's lists that use it keep: for a write those lists are
+// not to see, see Bridge.h. Dx12ShimTransition does it for any write.
+bool ShimRenameResource(ShimResource *resource);
 
 static inline UINT64 ShimAlign(UINT64 value, UINT64 alignment)
 {

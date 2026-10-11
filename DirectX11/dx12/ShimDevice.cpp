@@ -135,14 +135,15 @@ bool ShimWriteSubresource(ShimResource *resource, UINT subresource, const void *
 		}
 	}
 
-	dst.pResource = resource->resource;
 	dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
 	dst.SubresourceIndex = subresource;
 	src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
 	src.PlacedFootprint = layout;
 	src.PlacedFootprint.Offset = upload_offset;
 
+	// The transition may give the resource another D3D12 resource
 	Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_DEST);
+	dst.pResource = resource->resource;
 	Dx12ShimList()->CopyTextureRegion(&dst, 0, 0, 0, &src, NULL);
 	return true;
 }
@@ -186,6 +187,65 @@ static HRESULT create_resource(ShimResource *resource, const D3D12_RESOURCE_DESC
 	resource->desc = resource->resource->GetDesc();
 	resource->state = D3D12_RESOURCE_STATE_COMMON;
 	return S_OK;
+}
+
+// A resource written once for each of the draws of a frame that use it goes
+// through as many D3D12 resources a frame, which the lists of the last frames
+// still hold, so a few more than that are kept before any is let go
+const size_t SPARES_KEPT = 16;
+
+bool ShimRenameResource(ShimResource *resource)
+{
+	static bool failed;
+	ID3D12Resource *old = resource->resource, *fresh = NULL;
+	D3D12_HEAP_PROPERTIES heap = {};
+	D3D12_RESOURCE_BARRIER barrier = {};
+	size_t i;
+
+	// One the lists are done with comes before a new one
+	for (i = 0; i < resource->spares.size(); i++) {
+		resource->spares[i]->AddRef();
+		if (resource->spares[i]->Release() != 1)
+			continue;
+		fresh = resource->spares[i];
+		resource->spares.erase(resource->spares.begin() + i);
+		break;
+	}
+	if (!fresh) {
+		heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+		if (FAILED(dx12_shim->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &resource->desc,
+				D3D12_RESOURCE_STATE_COMMON, NULL, IID_PPV_ARGS(&fresh)))) {
+			if (!failed)
+				Dx12LogInfo("*** Failed to create a resource for a mod to write while the game's lists use it. The lists see the write.\n");
+			failed = true;
+			return false;
+		}
+	}
+
+	// The fresh resource is in the common state, from where the copy
+	// promotes it. The old one is left in the common state as well, as
+	// the lists that use it expect.
+	Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+	Dx12ShimList()->CopyResource(fresh, old);
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barrier.Transition.pResource = old;
+	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	barrier.Transition.StateBefore = resource->state;
+	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+	Dx12ShimList()->ResourceBarrier(1, &barrier);
+
+	resource->resource = fresh;
+	resource->state = D3D12_RESOURCE_STATE_COPY_DEST;
+	resource->spares.push_back(old);
+	if (resource->spares.size() > SPARES_KEPT) {
+		Dx12ShimDeferRelease(resource->spares.front());
+		resource->spares.front()->Release();
+		resource->spares.erase(resource->spares.begin());
+	}
+	for (ShimView *view : resource->views)
+		ShimRecreateView(view);
+	InterlockedIncrement64(&dx12_stats.resources_renamed);
+	return true;
 }
 
 bool ShimBufferToGpu(ShimResource *resource)
@@ -443,6 +503,7 @@ static HRESULT begin_view(ID3D11Resource *resource11, D3D12_DESCRIPTOR_HEAP_TYPE
 	view->v.resource11 = resource11;
 	view->v.resource = resource;
 	view->v.format = format;
+	resource->views.push_back(&view->v);
 
 	*out = view;
 	return S_OK;
@@ -574,7 +635,9 @@ HRESULT STDMETHODCALLTYPE ShimDevice::CreateShaderResourceView(ID3D11Resource *p
 	if (FAILED(hr))
 		return hr;
 	view->mDesc = desc;
-	dx12_shim->device->CreateShaderResourceView(view->v.resource->resource, &desc12, view->v.handle);
+	view->v.kind = ShimView::SRV;
+	view->v.desc12.srv = desc12;
+	ShimRecreateView(&view->v);
 
 	*ppSRView = view;
 	return S_OK;
@@ -664,7 +727,9 @@ HRESULT STDMETHODCALLTYPE ShimDevice::CreateUnorderedAccessView(ID3D11Resource *
 	if (FAILED(hr))
 		return hr;
 	view->mDesc = desc;
-	dx12_shim->device->CreateUnorderedAccessView(view->v.resource->resource, NULL, &desc12, view->v.handle);
+	view->v.kind = ShimView::UAV;
+	view->v.desc12.uav = desc12;
+	ShimRecreateView(&view->v);
 
 	*ppUAView = view;
 	return S_OK;
@@ -754,7 +819,9 @@ HRESULT STDMETHODCALLTYPE ShimDevice::CreateRenderTargetView(ID3D11Resource *pRe
 	if (FAILED(hr))
 		return hr;
 	view->mDesc = desc;
-	dx12_shim->device->CreateRenderTargetView(view->v.resource->resource, &desc12, view->v.handle);
+	view->v.kind = ShimView::RTV;
+	view->v.desc12.rtv = desc12;
+	ShimRecreateView(&view->v);
 
 	*ppRTView = view;
 	return S_OK;
@@ -834,7 +901,9 @@ HRESULT STDMETHODCALLTYPE ShimDevice::CreateDepthStencilView(ID3D11Resource *pRe
 		return hr;
 	view->mDesc = desc;
 	view->v.read_only = (desc.Flags & D3D11_DSV_READ_ONLY_DEPTH) && (desc.Flags & D3D11_DSV_READ_ONLY_STENCIL);
-	dx12_shim->device->CreateDepthStencilView(view->v.resource->resource, &desc12, view->v.handle);
+	view->v.kind = ShimView::DSV;
+	view->v.desc12.dsv = desc12;
+	ShimRecreateView(&view->v);
 
 	*ppDepthStencilView = view;
 	return S_OK;

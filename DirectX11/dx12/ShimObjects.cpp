@@ -1,5 +1,7 @@
 #include "ShimObjects.h"
 
+#include <algorithm>
+
 #include "ShimDevice.h"
 #include "ShimPipeline.h"
 
@@ -140,13 +142,46 @@ void ShimDestroyResource(ShimResource *resource)
 	// The lists using it have their own references
 	if (resource->game_upload)
 		resource->game_upload->Release();
+	for (ID3D12Resource *spare : resource->spares) {
+		Dx12ShimDeferRelease(spare);
+		spare->Release();
+	}
 }
 
 void ShimDestroyView(ShimView *view)
 {
 	Dx12ShimFreeDescriptor(view->heap_type, view->handle);
+	// A view made up for a resource of the game (new_game_view) has no
+	// descriptor, and is not among its resource's
+	if (view->resource) {
+		std::vector<ShimView*> &views = view->resource->views;
+		auto found = std::find(views.begin(), views.end(), view);
+
+		if (found != views.end())
+			views.erase(found);
+	}
 	if (view->resource11)
 		view->resource11->Release();
+}
+
+void ShimRecreateView(ShimView *view)
+{
+	ID3D12Resource *resource = view->resource->resource;
+
+	switch (view->kind) {
+	case ShimView::SRV:
+		dx12_shim->device->CreateShaderResourceView(resource, &view->desc12.srv, view->handle);
+		break;
+	case ShimView::UAV:
+		dx12_shim->device->CreateUnorderedAccessView(resource, NULL, &view->desc12.uav, view->handle);
+		break;
+	case ShimView::RTV:
+		dx12_shim->device->CreateRenderTargetView(resource, &view->desc12.rtv, view->handle);
+		break;
+	case ShimView::DSV:
+		dx12_shim->device->CreateDepthStencilView(resource, &view->desc12.dsv, view->handle);
+		break;
+	}
 }
 
 void ShimDestroyShader(ShimShader *shader)

@@ -1639,49 +1639,29 @@ static bool table_size(UINT parameter, UINT *size)
 	return true;
 }
 
-// A game may have made its heap as large as a heap can be, which leaves no
-// room for a reserve of ours in it (see Dx12DescriptorHeap::mReserve). The
-// copies of its tables are then made in a heap of our own, which takes the
-// place of the game's for the scope: every table the game had set has to be
-// copied for that, as a table only reaches into the heap that is set. Those
-// copies are made once a scope, see prepare_side_tables. Handed out as a ring
-// like the reserve is.
+// A game may have made its heap as large as a heap can be, leaving no room for
+// a reserve of ours (see Dx12DescriptorHeap::mReserve). The copies of its
+// tables are then made in a heap of our own that replaces the game's for the
+// scope, which takes copying every table the game had set (once a scope, see
+// prepare_side_tables). Handed out and pinned to the list as the reserve is.
 static ID3D12DescriptorHeap *side_heap;
-static UINT side_next, side_frame, side_used[DX12_RESERVE_FRAMES];
+static Dx12DescriptorArena side_arena(DX12_HEAP_RESERVE);
 
 static bool side_alloc(UINT count, D3D12_CPU_DESCRIPTOR_HANDLE *cpu, D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
 {
 	D3D12_DESCRIPTOR_HEAP_DESC desc = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, DX12_HEAP_RESERVE, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE };
-	UINT i, in_use = 0, skipped = 0, increment = scope->list->mState.view_heap->mIncrement;
+	UINT start, increment = scope->list->mState.view_heap->mIncrement;
+	Dx12DescriptorSpan *span;
 
-	if (count > DX12_HEAP_RESERVE)
-		return false;
 	if (!side_heap && FAILED(dx12_shim->device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&side_heap))))
 		return false;
-
-	if (side_frame != dx12_frame) {
-		UINT gone = min(dx12_frame - side_frame, DX12_RESERVE_FRAMES);
-		for (i = 1; i <= gone; i++)
-			side_used[(side_frame + i) % DX12_RESERVE_FRAMES] = 0;
-		side_frame = dx12_frame;
-	}
-
-	// A table does not wrap around
-	if (side_next + count > DX12_HEAP_RESERVE)
-		skipped = DX12_HEAP_RESERVE - side_next;
-	for (i = 0; i < DX12_RESERVE_FRAMES; i++)
-		in_use += side_used[i];
-	if (in_use + skipped + count > DX12_HEAP_RESERVE)
+	if (!side_arena.Alloc(count, &start, &span))
 		return false;
-
-	side_used[dx12_frame % DX12_RESERVE_FRAMES] += skipped + count;
-	if (skipped)
-		side_next = 0;
+	Dx12ShimPin(scope->list, span);
 
 	*cpu = side_heap->GetCPUDescriptorHandleForHeapStart();
-	cpu->ptr += (SIZE_T)side_next * increment;
-	gpu->ptr = side_heap->GetGPUDescriptorHandleForHeapStart().ptr + (UINT64)side_next * increment;
-	side_next += count;
+	cpu->ptr += (SIZE_T)start * increment;
+	gpu->ptr = side_heap->GetGPUDescriptorHandleForHeapStart().ptr + (UINT64)start * increment;
 	return true;
 }
 
@@ -1695,6 +1675,7 @@ static D3D12_CPU_DESCRIPTOR_HANDLE* table_descriptor(const Dx12RegisterLocation 
 	const Dx12RootArguments *arguments = scope->compute ? &game->compute : &game->graphics;
 	Dx12DescriptorHeap *heap = game->view_heap;
 	ChangedParameter changed = {};
+	Dx12DescriptorSpan *span;
 	UINT64 base, first;
 	UINT size;
 
@@ -1732,16 +1713,18 @@ static D3D12_CPU_DESCRIPTOR_HANDLE* table_descriptor(const Dx12RegisterLocation 
 			return NULL;
 		}
 		stats.side_copies++;
-	} else if (!heap->AllocReserved(size, &changed.cpu, &changed.gpu)) {
+	} else if (!heap->AllocReserved(size, &changed.cpu, &changed.gpu, &span)) {
 		stats.table_no_room++;
 		if (!no_room) {
 			no_room = true;
 			Dx12DumpNote("*** Out of descriptors for what mods replace on the game's draws. Some were ignored. "
-				"(A table of %u for %s parameter %u of a heap of %u with %u more to spare, of which the last frames used %u, %u, %u and %u)\n",
+				"(A table of %u for %s parameter %u of a heap of %u with %u more to spare, of which %u are taken by lists not done with them)\n",
 				size, scope->compute ? "compute" : "graphics", location->parameter, heap->mCount, heap->mReserve,
-				heap->mReserveUsed[0], heap->mReserveUsed[1], heap->mReserveUsed[2], heap->mReserveUsed[3]);
+				heap->mArena.mLive);
 		}
 		return NULL;
+	} else {
+		Dx12ShimPin(scope->list, span);
 	}
 	if (heap->mReserve)
 		stats.table_copies++;
@@ -3905,10 +3888,12 @@ void Dx12DrawPathFramePresented()
 			skin_outputs.size(), stats.skin_filter_misses, stats.table_copies, stats.side_copies, stats.side_base_copies,
 			stats.table_descriptors, stats.side_switches, stats.table_unbounded, stats.table_no_room);
 		Dx12DumpNote("  The fence was signalled %lld times for what game lists had pinned, which %lld times were executed on "
-			"another queue than ours; %lld pages of upload memory were created and %lld released\n",
+			"another queue than ours; %lld pages of upload memory were created and %lld released; %lld times a resource "
+			"of a mod was given another D3D12 resource for a write while game lists use it\n",
 			InterlockedExchange64(&dx12_stats.pin_signals, 0), InterlockedExchange64(&dx12_stats.pin_lates, 0),
 			InterlockedExchange64(&dx12_stats.upload_pages_created, 0),
-			InterlockedExchange64(&dx12_stats.upload_pages_released, 0));
+			InterlockedExchange64(&dx12_stats.upload_pages_released, 0),
+			InterlockedExchange64(&dx12_stats.resources_renamed, 0));
 		stats = {};
 		reported_epoch = dx12_shim_epoch;
 	}

@@ -649,9 +649,10 @@ void STDMETHODCALLTYPE ShimContext::DrawIndexedInstanced(UINT IndexCountPerInsta
 
 void STDMETHODCALLTYPE ShimContext::Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ)
 {
-	// A compute shader of a mod has nothing to do with what the game's
-	// list is in the middle of, so it runs on our list like any other
-	// and with that before the game's draw. The game's own cannot be run
+	// A compute shader of a mod runs on our list like any other, and so
+	// before the game's draw. What it writes that an earlier draw of the
+	// game uses goes to another resource (see Bridge.h), so that draw sees
+	// what it did when it was recorded. The game's own cannot be run
 	// again: its pipeline state would have to be on our list.
 	if (Dx12InDrawScope() && !mState->stages[DX12_STAGE_CS].shader) {
 		Dx12ScopeUnsupported("to dispatch without a compute shader of its own");
@@ -700,9 +701,10 @@ static bool prepare_uav_clear(ShimView *view, D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
 	cpu = Dx12ShimAllocViews(1, gpu);
 	if (!cpu.ptr)
 		return false;
+	// Before the descriptor is read: the transition may write it again
+	Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 	dx12_shim->device->CopyDescriptorsSimple(1, cpu, view->handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-	Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 	Dx12ShimBindHeaps();
 	return true;
 }
@@ -738,9 +740,9 @@ void STDMETHODCALLTYPE ShimContext::ClearUnorderedAccessViewUint(ID3D11Unordered
 	cpu = Dx12ShimAllocDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	shown = Dx12ShimAllocViews(1, &gpu);
 	if (cpu.ptr && shown.ptr) {
+		Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 		dx12_shim->device->CreateUnorderedAccessView(view->resource->resource, NULL, &words, cpu);
 		dx12_shim->device->CopyDescriptorsSimple(1, shown, cpu, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-		Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 		Dx12ShimBindHeaps();
 		Dx12ShimList()->ClearUnorderedAccessViewUint(gpu, cpu, view->resource->resource, Values, 0, NULL);
 	}
@@ -979,15 +981,14 @@ void STDMETHODCALLTYPE ShimContext::CopySubresourceRegion(ID3D11Resource *pDstRe
 	if (!dst->resource || !src->resource || dst == src)
 		return;
 
+	Dx12ShimTransition(src, D3D12_RESOURCE_STATE_COPY_SOURCE);
+	Dx12ShimTransition(dst, D3D12_RESOURCE_STATE_COPY_DEST);
 	dst_location.pResource = dst->resource;
 	dst_location.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
 	dst_location.SubresourceIndex = DstSubresource;
 	src_location.pResource = src->resource;
 	src_location.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
 	src_location.SubresourceIndex = SrcSubresource;
-
-	Dx12ShimTransition(src, D3D12_RESOURCE_STATE_COPY_SOURCE);
-	Dx12ShimTransition(dst, D3D12_RESOURCE_STATE_COPY_DEST);
 	// D3D12_BOX is the same struct as D3D11_BOX
 	Dx12ShimList()->CopyTextureRegion(&dst_location, DstX, DstY, DstZ, &src_location, (const D3D12_BOX*)pSrcBox);
 }

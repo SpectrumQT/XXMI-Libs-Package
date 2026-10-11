@@ -27,7 +27,9 @@
 // A compute shader of a mod dispatched from there is no different from one
 // dispatched at present: it goes to our own list, which is executed before
 // the game's. It can read a constant buffer of the game that way, as those are
-// filled in by the time the game binds them.
+// filled in by the time the game binds them. What it writes that a draw of
+// the game recorded earlier uses is written to another resource, so that the
+// draw keeps what it had (ShimRenameResource).
 //
 // Not in here yet: drawing with custom shaders, render targets and unordered
 // access views for these draws, and reading the game's textures.

@@ -43,7 +43,14 @@
 //     D3D12 lets a list read them without a barrier. The game's lists never
 //     get barriers of ours: they are executed in an order we do not know.
 //   - What a game list uses is pinned to it (Dx12ShimPin), and lives until
-//     that list has been executed.
+//     every execution of that list is done: a fence of ours on the queue it
+//     was executed on says when. A bundle's pins pass to the list that
+//     executes it.
+//   - A game list reads a resource of ours as it was when the draw was
+//     recorded, although our list writes it later and is executed first:
+//     while a list that has not been executed uses a resource, a write to
+//     it goes to a fresh D3D12 resource with the same contents instead
+//     (ShimRenameResource), and the lists keep the old one.
 
 class Dx12CommandQueue;
 class Dx12Device;
@@ -145,13 +152,20 @@ void Dx12ShimFreeDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE type, D3D12_CPU_DESCRIPTO
 void Dx12ShimTransition(ShimResource *resource, D3D12_RESOURCE_STATES state);
 void Dx12ShimForgetResource(ShimResource *resource);
 
-// Keeps the object alive until the game's list has been executed, or has been
-// reset without being executed
-void Dx12ShimPin(Dx12GraphicsCommandList *list, IUnknown *object);
-// For the queue proxy, after it has handed lists to the queue, with the pins
-// of all of them, and for a list that drops what it recorded
-void Dx12ShimPinsExecuted(ID3D12CommandQueue *queue, std::vector<IUnknown*> *pins);
-void Dx12ShimPinsAbandoned(std::vector<IUnknown*> *pins);
+// Keeps the object alive until the game's list has been executed, as often
+// as it is, or has been reset without being executed. False if the list had
+// it pinned already.
+bool Dx12ShimPin(Dx12GraphicsCommandList *list, IUnknown *object);
+// For the queue proxy, after it has handed lists to the queue: pins is what
+// the lists use, referenced once for this execution, and first the pins of
+// the lists executed for the first time since they were recorded
+void Dx12ShimPinsExecuted(ID3D12CommandQueue *queue, std::vector<IUnknown*> *pins, std::vector<IUnknown*> *first);
+// For a list that drops what it recorded, and whether it had been executed
+void Dx12ShimPinsAbandoned(std::vector<IUnknown*> *pins, bool executed);
+// For a list that executes a bundle: what the bundle pinned is pinned to the
+// list too, as it is the list's execution that uses it. The bundle keeps its
+// own pins and uses until it is reset.
+void Dx12ShimPinsInherited(Dx12GraphicsCommandList *list, Dx12GraphicsCommandList *bundle);
 
 // Makes a resource of ours usable by a game list that is being recorded.
 // False if it has no D3D12 resource.

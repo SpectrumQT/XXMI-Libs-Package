@@ -89,6 +89,8 @@ public:
 // -----------------------------------------------------------------------------
 // Resources
 
+struct ShimView;
+
 struct ShimResource {
 	D3D11_RESOURCE_DIMENSION dimension;
 
@@ -151,6 +153,14 @@ struct ShimResource {
 	// of the game they take the place of. A copy of such a buffer stands
 	// for the same, see copy_buffer.
 	UINT64 skin_va;
+
+	// The views made of the resource, for ShimRenameResource to make them
+	// again. Not referenced: a view goes before its resource.
+	std::vector<ShimView*> views;
+	// The D3D12 resources the game's lists were left with by
+	// ShimRenameResource, kept for the next renaming once those lists
+	// are done with them. Referenced.
+	std::vector<ID3D12Resource*> spares;
 };
 
 void ShimDestroyResource(ShimResource *resource);
@@ -268,9 +278,21 @@ struct ShimView {
 	DXGI_FORMAT format;
 	// Depth stencil views that do not write
 	bool read_only;
+	// What the descriptor was made with, to make it again on another
+	// D3D12 resource (ShimRecreateView)
+	enum Kind { SRV, UAV, RTV, DSV } kind;
+	union {
+		D3D12_SHADER_RESOURCE_VIEW_DESC srv;
+		D3D12_UNORDERED_ACCESS_VIEW_DESC uav;
+		D3D12_RENDER_TARGET_VIEW_DESC rtv;
+		D3D12_DEPTH_STENCIL_VIEW_DESC dsv;
+	} desc12;
 };
 
 void ShimDestroyView(ShimView *view);
+// Writes the descriptor again, for the D3D12 resource the view's resource
+// has now
+void ShimRecreateView(ShimView *view);
 
 template <class Interface>
 class ShimViewObject : public ShimChild<Interface>

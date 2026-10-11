@@ -89,11 +89,14 @@ struct Dx12Stats {
 	// Signals of the fence for what game lists had pinned
 	volatile LONG64 pin_signals;
 	// The times those lists were executed on another queue than ours,
-	// where the fence says nothing about them
+	// which gets a fence of its own for them
 	volatile LONG64 pin_lates;
 	// The pages Dx12ShimUpload hands out memory from
 	volatile LONG64 upload_pages_created;
 	volatile LONG64 upload_pages_released;
+	// Resources of mods given another D3D12 resource for a write, see
+	// ShimRenameResource
+	volatile LONG64 resources_renamed;
 };
 extern Dx12Stats dx12_stats;
 

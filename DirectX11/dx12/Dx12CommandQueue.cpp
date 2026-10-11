@@ -91,7 +91,7 @@ void STDMETHODCALLTYPE Dx12CommandQueue::ExecuteCommandLists(UINT NumCommandList
 {
 	ID3D12CommandList *stack[64], **lists = stack;
 	std::vector<ID3D12CommandList*> large;
-	std::vector<IUnknown*> pins;
+	std::vector<IUnknown*> pins, first;
 	UINT i;
 
 	if (!ppCommandLists) {
@@ -119,12 +119,17 @@ void STDMETHODCALLTYPE Dx12CommandQueue::ExecuteCommandLists(UINT NumCommandList
 		Dx12GraphicsCommandList *proxy = static_cast<Dx12GraphicsCommandList*>(ppCommandLists[i]);
 		for (const Dx12Transition &transition : proxy->mTransitions)
 			Dx12ApplyTransition(transition.resource, transition.subresource, transition.state);
-		proxy->mTransitions.clear();
-		// Together, so that one signal of the fence does for all of
-		// them
-		pins.insert(pins.end(), proxy->mPins.begin(), proxy->mPins.end());
-		proxy->mPins.clear();
-		memset(proxy->mPinned, 0, sizeof(proxy->mPinned));
+		// The list keeps what it pinned, for being executed again:
+		// this execution gets references of its own, together so
+		// that one signal of the fence does for all of them
+		for (IUnknown *object : proxy->mPins) {
+			object->AddRef();
+			pins.push_back(object);
+		}
+		if (!proxy->mExecuted) {
+			proxy->mExecuted = true;
+			first.insert(first.end(), proxy->mPins.begin(), proxy->mPins.end());
+		}
 	}
 
 	InterlockedIncrement64(&dx12_stats.execute_calls);
@@ -133,7 +138,7 @@ void STDMETHODCALLTYPE Dx12CommandQueue::ExecuteCommandLists(UINT NumCommandList
 	mOrig->ExecuteCommandLists(NumCommandLists, lists);
 
 	if (!pins.empty())
-		Dx12ShimPinsExecuted(mOrig, &pins);
+		Dx12ShimPinsExecuted(mOrig, &pins, &first);
 }
 
 #include "generated/Dx12CommandQueue.fwd.inl"

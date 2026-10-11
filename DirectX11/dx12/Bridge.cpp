@@ -59,15 +59,46 @@ struct Retired {
 };
 static std::deque<Retired> retired;
 
-// Waiting for a couple of presents to go by, for when there is no telling
-// from a fence that the GPU is done with them
-struct Late {
-	IUnknown *object;
-	UINT frame;
+// What the lists executed on another queue than ours pinned is held until a
+// fence of our own that queue signals says they are done with it
+struct ForeignQueue {
+	// Referenced
+	ID3D12CommandQueue *queue;
+	// NULL if none could be made, which is not tried again
+	ID3D12Fence *fence;
+	UINT64 signalled;
+	std::deque<Retired> retired;
 };
-static std::deque<Late> late;
+static std::vector<ForeignQueue*> foreign_queues;
+static ForeignQueue* foreign_queue(ID3D12CommandQueue *queue);
+// What was pinned by lists executed on a queue that could not be given a
+// fence: nothing tells when that queue is done with it, so it is kept for
+// good rather than handed out again too soon
+static std::vector<IUnknown*> stranded;
+static void release_retired();
 
 static std::vector<ShimResource*> touched;
+
+// How many of the game's lists that have not been executed use a D3D12
+// resource of ours, by the resource. Only those pinned by
+// Dx12ShimUseOnGameList count, and an entry goes once the count is 0.
+static std::unordered_map<IUnknown*, UINT> game_uses;
+
+// With the lock held
+static void end_game_uses(const std::vector<IUnknown*> *pins)
+{
+	for (IUnknown *object : *pins) {
+		auto found = game_uses.find(object);
+
+		if (found != game_uses.end() && !--found->second)
+			game_uses.erase(found);
+	}
+}
+
+static bool game_list_uses(IUnknown *object)
+{
+	return !game_uses.empty() && game_uses.count(object);
+}
 
 static CRITICAL_SECTION shim_lock;
 static INIT_ONCE shim_lock_once = INIT_ONCE_STATIC_INIT;
@@ -485,6 +516,12 @@ void Dx12ShimTransition(ShimResource *resource, D3D12_RESOURCE_STATES state)
 	if (resource->write_pending)
 		ShimFlushWrite(resource);
 
+	// What is about to be written is in use by lists of the game that
+	// were recorded before and will be executed after: they keep it as it
+	// is, see Bridge.h
+	if ((state & ~READ_STATES) && !resource->foreign && game_list_uses(resource->resource))
+		ShimRenameResource(resource);
+
 	if (!resource->foreign && resource->touched_epoch != dx12_shim_epoch) {
 		resource->touched_epoch = dx12_shim_epoch;
 		touched.push_back(resource);
@@ -557,20 +594,22 @@ static bool next_game_upload(UploadPage *page)
 	return create_upload_buffer(GAME_UPLOAD_BLOCK_SIZE, page);
 }
 
-void Dx12ShimPin(Dx12GraphicsCommandList *list, IUnknown *object)
+bool Dx12ShimPin(Dx12GraphicsCommandList *list, IUnknown *object)
 {
 	IUnknown **pinned = &list->mPinned[((UINT64)(uintptr_t)object * 0x9e3779b97f4a7c15ull) >> 59];
 
 	if (*pinned == object)
-		return;
+		return false;
 	*pinned = object;
 	object->AddRef();
 	list->mPins.push_back(object);
+	return true;
 }
 
-void Dx12ShimPinsExecuted(ID3D12CommandQueue *queue, std::vector<IUnknown*> *pins)
+void Dx12ShimPinsExecuted(ID3D12CommandQueue *queue, std::vector<IUnknown*> *pins, std::vector<IUnknown*> *first)
 {
 	Dx12ShimLock();
+	end_game_uses(first);
 	if (dx12_shim && queue == shim.queue) {
 		// What another thread recorded since the queue proxy had our
 		// list executed was promised the value signalled next
@@ -580,16 +619,48 @@ void Dx12ShimPinsExecuted(ID3D12CommandQueue *queue, std::vector<IUnknown*> *pin
 		for (IUnknown *object : *pins)
 			retired.push_back({ object, fence_signalled });
 	} else {
+		ForeignQueue *foreign = foreign_queue(queue);
+
 		InterlockedIncrement64(&dx12_stats.pin_lates);
-		for (IUnknown *object : *pins)
-			late.push_back({ object, dx12_frame });
+		if (foreign->fence) {
+			queue->Signal(foreign->fence, ++foreign->signalled);
+			for (IUnknown *object : *pins)
+				foreign->retired.push_back({ object, foreign->signalled });
+		} else {
+			stranded.insert(stranded.end(), pins->begin(), pins->end());
+		}
 	}
 	pins->clear();
 	Dx12ShimUnlock();
 }
 
-void Dx12ShimPinsAbandoned(std::vector<IUnknown*> *pins)
+void Dx12ShimPinsInherited(Dx12GraphicsCommandList *list, Dx12GraphicsCommandList *bundle)
 {
+	Dx12ShimLock();
+	for (IUnknown *object : bundle->mPins) {
+		ID3D12Resource *resource;
+
+		if (!Dx12ShimPin(list, object))
+			continue;
+		// A resource is in use by the list now, see game_uses. The
+		// bundle's own uses stay until it is reset: it may be
+		// executed again by another list, with what it was recorded
+		// with.
+		if (SUCCEEDED(object->QueryInterface(IID_PPV_ARGS(&resource)))) {
+			game_uses[object]++;
+			resource->Release();
+		}
+	}
+	Dx12ShimUnlock();
+}
+
+void Dx12ShimPinsAbandoned(std::vector<IUnknown*> *pins, bool executed)
+{
+	if (!executed) {
+		Dx12ShimLock();
+		end_game_uses(pins);
+		Dx12ShimUnlock();
+	}
 	for (IUnknown *object : *pins)
 		object->Release();
 	pins->clear();
@@ -597,10 +668,7 @@ void Dx12ShimPinsAbandoned(std::vector<IUnknown*> *pins)
 
 void Dx12ShimFramePresented()
 {
-	while (!late.empty() && dx12_frame - late.front().frame >= 3) {
-		retired.push_back({ late.front().object, Dx12ShimPendingFence() });
-		late.pop_front();
-	}
+	release_retired();
 }
 
 bool Dx12ShimUseOnGameList(ShimResource *resource, Dx12GraphicsCommandList *list)
@@ -609,7 +677,8 @@ bool Dx12ShimUseOnGameList(ShimResource *resource, Dx12GraphicsCommandList *list
 		return false;
 
 	Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COMMON);
-	Dx12ShimPin(list, resource->resource);
+	if (Dx12ShimPin(list, resource->resource))
+		game_uses[resource->resource]++;
 	return true;
 }
 
@@ -733,6 +802,46 @@ static void release_retired()
 		retired.front().object->Release();
 		retired.pop_front();
 	}
+
+	for (ForeignQueue *foreign : foreign_queues) {
+		if (!foreign->fence || foreign->retired.empty())
+			continue;
+		completed = foreign->fence->GetCompletedValue();
+		while (!foreign->retired.empty() && foreign->retired.front().fence <= completed) {
+			foreign->retired.front().object->Release();
+			foreign->retired.pop_front();
+		}
+	}
+}
+
+static ForeignQueue* foreign_queue(ID3D12CommandQueue *queue)
+{
+	ForeignQueue *foreign;
+	ID3D12Device *device;
+	ID3D12Fence *queue_fence = NULL;
+
+	for (ForeignQueue *known : foreign_queues) {
+		if (known->queue == queue)
+			return known;
+	}
+
+	if (SUCCEEDED(queue->GetDevice(IID_PPV_ARGS(&device)))) {
+		if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&queue_fence))))
+			queue_fence = NULL;
+		device->Release();
+	}
+	if (queue_fence)
+		Dx12LogInfo("Lists executed on ID3D12CommandQueue %p use what mods gave them, which a fence of ours on it now guards\n", queue);
+	else
+		Dx12LogInfo("*** Failed to create a fence for ID3D12CommandQueue %p, what its lists use of the mods is kept for good\n", queue);
+
+	foreign = new ForeignQueue();
+	foreign->queue = queue;
+	foreign->fence = queue_fence;
+	foreign->signalled = 0;
+	queue->AddRef();
+	foreign_queues.push_back(foreign);
+	return foreign;
 }
 
 UINT64 Dx12ShimPendingFence()
@@ -792,6 +901,7 @@ void Dx12ShimSubmit()
 				entry.object->Release();
 			retired.clear();
 		}
+		release_retired();
 		return;
 	}
 
@@ -931,8 +1041,6 @@ bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue)
 	Dx12LogInfo("HackerDevice %p and HackerContext %p created on the D3D11 shim of ID3D12Device %p, commands go to ID3D12CommandQueue %p\n",
 		shim.hacker_device, shim.hacker_context, shim.device, shim.queue);
 	shim_created = true;
-	return true;
-}
 
 	// The shader overrides were read before the game was known to be
 	// D3D12, and are not read again at the first present when
@@ -941,3 +1049,5 @@ bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue)
 		Dx12LogInfo("Reloading the configuration for the hash_dx12 of the shader overrides\n");
 		G->gReloadConfigPending = true;
 	}
+	return true;
+}

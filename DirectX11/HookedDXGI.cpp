@@ -21,6 +21,8 @@
 #include "log.h"
 #include "util.h"
 #include "D3D11Wrapper.h"
+#include "dx12/Dx12CommandQueue.h"
+#include "dx12/Dx12SwapChain.h"
 
 
 // This class is for a different approach than the wrapping of the system objects
@@ -182,6 +184,16 @@ static HackerDevice* sort_out_swap_chain_device_mess(IUnknown **device)
 			return NULL;
 		}
 
+		if (G->dx12 != Dx12Mode::OFF && check_interface_supported(*device, IID_ID3D12CommandQueue)) {
+			// Not one of our queue proxies, so the device was not
+			// wrapped. Attaching the D3D11On12 device of the
+			// warning overlay below to somebody else's queue is
+			// intrusive.
+			LogInfo("[DX12] Swap chain belongs to an unwrapped ID3D12CommandQueue, not touching it\n");
+			fflush(LogFile);
+			return NULL;
+		}
+
 		LogInfo("FATAL: Unsupported DirectX Version!\n");
 
 		// Normally we flush the log file on the Present() call, but if
@@ -209,6 +221,21 @@ static HackerDevice* sort_out_swap_chain_device_mess(IUnknown **device)
 	}
 
 	return hackerDevice;
+}
+
+// The D3D12 counterpart of wrap_swap_chain, for a swap chain created on the
+// original of one of our command queue proxies. None of the display overrides
+// of the D3D11 path are applied to these.
+static HRESULT dx12_swap_chain_created(Dx12CommandQueue *queue, HRESULT hr, IDXGISwapChain **ppSwapChain)
+{
+	if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain)
+		Dx12WrapSwapChain(queue, ppSwapChain);
+	else
+		LogInfo("[DX12] Swap chain creation returned 0x%x\n", hr);
+	fflush(LogFile);
+
+	queue->Release();
+	return hr;
 }
 
 void ForceDisplayMode(DXGI_MODE_DESC *BufferDesc)
@@ -576,6 +603,15 @@ static HRESULT create_swap_chain_for_hwnd(CreateSwapChainForHwnd_t orig,
 	LogInfo("  Description1 = %p\n", pDesc);
 	LogInfo("  FullScreenDescription = %p\n", pFullscreenDesc);
 
+	Dx12CommandQueue *dx12Queue = Dx12QueryProxy<Dx12CommandQueue>(pDevice);
+	if (dx12Queue) {
+		G->hWnd = hWnd;
+		get_tls()->hooking_quirk_protection = true;
+		HRESULT hr = orig(This, dx12Queue->mOrig, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+		get_tls()->hooking_quirk_protection = false;
+		return dx12_swap_chain_created(dx12Queue, hr, (IDXGISwapChain**)ppSwapChain);
+	}
+
 	hackerDevice = sort_out_swap_chain_device_mess(&pDevice);
 	if (!hackerDevice) {
 		LogInfo("  Device is not ours, passing IDXGIFactory2::CreateSwapChainForHwnd through untouched\n");
@@ -678,6 +714,14 @@ static HRESULT create_swap_chain_for_core_window(CreateSwapChainForCoreWindow_t 
 
 	// FIXME: Need the hWnd for mouse support
 
+	Dx12CommandQueue *dx12Queue = Dx12QueryProxy<Dx12CommandQueue>(pDevice);
+	if (dx12Queue) {
+		get_tls()->hooking_quirk_protection = true;
+		HRESULT hr = orig(This, dx12Queue->mOrig, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
+		get_tls()->hooking_quirk_protection = false;
+		return dx12_swap_chain_created(dx12Queue, hr, (IDXGISwapChain**)ppSwapChain);
+	}
+
 	hackerDevice = sort_out_swap_chain_device_mess(&pDevice);
 	if (!hackerDevice) {
 		LogInfo("  Device is not ours, passing IDXGIFactory2::CreateSwapChainForCoreWindow through untouched\n");
@@ -764,6 +808,14 @@ static HRESULT create_swap_chain_for_composition(CreateSwapChainForComposition_t
 	LogInfo("  Description1 = %p\n", pDesc);
 
 	// FIXME: Need the hWnd for mouse support
+
+	Dx12CommandQueue *dx12Queue = Dx12QueryProxy<Dx12CommandQueue>(pDevice);
+	if (dx12Queue) {
+		get_tls()->hooking_quirk_protection = true;
+		HRESULT hr = orig(This, dx12Queue->mOrig, pDesc, pRestrictToOutput, ppSwapChain);
+		get_tls()->hooking_quirk_protection = false;
+		return dx12_swap_chain_created(dx12Queue, hr, (IDXGISwapChain**)ppSwapChain);
+	}
 
 	hackerDevice = sort_out_swap_chain_device_mess(&pDevice);
 	if (!hackerDevice) {
@@ -923,6 +975,16 @@ static HRESULT create_swap_chain(CreateSwapChain_t orig,
 	HackerDevice *hackerDevice = NULL;
 	DXGI_SWAP_CHAIN_DESC origSwapChainDesc;
 
+	Dx12CommandQueue *dx12Queue = Dx12QueryProxy<Dx12CommandQueue>(pDevice);
+	if (dx12Queue) {
+		if (pDesc)
+			G->hWnd = pDesc->OutputWindow;
+		get_tls()->hooking_quirk_protection = true;
+		HRESULT hr = orig(This, dx12Queue->mOrig, pDesc, ppSwapChain);
+		get_tls()->hooking_quirk_protection = false;
+		return dx12_swap_chain_created(dx12Queue, hr, ppSwapChain);
+	}
+
 	hackerDevice = sort_out_swap_chain_device_mess(&pDevice);
 	if (!hackerDevice) {
 		LogInfo("  Device is not ours, passing IDXGIFactory::CreateSwapChain through untouched\n");
@@ -1013,11 +1075,11 @@ struct VtblHook {
 	LPVOID hook;
 	LPVOID orig;
 };
-static VtblHook vtbl_hooks[4];
+static VtblHook vtbl_hooks[16];
 static unsigned num_vtbl_hooks = 0;
 static LONG vtbl_hooks_installed = 0;
 
-static void hook_vtable_slot(const char *name, LPVOID *slot, LPVOID hook, LPVOID *orig)
+void hook_vtable_slot(const char *name, LPVOID *slot, LPVOID hook, LPVOID *orig)
 {
 	HMODULE module = NULL;
 	wchar_t path[MAX_PATH] = L"?";
@@ -1050,7 +1112,7 @@ static void hook_vtable_slot(const char *name, LPVOID *slot, LPVOID hook, LPVOID
 		vtbl_hooks[num_vtbl_hooks++] = { name, slot, hook, *orig };
 }
 
-void remove_outer_swap_chain_hooks()
+void remove_vtable_hooks()
 {
 	DWORD old_protect = 0;
 

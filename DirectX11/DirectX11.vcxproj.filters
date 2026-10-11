@@ -32,6 +32,29 @@
     <ClCompile Include="Override.cpp" />
     <ClCompile Include="HackerInputLayout.cpp" />
     <ClCompile Include="ByteCodeReader.cpp" />
+    <ClCompile Include="dx12\Dx12Hooks.cpp" />
+    <ClCompile Include="dx12\Dx12CommandList.cpp" />
+    <ClCompile Include="dx12\Dx12CommandQueue.cpp" />
+    <ClCompile Include="dx12\Dx12Common.cpp" />
+    <ClCompile Include="dx12\BufferHash.cpp" />
+    <ClCompile Include="dx12\CmdState.cpp" />
+    <ClCompile Include="dx12\DescriptorShadow.cpp" />
+    <ClCompile Include="dx12\Dx12PipelineLibrary.cpp" />
+    <ClCompile Include="dx12\HashDump.cpp" />
+    <ClCompile Include="dx12\PipelineRegistry.cpp" />
+    <ClCompile Include="dx12\ResourceTracker.cpp" />
+    <ClCompile Include="dx12\TextureHash.cpp" />
+    <ClCompile Include="dx12\Dx12DescriptorHeap.cpp" />
+    <ClCompile Include="dx12\Dx12Device.cpp" />
+    <ClCompile Include="dx12\Dx12SwapChain.cpp" />
+    <ClCompile Include="dx12\Bridge.cpp" />
+    <ClCompile Include="dx12\DrawPath.cpp" />
+    <ClCompile Include="dx12\DxilMetadata.cpp" />
+    <ClCompile Include="dx12\PresentPass.cpp" />
+    <ClCompile Include="dx12\ShimContext.cpp" />
+    <ClCompile Include="dx12\ShimDevice.cpp" />
+    <ClCompile Include="dx12\ShimObjects.cpp" />
+    <ClCompile Include="dx12\ShimPipeline.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="d3d11Wrapper.def" />
@@ -69,6 +92,29 @@
     <ClInclude Include="HackerInputLayout.h" />
     <ClInclude Include="d3d11TokenizedProgramFormat.hpp" />
     <ClInclude Include="ByteCodeReader.h" />
+    <ClInclude Include="dx12\Dx12Common.h" />
+    <ClInclude Include="dx12\BufferHash.h" />
+    <ClInclude Include="dx12\CmdState.h" />
+    <ClInclude Include="dx12\DescriptorShadow.h" />
+    <ClInclude Include="dx12\Dx12PipelineLibrary.h" />
+    <ClInclude Include="dx12\HashDump.h" />
+    <ClInclude Include="dx12\PipelineRegistry.h" />
+    <ClInclude Include="dx12\ResourceTracker.h" />
+    <ClInclude Include="dx12\TextureHash.h" />
+    <ClInclude Include="dx12\Dx12Hooks.h" />
+    <ClInclude Include="dx12\Dx12CommandList.h" />
+    <ClInclude Include="dx12\Dx12CommandQueue.h" />
+    <ClInclude Include="dx12\Dx12DescriptorHeap.h" />
+    <ClInclude Include="dx12\Dx12Device.h" />
+    <ClInclude Include="dx12\Dx12SwapChain.h" />
+    <ClInclude Include="dx12\Bridge.h" />
+    <ClInclude Include="dx12\DrawPath.h" />
+    <ClInclude Include="dx12\DxilMetadata.h" />
+    <ClInclude Include="dx12\PresentPass.h" />
+    <ClInclude Include="dx12\ShimContext.h" />
+    <ClInclude Include="dx12\ShimDevice.h" />
+    <ClInclude Include="dx12\ShimObjects.h" />
+    <ClInclude Include="dx12\ShimPipeline.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="DirectX11.rc" />

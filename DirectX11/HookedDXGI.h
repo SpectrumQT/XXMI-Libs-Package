@@ -82,9 +82,14 @@ extern "C" LPVOID* lpvtbl_slot_CreateSwapChainForComposition(IDXGIFactory2* pFac
 
 void maybe_install_outer_swap_chain_hooks();
 
+// Replaces a vtable slot and remembers it for remove_vtable_hooks. *orig is
+// only written if the hook went in.
+
+void hook_vtable_slot(const char *name, LPVOID *slot, LPVOID hook, LPVOID *orig);
+
 // Called from RemoveHooks on DLL unload:
 
-void remove_outer_swap_chain_hooks();
+void remove_vtable_hooks();
 
 extern "C" LPVOID lpvtbl_Present(IDXGISwapChain* pSwapChain);
 

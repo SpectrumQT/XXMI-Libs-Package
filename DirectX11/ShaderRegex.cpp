@@ -3,6 +3,7 @@
 #include "globals.h" // For ShaderOverride FIXME: This should be in a separate header
 #include "log.h"
 #include "Overlay.h"
+#include "dx12/PipelineRegistry.h"
 
 #include <algorithm>
 #include <condition_variable>
@@ -447,6 +448,51 @@ void ShaderRegexGroup::link_command_lists_and_filter_index(UINT64 shader_hash)
 
 	if (!post_command_list.noop())
 		post_link = LinkCommandLists(&shader_override->post_command_list, &post_command_list, &ini_line);
+}
+
+bool ShaderRegexGroup::dx12_matches(const Dx12ShaderInfo *shader) const
+{
+	UINT i;
+
+	// Nothing is known about a shader that could not be read
+	if (!shader->reflected)
+		return false;
+	if ((shader->srv[0] & dx12_srv[0]) != dx12_srv[0] || (shader->srv[1] & dx12_srv[1]) != dx12_srv[1]
+	    || (shader->cbv & dx12_cbv) != dx12_cbv || (shader->uav & dx12_uav) != dx12_uav)
+		return false;
+	if (!dx12_targets.matches_uint(shader->targets))
+		return false;
+	for (i = 0; i < ARRAYSIZE(dx12_cb_bytes) && i < DX12_CB_SIZES; i++) {
+		if (!dx12_cb_bytes[i].matches_uint(shader->cb_bytes[i]))
+			return false;
+	}
+	return true;
+}
+
+bool link_shader_regex_groups_dx12(const Dx12ShaderInfo *shader)
+{
+	const char *shader_type = dx12_stage_names[shader->stage];
+	size_t length = strlen(shader_type);
+	bool linked = false;
+
+	for (auto &entry : shader_regex_groups) {
+		ShaderRegexGroup *group = &entry.second;
+
+		if (group->dx12_match ? !group->dx12_matches(shader) : !group->patterns.empty())
+			continue;
+		if (group->command_list.noop() && group->post_command_list.noop() && group->filter_index == FLT_MAX)
+			continue;
+
+		for (const std::string &model : group->shader_models) {
+			if (model.compare(0, length, shader_type) || model[length] != '_')
+				continue;
+			group->link_command_lists_and_filter_index(shader->hash);
+			linked = true;
+			break;
+		}
+	}
+
+	return linked;
 }
 
 bool unlink_shader_regex_command_lists_and_filter_index(UINT64 shader_hash)

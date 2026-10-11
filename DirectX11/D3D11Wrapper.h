@@ -5,6 +5,7 @@
 #include <dxgi1_2.h>
 
 
+void InitCommon();
 void InitD311();
 void DestroyDLL();
 

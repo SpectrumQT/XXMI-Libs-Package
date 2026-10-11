@@ -4,6 +4,7 @@
 #include "Globals.h"
 #include "IniHandler.h"
 #include "HookedDXGI.h"
+#include "dx12/Dx12Hooks.h"
 
 #include <locale>
 #include <chrono>
@@ -374,11 +375,16 @@ PFN_D3D11ON12_CREATE_DEVICE _D3D11On12CreateDevice;
 
 
 
-void InitD311()
+// The part of the initialisation that does not depend on the original
+// d3d11.dll, so that the D3D12 entry points can load the config and open the
+// log in a game that never touches D3D11.
+void InitCommon()
 {
-	UINT ret;
+	static bool initialized = false;
 
-	if (hD3D11) return;
+	if (initialized)
+		return;
+	initialized = true;
 
 	InitializeCriticalSectionPretty(&G->mCriticalSection);
 	InitializeCriticalSectionPretty(&G->mResourcesLock);
@@ -387,7 +393,16 @@ void InitD311()
 	InitializeCriticalSectionPretty(&G->mShaderBindingsLock);
 
 	InitializeDLL();
-	
+}
+
+void InitD311()
+{
+	UINT ret;
+
+	if (hD3D11) return;
+
+	InitCommon();
+
 
 	// Chain through to the either the original DLL in the system, or to a proxy
 	// DLL with the same interface, specified in the d3dx.ini file.
@@ -496,7 +511,7 @@ HRESULT WINAPI D3D11On12CreateDevice(
 	InitD311();
 	LogInfo("D3D11On12CreateDevice called.\n");
 
-	return (*_D3D11On12CreateDevice)(pDevice, Flags, pFeatureLevels, FeatureLevels, ppCommandQueues, NumQueues, NodeMask, ppDevice, ppImmediateContext, pChosenFeatureLevel);
+	return Dx12D3D11On12CreateDevice(_D3D11On12CreateDevice, pDevice, Flags, pFeatureLevels, FeatureLevels, ppCommandQueues, NumQueues, NodeMask, ppDevice, ppImmediateContext, pChosenFeatureLevel);
 }
 
 int WINAPI D3DKMTQueryAdapterInfo(_D3DKMT_QUERYADAPTERINFO *info)
@@ -1182,7 +1197,16 @@ HMODULE __stdcall Hooked_LoadLibraryExW(_In_ LPCWSTR lpLibFileName, _Reserved_ H
 		hook_enabled = true;
 
 	// Normal unchanged case.
-	return fnOrigLoadLibraryExW(lpLibFileName, hFile, dwFlags);
+	module = fnOrigLoadLibraryExW(lpLibFileName, hFile, dwFlags);
+
+	// d3d12.dll may only have come in now, either directly or as a
+	// dependency of what was loaded. The caller still needs the error code
+	// of its own call.
+	DWORD last_error = GetLastError();
+	Dx12HookExports();
+	SetLastError(last_error);
+
+	return module;
 }
 
 // This callback proc allows us to hook into any application we need. It is

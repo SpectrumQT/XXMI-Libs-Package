@@ -17,6 +17,9 @@
 #include "profiling.h"
 #include "Hunting.h"
 #include "cursor.h"
+#include "dx12/Bridge.h"
+#include "dx12/PipelineRegistry.h"
+#include "dx12/PresentPass.h"
 
 #include <D3DCompiler.h>
 
@@ -357,6 +360,9 @@ static void UpdateInputLayout(const wchar_t* ini_section, CommandListState* stat
 	//LogInfo("UpdateInputLayout called\n");
 
 	HackerInputLayout* current_layout = nullptr;
+
+	if (dx12_shim)
+		state->mHackerContext->Dx12PublishInputLayout();
 
 	state->mHackerContext->IAGetInputLayout(reinterpret_cast<ID3D11InputLayout**>(&current_layout));
 
@@ -1558,6 +1564,165 @@ bool CheckTextureOverrideCommand::noop(bool post, bool ignore_cto_pre, bool igno
 	return ignore_cto_pre;
 }
 
+static bool note_checked_slot(CheckTextureOverrideCommand *check, CommandListCheckedSlots *slots)
+{
+	unsigned i;
+
+	if (!is_static_pipeline_slot(check->target))
+		return false;
+
+	switch (check->target.type) {
+		case ResourceCopyTargetType::VERTEX_BUFFER:
+			if (check->target.slot >= 32)
+				return false;
+			slots->vbs |= 1u << check->target.slot;
+			return true;
+		case ResourceCopyTargetType::INDEX_BUFFER:
+			slots->ib = true;
+			return true;
+		case ResourceCopyTargetType::CONSTANT_BUFFER:
+			for (i = 0; i < slots->cb_count; i++) {
+				if (slots->cbs[i].shader_type == check->target.shader_type && slots->cbs[i].slot == check->target.slot)
+					return true;
+			}
+			if (slots->cb_count == ARRAYSIZE(slots->cbs))
+				return false;
+			slots->cbs[slots->cb_count].shader_type = check->target.shader_type;
+			slots->cbs[slots->cb_count].slot = check->target.slot;
+			slots->cb_count++;
+			return true;
+		case ResourceCopyTargetType::SHADER_RESOURCE:
+			for (i = 0; i < slots->texture_count; i++) {
+				if (slots->textures[i].shader_type == check->target.shader_type && slots->textures[i].slot == check->target.slot)
+					return true;
+			}
+			if (slots->texture_count == ARRAYSIZE(slots->textures))
+				return false;
+			slots->textures[slots->texture_count].shader_type = check->target.shader_type;
+			slots->textures[slots->texture_count].slot = check->target.slot;
+			slots->texture_count++;
+			return true;
+		default:
+			return false;
+	}
+}
+
+static bool expression_is_stateless(CommandListEvaluatable *evaluatable, bool of_draw = false);
+
+static bool note_assignment(CommandListVariable *var, int param_idx, float DirectX::XMFLOAT4::*param_component,
+		CommandListExpression *expression, float val, CommandListCheckedSlots *slots)
+{
+	CommandListCheckedAssignment assignment = { var, param_idx, param_component, expression, val };
+	unsigned i;
+
+	// Nothing but the list itself reads a local variable of it
+	if (var && !(var->flags & VariableFlags::GLOBAL))
+		return !expression || expression_is_stateless(expression->evaluatable.get(), true);
+
+	if (expression && !expression_is_stateless(expression->evaluatable.get()))
+		return false;
+
+	for (i = 0; i < slots->assignment_count; i++) {
+		if (slots->assignments[i] == assignment)
+			return true;
+	}
+	if (slots->assignment_count == ARRAYSIZE(slots->assignments))
+		return false;
+	slots->assignments[slots->assignment_count++] = assignment;
+	return true;
+}
+
+static bool note_guard(IfCommand *branch, bool nonzero, CommandListCheckedSlots *slots)
+{
+	unsigned i;
+
+	if (!expression_is_stateless(branch->expression.evaluatable.get()))
+		return false;
+
+	for (i = 0; i < slots->guard_count; i++) {
+		if (slots->guards[i].expression == &branch->expression)
+			return slots->guards[i].nonzero == nonzero;
+	}
+	if (slots->guard_count == ARRAYSIZE(slots->guards))
+		return false;
+	slots->guards[slots->guard_count].expression = &branch->expression;
+	slots->guards[slots->guard_count].nonzero = nonzero;
+	slots->guard_count++;
+	return true;
+}
+
+static bool branch_only_checks_texture_overrides(CommandList *pre, CommandList *post, CommandListCheckedSlots *slots, unsigned depth)
+{
+	CommandListCheckedSlots saved = *slots;
+
+	if ((!pre || CommandListOnlyChecksTextureOverrides(pre, slots, depth))
+	    && (!post || CommandListOnlyChecksTextureOverrides(post, slots, depth)))
+		return true;
+
+	*slots = saved;
+	return false;
+}
+
+bool CommandListOnlyChecksTextureOverrides(CommandList *command_list, CommandListCheckedSlots *slots, unsigned depth)
+{
+	// Bounds circular references:
+	if (depth > 8)
+		return false;
+
+	command_list = command_list->ResolveCommandList();
+
+	for (auto &command : command_list->commands) {
+		CommandListCommand *cmd = command.get();
+
+		if (IfCommand *branch = dynamic_cast<IfCommand*>(cmd)) {
+			// Evaluating the condition changes nothing, and either
+			// branch may be the one that runs, unless only one of
+			// them will do and the condition is one that can be
+			// watched:
+			bool if_true = branch_only_checks_texture_overrides(branch->true_commands_pre.get(),
+					branch->true_commands_post.get(), slots, depth + 1);
+			bool if_false = branch_only_checks_texture_overrides(branch->false_commands_pre.get(),
+					branch->false_commands_post.get(), slots, depth + 1);
+
+			if (!if_true && !if_false)
+				return false;
+			if (if_true != if_false && !note_guard(branch, if_true, slots))
+				return false;
+		} else if (RunExplicitCommandList *run = dynamic_cast<RunExplicitCommandList*>(cmd)) {
+			if (!run->command_list_section
+			    || !CommandListOnlyChecksTextureOverrides(&run->command_list_section->command_list, slots, depth + 1)
+			    || !CommandListOnlyChecksTextureOverrides(&run->command_list_section->post_command_list, slots, depth + 1))
+				return false;
+		} else if (RunLinkedCommandList *linked = dynamic_cast<RunLinkedCommandList*>(cmd)) {
+			if (!linked->link || !CommandListOnlyChecksTextureOverrides(linked->link, slots, depth + 1))
+				return false;
+		} else if (CheckTextureOverrideCommand *check = dynamic_cast<CheckTextureOverrideCommand*>(cmd)) {
+			if (!note_checked_slot(check, slots))
+				return false;
+		} else if (CheckTextureOverrideBatch *batch = dynamic_cast<CheckTextureOverrideBatch*>(cmd)) {
+			for (auto &merged : batch->checks) {
+				if (!note_checked_slot(merged.command.get(), slots))
+					return false;
+			}
+		} else if (VariableAssignment *variable = dynamic_cast<VariableAssignment*>(cmd)) {
+			if (!note_assignment(variable->var, -1, NULL, &variable->expression, 0, slots))
+				return false;
+		} else if (ParamOverride *param = dynamic_cast<ParamOverride*>(cmd)) {
+			if (!note_assignment(NULL, param->param_idx, param->param_component, &param->expression, 0, slots))
+				return false;
+		} else if (ConstantAssignmentBatch *constants = dynamic_cast<ConstantAssignmentBatch*>(cmd)) {
+			for (auto &constant : constants->assignments) {
+				if (!note_assignment(constant.var, constant.param_idx, constant.param_component, NULL, constant.val, slots))
+					return false;
+			}
+		} else if (!dynamic_cast<CommandPlaceholder*>(cmd) && !dynamic_cast<FrameAnalysisDumpCommand*>(cmd)) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
 ClearViewCommand::ClearViewCommand() :
 	dsv_depth(0.0),
 	dsv_stencil(0),
@@ -2424,7 +2589,7 @@ void Draw3DMigotoOverlayCommand::run(CommandListState *state)
 	COMMAND_LIST_LOG(state, "[%S] special = draw_3dmigoto_overlay\n", ini_section.c_str());
 
 	HackerSwapChain *mHackerSwapChain = state->mHackerDevice->GetHackerSwapChain();
-	if (mHackerSwapChain->mOverlay) {
+	if (mHackerSwapChain && mHackerSwapChain->mOverlay) {
 		mHackerSwapChain->mOverlay->DrawOverlay();
 		G->suppress_overlay = true;
 	}
@@ -3391,8 +3556,19 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
 			break;
 	}
 
-	if (!shader)
-		return -0.0;  // Negative zero means no shader bound.
+	if (!shader) {
+		// The shaders of a D3D12 game are known by hash alone
+		UINT64 hash = mHackerContext->Dx12CurrentShader(shader_target.shader_type);
+		if (!hash)
+			return -0.0;  // Negative zero means no shader bound.
+		if (shader_target.evaluation_mode != ShaderTargetEvaluationMode::SHADER)
+			return 0.0;
+
+		ShaderOverrideMap::iterator override = lookup_shaderoverride(hash);
+		if (override == G->mShaderOverrideMap.end())
+			return 0.0;
+		return override->second.filter_index != FLT_MAX ? override->second.filter_index : 1.0f;
+	}
 
 	ShaderMap::iterator shader_it = lookup_shader_hash(shader);
 
@@ -3940,6 +4116,8 @@ float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device
 			return 0;
 		case ParamOverrideType::STEREO_AVAILABLE:
 			return 0;
+		case ParamOverrideType::DX12:
+			return dx12_shim ? 1.0f : 0.0f;
 		// XXX: If updating this list, be sure to also update
 		// XXX: operand_allowed_in_context()
 	}
@@ -5352,6 +5530,45 @@ DEFINE_OPERATOR(saturate_operator,      "saturate",  max(0.0, min(rhs, 1.0)));
 
 DEFINE_OPERATOR(random_operator,        "random",    random(rhs));
 
+// Whether the value depends on nothing but IniParams and global variables, see
+// CommandListCheckedSlots. A local variable is as the command list that has it
+// left it, which is not for anything outside of that list to go by. of_draw
+// lets in what the draw call was made with as well.
+static bool expression_is_stateless(CommandListEvaluatable *evaluatable, bool of_draw)
+{
+	if (CommandListOperator *op = dynamic_cast<CommandListOperator*>(evaluatable)) {
+		if (dynamic_cast<random_operatorT*>(op) || !op->rhs)
+			return false;
+		return (!op->lhs || expression_is_stateless(op->lhs.get(), of_draw)) && expression_is_stateless(op->rhs.get(), of_draw);
+	}
+	if (CommandListOperand *operand = dynamic_cast<CommandListOperand*>(evaluatable)) {
+		switch (operand->type) {
+			case ParamOverrideType::VALUE:
+			case ParamOverrideType::INI_PARAM:
+			case ParamOverrideType::DX12:
+				return true;
+			case ParamOverrideType::VARIABLE:
+				// var_ftarget is the fval of a CommandListVariable
+				return !!(CONTAINING_RECORD(operand->var_ftarget, CommandListVariable, fval)->flags & VariableFlags::GLOBAL);
+			case ParamOverrideType::VERTEX_COUNT:
+			case ParamOverrideType::INDEX_COUNT:
+			case ParamOverrideType::INSTANCE_COUNT:
+			case ParamOverrideType::FIRST_VERTEX:
+			case ParamOverrideType::FIRST_INDEX:
+			case ParamOverrideType::FIRST_INSTANCE:
+			case ParamOverrideType::THREAD_GROUP_COUNT_X:
+			case ParamOverrideType::THREAD_GROUP_COUNT_Y:
+			case ParamOverrideType::THREAD_GROUP_COUNT_Z:
+			case ParamOverrideType::INDIRECT_OFFSET:
+			case ParamOverrideType::DRAW_TYPE:
+				return of_draw;
+			default:
+				return false;
+		}
+	}
+	return false;
+}
+
 // High level of precedence, right-associative. Lower than unary operators, so
 // that 4**-2 works for square root
 DEFINE_OPERATOR(exponent_operator,      "**", (pow(lhs, rhs)));
@@ -6017,6 +6234,7 @@ static bool operand_allowed_in_context(ParamOverrideType type, CommandListScope 
 		case ParamOverrideType::SLI:
 		case ParamOverrideType::STEREO_ACTIVE:
 		case ParamOverrideType::STEREO_AVAILABLE:
+		case ParamOverrideType::DX12:
 			return true;
 	}
 	return false;
@@ -9398,6 +9616,8 @@ bool ParseCommandListResourceCopyTargetDirective(
 		// Vertex Buffer Layout Override
 		// vb0->ElementFormat(BLENDINDICES, 0) = R16G16B16A16_FLOAT
 		operation = parse_layout_operation(section, dst, val, command_list, ini_namespace);
+		// On D3D12 the layout takes making a pipeline of the game again
+		dx12_keep_shader_bytecode = true;
 		break;
 
 	case ResourceCopyTargetEvaluationMode::VARIABLE:
@@ -10142,7 +10362,7 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 					mHackerSwapChain->GetBuffer(0, __uuidof(ID3D11Resource), (void**)&res);
 				else
 					mHackerSwapChain->GetOrigSwapChain1()->GetBuffer(0, __uuidof(ID3D11Resource), (void**)&res);
-			} else
+			} else if (!(res = Dx12ShimBackBuffer()))
 				COMMAND_LIST_LOG(state, "  Unable to get access to swap chain\n");
 		}
 		return res;
@@ -10152,7 +10372,7 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 			HackerSwapChain *mHackerSwapChain = mHackerDevice->GetHackerSwapChain();
 			if (mHackerSwapChain)
 				mHackerSwapChain->GetOrigSwapChain1()->GetBuffer(0, __uuidof(ID3D11Resource), (void**)&res);
-			else
+			else if (!(res = Dx12ShimBackBuffer()))
 				COMMAND_LIST_LOG(state, "  Unable to get access to real swap chain\n");
 		}
 		return res;
@@ -10162,7 +10382,7 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 			HackerSwapChain *mHackerSwapChain = mHackerDevice->GetHackerSwapChain();
 			if (mHackerSwapChain)
 				mHackerSwapChain->GetBuffer(0, __uuidof(ID3D11Resource), (void**)&res);
-			else
+			else if (!(res = Dx12ShimBackBuffer()))
 				COMMAND_LIST_LOG(state, "  Unable to get access to fake swap chain\n");
 		}
 		return res;
@@ -12952,6 +13172,16 @@ void ResourceCopyOperation::run(CommandListState *state)
 		buf_src_size = (UINT)src.member_args[1].GetValue(state);
 	}
 
+	// A D3D12 constant buffer of the game does not keep its contents: a
+	// reference kept for later draws would be to whatever that draw has in
+	// the slot, so the contents are copied instead.
+	const ResourceCopyOptions ini_options = options;
+	if (dx12_shim && src_resource && (options & ResourceCopyOptions::REFERENCE)
+		&& src.type == ResourceCopyTargetType::CONSTANT_BUFFER
+		&& (dst.type == ResourceCopyTargetType::CUSTOM_RESOURCE || dst.type == ResourceCopyTargetType::POOL)
+		&& Dx12ShimIsGameConstants(src_resource))
+		options = (ResourceCopyOptions)(((int)options & ~(int)ResourceCopyOptions::REFERENCE) | (int)ResourceCopyOptions::COPY);
+
 	switch (dst.type)
 	{
 	case ResourceCopyTargetType::POOL:
@@ -12962,6 +13192,8 @@ void ResourceCopyOperation::run(CommandListState *state)
 		CopyResourceToResource(state, src_resource, src_view, stride, offset, format, buf_src_size);
 		break;
 	}
+
+	options = ini_options;
 
 	if (src_view)
 		src_view->Release();

@@ -2017,6 +2017,25 @@ void RunCommandList(HackerDevice *mHackerDevice,
 		CommandList *command_list, DrawCallInfo *call_info,
 		bool post);
 
+// An assignment that changes nothing while what it assigns to has the value
+// already
+struct CommandListCheckedAssignment {
+	// The global variable assigned to, or NULL for the ini param below
+	CommandListVariable *var;
+	int param_idx;
+	float DirectX::XMFLOAT4::*param_component;
+	// What is assigned, which depends on nothing but IniParams and global
+	// variables, or NULL for val
+	CommandListExpression *expression;
+	float val;
+
+	bool operator==(const CommandListCheckedAssignment &other) const
+	{
+		return var == other.var && param_idx == other.param_idx && param_component == other.param_component
+			&& expression == other.expression && val == other.val;
+	}
+};
+
 // The slots a command list may run checktextureoverride on, see
 // CommandListOnlyChecksTextureOverrides():
 struct CommandListCheckedSlots {
@@ -2027,6 +2046,15 @@ struct CommandListCheckedSlots {
 		wchar_t shader_type;
 		unsigned slot;
 	} cbs[8];
+	unsigned texture_count;
+	struct {
+		wchar_t shader_type;
+		unsigned slot;
+	} textures[16];
+	// Besides the checks the list may assign these, so it only does
+	// nothing while they would change nothing
+	unsigned assignment_count;
+	CommandListCheckedAssignment assignments[8];
 	// Conditions that have to evaluate to non-zero (or to zero) for the
 	// list to do no more than that. Each depends on nothing but IniParams
 	// and variables, so it can be evaluated outside of a draw call and
@@ -2039,13 +2067,16 @@ struct CommandListCheckedSlots {
 };
 
 // Whether running the command list can do nothing but look up the
-// TextureOverride sections of fixed vertex, index and constant buffer slots
-// for as long as the guards (added to slots) hold, whatever its other
-// conditions evaluate to. If so and none of those slots (added to slots as
-// well) holds something a TextureOverride section could match, running the
-// list has no effect. The D3D12 draw path uses this to tell the draws of the
-// game it has no need to stop for. Frame analysis dumps count as nothing,
-// which whoever relies on this has to make sure of.
+// TextureOverride sections of fixed vertex, index and constant buffer and
+// texture slots, as long as the guards hold and its assignments are of the
+// values already in place (all added to slots). If none of those slots holds
+// something a TextureOverride section could match, running the list has no
+// effect: the D3D12 draw path uses this to skip draws of the game. Frame
+// analysis dumps count as nothing, which the caller has to make sure of.
+//
+// A local variable given a value that comes of the draw alone counts as
+// nothing too. One the list reads before giving it a value in the same run is
+// left as the last run that was not skipped had it.
 bool CommandListOnlyChecksTextureOverrides(CommandList *command_list, CommandListCheckedSlots *slots, unsigned depth = 0);
 void RunResourceCommandList(HackerDevice *mHackerDevice,
 		HackerContext *mHackerContext,

@@ -844,6 +844,11 @@ struct BufferCacheEntry {
 	UINT64 offset, span, ib_offset, ib_span;
 	bool ib_asked, ib_found;
 	UINT64 stamp;
+	// What the lookups the stamp is of came to, for when it has changed:
+	// the counters it is made of are shared, and the game writes
+	// hundreds of other ranges every frame
+	bool has_hash, ib_hashed;
+	Dx12BufferHash data, ib_data;
 
 	// No TextureOverride section can match the buffer
 	bool boring;
@@ -960,31 +965,44 @@ static bool unhashed_buffer_is_boring(UINT64 va, UINT64 bytes, UINT kind)
 	return Dx12FindBuffer(va, &resource, &offset) && !Dx12FindBufferHash(resource, offset, &hash);
 }
 
-// The stamp is only good for lookups made after it was taken, so they are
-// made once more
-static void remember_buffer(BufferCacheEntry *cached, bool has_hash, const Dx12BufferHash *data, const ReachLookup *lookup)
+// Whether the lookups an entry was made from come to the same now. Without
+// the lock, and without following its pointers.
+static bool buffer_as_remembered(const BufferCacheEntry *cached)
 {
 	ID3D12Resource *resource;
 	UINT64 offset;
 
+	if (!Dx12FindBuffer(cached->va, &resource, &offset) || resource != cached->resource || offset != cached->offset)
+		return false;
+	if (!same_buffer_hash(cached->has_hash, &cached->data, cached->resource, cached->offset))
+		return false;
+	if (cached->ib_asked) {
+		if (Dx12FindBuffer(cached->ib_va, &resource, &offset) != cached->ib_found)
+			return false;
+		if (cached->ib_found) {
+			if (resource != cached->ib || offset != cached->ib_offset)
+				return false;
+			if (!same_buffer_hash(cached->ib_hashed, &cached->ib_data, cached->ib, cached->ib_offset))
+				return false;
+		}
+	}
+	return true;
+}
+
+// The stamp is only good for lookups made after it was taken, so they are
+// made once more
+static void remember_buffer(BufferCacheEntry *cached, bool has_hash, const Dx12BufferHash *data, const ReachLookup *lookup)
+{
 	cached->generation = 0;
 	if (!buffer_cache_stamp(cached, &cached->stamp))
 		return;
 
-	if (!Dx12FindBuffer(cached->va, &resource, &offset) || resource != cached->resource || offset != cached->offset)
+	cached->has_hash = has_hash;
+	cached->data = has_hash ? *data : Dx12BufferHash();
+	cached->ib_hashed = lookup->ib_hashed;
+	cached->ib_data = lookup->ib_hashed ? lookup->ib_upload : Dx12BufferHash();
+	if (!buffer_as_remembered(cached))
 		return;
-	if (!same_buffer_hash(has_hash, data, cached->resource, cached->offset))
-		return;
-	if (cached->ib_asked) {
-		if (Dx12FindBuffer(cached->ib_va, &resource, &offset) != cached->ib_found)
-			return;
-		if (cached->ib_found) {
-			if (resource != cached->ib || offset != cached->ib_offset)
-				return;
-			if (!same_buffer_hash(lookup->ib_hashed, &lookup->ib_upload, cached->ib, cached->ib_offset))
-				return;
-		}
-	}
 
 	cached->generation = buffer_cache_generation;
 }
@@ -1098,6 +1116,62 @@ static Published* publish_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride
 		Dx12DumpNote("Vertex buffer %p+%llu matches the TextureOverride sections of hash %08x\n", resource, offset, hash);
 	}
 	return entry;
+}
+
+// The textures no TextureOverride section can match, for the threads recording
+// to find without the lock: a word per texture made of everything the answer
+// came of, which is the resource at the address, its contents and the
+// configuration. In pairs, for the textures that would share a slot.
+static volatile LONG64 boring_textures[8192];
+
+static volatile LONG64* boring_texture_slot(ID3D12Resource *resource, const Dx12ResourceInfo *info, LONG64 *word)
+{
+	struct {
+		ID3D12Resource *resource;
+		UINT config;
+		UINT cube;
+	} key = { resource, config_generation, info->cube };
+	uint32_t shape = crc32c_hw(crc32c_hw(0, &info->desc, sizeof(info->desc)), &key, sizeof(key));
+
+	// Never what an empty slot has
+	*word = (LONG64)((UINT64)shape << 32 | (info->has_data_hash ? info->data_hash : 0) | 1ull << 63);
+	if (!info->has_data_hash)
+		*word ^= 1ll << 62;
+	return &boring_textures[(((UINT64)(uintptr_t)resource * 0x9e3779b97f4a7c15ull) >> 51) & ~1ull];
+}
+
+// Without the lock
+static bool texture_is_boring(ID3D12Resource *resource)
+{
+	volatile LONG64 *slot;
+	Dx12ResourceInfo info;
+	LONG64 word;
+
+	// The engine is not shown what is not known, see publish_resource
+	if (!Dx12GetResourceInfo(resource, &info))
+		return true;
+	slot = boring_texture_slot(resource, &info, &word);
+	return slot[0] == word || slot[1] == word;
+}
+
+// entry is what publish_resource returned for the resource
+static void remember_texture(ID3D12Resource *resource, const Published *entry)
+{
+	static UINT next;
+	volatile LONG64 *slot;
+	Dx12ResourceInfo info;
+	LONG64 word;
+
+	// Only if the entry is of the resource as it is by now
+	if (!Dx12GetResourceInfo(resource, &info) || memcmp(&entry->desc, &info.desc, sizeof(info.desc))
+	    || entry->has_data_hash != info.has_data_hash || entry->data_hash != info.data_hash || entry->config != config_generation)
+		return;
+
+	slot = boring_texture_slot(resource, &info, &word);
+	if (slot[0] == word || slot[1] == word)
+		return;
+	if (TextureOverrideCandidatesEmpty(entry->resource))
+		InterlockedExchange64(&slot[next++ & 1], word);
 }
 
 // A constant buffer is bound by address and the game hands out a new address
@@ -1429,6 +1503,7 @@ ID3D11ShaderResourceView* Dx12ScopeShaderResource(Dx12ShaderStage stage, UINT sl
 	entry = publish_register(stage, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, slot, &view);
 	if (!entry)
 		return NULL;
+	remember_texture(view.resource, entry);
 
 	// The entry outlives the game's resource where its address passes on to
 	// another of the same description, a normal map to a colour texture
@@ -3316,6 +3391,7 @@ enum SlowReason {
 	SLOW_IB,
 	SLOW_CB,
 	SLOW_SKIN,
+	SLOW_TEXTURE,
 	SLOW_REASONS,
 	SLOW_NOT = SLOW_REASONS,
 };
@@ -3341,14 +3417,29 @@ static bool stage_of_shader_type(wchar_t shader_type, Dx12ShaderStage *stage)
 // word for the threads recording, which cannot evaluate them: the expressions
 // go away when the configuration is read again. Bit numbers are good while
 // config_generation stays the same.
-static CommandListExpression *guard_expressions[64];
+
+// A condition to be true or false, or an assignment to be of the value in place
+struct Guard {
+	CommandListExpression *expression;
+	CommandListCheckedAssignment assignment;
+};
+static Guard guard_conditions[64];
 static unsigned guard_count;
 static volatile LONG64 guard_bits;
 
 static bool guard_holds(unsigned guard)
 {
+	const CommandListCheckedAssignment *assignment = &guard_conditions[guard].assignment;
+	float value;
+
 	// As IfCommand::run decides
-	return !!guard_expressions[guard]->evaluate(NULL, dx12_shim->hacker_device);
+	if (guard_conditions[guard].expression)
+		return !!guard_conditions[guard].expression->evaluate(NULL, dx12_shim->hacker_device);
+
+	value = assignment->expression ? assignment->expression->evaluate(NULL, dx12_shim->hacker_device) : assignment->val;
+	if (assignment->var)
+		return assignment->var->fval == value;
+	return G->iniParams[assignment->param_idx].*assignment->param_component == value;
 }
 
 // With the lock held
@@ -3368,20 +3459,23 @@ void Dx12DrawPathEngineRan()
 	refresh_guards();
 }
 
-static bool register_guard(CommandListExpression *expression, unsigned *guard)
+// assignment is for where there is no expression
+static bool register_guard(CommandListExpression *expression, const CommandListCheckedAssignment *assignment, unsigned *guard)
 {
 	unsigned i;
 
 	for (i = 0; i < guard_count; i++) {
-		if (guard_expressions[i] == expression) {
+		if (guard_conditions[i].expression == expression && (expression || guard_conditions[i].assignment == *assignment)) {
 			*guard = i;
 			return true;
 		}
 	}
-	if (guard_count == ARRAYSIZE(guard_expressions))
+	if (guard_count == ARRAYSIZE(guard_conditions))
 		return false;
 
-	guard_expressions[guard_count] = expression;
+	guard_conditions[guard_count].expression = expression;
+	if (!expression)
+		guard_conditions[guard_count].assignment = *assignment;
 	*guard = guard_count++;
 	// No filter refers to the bit yet
 	if (guard_holds(*guard))
@@ -3428,19 +3522,36 @@ static void work_out_filter(const Dx12PipelineInfo *pipeline, const Dx12ShaderIn
 		filter->cbs[i].slot = (BYTE)slots.cbs[i].slot;
 	}
 
+	for (i = 0; only_checks && i < slots.texture_count; i++) {
+		if (!stage_of_shader_type(slots.textures[i].shader_type, &stage) || slots.textures[i].slot > 255) {
+			only_checks = false;
+			break;
+		}
+		filter->textures[i].stage = (BYTE)stage;
+		filter->textures[i].slot = (BYTE)slots.textures[i].slot;
+	}
+
 	filter->guards_zero = filter->guards_nonzero = 0;
 	for (i = 0; only_checks && i < slots.guard_count; i++) {
-		if (!register_guard(slots.guards[i].expression, &guard)) {
+		if (!register_guard(slots.guards[i].expression, NULL, &guard)) {
 			only_checks = false;
 			break;
 		}
 		*(slots.guards[i].nonzero ? &filter->guards_nonzero : &filter->guards_zero) |= 1ull << guard;
+	}
+	for (i = 0; only_checks && i < slots.assignment_count; i++) {
+		if (!register_guard(NULL, &slots.assignments[i], &guard)) {
+			only_checks = false;
+			break;
+		}
+		filter->guards_nonzero |= 1ull << guard;
 	}
 
 	filter->only_checks = only_checks;
 	filter->vbs = slots.vbs;
 	filter->ib = slots.ib;
 	filter->cb_count = (BYTE)slots.cb_count;
+	filter->texture_count = (BYTE)slots.texture_count;
 	filter->override_generation = G->shader_override_generation;
 	InterlockedExchange(&filter->generation, (LONG)config_generation);
 }
@@ -3488,7 +3599,11 @@ static SlowReason buffer_is_boring(UINT64 va, UINT64 bytes, UINT kind, UINT stri
 			break;
 		if (!cached.boring)
 			return SLOW_VB_WANTED;
-		if (!buffer_cache_stamp(&cached, &stamp) || stamp != cached.stamp)
+		if (!buffer_cache_stamp(&cached, &stamp))
+			return SLOW_VB_CHANGED;
+		// A stamp that moved says something was written near the
+		// buffer, which is rarely the buffer
+		if (stamp != cached.stamp && !buffer_as_remembered(&cached))
 			return SLOW_VB_CHANGED;
 		return SLOW_NOT;
 	}
@@ -3583,6 +3698,24 @@ static SlowReason draw_is_boring(Dx12GraphicsCommandList *list, const Dx12Pipeli
 		if (*boring_constants_slot(stage, cb, shader->cb_bytes[cb], &word) != word)
 			return SLOW_CB;
 	}
+
+	// What the engine is not shown is left out as it is there, see
+	// Dx12ScopeShaderResource
+	for (i = 0; i < worked_out.texture_count; i++) {
+		Dx12ShaderStage stage = (Dx12ShaderStage)worked_out.textures[i].stage;
+		const Dx12ShaderInfo *shader = pipeline->shaders[stage];
+		UINT reg = worked_out.textures[i].slot;
+		Dx12DescriptorSlot view;
+
+		if (stage == DX12_STAGE_CS || !signature)
+			continue;
+		if (shader && shader->reflected && !shader->unbounded_srv && reg < 128 && !(shader->srv[reg / 64] & (1ull << (reg % 64))))
+			continue;
+		if (!Dx12ResolveRegister(game, signature, stage, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, reg, &view) || !view.resource)
+			continue;
+		if (!texture_is_boring(view.resource))
+			return SLOW_TEXTURE;
+	}
 	return SLOW_NOT;
 }
 
@@ -3623,6 +3756,11 @@ static SlowReason skin_is_boring(const Dx12PipelineInfo *pipeline, const SkinDis
 		if (worked_out.cbs[i].stage == DX12_STAGE_CS)
 			return SLOW_CB;
 	}
+	// The scope of a dispatch has none for the other stages
+	for (i = 0; i < worked_out.texture_count; i++) {
+		if (worked_out.textures[i].stage == DX12_STAGE_CS)
+			return SLOW_TEXTURE;
+	}
 	return SLOW_NOT;
 }
 
@@ -3651,6 +3789,8 @@ static void prime_filter(const Dx12PipelineInfo *pipeline)
 		if (shader && cb < DX12_CB_SIZES && shader->cb_bytes[cb])
 			publish_constants(stage, cb, shader->cb_bytes[cb]);
 	}
+	for (i = 0; i < filter->texture_count; i++)
+		Dx12ScopeShaderResource((Dx12ShaderStage)filter->textures[i].stage, filter->textures[i].slot);
 }
 
 // -----------------------------------------------------------------------------
@@ -4047,11 +4187,11 @@ void Dx12DrawPathFramePresented()
 		Dx12DumpNote("  The others were stopped for because of: settings %d, a pipeline not looked at yet %d, command lists doing more "
 			"than asking %d, a condition of a command list %d (%u watched), IniParams %d, a vertex buffer not known %d, wanted by a mod %d, "
 			"written since %d, the index buffer %d, "
-			"a constant buffer %d, a buffer a mod had skinned %d; of the buffers looked up %u were none known, %u not settled, "
+			"a constant buffer %d, a buffer a mod had skinned %d, a texture %d; of the buffers looked up %u were none known, %u not settled, "
 			"%u too large to watch, %u new\n",
 			reasons[SLOW_SETTINGS], reasons[SLOW_FILTER], reasons[SLOW_LISTS], reasons[SLOW_GUARD], guard_count,
 			reasons[SLOW_INI_PARAMS], reasons[SLOW_VB_UNKNOWN],
-			reasons[SLOW_VB_WANTED], reasons[SLOW_VB_CHANGED], reasons[SLOW_IB], reasons[SLOW_CB], reasons[SLOW_SKIN],
+			reasons[SLOW_VB_WANTED], reasons[SLOW_VB_CHANGED], reasons[SLOW_IB], reasons[SLOW_CB], reasons[SLOW_SKIN], reasons[SLOW_TEXTURE],
 			stats.lookups_missing, stats.lookups_unsettled, stats.lookups_unstamped, stats.lookups_new);
 		Dx12DumpNote("  Skinning: %u dispatches of the game were shown to the mods as draws and %u with such a shader were not, "
 			"mods had their own vertices skinned %u times and failed to %u times, %u vertex buffers of draws were swapped for those, "

@@ -1591,12 +1591,46 @@ static bool note_checked_slot(CheckTextureOverrideCommand *check, CommandListChe
 			slots->cbs[slots->cb_count].slot = check->target.slot;
 			slots->cb_count++;
 			return true;
+		case ResourceCopyTargetType::SHADER_RESOURCE:
+			for (i = 0; i < slots->texture_count; i++) {
+				if (slots->textures[i].shader_type == check->target.shader_type && slots->textures[i].slot == check->target.slot)
+					return true;
+			}
+			if (slots->texture_count == ARRAYSIZE(slots->textures))
+				return false;
+			slots->textures[slots->texture_count].shader_type = check->target.shader_type;
+			slots->textures[slots->texture_count].slot = check->target.slot;
+			slots->texture_count++;
+			return true;
 		default:
 			return false;
 	}
 }
 
-static bool expression_is_stateless(CommandListEvaluatable *evaluatable);
+static bool expression_is_stateless(CommandListEvaluatable *evaluatable, bool of_draw = false);
+
+static bool note_assignment(CommandListVariable *var, int param_idx, float DirectX::XMFLOAT4::*param_component,
+		CommandListExpression *expression, float val, CommandListCheckedSlots *slots)
+{
+	CommandListCheckedAssignment assignment = { var, param_idx, param_component, expression, val };
+	unsigned i;
+
+	// Nothing but the list itself reads a local variable of it
+	if (var && !(var->flags & VariableFlags::GLOBAL))
+		return !expression || expression_is_stateless(expression->evaluatable.get(), true);
+
+	if (expression && !expression_is_stateless(expression->evaluatable.get()))
+		return false;
+
+	for (i = 0; i < slots->assignment_count; i++) {
+		if (slots->assignments[i] == assignment)
+			return true;
+	}
+	if (slots->assignment_count == ARRAYSIZE(slots->assignments))
+		return false;
+	slots->assignments[slots->assignment_count++] = assignment;
+	return true;
+}
 
 static bool note_guard(IfCommand *branch, bool nonzero, CommandListCheckedSlots *slots)
 {
@@ -1668,6 +1702,17 @@ bool CommandListOnlyChecksTextureOverrides(CommandList *command_list, CommandLis
 		} else if (CheckTextureOverrideBatch *batch = dynamic_cast<CheckTextureOverrideBatch*>(cmd)) {
 			for (auto &merged : batch->checks) {
 				if (!note_checked_slot(merged.command.get(), slots))
+					return false;
+			}
+		} else if (VariableAssignment *variable = dynamic_cast<VariableAssignment*>(cmd)) {
+			if (!note_assignment(variable->var, -1, NULL, &variable->expression, 0, slots))
+				return false;
+		} else if (ParamOverride *param = dynamic_cast<ParamOverride*>(cmd)) {
+			if (!note_assignment(NULL, param->param_idx, param->param_component, &param->expression, 0, slots))
+				return false;
+		} else if (ConstantAssignmentBatch *constants = dynamic_cast<ConstantAssignmentBatch*>(cmd)) {
+			for (auto &constant : constants->assignments) {
+				if (!note_assignment(constant.var, constant.param_idx, constant.param_component, NULL, constant.val, slots))
 					return false;
 			}
 		} else if (!dynamic_cast<CommandPlaceholder*>(cmd) && !dynamic_cast<FrameAnalysisDumpCommand*>(cmd)) {
@@ -5485,22 +5530,38 @@ DEFINE_OPERATOR(saturate_operator,      "saturate",  max(0.0, min(rhs, 1.0)));
 
 DEFINE_OPERATOR(random_operator,        "random",    random(rhs));
 
-// Whether the value depends on nothing but IniParams and variables, see
-// CommandListCheckedSlots
-static bool expression_is_stateless(CommandListEvaluatable *evaluatable)
+// Whether the value depends on nothing but IniParams and global variables, see
+// CommandListCheckedSlots. A local variable is as the command list that has it
+// left it, which is not for anything outside of that list to go by. of_draw
+// lets in what the draw call was made with as well.
+static bool expression_is_stateless(CommandListEvaluatable *evaluatable, bool of_draw)
 {
 	if (CommandListOperator *op = dynamic_cast<CommandListOperator*>(evaluatable)) {
 		if (dynamic_cast<random_operatorT*>(op) || !op->rhs)
 			return false;
-		return (!op->lhs || expression_is_stateless(op->lhs.get())) && expression_is_stateless(op->rhs.get());
+		return (!op->lhs || expression_is_stateless(op->lhs.get(), of_draw)) && expression_is_stateless(op->rhs.get(), of_draw);
 	}
 	if (CommandListOperand *operand = dynamic_cast<CommandListOperand*>(evaluatable)) {
 		switch (operand->type) {
 			case ParamOverrideType::VALUE:
 			case ParamOverrideType::INI_PARAM:
-			case ParamOverrideType::VARIABLE:
 			case ParamOverrideType::DX12:
 				return true;
+			case ParamOverrideType::VARIABLE:
+				// var_ftarget is the fval of a CommandListVariable
+				return !!(CONTAINING_RECORD(operand->var_ftarget, CommandListVariable, fval)->flags & VariableFlags::GLOBAL);
+			case ParamOverrideType::VERTEX_COUNT:
+			case ParamOverrideType::INDEX_COUNT:
+			case ParamOverrideType::INSTANCE_COUNT:
+			case ParamOverrideType::FIRST_VERTEX:
+			case ParamOverrideType::FIRST_INDEX:
+			case ParamOverrideType::FIRST_INSTANCE:
+			case ParamOverrideType::THREAD_GROUP_COUNT_X:
+			case ParamOverrideType::THREAD_GROUP_COUNT_Y:
+			case ParamOverrideType::THREAD_GROUP_COUNT_Z:
+			case ParamOverrideType::INDIRECT_OFFSET:
+			case ParamOverrideType::DRAW_TYPE:
+				return of_draw;
 			default:
 				return false;
 		}

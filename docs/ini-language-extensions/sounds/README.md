@@ -23,7 +23,11 @@ overlap = true
 | `loop` | `false` | Whether playback repeats until stopped. |
 | `overlap` | `false` | Whether each play starts a voice of its own. See [Overlap](#overlap). |
 
-Only uncompressed `.wav` files are supported, and the whole file is read into RAM.
+The file must be a real `.wav` holding PCM, IEEE float or MS ADPCM data, and the whole of it is read into RAM. An MP3 or Ogg renamed to `.wav` is the usual mistake and is rejected with a reason on the overlay; convert it first:
+
+```
+ffmpeg -i music.mp3 -c:a pcm_s16le music.wav
+```
 
 The audio device is opened and the files are read while the INI is read, so neither happens inside a frame. A declaration that cannot be satisfied — no audio device, a missing file — is a warning and a silent sound, never a dead mod.
 

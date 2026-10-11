@@ -104,6 +104,10 @@ void STDMETHODCALLTYPE Dx12CommandQueue::ExecuteCommandLists(UINT NumCommandList
 		lists = large.data();
 	}
 
+	// What the mods had done for the draws of these lists comes first, and
+	// was recorded with the states their resources had before them
+	Dx12ShimFlush();
+
 	for (i = 0; i < NumCommandLists; i++) {
 		lists[i] = Dx12Unwrap<Dx12GraphicsCommandList>(ppCommandLists[i]);
 		if (lists[i] == ppCommandLists[i])

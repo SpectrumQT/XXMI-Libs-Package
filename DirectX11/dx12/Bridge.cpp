@@ -45,7 +45,8 @@ static std::vector<Allocator> allocators;
 static size_t current_allocator;
 static ID3D12GraphicsCommandList *shim_list;
 static bool list_open;
-static bool list_used;
+// Read without the lock by Dx12ShimFlush
+static volatile bool list_used;
 
 static ID3D12Fence *fence;
 static UINT64 fence_signalled;
@@ -570,6 +571,9 @@ void Dx12ShimFramePresented()
 	while (!late.empty() && dx12_frame - late.front().frame >= 3) {
 		retired.push_back({ late.front().object, Dx12ShimPendingFence() });
 		late.pop_front();
+		// What another thread recorded since the queue proxy had our
+		// list executed was promised the value signalled next
+		Dx12ShimSubmit();
 	}
 }
 
@@ -809,6 +813,19 @@ void Dx12ShimSetQueue(Dx12CommandQueue *queue)
 	shim.queue->Release();
 	shim.queue = queue->mOrig;
 	shim.queue->AddRef();
+void Dx12ShimFlush()
+{
+	// Whatever the lists about to be executed depend on was recorded
+	// before they were closed, by the threads the game had them from
+	if (!list_used)
+		return;
+
+	Dx12ShimLock();
+	if (dx12_shim)
+		Dx12ShimSubmit();
+	Dx12ShimUnlock();
+}
+
 }
 
 bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue)

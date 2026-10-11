@@ -3028,10 +3028,6 @@ static void close_scope()
 	context->mState = &context->mFrameState;
 	scope = NULL;
 	refresh_guards();
-
-	// Whatever the mod's resources needed done before the game's list
-	// can use them, see Bridge.h
-	Dx12ShimSubmit();
 }
 
 // -----------------------------------------------------------------------------

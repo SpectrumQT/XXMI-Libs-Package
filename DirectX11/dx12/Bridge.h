@@ -34,9 +34,11 @@
 // game's command list, which is executed whenever the game sees fit, and the
 // following keeps that safe:
 //
-//   - Our own list is submitted before the lock is let go of, so whatever a
-//     mod resource needed done to it has been executed by the time a game
-//     list recorded later can use it.
+//   - Our own list is submitted before the game has any of its lists
+//     executed (Dx12ShimFlush, for the queue proxy), so whatever a mod
+//     resource needed done to it has been executed by the time a game list
+//     uses it. Not when the draw is done with: a submission costs more than
+//     the draws of a frame that set one off can afford one each.
 //   - Every submission leaves our resources in the common state, from where
 //     D3D12 lets a list read them without a barrier. The game's lists never
 //     get barriers of ours: they are executed in an order we do not know.
@@ -102,6 +104,9 @@ ID3D12GraphicsCommandList* Dx12ShimList();
 void Dx12ShimSubmit();
 // The same, and does not return before the GPU is done with it
 void Dx12ShimSubmitAndWait();
+// Dx12ShimSubmit for a caller without the lock, which is only taken if there
+// is anything to submit: the queue proxy, before it hands lists to the queue
+void Dx12ShimFlush();
 
 // The fence value that will be signalled once the commands being recorded now
 // have been executed

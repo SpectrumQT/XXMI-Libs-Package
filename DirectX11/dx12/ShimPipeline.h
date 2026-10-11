@@ -46,6 +46,9 @@ struct ShimState {
 	ID3D11Buffer *ib;
 	DXGI_FORMAT ib_format;
 	UINT ib_offset;
+	// A mod set no index buffer, as with a file of it that is missing,
+	// which is not the same as ib being NULL for the game's being kept
+	bool ib_unbound;
 };
 
 bool Dx12ShimPipelineInit();

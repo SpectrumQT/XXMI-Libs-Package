@@ -412,6 +412,7 @@ void STDMETHODCALLTYPE ShimContext::IASetIndexBuffer(ID3D11Buffer *pIndexBuffer,
 	assign(mState->ib, pIndexBuffer);
 	mState->ib_format = Format;
 	mState->ib_offset = Offset;
+	mState->ib_unbound = !pIndexBuffer;
 	mChanged = true;
 }
 
@@ -421,7 +422,7 @@ void STDMETHODCALLTYPE ShimContext::IAGetIndexBuffer(ID3D11Buffer **pIndexBuffer
 	DXGI_FORMAT format = mState->ib_format;
 	UINT offset = mState->ib_offset;
 
-	if (!buffer && Dx12InDrawScope()) {
+	if (!buffer && !mState->ib_unbound && Dx12InDrawScope()) {
 		buffer = Dx12ScopeIndexBuffer(&format);
 		offset = 0;
 	}

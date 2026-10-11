@@ -3144,6 +3144,12 @@ void Dx12ScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT bas
 		}
 	}
 
+	// D3D11 reads every index as 0 without an index buffer, which draws
+	// nothing. The game's is still bound to its list here and would draw
+	// the game's mesh.
+	if (indexed && mod->ib_unbound)
+		return;
+
 	apply_overrides();
 	stats.mod_draws++;
 	if (G->dx12_dump_hashes)

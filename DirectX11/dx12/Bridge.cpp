@@ -530,9 +530,31 @@ void Dx12ShimForgetResource(ShimResource *resource)
 
 const UINT64 GAME_UPLOAD_BLOCK_SIZE = 1 << 20;
 
+const size_t GAME_UPLOAD_BLOCKS_KEPT = 8;
+
 // The upload buffer being handed out for game lists. Those that are full are
-// only kept alive by the lists and buffers using them.
+// kept alive by the lists and buffers using them, and a few of them by a
+// reference of ours as well: once that is the only one left, the lists have
+// been executed and the buffers have their contents elsewhere, and the block
+// is handed out again.
 static UploadPage game_upload;
+static std::vector<UploadPage> game_upload_full;
+
+static bool next_game_upload(UploadPage *page)
+{
+	size_t i;
+
+	for (i = 0; i < game_upload_full.size(); i++) {
+		game_upload_full[i].buffer->AddRef();
+		if (game_upload_full[i].buffer->Release() != 1)
+			continue;
+		*page = game_upload_full[i];
+		page->used = 0;
+		game_upload_full.erase(game_upload_full.begin() + i);
+		return true;
+	}
+	return create_upload_buffer(GAME_UPLOAD_BLOCK_SIZE, page);
+}
 
 void Dx12ShimPin(Dx12GraphicsCommandList *list, IUnknown *object)
 {
@@ -540,6 +562,7 @@ void Dx12ShimPin(Dx12GraphicsCommandList *list, IUnknown *object)
 
 	if (*pinned == object)
 		return;
+	*pinned = object;
 	object->AddRef();
 	list->mPins.push_back(object);
 }
@@ -548,6 +571,9 @@ void Dx12ShimPinsExecuted(ID3D12CommandQueue *queue, std::vector<IUnknown*> *pin
 {
 	Dx12ShimLock();
 	if (dx12_shim && queue == shim.queue) {
+		// What another thread recorded since the queue proxy had our
+		// list executed was promised the value signalled next
+		Dx12ShimSubmit();
 		shim.queue->Signal(fence, ++fence_signalled);
 		InterlockedIncrement64(&dx12_stats.pin_signals);
 		for (IUnknown *object : *pins)
@@ -562,7 +588,6 @@ void Dx12ShimPinsExecuted(ID3D12CommandQueue *queue, std::vector<IUnknown*> *pin
 }
 
 void Dx12ShimPinsAbandoned(std::vector<IUnknown*> *pins)
-	*pinned = object;
 {
 	for (IUnknown *object : *pins)
 		object->Release();
@@ -571,9 +596,6 @@ void Dx12ShimPinsAbandoned(std::vector<IUnknown*> *pins)
 
 void Dx12ShimFramePresented()
 {
-		// What another thread recorded since the queue proxy had our
-		// list executed was promised the value signalled next
-		Dx12ShimSubmit();
 	while (!late.empty() && dx12_frame - late.front().frame >= 3) {
 		retired.push_back({ late.front().object, Dx12ShimPendingFence() });
 		late.pop_front();
@@ -605,9 +627,11 @@ static bool upload_for_game_lists(ShimResource *resource, UINT64 bytes, bool alo
 		start = 0;
 	} else {
 		if (!game_upload.buffer || game_upload.used + bytes > GAME_UPLOAD_BLOCK_SIZE) {
-			if (!create_upload_buffer(GAME_UPLOAD_BLOCK_SIZE, &page))
+			if (!next_game_upload(&page))
 				return false;
-			if (game_upload.buffer)
+			if (game_upload.buffer && game_upload_full.size() < GAME_UPLOAD_BLOCKS_KEPT)
+				game_upload_full.push_back(game_upload);
+			else if (game_upload.buffer)
 				game_upload.buffer->Release();
 			game_upload = page;
 		}
@@ -789,6 +813,19 @@ void Dx12ShimSubmit()
 	release_retired();
 }
 
+void Dx12ShimFlush()
+{
+	// Whatever the lists about to be executed depend on was recorded
+	// before they were closed, by the threads the game had them from
+	if (!list_used)
+		return;
+
+	Dx12ShimLock();
+	if (dx12_shim)
+		Dx12ShimSubmit();
+	Dx12ShimUnlock();
+}
+
 void Dx12ShimSubmitAndWait()
 {
 	Dx12ShimSubmit();
@@ -813,19 +850,6 @@ void Dx12ShimSetQueue(Dx12CommandQueue *queue)
 	Dx12ShimSubmitAndWait();
 
 	Dx12LogInfo("Shim commands now go to ID3D12CommandQueue %p\n", queue->mOrig);
-void Dx12ShimFlush()
-{
-	// Whatever the lists about to be executed depend on was recorded
-	// before they were closed, by the threads the game had them from
-	if (!list_used)
-		return;
-
-	Dx12ShimLock();
-	if (dx12_shim)
-		Dx12ShimSubmit();
-	Dx12ShimUnlock();
-}
-
 	shim.queue->Release();
 	shim.queue = queue->mOrig;
 	shim.queue->AddRef();

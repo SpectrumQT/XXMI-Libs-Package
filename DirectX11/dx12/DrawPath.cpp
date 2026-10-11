@@ -377,6 +377,13 @@ const UINT64 REACH_FINISH_BYTES = 8 << 20;
 // An upload recorded this recently may not have been executed yet
 const UINT REACH_UPLOAD_AGE = 3;
 
+// The buffers the copies were read from, kept for the next meshes while there
+// are any: a scene coming into view has hundreds of them looked at
+static std::vector<ID3D12Resource*> spare_readbacks;
+const UINT64 REACH_READBACK_STEP = 1 << 16;
+const UINT64 REACH_SPARE_BYTES = 4 << 20;
+const size_t REACH_SPARES = 4;
+
 // The barriers that let a list of ours copy from a buffer of the game and
 // leave it as the game expects it. False if it is in no state to be read.
 static bool reach_barrier(ID3D12Resource *resource, D3D12_RESOURCE_BARRIER *barrier, bool *needed)
@@ -420,13 +427,21 @@ static bool start_reach(const ReachKey *key, VertexReach *reach, UINT64 vb_bytes
 	}
 
 	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	desc.Width = key->ib_bytes + vb_bytes;
+	// In steps, for one that finish_reach kept to do for another mesh
+	desc.Width = (key->ib_bytes + vb_bytes + REACH_READBACK_STEP - 1) & ~(REACH_READBACK_STEP - 1);
 	desc.Height = 1;
 	desc.DepthOrArraySize = 1;
 	desc.MipLevels = 1;
 	desc.SampleDesc.Count = 1;
 	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-	if (FAILED(dx12_shim->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+	for (i = 0; i < spare_readbacks.size(); i++) {
+		if (spare_readbacks[i]->GetDesc().Width < desc.Width)
+			continue;
+		reach->readback = spare_readbacks[i];
+		spare_readbacks.erase(spare_readbacks.begin() + i);
+		break;
+	}
+	if (!reach->readback && FAILED(dx12_shim->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
 			D3D12_RESOURCE_STATE_COPY_DEST, NULL, IID_PPV_ARGS(&reach->readback))))
 		return false;
 
@@ -719,7 +734,10 @@ static void finish_reach(const ReachKey *key, VertexReach *reach)
 		reach->readback->Unmap(0, &nothing);
 	}
 
-	reach->readback->Release();
+	if (spare_readbacks.size() < REACH_SPARES && reach->readback->GetDesc().Width <= REACH_SPARE_BYTES)
+		spare_readbacks.push_back(reach->readback);
+	else
+		reach->readback->Release();
 	reach->readback = NULL;
 }
 
@@ -749,6 +767,11 @@ static void update_reaches()
 
 	if (dx12_frame & 255)
 		return;
+	if (pending_reaches.empty()) {
+		for (ID3D12Resource *readback : spare_readbacks)
+			readback->Release();
+		spare_readbacks.clear();
+	}
 	buffer_cache_generation++;
 	for (auto j = reaches.begin(); j != reaches.end();) {
 		if (j->second.state != REACH_PENDING && dx12_frame - j->second.frame > 600)
@@ -1562,6 +1585,10 @@ static UINT declared_in_range(const Dx12RootRange *range, const Dx12ShaderInfo *
 // signature. False if that has no end.
 static bool table_size(UINT parameter, UINT *size)
 {
+	static const D3D12_SHADER_VISIBILITY visibilities[DX12_STAGE_COUNT] = {
+		D3D12_SHADER_VISIBILITY_VERTEX, D3D12_SHADER_VISIBILITY_PIXEL, D3D12_SHADER_VISIBILITY_GEOMETRY,
+		D3D12_SHADER_VISIBILITY_HULL, D3D12_SHADER_VISIBILITY_DOMAIN, D3D12_SHADER_VISIBILITY_ALL,
+	};
 	const Dx12RootSignatureInfo *signature = scope->signature;
 	const Dx12ShaderStage *stages = scope->compute ? compute_stages : graphics_stages;
 	size_t stage_count = scope->compute ? ARRAYSIZE(compute_stages) : ARRAYSIZE(graphics_stages);
@@ -1570,6 +1597,7 @@ static bool table_size(UINT parameter, UINT *size)
 	UINT whole = 0, read = 0;
 	size_t i, shader_count = 0;
 
+	*size = 0;
 	if (!signature || parameter >= signature->parameters.size())
 		return false;
 	const Dx12RootParameter &table = signature->parameters[parameter];
@@ -1620,14 +1648,9 @@ static bool table_size(UINT parameter, UINT *size)
 // like the reserve is.
 static ID3D12DescriptorHeap *side_heap;
 static UINT side_next, side_frame, side_used[DX12_RESERVE_FRAMES];
-	static const D3D12_SHADER_VISIBILITY visibilities[DX12_STAGE_COUNT] = {
-		D3D12_SHADER_VISIBILITY_VERTEX, D3D12_SHADER_VISIBILITY_PIXEL, D3D12_SHADER_VISIBILITY_GEOMETRY,
-		D3D12_SHADER_VISIBILITY_HULL, D3D12_SHADER_VISIBILITY_DOMAIN, D3D12_SHADER_VISIBILITY_ALL,
-	};
 
 static bool side_alloc(UINT count, D3D12_CPU_DESCRIPTOR_HANDLE *cpu, D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
 {
-	*size = 0;
 	D3D12_DESCRIPTOR_HEAP_DESC desc = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, DX12_HEAP_RESERVE, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE };
 	UINT i, in_use = 0, skipped = 0, increment = scope->list->mState.view_heap->mIncrement;
 

@@ -143,8 +143,8 @@ void Dx12ShimForgetResource(ShimResource *resource);
 // Keeps the object alive until the game's list has been executed, or has been
 // reset without being executed
 void Dx12ShimPin(Dx12GraphicsCommandList *list, IUnknown *object);
-// For the queue proxy, after it has handed lists with pins to the queue, and
-// for a list that drops what it recorded
+// For the queue proxy, after it has handed lists to the queue, with the pins
+// of all of them, and for a list that drops what it recorded
 void Dx12ShimPinsExecuted(ID3D12CommandQueue *queue, std::vector<IUnknown*> *pins);
 void Dx12ShimPinsAbandoned(std::vector<IUnknown*> *pins);
 

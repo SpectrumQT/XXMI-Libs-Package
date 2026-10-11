@@ -1421,6 +1421,16 @@ ID3D11ShaderResourceView* Dx12ScopeShaderResource(Dx12ShaderStage stage, UINT sl
 	if (!entry)
 		return NULL;
 
+	// The entry outlives the game's resource where its address passes on to
+	// another of the same description, a normal map to a colour texture
+	// for one, which differ in nothing but the format of their views. A
+	// mod that picks its textures by that format has to see this view's.
+	srv = static_cast<ShimShaderResourceView*>(entry->srv);
+	if (srv && (srv->mDesc.Format != (DXGI_FORMAT)view.format || srv->mDesc.ViewDimension != (D3D11_SRV_DIMENSION)view.dimension)) {
+		entry->srv->Release();
+		entry->srv = NULL;
+	}
+
 	if (!entry->srv) {
 		srv = new_game_view<ShimShaderResourceView>(entry);
 		srv->mDesc.Format = (DXGI_FORMAT)view.format;
@@ -1440,6 +1450,12 @@ ID3D11UnorderedAccessView* Dx12ScopeUnorderedAccess(UINT slot)
 
 	if (!entry)
 		return NULL;
+
+	uav = static_cast<ShimUnorderedAccessView*>(entry->uav);
+	if (uav && (uav->mDesc.Format != (DXGI_FORMAT)view.format || uav->mDesc.ViewDimension != (D3D11_UAV_DIMENSION)view.dimension)) {
+		entry->uav->Release();
+		entry->uav = NULL;
+	}
 
 	if (!entry->uav) {
 		uav = new_game_view<ShimUnorderedAccessView>(entry);
@@ -3083,7 +3099,18 @@ static void note_mod_draw(bool indexed, UINT count, UINT start)
 
 	key = (pipeline->shaders[DX12_STAGE_VS] ? pipeline->shaders[DX12_STAGE_VS]->hash : 0) * 31
 		+ game->index_buffer.BufferLocation * 7 + game->vertex_buffers[0].BufferLocation + count * 0x9e3779b97f4a7c15ull + start;
-	if (noted.size() >= 600 || !noted.insert(key).second)
+	// Once more for other formats of the game's textures or other textures
+	// of the mod, which is what differs where a mod picks them by format
+	key = key * 31 + ps->srv_mask[0];
+	for (word = 0; word < 8 && scope->signature; word++) {
+		Dx12DescriptorSlot view = {};
+
+		if (Dx12ResolveRegister(game, scope->signature, DX12_STAGE_PS, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, word, &view) && view.resource)
+			key = key * 131 + view.format + 1;
+		else
+			key *= 131;
+	}
+	if (noted.size() >= 3000 || !noted.insert(key).second)
 		return;
 
 	_snprintf_s(text, _TRUNCATE, "Mod draw: %u from %u%s, vs %016llx ps %016llx, the game's index buffer %s%s. Vertex buffers:",
@@ -3115,6 +3142,32 @@ static void note_mod_draw(bool indexed, UINT count, UINT start)
 			_snprintf_s(part, _TRUNCATE, " %lu", word * 32 + bit);
 			strncat_s(text, part, _TRUNCATE);
 		}
+	}
+	Dx12DumpNote("%s\n", text);
+
+	// What a mod that picks its textures by the format of the game's had
+	// to go by, and what it bound: format of the view/of the resource
+	_snprintf_s(text, _TRUNCATE, "  ps textures of %u from %u:", count, start);
+	for (word = 0; word < 12; word++) {
+		Dx12DescriptorSlot view = {};
+		Dx12ResourceInfo info = {};
+		ID3D11ShaderResourceView *bound = ps->srvs[word];
+
+		if (!scope->signature || !Dx12ResolveRegister(game, scope->signature, DX12_STAGE_PS, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, word, &view)
+		    || !view.resource)
+			continue;
+		Dx12GetResourceInfo(view.resource, &info);
+		_snprintf_s(part, _TRUNCATE, " t%u game %u/%d %llux%u", word, view.format, info.desc.Format, info.desc.Width, info.desc.Height);
+		strncat_s(text, part, _TRUNCATE);
+		if (bound) {
+			const ShimView *mod_view = ShimViewOf(bound);
+
+			_snprintf_s(part, _TRUNCATE, " mod %d/%d %llux%u%s", static_cast<ShimShaderResourceView*>(bound)->mDesc.Format,
+				mod_view->resource->desc.Format, mod_view->resource->desc.Width, mod_view->resource->desc.Height,
+				mod_view->resource->foreign ? " (the game's)" : !mod_view->resource->resource ? " NO RESOURCE" : "");
+			strncat_s(text, part, _TRUNCATE);
+		}
+		strncat_s(text, ",", _TRUNCATE);
 	}
 	Dx12DumpNote("%s\n", text);
 }

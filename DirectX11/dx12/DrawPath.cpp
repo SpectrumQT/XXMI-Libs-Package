@@ -822,6 +822,34 @@ static bool same_buffer_hash(bool found, const Dx12BufferHash *hash, ID3D12Resou
 	return !found || (now.bytes == hash->bytes && now.data_hash == hash->data_hash && now.frame == hash->frame);
 }
 
+// A buffer whose contents were never hashed (written by the GPU, or too often
+// to keep up with) can only match a TextureOverride section by its size and
+// kind. The game makes such buffers anew every frame at addresses the cache
+// above has never seen, so the sizes and kinds that matched nothing are kept
+// as well: kind, size and configuration in a word.
+static volatile LONG64 boring_unhashed[4096];
+
+static volatile LONG64* boring_unhashed_slot(UINT kind, UINT64 bytes, LONG64 *word)
+{
+	UINT64 shape = (bytes & 0xffffffffffull) | (UINT64)kind << 40;
+
+	*word = (LONG64)(shape | (UINT64)(config_generation & 0xfffff) << 44);
+	return &boring_unhashed[(shape * 0x9e3779b97f4a7c15ull) >> 52];
+}
+
+// Without the lock
+static bool unhashed_buffer_is_boring(UINT64 va, UINT64 bytes, UINT kind)
+{
+	ID3D12Resource *resource;
+	Dx12BufferHash hash;
+	UINT64 offset;
+	LONG64 word;
+
+	if (*boring_unhashed_slot(kind, bytes, &word) != word)
+		return false;
+	return Dx12FindBuffer(va, &resource, &offset) && !Dx12FindBufferHash(resource, offset, &hash);
+}
+
 // The stamp is only good for lookups made after it was taken, so they are
 // made once more
 static void remember_buffer(BufferCacheEntry *cached, bool has_hash, const Dx12BufferHash *data, const ReachLookup *lookup)
@@ -865,6 +893,7 @@ static Published* publish_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride
 	UINT64 offset, stamp;
 	uint32_t hash;
 	bool has_hash;
+	LONG64 word;
 
 	bucket = buffer_cache_slot(&asked, va, bytes, kind, stride, indices);
 	slot = buffer_cache_way(bucket, &asked, false);
@@ -914,9 +943,11 @@ static Published* publish_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride
 			if (lookup.settled) {
 				asked.entry_version = entry->version;
 				remember_buffer(&asked, has_hash, &data, &lookup);
-				if (asked.generation)
+				if (asked.generation) {
 					asked.boring = TextureOverrideCandidatesEmpty(entry->resource);
-				else
+					if (asked.boring && !has_hash)
+						InterlockedExchange64(boring_unhashed_slot(kind, bytes, &word), word);
+				} else
 					stats.lookups_unstamped++;
 				// What could not be remembered still replaces
 				// what was, which no longer goes
@@ -1809,14 +1840,14 @@ static SlowReason buffer_is_boring(UINT64 va, UINT64 bytes, UINT kind, UINT stri
 		// are good for does not matter. What they pointed to going
 		// away does not change what the buffer is.
 		if (!cached.generation || cached.config != config_generation)
-			return SLOW_VB_UNKNOWN;
+			break;
 		if (!cached.boring)
 			return SLOW_VB_WANTED;
 		if (!buffer_cache_stamp(&cached, &stamp) || stamp != cached.stamp)
 			return SLOW_VB_CHANGED;
 		return SLOW_NOT;
 	}
-	return SLOW_VB_UNKNOWN;
+	return unhashed_buffer_is_boring(va, bytes, kind) ? SLOW_NOT : SLOW_VB_UNKNOWN;
 }
 
 // Without the lock. SLOW_NOT only if the engine would look at the draw and

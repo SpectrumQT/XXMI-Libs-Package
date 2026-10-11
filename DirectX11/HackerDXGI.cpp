@@ -71,6 +71,7 @@
 #include "CommandList.h"
 #include "profiling.h"
 #include "cursor.h" // For InstallHookLate
+#include "dx12/Bridge.h"
 
 
 // -----------------------------------------------------------------------------
@@ -254,6 +255,9 @@ IDXGISwapChain1* HackerSwapChain::GetOrigSwapChain1()
 void HackerSwapChain::RunFrameActions()
 {
 	LogDebug("Running frame actions.  Device: %p\n", mHackerDevice);
+
+	if (!dx12_d3d11_presented.load(std::memory_order_relaxed))
+		dx12_d3d11_presented = true;
 
 	// Regardless of log settings, since this runs every frame, let's flush the log
 	// so that the most lost will be one frame worth.  Tradeoff of performance to accuracy

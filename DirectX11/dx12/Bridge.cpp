@@ -19,6 +19,15 @@
 
 Dx12Shim *dx12_shim;
 bool dx12_unloading;
+std::atomic<bool> dx12_d3d11_presented;
+
+// dx12_shim for Dx12IsD3D11Game, which is called without the shim's lock
+static std::atomic<bool> shim_created;
+
+bool Dx12IsD3D11Game()
+{
+	return dx12_d3d11_presented && !shim_created && G->dx12 != Dx12Mode::ON;
+}
 UINT dx12_shim_epoch = 1;
 UINT dx12_shim_view_increment;
 
@@ -737,6 +746,12 @@ bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue)
 		return false;
 	failed = true;
 
+	// A device wrapped before the game's D3D11 swap chain presented
+	if (Dx12IsD3D11Game()) {
+		Dx12LogInfo("The game presents with D3D11, leaving the D3D12 swap chain alone\n");
+		return false;
+	}
+
 	// Our objects are created on the original device: they are not the
 	// game's, so nothing about them belongs in what the proxies record.
 	shim.device = device->mOrig;
@@ -793,5 +808,6 @@ bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue)
 
 	Dx12LogInfo("HackerDevice %p and HackerContext %p created on the D3D11 shim of ID3D12Device %p, commands go to ID3D12CommandQueue %p\n",
 		shim.hacker_device, shim.hacker_context, shim.device, shim.queue);
+	shim_created = true;
 	return true;
 }

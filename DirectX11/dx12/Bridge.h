@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <vector>
 
 #include <d3d11_1.h>
@@ -70,6 +71,17 @@ extern Dx12Shim *dx12_shim;
 // nor our own state can be relied on any more, so from then on the objects
 // of the shim are left to the process going away.
 extern bool dx12_unloading;
+
+// Set once a D3D11 swap chain of ours has presented a frame. Creating one is
+// not enough to go by: overlays make swap chains they never present, to find
+// the methods to hook.
+extern std::atomic<bool> dx12_d3d11_presented;
+
+// Whether the game is taken to be a D3D11 game, where a D3D12 device belongs
+// to an overlay or a driver layer and neither that nor the D3D11 engine
+// expects the D3D12 side to step in. Whichever API presents first has the
+// game, unless dx12=1 says it is D3D12.
+bool Dx12IsD3D11Game();
 
 bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue);
 // For when the swap chain being presented is on another queue than before

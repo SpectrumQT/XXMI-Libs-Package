@@ -2,6 +2,7 @@
 
 #include <vector>
 
+#include "Bridge.h"
 #include "Dx12Common.h"
 #include "Dx12CommandQueue.h"
 #include "Dx12Device.h"
@@ -77,6 +78,11 @@ static void device_created(const char *func, IUnknown *adapter, D3D_FEATURE_LEVE
 	// driver layer, neither of which expects our proxy.
 	if (get_tls()->hooking_quirk_protection) {
 		Dx12LogInfo("  Created from inside another hooked call, not wrapping\n");
+		return;
+	}
+
+	if (Dx12IsD3D11Game()) {
+		Dx12LogInfo("  The game presents with D3D11, not wrapping\n");
 		return;
 	}
 

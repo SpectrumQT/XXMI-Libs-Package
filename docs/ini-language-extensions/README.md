@@ -11,4 +11,5 @@
 * [Filters](filters/README.md) — reusable resource-matching criteria, currently focused on dHash-based texture identification and filtering
 * [Pools](pools/README.md) — indexed storage for resources and variables
 * [Input Layouts](input-layouts/README.md) — vertex input layout overrides
+* [Sounds](sounds/README.md) — playing sound from an INI
 * [Examples](examples/README.md) — practical scripts combining the extensions above

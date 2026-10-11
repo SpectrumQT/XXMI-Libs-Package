@@ -85,6 +85,11 @@ bool Dx12DrawPipelineWanted(Dx12GraphicsCommandList *list)
 		}
 	}
 
+	// Nothing of the mods goes on a list whose queue cannot be made to wait
+	// for it, see Dx12ShimQueueWaits
+	if (wanted && Dx12ShimQueueUnordered(list->mQueue))
+		wanted = false;
+
 	list->mWantedPipeline = state;
 	list->mWantedGeneration = generation;
 	list->mWanted = wanted;
@@ -4057,9 +4062,11 @@ void Dx12DrawPathFramePresented()
 			skin_outputs.size(), stats.skin_filter_misses, stats.table_copies, stats.side_copies, stats.side_base_copies,
 			stats.table_descriptors, stats.side_switches, stats.table_unbounded, stats.table_no_room);
 		Dx12DumpNote("  The fence was signalled %lld times for what game lists had pinned, which %lld times were executed on "
-			"another queue than ours; %lld pages of upload memory were created and %lld released; %lld times a resource "
+			"another queue than ours, which was made to wait for ours %lld times and %lld times ran them without, not being able to; "
+			"%lld pages of upload memory were created and %lld released; %lld times a resource "
 			"of a mod was given another D3D12 resource for a write while game lists use it\n",
 			InterlockedExchange64(&dx12_stats.pin_signals, 0), InterlockedExchange64(&dx12_stats.pin_lates, 0),
+			InterlockedExchange64(&dx12_stats.queue_waits, 0), InterlockedExchange64(&dx12_stats.queue_waits_skipped, 0),
 			InterlockedExchange64(&dx12_stats.upload_pages_created, 0),
 			InterlockedExchange64(&dx12_stats.upload_pages_released, 0),
 			InterlockedExchange64(&dx12_stats.resources_renamed, 0));

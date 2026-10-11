@@ -43,6 +43,12 @@ public:
 	IUnknown *mPinned[32];
 	// Whether the list has been executed since it was last reset
 	bool mExecuted;
+	// The value of the shim's fence that says what the mods had done for
+	// this list has been executed, see Dx12ShimQueueWaits
+	UINT64 mShimFence;
+	// The queue the list was last executed on, which is taken for the one
+	// it will be executed on again. Not referenced, only compared.
+	ID3D12CommandQueue *mQueue;
 
 	// Whether the engine has anything to do for draws with mPipeline,
 	// see Dx12DrawWanted

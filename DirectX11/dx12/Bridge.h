@@ -38,7 +38,10 @@
 //     executed (Dx12ShimFlush, for the queue proxy), so whatever a mod
 //     resource needed done to it has been executed by the time a game list
 //     uses it. Not when the draw is done with: a submission costs more than
-//     the draws of a frame that set one off can afford one each.
+//     the draws of a frame that set one off can afford one each. A list
+//     executed on another queue than ours has that queue wait for ours,
+//     and where it cannot the mods are kept from its lists
+//     (Dx12ShimQueueWaits).
 //   - Every submission leaves our resources in the common state, from where
 //     D3D12 lets a list read them without a barrier. The game's lists never
 //     get barriers of ours: they are executed in an order we do not know.
@@ -156,6 +159,24 @@ void Dx12ShimForgetResource(ShimResource *resource);
 // as it is, or has been reset without being executed. False if the list had
 // it pinned already.
 bool Dx12ShimPin(Dx12GraphicsCommandList *list, IUnknown *object);
+// For the queue proxy, after Dx12ShimFlush and before it hands the queue lists
+// that use something of the mods, or any at all while the queue is one of
+// dx12_unordered_queues. A queue that is not ours is made to wait for what
+// ours was handed for the lists: needed is the highest mShimFence of those
+// lists.
+//
+// Where that could leave the two queues waiting for each other, the lists go
+// without the wait and the mods are left out of the queue's lists from when
+// they are recorded (Dx12DrawPipelineWanted): for a number of frames that
+// doubles every time, and for as long after as it still could not wait.
+void Dx12ShimQueueWaits(ID3D12CommandQueue *queue, UINT64 needed, bool uses_mods);
+// By the original queue, NULL where there is none. Read without the lock.
+extern ID3D12CommandQueue *volatile dx12_unordered_queues[4];
+static inline bool Dx12ShimQueueUnordered(ID3D12CommandQueue *queue)
+{
+	return queue && (dx12_unordered_queues[0] == queue || dx12_unordered_queues[1] == queue
+		|| dx12_unordered_queues[2] == queue || dx12_unordered_queues[3] == queue);
+}
 // For the queue proxy, after it has handed lists to the queue: pins is what
 // the lists use, referenced once for this execution, and first the pins of
 // the lists executed for the first time since they were recorded

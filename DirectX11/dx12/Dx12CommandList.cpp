@@ -33,7 +33,9 @@ Dx12GraphicsCommandList::Dx12GraphicsCommandList(Dx12Device *device, ID3D12Graph
 	mWantedGeneration(0),
 	mWanted(false),
 	mPinned(),
-	mExecuted(false)
+	mExecuted(false),
+	mShimFence(0),
+	mQueue(NULL)
 {
 	mVersion = Dx12QueryNewest(orig, list_iids, ARRAYSIZE(list_iids), (void**)&mOrig);
 	mDevice->AddRef();
@@ -145,6 +147,7 @@ HRESULT STDMETHODCALLTYPE Dx12GraphicsCommandList::Reset(ID3D12CommandAllocator 
 		Dx12ShimPinsAbandoned(&mPins, mExecuted);
 	memset(mPinned, 0, sizeof(mPinned));
 	mExecuted = false;
+	mShimFence = 0;
 
 	return mOrig->Reset(pAllocator, pInitialState);
 }
@@ -229,6 +232,7 @@ void STDMETHODCALLTYPE Dx12GraphicsCommandList::ExecuteBundle(ID3D12GraphicsComm
 
 		if (!bundle->mPins.empty())
 			Dx12ShimPinsInherited(this, bundle);
+		bundle->mQueue = mQueue;
 	}
 	mOrig->ExecuteBundle(orig);
 }

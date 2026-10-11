@@ -91,6 +91,11 @@ struct Dx12Stats {
 	// The times those lists were executed on another queue than ours,
 	// which gets a fence of its own for them
 	volatile LONG64 pin_lates;
+	// The times such a queue was made to wait for ours, and the times its
+	// lists were executed without for it not being possible, see
+	// Dx12ShimQueueWaits
+	volatile LONG64 queue_waits;
+	volatile LONG64 queue_waits_skipped;
 	// The pages Dx12ShimUpload hands out memory from
 	volatile LONG64 upload_pages_created;
 	volatile LONG64 upload_pages_released;

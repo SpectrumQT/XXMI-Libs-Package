@@ -54,7 +54,7 @@ CLASSES = {
         'CreatePipelineState', 'CreatePipelineLibrary',
     ]),
     'Dx12CommandQueue': ('ID3D12CommandQueue', [
-        'GetDevice', 'ExecuteCommandLists',
+        'GetDevice', 'ExecuteCommandLists', 'Signal', 'Wait',
     ]),
     'Dx12GraphicsCommandList': ('ID3D12GraphicsCommandList10', [
         'GetDevice', 'Close', 'Reset', 'ClearState',

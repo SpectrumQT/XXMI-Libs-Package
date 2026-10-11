@@ -8,6 +8,7 @@
 #include "Dx12CommandList.h"
 #include "Dx12CommandQueue.h"
 #include "Dx12Device.h"
+#include "DrawPath.h"
 #include "ShimContext.h"
 #include "ShimDevice.h"
 #include "ShimPipeline.h"
@@ -68,6 +69,17 @@ struct ForeignQueue {
 	ID3D12Fence *fence;
 	UINT64 signalled;
 	std::deque<Retired> retired;
+	// Not referenced, each is in retired with the same value: what its
+	// lists use of our resources until it is done with them, see game_uses
+	std::deque<Retired> uses;
+	// The value of our own fence it was last made to wait for
+	UINT64 waited;
+	// Whether it is one of dx12_unordered_queues, the frame until which
+	// it stays one at least, and for how many frames it was made one
+	// the last time, which is twice that the next time
+	bool unordered;
+	UINT unordered_until;
+	UINT unordered_frames;
 };
 static std::vector<ForeignQueue*> foreign_queues;
 static ForeignQueue* foreign_queue(ID3D12CommandQueue *queue);
@@ -79,20 +91,25 @@ static void release_retired();
 
 static std::vector<ShimResource*> touched;
 
-// How many of the game's lists that have not been executed use a D3D12
-// resource of ours, by the resource. Only those pinned by
-// Dx12ShimUseOnGameList count, and an entry goes once the count is 0.
+// How many unexecuted lists of the game use each D3D12 resource of ours,
+// counting only what Dx12ShimUseOnGameList pinned. An execution on another
+// queue than ours counts too until that queue is done with it: what we write
+// after handing it the list is not after it for the GPU.
 static std::unordered_map<IUnknown*, UINT> game_uses;
 
 // With the lock held
+static void end_game_use(IUnknown *object)
+{
+	auto found = game_uses.find(object);
+
+	if (found != game_uses.end() && !--found->second)
+		game_uses.erase(found);
+}
+
 static void end_game_uses(const std::vector<IUnknown*> *pins)
 {
-	for (IUnknown *object : *pins) {
-		auto found = game_uses.find(object);
-
-		if (found != game_uses.end() && !--found->second)
-			game_uses.erase(found);
-	}
+	for (IUnknown *object : *pins)
+		end_game_use(object);
 }
 
 static bool game_list_uses(IUnknown *object)
@@ -568,6 +585,10 @@ void Dx12ShimForgetResource(ShimResource *resource)
 
 const UINT64 GAME_UPLOAD_BLOCK_SIZE = 1 << 20;
 
+// For how long the lists of a queue go without the mods the first time it
+// could not be made to wait for them
+const UINT UNORDERED_FRAMES = 600;
+
 const size_t GAME_UPLOAD_BLOCKS_KEPT = 8;
 
 // The upload buffer being handed out for game lists. Those that are full are
@@ -598,6 +619,9 @@ bool Dx12ShimPin(Dx12GraphicsCommandList *list, IUnknown *object)
 {
 	IUnknown **pinned = &list->mPinned[((UINT64)(uintptr_t)object * 0x9e3779b97f4a7c15ull) >> 59];
 
+	// What was done to the object for the list is in the submission being
+	// recorded, if not in one before it
+	list->mShimFence = Dx12ShimPendingFence();
 	if (*pinned == object)
 		return false;
 	*pinned = object;
@@ -609,12 +633,13 @@ bool Dx12ShimPin(Dx12GraphicsCommandList *list, IUnknown *object)
 void Dx12ShimPinsExecuted(ID3D12CommandQueue *queue, std::vector<IUnknown*> *pins, std::vector<IUnknown*> *first)
 {
 	Dx12ShimLock();
-	end_game_uses(first);
 	if (dx12_shim && queue == shim.queue) {
+		end_game_uses(first);
 		// What another thread recorded since the queue proxy had our
 		// list executed was promised the value signalled next
 		Dx12ShimSubmit();
 		shim.queue->Signal(fence, ++fence_signalled);
+		Dx12QueueSignalled(shim.queue, fence, fence_signalled);
 		InterlockedIncrement64(&dx12_stats.pin_signals);
 		for (IUnknown *object : *pins)
 			retired.push_back({ object, fence_signalled });
@@ -624,13 +649,85 @@ void Dx12ShimPinsExecuted(ID3D12CommandQueue *queue, std::vector<IUnknown*> *pin
 		InterlockedIncrement64(&dx12_stats.pin_lates);
 		if (foreign->fence) {
 			queue->Signal(foreign->fence, ++foreign->signalled);
-			for (IUnknown *object : *pins)
+			for (IUnknown *object : *pins) {
+				game_uses[object]++;
+				foreign->uses.push_back({ object, foreign->signalled });
 				foreign->retired.push_back({ object, foreign->signalled });
+			}
+			end_game_uses(first);
 		} else {
+			// Never is not an option for these: every write would
+			// take another resource, kept for good as well
+			end_game_uses(first);
 			stranded.insert(stranded.end(), pins->begin(), pins->end());
 		}
 	}
 	pins->clear();
+	Dx12ShimUnlock();
+}
+
+ID3D12CommandQueue *volatile dx12_unordered_queues[4];
+
+// With the lock held
+static void set_queue_unordered(ForeignQueue *foreign, bool unordered)
+{
+	ID3D12CommandQueue *wanted = unordered ? NULL : foreign->queue;
+
+	for (ID3D12CommandQueue *volatile &slot : dx12_unordered_queues) {
+		if (slot != wanted)
+			continue;
+		slot = unordered ? foreign->queue : NULL;
+		foreign->unordered = unordered;
+		// What the lists had worked out for their draws went by this
+		dx12_draw_generation++;
+		if (unordered) {
+			Dx12LogInfo("*** ID3D12CommandQueue %p cannot be made to wait for what the mods have done for its lists, "
+				"they are left out of those for %u frames at least\n", foreign->queue, foreign->unordered_frames);
+		} else {
+			Dx12LogInfo("ID3D12CommandQueue %p can be made to wait for the mods again\n", foreign->queue);
+		}
+		return;
+	}
+}
+
+void Dx12ShimQueueWaits(ID3D12CommandQueue *queue, UINT64 needed, bool uses_mods)
+{
+	ForeignQueue *foreign;
+	bool ordered = true;
+
+	Dx12ShimLock();
+	if (dx12_shim && queue != shim.queue) {
+		foreign = foreign_queue(queue);
+		// Nothing was recorded since for a value not signalled yet
+		needed = needed ? min(needed, fence_signalled) : fence_signalled;
+		if (foreign->waited < needed && fence->GetCompletedValue() < needed) {
+			// Our queue may be behind a wait for what this one is
+			// yet to be handed, and would then never get to it
+			if (!Dx12QueueCanWait(fence, needed)) {
+				ordered = false;
+			} else if (uses_mods) {
+				Dx12QueueWaits(queue, fence, needed);
+				if (SUCCEEDED(queue->Wait(fence, needed))) {
+					foreign->waited = needed;
+					InterlockedIncrement64(&dx12_stats.queue_waits);
+				} else {
+					ordered = false;
+				}
+			}
+		}
+
+		if (!ordered) {
+			if (uses_mods)
+				InterlockedIncrement64(&dx12_stats.queue_waits_skipped);
+			if (!foreign->unordered) {
+				foreign->unordered_frames = foreign->unordered_frames ? min(foreign->unordered_frames * 2, 1u << 20) : UNORDERED_FRAMES;
+				set_queue_unordered(foreign, true);
+			}
+			foreign->unordered_until = dx12_frame + foreign->unordered_frames;
+		} else if (foreign->unordered && (int)(dx12_frame - foreign->unordered_until) >= 0) {
+			set_queue_unordered(foreign, false);
+		}
+	}
 	Dx12ShimUnlock();
 }
 
@@ -807,6 +904,10 @@ static void release_retired()
 		if (!foreign->fence || foreign->retired.empty())
 			continue;
 		completed = foreign->fence->GetCompletedValue();
+		while (!foreign->uses.empty() && foreign->uses.front().fence <= completed) {
+			end_game_use(foreign->uses.front().object);
+			foreign->uses.pop_front();
+		}
 		while (!foreign->retired.empty() && foreign->retired.front().fence <= completed) {
 			foreign->retired.front().object->Release();
 			foreign->retired.pop_front();
@@ -839,6 +940,10 @@ static ForeignQueue* foreign_queue(ID3D12CommandQueue *queue)
 	foreign->queue = queue;
 	foreign->fence = queue_fence;
 	foreign->signalled = 0;
+	foreign->waited = 0;
+	foreign->unordered = false;
+	foreign->unordered_until = 0;
+	foreign->unordered_frames = 0;
 	queue->AddRef();
 	foreign_queues.push_back(foreign);
 	return foreign;
@@ -915,6 +1020,7 @@ void Dx12ShimSubmit()
 	lists[0] = shim_list;
 	shim.queue->ExecuteCommandLists(1, lists);
 	shim.queue->Signal(fence, ++fence_signalled);
+	Dx12QueueSignalled(shim.queue, fence, fence_signalled);
 	allocators[current_allocator].fence = fence_signalled;
 	list_open = false;
 	list_used = false;

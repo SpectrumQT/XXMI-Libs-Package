@@ -46,16 +46,6 @@ void STDMETHODCALLTYPE Dx12CommandQueue::EndEvent()
 	mOrig->EndEvent();
 }
 
-HRESULT STDMETHODCALLTYPE Dx12CommandQueue::Signal(ID3D12Fence *pFence, UINT64 Value)
-{
-	return mOrig->Signal(pFence, Value);
-}
-
-HRESULT STDMETHODCALLTYPE Dx12CommandQueue::Wait(ID3D12Fence *pFence, UINT64 Value)
-{
-	return mOrig->Wait(pFence, Value);
-}
-
 HRESULT STDMETHODCALLTYPE Dx12CommandQueue::GetTimestampFrequency(UINT64 *pFrequency)
 {
 	return mOrig->GetTimestampFrequency(pFrequency);

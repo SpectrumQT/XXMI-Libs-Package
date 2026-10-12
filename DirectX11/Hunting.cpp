@@ -1296,11 +1296,14 @@ static void AnalyseFrame(HackerDevice *device, void *private_data)
 	time_t ltime;
 	struct tm tm;
 
-	if (FAILED(device->GetHackerContext()->QueryInterface(IID_FrameAnalysisContext, (void**)&factx))) {
-		LogOverlay(LOG_DIRE, "Frame Analysis Context is missing: Restart the game with hunting enabled\n");
-		return;
+	// D3D12 has none: dx12/FrameDump.cpp writes what can be had of the frame
+	if (!dx12_shim) {
+		if (FAILED(device->GetHackerContext()->QueryInterface(IID_FrameAnalysisContext, (void**)&factx))) {
+			LogOverlay(LOG_DIRE, "Frame Analysis Context is missing: Restart the game with hunting enabled\n");
+			return;
+		}
+		factx->Release();
 	}
-	factx->Release();
 
 	if (G->analyse_frame) {
 		// Frame analysis key has been pressed again while FA was

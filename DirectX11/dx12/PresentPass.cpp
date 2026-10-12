@@ -7,6 +7,7 @@
 #include "Dx12CommandQueue.h"
 #include "Dx12Device.h"
 #include "Dx12SwapChain.h"
+#include "FrameDump.h"
 #include "ShimContext.h"
 #include "ShimObjects.h"
 
@@ -222,6 +223,7 @@ void Dx12PresentBegin(Dx12SwapChain *swap_chain)
 		Dx12ShimFramePresented();
 		Dx12DrawPathFramePresented();
 		submit();
+		Dx12FrameDumpFramePresented();
 	}
 	Dx12ShimUnlock();
 }

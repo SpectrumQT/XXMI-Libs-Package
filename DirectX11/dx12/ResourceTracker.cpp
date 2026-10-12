@@ -162,6 +162,7 @@ void Dx12TrackResource(REFIID riid, void **ppvResource, LONG initial_state)
 
 	info.desc = resource->GetDesc();
 	info.state = initial_state;
+	info.top_state = initial_state;
 	info.serial = InterlockedIncrement64(&resource_serial);
 	// Fails for reserved resources, which have no heap of their own
 	if (SUCCEEDED(resource->GetHeapProperties(&heap, NULL))) {
@@ -223,6 +224,9 @@ void Dx12ApplyTransition(ID3D12Resource *resource, UINT subresource, LONG state)
 	auto i = shard->resources.find(resource);
 	if (i != shard->resources.end()) {
 		const D3D12_RESOURCE_DESC *desc = &i->second.desc;
+
+		if (subresource == D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES || !subresource)
+			InterlockedExchange(&i->second.top_state, state);
 
 		// A single state is all that is kept per resource, so a
 		// transition of one subresource out of several leaves it

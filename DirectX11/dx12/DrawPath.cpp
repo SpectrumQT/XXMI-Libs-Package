@@ -10,6 +10,7 @@
 
 #include "Bridge.h"
 #include "BufferHash.h"
+#include "FrameDump.h"
 #include "HashDump.h"
 #include "ShimContext.h"
 #include "ShimDevice.h"
@@ -4255,6 +4256,8 @@ bool Dx12Draw(Dx12GraphicsCommandList *list, bool indexed, UINT count, UINT inst
 	open_scope(&scope_storage, list, pipeline, false);
 
 	dx12_shim->hacker_context->Dx12BeforeDraw(c, hashes);
+	if (G->analyse_frame)
+		Dx12FrameDumpDraw(list, pipeline, indexed, count, instances, start, base_vertex, start_instance);
 	if (timed)
 		times[2] = ticks();
 	stats.draws++;

@@ -27,6 +27,9 @@ struct Dx12ResourceInfo {
 	// DX12_STATE_UNKNOWN: subresources in different states, enhanced
 	// barriers, or a resource created with a layout.
 	LONG state;
+	// The same for subresource 0 alone, which is known more often: a
+	// texture whose mips were transitioned one by one has no state above
+	LONG top_state;
 
 	// Textures: crc32c of the top mip as 3DMigoto calculates it for
 	// D3D11, see TextureHash.h

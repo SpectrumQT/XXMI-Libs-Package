@@ -58,6 +58,7 @@
     <ClCompile Include="dx12\CmdState.cpp" />
     <ClCompile Include="dx12\DescriptorShadow.cpp" />
     <ClCompile Include="dx12\Dx12PipelineLibrary.cpp" />
+    <ClCompile Include="dx12\FrameDump.cpp" />
     <ClCompile Include="dx12\HashDump.cpp" />
     <ClCompile Include="dx12\PipelineRegistry.cpp" />
     <ClCompile Include="dx12\ResourceTracker.cpp" />
@@ -113,6 +114,7 @@
     <ClInclude Include="dx12\CmdState.h" />
     <ClInclude Include="dx12\DescriptorShadow.h" />
     <ClInclude Include="dx12\Dx12PipelineLibrary.h" />
+    <ClInclude Include="dx12\FrameDump.h" />
     <ClInclude Include="dx12\HashDump.h" />
     <ClInclude Include="dx12\PipelineRegistry.h" />
     <ClInclude Include="dx12\ResourceTracker.h" />

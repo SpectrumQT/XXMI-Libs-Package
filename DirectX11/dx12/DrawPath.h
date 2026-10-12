@@ -29,7 +29,10 @@
 // the game's. It can read a constant buffer of the game that way, as those are
 // filled in by the time the game binds them. What it writes that a draw of
 // the game recorded earlier uses is written to another resource, so that the
-// draw keeps what it had (ShimRenameResource).
+// draw keeps what it had (ShimRenameResource). In place of a dispatch of the
+// game it has the game's constant buffers where it bound none, and for the
+// buffers the game's shader writes a buffer of ours each
+// (Dx12ScopeWrittenBuffer).
 //
 // Not in here yet: drawing with custom shaders, render targets and unordered
 // access views for these draws, and reading the game's textures.
@@ -111,6 +114,10 @@ ID3D11Buffer* Dx12ScopeIndexBuffer(DXGI_FORMAT *format);
 ID3D11Buffer* Dx12ScopeConstantBuffer(Dx12ShaderStage stage, UINT slot);
 ID3D11ShaderResourceView* Dx12ScopeShaderResource(Dx12ShaderStage stage, UINT slot);
 ID3D11UnorderedAccessView* Dx12ScopeUnorderedAccess(UINT slot);
+// For a compute shader of a mod that writes what the game has at the
+// register: a view of a buffer of ours that stands in for the game's. NULL if
+// there is nothing a mod could write.
+ID3D11UnorderedAccessView* Dx12ScopeWrittenBuffer(UINT slot);
 void Dx12ScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT base_vertex, UINT start_instance);
 void Dx12ScopeUnsupported(const char *what);
 void Dx12ScopeDispatched();

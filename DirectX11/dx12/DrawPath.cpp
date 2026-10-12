@@ -39,6 +39,8 @@ static struct {
 	unsigned table_unbounded, table_no_room;
 	unsigned skin_filter_misses;
 	unsigned buffers_unpacked, skin_stood_in, skin_aliased;
+	// Draws of mods given a buffer the mods wrote in place of the game's
+	unsigned written_swapped;
 	// Only counted with dx12_dump_hashes, in QueryPerformanceCounter ticks
 	UINT64 wait_ticks, before_ticks, buffer_ticks, draw_ticks, after_ticks;
 } stats;
@@ -150,6 +152,13 @@ struct Published {
 	// Buffers: counts the times any of the above changed
 	UINT version;
 
+	// Referenced. A buffer of ours that the compute shaders of mods write
+	// in place of this one, see "Buffers of the game that mods write".
+	ID3D11Buffer *standin;
+	ID3D11UnorderedAccessView *standin_uav;
+	UINT standin_frame;
+	bool standin_drawn;
+
 	UINT frame;
 };
 
@@ -176,8 +185,23 @@ static void set_resource_hash(ID3D11Resource *resource, D3D11_RESOURCE_DIMENSION
 	ForgetTextureOverrideMiss(resource);
 }
 
+static UINT standins_live;
+
+static void release_standin(Published *entry)
+{
+	if (entry->standin_uav)
+		entry->standin_uav->Release();
+	if (entry->standin) {
+		entry->standin->Release();
+		standins_live--;
+	}
+	entry->standin_uav = NULL;
+	entry->standin = NULL;
+}
+
 static void release_published(Published *entry)
 {
+	release_standin(entry);
 	if (entry->srv)
 		entry->srv->Release();
 	if (entry->uav)
@@ -286,6 +310,32 @@ static uint32_t pick_texture_hash(const Dx12ResourceInfo *info)
 		if (G->mTextureOverrideMap.count(hash))
 			return hash;
 		if (!rule)
+			first = hash;
+	}
+	return first;
+}
+
+// A buffer the game's compute shaders write is created without contents under
+// D3D11, which leaves the description to be hashed, as for constant buffers
+static uint32_t pick_written_buffer_hash(UINT64 bytes)
+{
+	static const UINT flags[] = {
+		D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
+		D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
+		D3D11_BIND_UNORDERED_ACCESS,
+	};
+	D3D11_BUFFER_DESC desc = {};
+	uint32_t hash, first = 0;
+	size_t i;
+
+	desc.ByteWidth = (UINT)bytes;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	for (i = 0; i < ARRAYSIZE(flags); i++) {
+		desc.BindFlags = flags[i];
+		hash = crc32c_hw(0, &desc, sizeof(desc));
+		if (G->mTextureOverrideMap.count(hash))
+			return hash;
+		if (!i)
 			first = hash;
 	}
 	return first;
@@ -820,6 +870,9 @@ static Published* publish_resource(ID3D12Resource *resource)
 	if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
 		static_cast<ShimTexture2D*>(entry->resource)->GetDesc(&desc2d);
 		set_resource_hash(entry->resource, dimension, pick_texture_hash(&info), info.has_data_hash ? info.data_hash : 0, &desc2d);
+	} else if (dimension == D3D11_RESOURCE_DIMENSION_BUFFER && (info.desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
+	    && info.desc.Width <= UINT_MAX) {
+		set_resource_hash(entry->resource, dimension, pick_written_buffer_hash(info.desc.Width), 0, NULL);
 	}
 	return entry;
 }
@@ -1573,6 +1626,123 @@ ID3D11UnorderedAccessView* Dx12ScopeUnorderedAccess(UINT slot)
 		entry->uav = uav;
 	}
 	return entry->uav;
+}
+
+// -----------------------------------------------------------------------------
+// Buffers of the game that mods write
+//
+// A mod's compute shader run in place of a dispatch of the game finds the
+// game's unordered access views bound under D3D11, and writes the game's
+// buffer through them: a mesh's shape key offsets, for one, which the game
+// then draws with as a vertex buffer. Where the mod's mesh has more vertices
+// than the game's, a TextureOverride section has the buffer created larger
+// (override_vertex_count).
+//
+// Neither works on D3D12: the mod's shader runs on our list, which knows
+// nothing of the state the game has its buffer in, and the buffer is the size
+// the game made it. So the shader is given a buffer of ours instead, of the
+// size the mods ask for, and the draws of mods get that in place of the game's
+// wherever the game's is bound as a vertex buffer.
+//
+// The game clears such a buffer before the dispatches that add up in it, with
+// a dispatch the mods know nothing of. Ours is cleared the first time a frame
+// has it written, and when it was drawn with since.
+
+static UINT standin_bytes(const Published *entry)
+{
+	TextureOverrideMatches matches;
+	UINT bytes = (UINT)entry->desc.Width;
+
+	find_texture_overrides_for_resource(entry->resource, &matches, NULL);
+	for (TextureOverride *texture_override : matches) {
+		if (texture_override->override_byte_width > 0)
+			bytes = max(bytes, (UINT)texture_override->override_byte_width);
+	}
+	return bytes;
+}
+
+ID3D11UnorderedAccessView* Dx12ScopeWrittenBuffer(UINT slot)
+{
+	static const UINT clear[4] = {};
+	static bool failed;
+	D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
+	D3D11_BUFFER_DESC desc = {};
+	Dx12DescriptorSlot view;
+	Published *entry;
+	UINT bytes, element;
+
+	if (!scope || !scope->compute || scope->skin)
+		return NULL;
+	entry = publish_register(DX12_STAGE_CS, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, slot, &view);
+	if (!entry || entry->desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || entry->desc.Width > UINT_MAX)
+		return NULL;
+	// Typed views of the whole buffer are what can be made again on a
+	// buffer of another size
+	element = dxgi_format_size((DXGI_FORMAT)view.format);
+	if (view.dimension != D3D12_UAV_DIMENSION_BUFFER || !element || view.offset || (UINT64)view.size * element != entry->desc.Width) {
+		Dx12ScopeUnsupported("to write a buffer of the game through a view that is not a typed one of all of it");
+		return NULL;
+	}
+
+	bytes = standin_bytes(entry);
+	desc.ByteWidth = bytes;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+	if (entry->standin) {
+		D3D11_BUFFER_DESC existing;
+
+		entry->standin->GetDesc(&existing);
+		if (existing.ByteWidth != bytes)
+			release_standin(entry);
+	}
+	if (entry->standin_uav && static_cast<ShimUnorderedAccessView*>(entry->standin_uav)->mDesc.Format != (DXGI_FORMAT)view.format) {
+		entry->standin_uav->Release();
+		entry->standin_uav = NULL;
+	}
+
+	if (!entry->standin) {
+		if (FAILED(dx12_shim->shim_device->CreateBuffer(&desc, NULL, &entry->standin))) {
+			log_once(&failed, "Unable to create a buffer for a mod to write in place of one of the game. Not written.");
+			return NULL;
+		}
+		standins_live++;
+		entry->standin_drawn = true;
+		Dx12DumpNote("Buffer %p of %llu bytes that the game's compute shaders write is %u bytes for the mods, which write a buffer of ours instead\n",
+			view.resource, entry->desc.Width, bytes);
+	}
+	if (!entry->standin_uav) {
+		uav_desc.Format = (DXGI_FORMAT)view.format;
+		uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+		uav_desc.Buffer.NumElements = bytes / element;
+		if (FAILED(dx12_shim->shim_device->CreateUnorderedAccessView(entry->standin, &uav_desc, &entry->standin_uav))) {
+			log_once(&failed, "Unable to create a buffer for a mod to write in place of one of the game. Not written.");
+			return NULL;
+		}
+	}
+
+	if (entry->standin_drawn || entry->standin_frame != dx12_frame)
+		dx12_shim->shim_context->ClearUnorderedAccessViewUint(entry->standin_uav, clear);
+	entry->standin_drawn = false;
+	entry->standin_frame = dx12_frame;
+	return entry->standin_uav;
+}
+
+// What a mod's compute shaders wrote in place of the buffer the game has at
+// the address, for a draw of the mod's. NULL if there is no such thing.
+static Published* written_buffer_at(UINT64 va, UINT64 *offset)
+{
+	ID3D12Resource *resource;
+	Dx12ResourceInfo info;
+
+	if (!Dx12FindBuffer(va, &resource, offset))
+		return NULL;
+	auto found = published.find({ resource, 0, PUBLISHED_RESOURCE });
+	if (found == published.end() || !found->second.standin)
+		return NULL;
+	// The address may have passed on to another buffer
+	if (!Dx12GetResourceInfo(resource, &info) || memcmp(&found->second.desc, &info.desc, sizeof(info.desc)))
+		return NULL;
+	return &found->second;
 }
 
 // -----------------------------------------------------------------------------
@@ -3074,7 +3244,7 @@ static void apply_input_layout(const ShimState *mod)
 // Makes the next draw or dispatch on the list use what the mod has bound in
 // place of what the game has, as far as that can be done. Whatever an earlier
 // call left on the list goes first: the mod may have unbound it since.
-static void apply_overrides()
+static void apply_overrides(bool mod_draw)
 {
 	const ShimState *mod = dx12_shim->shim_context->mState;
 	const Dx12CmdState *game = &scope->list->mState;
@@ -3177,6 +3347,32 @@ static void apply_overrides()
 		Dx12ShimPin(scope->list, output->buffer);
 		output->frame = dx12_frame;
 		stats.skin_swapped++;
+	}
+
+	// Only for a mod's own draws: the game's own are of its mesh, which
+	// goes with what the game wrote
+	for (mask = mod_draw && standins_live ? scope->pipeline->vb_slots & ~scope->vbs_changed : 0; _BitScanForward(&bit, mask); mask &= mask - 1) {
+		D3D11_BUFFER_DESC written_desc;
+		Published *written;
+		UINT64 offset;
+
+		if (bit >= ARRAYSIZE(game->vertex_buffers) || !game->vertex_buffers[bit].BufferLocation)
+			continue;
+		written = written_buffer_at(game->vertex_buffers[bit].BufferLocation, &offset);
+		if (!written)
+			continue;
+		written->standin->GetDesc(&written_desc);
+		vb.BufferLocation = Dx12ShimGameBufferAddress(written->standin, scope->list, &size);
+		if (!vb.BufferLocation || offset >= written_desc.ByteWidth)
+			continue;
+		vb.BufferLocation += offset;
+		vb.SizeInBytes = written_desc.ByteWidth - (UINT)offset;
+		vb.StrideInBytes = game->vertex_buffers[bit].StrideInBytes;
+		list->IASetVertexBuffers(bit, 1, &vb);
+		scope->vbs_changed |= 1u << bit;
+		written->frame = dx12_frame;
+		written->standin_drawn = true;
+		stats.written_swapped++;
 	}
 
 	if (mod->ib && !ShimResourceOf(mod->ib)->foreign) {
@@ -3321,7 +3517,7 @@ void Dx12ScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT bas
 	if (indexed && mod->ib_unbound)
 		return;
 
-	apply_overrides();
+	apply_overrides(true);
 	stats.mod_draws++;
 	if (G->dx12_dump_hashes)
 		note_mod_draw(indexed, count, start);
@@ -3964,7 +4160,7 @@ bool Dx12Draw(Dx12GraphicsCommandList *list, bool indexed, UINT count, UINT inst
 	stats.draws++;
 	stats.skipped += c.call_info.skip;
 	if (!c.call_info.skip) {
-		apply_overrides();
+		apply_overrides(false);
 		if (indexed)
 			list->mOrig->DrawIndexedInstanced(count, instances, start, base_vertex, start_instance);
 		else
@@ -4063,7 +4259,7 @@ bool Dx12Dispatch(Dx12GraphicsCommandList *list, UINT x, UINT y, UINT z)
 	open_scope(&scope_storage, list, pipeline, true);
 
 	if (dx12_shim->hacker_context->Dx12BeforeDispatch(&c, pipeline->shaders[DX12_STAGE_CS]->hash)) {
-		apply_overrides();
+		apply_overrides(false);
 		list->mOrig->Dispatch(x, y, z);
 	}
 	dx12_shim->hacker_context->Dx12AfterDispatch(&c);
@@ -4138,6 +4334,10 @@ void Dx12DrawPathConfigReloaded()
 {
 	regex_linked_shaders = 0;
 	forget_unpacked_buffers();
+	// What the mods wrote before is not what the ones there now would
+	// write, if they write at all. The lists that use it have it pinned.
+	for (auto &entry : published)
+		release_standin(&entry.second);
 
 	// Which part of a vertex buffer counts depended on what the mods
 	// ask for, as does all that was worked out from their sections
@@ -4233,6 +4433,8 @@ void Dx12DrawPathFramePresented()
 			stats.skin_dispatches, stats.skin_unconfirmed, stats.skin_replaced, stats.skin_failed, stats.skin_swapped,
 			skin_outputs.size(), stats.skin_filter_misses, stats.table_copies, stats.side_copies, stats.side_base_copies,
 			stats.table_descriptors, stats.side_switches, stats.table_unbounded, stats.table_no_room);
+		Dx12DumpNote("  Buffers of the game that mods write: %u have one of ours standing in, which %u vertex buffers of mod draws were swapped for\n",
+			standins_live, stats.written_swapped);
 		Dx12DumpNote("  The fence was signalled %lld times for what game lists had pinned, which %lld times were executed on "
 			"another queue than ours, which was made to wait for ours %lld times and %lld times ran them without, not being able to; "
 			"%lld pages of upload memory were created and %lld released; %lld times a resource "

@@ -660,8 +660,43 @@ void STDMETHODCALLTYPE ShimContext::Dispatch(UINT ThreadGroupCountX, UINT Thread
 		Dx12ScopeUnsupported("to dispatch without a compute shader of its own");
 		return;
 	}
-	if (!Dx12ShimPrepareDispatch(mState))
+	if (Dx12InDrawScope()) {
+		// Under D3D11 the shader finds what the game has bound wherever
+		// the mod bound nothing. Gone from the state before anything
+		// else looks at it. The views are referenced until then: asking
+		// for the next may have the one before made again.
+		ShimStageState *stage = &mState->stages[DX12_STAGE_CS];
+		const ShimShader *shader = ShimShaderOf(stage->shader);
+		UINT64 uavs = 0;
+		UINT cbs = 0, slot;
+		bool prepared;
+
+		for (slot = 0; slot < SHIM_CBV_SLOTS; slot++) {
+			if ((shader->cbv_used & (1u << slot)) && !stage->cbs[slot] && (stage->cbs[slot] = Dx12ScopeConstantBuffer(DX12_STAGE_CS, slot)))
+				cbs |= 1u << slot;
+		}
+		for (slot = 0; slot < SHIM_UAV_SLOTS; slot++) {
+			if ((shader->uav_used & (1ull << slot)) && !mState->cs_uavs[slot] && (mState->cs_uavs[slot] = Dx12ScopeWrittenBuffer(slot))) {
+				mState->cs_uavs[slot]->AddRef();
+				uavs |= 1ull << slot;
+			}
+		}
+		prepared = Dx12ShimPrepareDispatch(mState);
+		for (slot = 0; slot < SHIM_CBV_SLOTS; slot++) {
+			if (cbs & (1u << slot))
+				stage->cbs[slot] = NULL;
+		}
+		for (slot = 0; slot < SHIM_UAV_SLOTS; slot++) {
+			if (uavs & (1ull << slot)) {
+				mState->cs_uavs[slot]->Release();
+				mState->cs_uavs[slot] = NULL;
+			}
+		}
+		if (!prepared)
+			return;
+	} else if (!Dx12ShimPrepareDispatch(mState)) {
 		return;
+	}
 
 	Dx12ShimList()->Dispatch(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
 	if (Dx12InDrawScope())

@@ -6,6 +6,9 @@
 // reference on whatever is bound, and so does this.
 struct ShimStageState {
 	ID3D11DeviceChild *shader;
+	// A mod set no shader, as with gs = null, which is not the same as
+	// shader being NULL for the game's being kept
+	bool shader_unbound;
 	ID3D11Buffer *cbs[SHIM_CBV_SLOTS];
 	// In constants of 16 bytes. A count of 0 is the whole buffer.
 	UINT cb_first[SHIM_CBV_SLOTS];

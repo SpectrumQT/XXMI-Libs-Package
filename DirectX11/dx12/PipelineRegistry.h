@@ -132,9 +132,9 @@ struct Dx12PipelineInfo {
 	mutable Dx12DrawFilter filter = {};
 
 	// What a graphics pipeline was created from, for creating it again
-	// with another input layout: a pipeline state stream, or a
-	// D3D12_GRAPHICS_PIPELINE_STATE_DESC if not creation_stream. What it
-	// points at was the game's and is gone, but for the root signature,
+	// with another input layout or other shaders: a pipeline state stream,
+	// or a D3D12_GRAPHICS_PIPELINE_STATE_DESC if not creation_stream. What
+	// it points at was the game's and is gone, but for the root signature,
 	// which is referenced.
 	std::vector<BYTE> creation;
 	bool creation_stream = false;
@@ -142,9 +142,9 @@ struct Dx12PipelineInfo {
 	// of the subobject that ended the reading before the end
 	UINT stream_bytes = 0, stream_read = 0, stream_stopped_at = 0;
 	ID3D12RootSignature *root_signature = NULL;
-	// The pipelines created of it that way by the hash of their input
-	// layout, NULL for one that could not be. Referenced. For DrawPath,
-	// with its lock held.
+	// The pipelines created of it that way by the key Dx12PipelineVariant
+	// makes of what differs, NULL for one that could not be. Referenced.
+	// For DrawPath, with its lock held.
 	mutable std::vector<std::pair<UINT64, ID3D12PipelineState*>> variants;
 
 	~Dx12PipelineInfo();
@@ -163,12 +163,42 @@ void Dx12RegisterPipeline(void **ppPipelineState, const D3D12_COMPUTE_PIPELINE_S
 void Dx12RegisterPipeline(void **ppPipelineState, const D3D12_PIPELINE_STATE_STREAM_DESC *desc);
 
 const Dx12PipelineInfo* Dx12FindPipeline(ID3D12PipelineState *pipeline);
-// The game's pipeline with another input layout, which the caller hashed. Not
-// referenced: it lives as long as the game's does. NULL if it cannot be made,
-// for one because the game's shaders were not kept.
-ID3D12PipelineState* Dx12PipelineWithInputLayout(const Dx12PipelineInfo *info, ID3D12Device *device, UINT64 layout_hash,
-		const D3D12_INPUT_ELEMENT_DESC *elements, UINT count);
+// What a pipeline of the game is made again with. Where nothing is given the
+// game's is kept.
+struct Dx12PipelineVariantDesc {
+	// An input layout of a mod, hashed by the caller
+	UINT64 layout_hash;
+	const D3D12_INPUT_ELEMENT_DESC *elements;
+	UINT element_count;
+	// Shaders of a mod in place of the game's, with their bytecode set
+	const Dx12ShaderInfo *shaders[DX12_STAGE_COUNT];
+	// Bit per stage a mod wants no shader for, where the game has one
+	UINT removed_stages;
+};
+
+// The game's pipeline made again with that. Not referenced: it lives as long
+// as the game's does. NULL if it cannot be made, for one because the game's
+// shaders were not kept, with why in why_failed if that is given.
+ID3D12PipelineState* Dx12PipelineVariant(const Dx12PipelineInfo *info, ID3D12Device *device, const Dx12PipelineVariantDesc *variant,
+		const char **why_failed);
 const Dx12ShaderInfo* Dx12FindShader(UINT64 hash);
+bool Dx12BytecodeIsDxil(const void *bytecode, size_t size);
+
+// An element of the input or output signature of a shader
+struct Dx12SignatureElement {
+	char name[64];
+	UINT index;
+	// Bit per component, x first
+	UINT mask;
+	UINT reg;
+	UINT system_value;
+};
+// The input (ISGN/ISG1) or output (OSGN/OSG1) signature of DXBC or DXIL.
+// False if there is none that can be read.
+bool Dx12ReadSignature(const void *bytecode, size_t size, bool output, std::vector<Dx12SignatureElement> *elements);
+// Whether any shader the game has made a graphics pipeline of so far is DXIL,
+// which a shader of a mod drawn with that pipeline has to be as well
+bool Dx12GameHasDxilShaders();
 // Appends the shaders seen since the first from of them, in the order they
 // were first seen in
 void Dx12GetShaders(size_t from, std::vector<const Dx12ShaderInfo*> *found);

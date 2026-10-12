@@ -34,8 +34,13 @@
 // buffers the game's shader writes a buffer of ours each
 // (Dx12ScopeWrittenBuffer).
 //
-// Not in here yet: drawing with custom shaders, render targets and unordered
-// access views for these draws, and reading the game's textures.
+// A draw of a mod with shaders of its own is made with the game's pipeline
+// state made again with those in it, as with an input layout of a mod. The
+// game's root signature stays, so the shaders can only read the registers the
+// game's shaders can.
+//
+// Not in here yet: render targets and unordered access views for these draws,
+// and reading the game's textures.
 
 // Whether any draw could be of interest at all. Read without the lock by the
 // threads recording, like dx12_draw_generation, which changes when what was
@@ -114,6 +119,8 @@ void Dx12DumpMarkedShader(UINT64 hash, const char *type);
 // For the shim context. All but the first are only for while a scope is open,
 // and what they return is not referenced.
 bool Dx12InDrawScope();
+// Whether the game's pipeline has a shader for the stage
+bool Dx12ScopeHasShader(Dx12ShaderStage stage);
 ID3D11Buffer* Dx12ScopeVertexBuffer(UINT slot, UINT *stride);
 ID3D11Buffer* Dx12ScopeStreamOutput();
 ID3D11Buffer* Dx12ScopeIndexBuffer(DXGI_FORMAT *format);

@@ -369,6 +369,9 @@ public:
 
 	ID3DBlob *vs_bytecode, *hs_bytecode, *ds_bytecode;
 	ID3DBlob *gs_bytecode, *ps_bytecode, *cs_bytecode;
+	// The HLSL those were compiled from, for compiling it again for the
+	// D3D12 game's shader model (add_dxil)
+	wstring vs_source, hs_source, ds_source, gs_source, ps_source, cs_source;
 
 	int blend_override;
 	D3D11_BLEND_DESC blend_desc;
@@ -398,6 +401,7 @@ public:
 	CommandList post_command_list;
 
 	bool substantiated;
+	bool dxil_added;
 
 	int max_executions_per_frame;
 	unsigned frame_no;
@@ -408,6 +412,7 @@ public:
 
 	bool compile(char type, wchar_t *filename, const wstring *wname, const wstring *mod_namespace);
 	void substantiate(ID3D11Device *mOrigDevice);
+	void add_dxil(ID3D11Device *mOrigDevice);
 
 	void merge_blend_states(ID3D11BlendState *state, FLOAT blend_factor[4], UINT sample_mask, ID3D11Device *mOrigDevice);
 	void merge_depth_stencil_states(ID3D11DepthStencilState *state, UINT stencil_ref, ID3D11Device *mOrigDevice);

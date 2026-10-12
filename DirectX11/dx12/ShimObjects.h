@@ -381,11 +381,23 @@ struct ShimShader {
 	// Identifies the shader in pipeline keys. An address would not do,
 	// as it can pass on to another shader.
 	UINT64 id;
+	// Of the bytecode, for the keys of the game's pipelines made again with
+	// the shader (DrawPath), which outlive it: an id could be taken again
+	UINT64 hash;
 	std::vector<BYTE> bytecode;
 
 	// What the shader reads, from its reflection: highest register + 1 of
 	// each kind, a bit per register it really uses, and what kind of
-	// resource it expects where, for binding nothing.
+	// resource it expects where, for binding nothing. The masks are all
+	// zero where it could not be read (reflected).
+	bool reflected;
+	bool dxil;
+	// The same shader compiled to DXIL (Dx12DxcCompile), for the pipelines
+	// of the game whose own shaders are: a pipeline state does not take
+	// DXBC and DXIL together. NULL if there is none. Owned.
+	ShimShader *dxil_form;
+	// How many render targets a pixel shader writes
+	UINT targets;
 	UINT cbv_count;
 	UINT srv_count;
 	UINT sampler_count;

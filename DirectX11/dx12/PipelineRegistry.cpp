@@ -19,6 +19,7 @@ static SRWLOCK pipeline_lock = SRWLOCK_INIT;
 static std::unordered_map<ID3D12PipelineState*, Dx12PipelineInfo*> pipelines;
 
 volatile bool dx12_keep_shader_bytecode;
+static volatile bool graphics_dxil;
 
 static SRWLOCK signature_lock = SRWLOCK_INIT;
 static std::unordered_map<ID3D12RootSignature*, Dx12RootSignatureInfo*> signatures;
@@ -98,6 +99,43 @@ static UINT32 count_targets(Blob part, bool wide)
 			targets++;
 	}
 	return targets;
+}
+
+// The elements of the signature parts in full: name, index, system value,
+// component type, register, mask, read/write mask. The *SG1 form has a
+// stream number in front and a minimum precision after.
+bool Dx12ReadSignature(const void *bytecode, size_t size, bool output, std::vector<Dx12SignatureElement> *elements)
+{
+	Blob container = { (const BYTE*)bytecode, size }, part;
+	UINT32 count, offset, value, i;
+	size_t entry, base;
+	bool wide;
+
+	elements->clear();
+	if (find_part(container, output ? "OSG1" : "ISG1", &part))
+		wide = true;
+	else if (find_part(container, output ? "OSGN" : "ISGN", &part))
+		wide = false;
+	else
+		return false;
+	entry = wide ? 32 : 24;
+
+	if (!read32(part, 0, &count) || count > 64)
+		return false;
+	for (i = 0; i < count; i++) {
+		Dx12SignatureElement element = {};
+
+		base = 8 + i * entry + (wide ? 4 : 0);
+		if (!read32(part, base, &offset) || offset >= part.size)
+			return false;
+		strncpy_s(element.name, (const char*)part.data + offset, min(sizeof(element.name) - 1, part.size - offset));
+		if (!read32(part, base + 4, &element.index) || !read32(part, base + 8, &element.system_value)
+		    || !read32(part, base + 16, &element.reg) || !read32(part, base + 20, &value))
+			return false;
+		element.mask = value & 0xff;
+		elements->push_back(element);
+	}
+	return true;
 }
 
 static void mark_registers(UINT64 *mask, unsigned words, UINT32 first, UINT32 count)
@@ -307,9 +345,23 @@ static const Dx12ShaderInfo* shader_info(Dx12ShaderStage stage, const D3D12_SHAD
 		delete info;
 		return inserted.first->second;
 	}
+	if (info->dxil && stage != DX12_STAGE_CS)
+		graphics_dxil = true;
 
 	Dx12DumpShader(stage, info);
 	return info;
+}
+
+bool Dx12BytecodeIsDxil(const void *bytecode, size_t size)
+{
+	Blob container = { (const BYTE*)bytecode, size }, part;
+
+	return find_part(container, "DXIL", &part);
+}
+
+bool Dx12GameHasDxilShaders()
+{
+	return graphics_dxil;
 }
 
 // -----------------------------------------------------------------------------
@@ -679,10 +731,15 @@ void Dx12RegisterPipeline(void **ppPipelineState, const D3D12_PIPELINE_STATE_STR
 }
 
 // The copy of what a pipeline was created from has the game's pointer to a
-// shader, which is gone
-static bool revive_shader(D3D12_SHADER_BYTECODE *bytecode, const Dx12ShaderInfo *shader)
+// shader, which is gone. A shader of a mod goes in whether the game had one
+// for the stage or not, and so does none where a mod wants none.
+static bool revive_shader(D3D12_SHADER_BYTECODE *bytecode, const Dx12ShaderInfo *shader, bool mod, bool removed)
 {
-	if (!bytecode->pShaderBytecode || !bytecode->BytecodeLength)
+	if (removed) {
+		*bytecode = {};
+		return true;
+	}
+	if (!mod && (!bytecode->pShaderBytecode || !bytecode->BytecodeLength))
 		return true;
 	if (!shader || !shader->bytecode)
 		return false;
@@ -692,20 +749,67 @@ static bool revive_shader(D3D12_SHADER_BYTECODE *bytecode, const Dx12ShaderInfo 
 	return true;
 }
 
-ID3D12PipelineState* Dx12PipelineWithInputLayout(const Dx12PipelineInfo *info, ID3D12Device *device, UINT64 layout_hash,
-		const D3D12_INPUT_ELEMENT_DESC *elements, UINT count)
+static const char* stage_list(UINT stages, char *text, size_t size)
+{
+	Dx12ShaderStage stage;
+
+	text[0] = 0;
+	for (stage = DX12_STAGE_VS; stage < DX12_STAGE_COUNT; stage = (Dx12ShaderStage)(stage + 1)) {
+		if (stages & 1u << stage) {
+			if (text[0])
+				strcat_s(text, size, " ");
+			strcat_s(text, size, dx12_stage_names[stage]);
+		}
+	}
+	return text;
+}
+
+ID3D12PipelineState* Dx12PipelineVariant(const Dx12PipelineInfo *info, ID3D12Device *device, const Dx12PipelineVariantDesc *variant,
+		const char **why_failed)
 {
 	static UINT reported;
 	std::vector<BYTE> creation;
+	// The game's layout where the variant keeps it: the pointer in the copy
+	// is the game's and gone
+	std::vector<D3D12_INPUT_ELEMENT_DESC> game_elements;
+	const D3D12_INPUT_ELEMENT_DESC *elements = variant->elements;
+	UINT count = variant->element_count;
 	ID3D12PipelineState *pipeline = NULL;
 	ID3D12Device2 *device2 = NULL;
+	const Dx12ShaderInfo *shaders[DX12_STAGE_COUNT];
 	const char *failed = NULL;
+	UINT64 key = variant->layout_hash;
+	UINT mod_stages = 0, changed_stages, patched = 0;
+	Dx12ShaderStage stage;
+	char stages[32];
 	size_t pos, size;
 	HRESULT hr = S_OK;
 
-	for (const auto &variant : info->variants) {
-		if (variant.first == layout_hash)
-			return variant.second;
+	for (stage = DX12_STAGE_VS; stage < DX12_STAGE_COUNT; stage = (Dx12ShaderStage)(stage + 1)) {
+		shaders[stage] = variant->shaders[stage] ? variant->shaders[stage] : info->shaders[stage];
+		if (variant->shaders[stage])
+			mod_stages |= 1u << stage;
+		key = key * 0x9e3779b97f4a7c15ull ^ (variant->shaders[stage] ? variant->shaders[stage]->hash : 0);
+	}
+	key = key * 0x9e3779b97f4a7c15ull ^ variant->removed_stages;
+	changed_stages = mod_stages | variant->removed_stages;
+
+	for (const auto &made : info->variants) {
+		if (made.first == key) {
+			if (why_failed && !made.second)
+				*why_failed = "it could not be made before";
+			return made.second;
+		}
+	}
+
+	if (!elements) {
+		for (const Dx12InputElement &input : info->input_layout) {
+			game_elements.push_back({ input.semantic.c_str(), input.index, input.format, input.slot, input.offset,
+				input.per_instance ? D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA : D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+				input.step_rate });
+		}
+		elements = game_elements.data();
+		count = (UINT)game_elements.size();
 	}
 
 	creation = info->creation;
@@ -713,12 +817,13 @@ ID3D12PipelineState* Dx12PipelineWithInputLayout(const Dx12PipelineInfo *info, I
 		failed = "what the game created it from is not known";
 	} else if (!info->creation_stream) {
 		D3D12_GRAPHICS_PIPELINE_STATE_DESC *desc = (D3D12_GRAPHICS_PIPELINE_STATE_DESC*)creation.data();
+		D3D12_SHADER_BYTECODE *const bytecodes[] = { &desc->VS, &desc->PS, &desc->GS, &desc->HS, &desc->DS };
 
-		if (!revive_shader(&desc->VS, info->shaders[DX12_STAGE_VS]) || !revive_shader(&desc->PS, info->shaders[DX12_STAGE_PS])
-		    || !revive_shader(&desc->GS, info->shaders[DX12_STAGE_GS]) || !revive_shader(&desc->HS, info->shaders[DX12_STAGE_HS])
-		    || !revive_shader(&desc->DS, info->shaders[DX12_STAGE_DS]))
-			failed = "the game's shaders were not kept";
-		else if (desc->StreamOutput.NumEntries || desc->StreamOutput.NumStrides)
+		for (stage = DX12_STAGE_VS; stage <= DX12_STAGE_DS; stage = (Dx12ShaderStage)(stage + 1)) {
+			if (!revive_shader(bytecodes[stage], shaders[stage], !!(mod_stages & 1u << stage), !!(variant->removed_stages & 1u << stage)))
+				failed = "the game's shaders were not kept";
+		}
+		if (!failed && (desc->StreamOutput.NumEntries || desc->StreamOutput.NumStrides))
 			failed = "it has a stream output";
 		desc->StreamOutput = {};
 		desc->InputLayout.pInputElementDescs = elements;
@@ -730,12 +835,14 @@ ID3D12PipelineState* Dx12PipelineWithInputLayout(const Dx12PipelineInfo *info, I
 		for (pos = 0; !failed && pos < creation.size(); pos += size) {
 			D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type = *(const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE*)(creation.data() + pos);
 			BYTE *value = creation.data() + pos + STREAM_VALUE;
-			Dx12ShaderStage stage = subobject_stage(type);
 
+			stage = subobject_stage(type);
 			size = subobject_size(type);
 			if (stage != DX12_STAGE_COUNT) {
-				if (!revive_shader((D3D12_SHADER_BYTECODE*)value, info->shaders[stage]))
+				if (!revive_shader((D3D12_SHADER_BYTECODE*)value, shaders[stage], !!(mod_stages & 1u << stage),
+						!!(variant->removed_stages & 1u << stage)))
 					failed = "the game's shaders were not kept";
+				patched |= 1u << stage;
 			} else if (type == D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT) {
 				((D3D12_INPUT_LAYOUT_DESC*)value)->pInputElementDescs = elements;
 				((D3D12_INPUT_LAYOUT_DESC*)value)->NumElements = count;
@@ -752,6 +859,10 @@ ID3D12PipelineState* Dx12PipelineWithInputLayout(const Dx12PipelineInfo *info, I
 					failed = "it has view instancing";
 			}
 		}
+		// A subobject is not made up for a stage the game's stream has
+		// none for: the stream would have to be put together again
+		if (!failed && (mod_stages & ~patched))
+			failed = "the game's pipeline state stream has no subobject for a shader of the mod's";
 		if (!failed && FAILED(device->QueryInterface(IID_PPV_ARGS(&device2))))
 			failed = "the device takes no pipeline state streams";
 		if (!failed) {
@@ -765,16 +876,35 @@ ID3D12PipelineState* Dx12PipelineWithInputLayout(const Dx12PipelineInfo *info, I
 
 	if (!pipeline && reported < 16) {
 		reported++;
-		if (failed)
+		if (!changed_stages && failed)
 			Dx12DumpNote("*** A mod's input layout cannot be given to a pipeline of the game: %s. The game's layout is used."
 				" (%zu bytes kept, %s, shaders %s, stream of %u bytes read to %u, stopped at subobject %u)\n", failed,
 				info->creation.size(), info->creation_stream ? "a stream" : "a description",
 				info->shaders_known ? "known" : "not all known", info->stream_bytes, info->stream_read, info->stream_stopped_at);
-		else
+		else if (!changed_stages)
 			Dx12DumpNote("*** Creating a pipeline of the game again with a mod's input layout failed: 0x%x. The game's layout is used.\n", hr);
+		else if (failed)
+			Dx12DumpNote("*** A mod's %s shader cannot be given to a pipeline of the game: %s. (%zu bytes kept, %s, shaders %s)\n",
+				stage_list(changed_stages, stages, sizeof(stages)), failed, info->creation.size(),
+				info->creation_stream ? "a stream" : "a description", info->shaders_known ? "known" : "not all known");
+		else
+			Dx12DumpNote("*** Creating a pipeline of the game again with a mod's %s shader failed: 0x%x. The game's vs is %s%s; "
+				"its ps %016llx writes %u render targets%s\n",
+				stage_list(changed_stages, stages, sizeof(stages)), hr,
+				!info->shaders[DX12_STAGE_VS] ? "none" : info->shaders[DX12_STAGE_VS]->dxil ? "DXIL" : "DXBC",
+				!info->shaders[DX12_STAGE_VS] ? "" : info->shaders[DX12_STAGE_VS]->dxil
+					? ", which the DXBC of a mod may not be put together with" : "",
+				info->shaders[DX12_STAGE_PS] ? info->shaders[DX12_STAGE_PS]->hash : 0,
+				info->shaders[DX12_STAGE_PS] ? info->shaders[DX12_STAGE_PS]->targets : 0,
+				variant->shaders[DX12_STAGE_PS] ? "" : ", and the mod keeps it");
+		if (!failed && variant->shaders[DX12_STAGE_PS])
+			Dx12DumpNote("    The mod's ps %016llx writes %u render targets\n",
+				variant->shaders[DX12_STAGE_PS]->hash, variant->shaders[DX12_STAGE_PS]->targets);
 	}
+	if (why_failed && !pipeline)
+		*why_failed = failed ? failed : "D3D12 refused it";
 
-	info->variants.emplace_back(layout_hash, pipeline);
+	info->variants.emplace_back(key, pipeline);
 	return pipeline;
 }
 

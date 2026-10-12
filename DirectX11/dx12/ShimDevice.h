@@ -30,6 +30,10 @@ void ShimFlushWrite(ShimResource *resource);
 // not to see, see Bridge.h. Dx12ShimTransition does it for any write.
 bool ShimRenameResource(ShimResource *resource);
 
+// Gives a shader of ours the DXIL it was compiled to as well, see
+// ShimShader::dxil_form
+void ShimSetShaderDxil(ID3D11DeviceChild *shader, const void *bytecode, size_t length);
+
 static inline UINT64 ShimAlign(UINT64 value, UINT64 alignment)
 {
 	return (value + alignment - 1) / alignment * alignment;

@@ -187,6 +187,7 @@ void ShimRecreateView(ShimView *view)
 void ShimDestroyShader(ShimShader *shader)
 {
 	Dx12ShimForgetPipelines(shader->id);
+	delete shader->dxil_form;
 }
 
 ShimSamplerState::~ShimSamplerState()

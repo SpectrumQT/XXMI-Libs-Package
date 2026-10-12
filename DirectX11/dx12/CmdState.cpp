@@ -26,6 +26,9 @@ bool Dx12LocateRegister(const Dx12RootSignatureInfo *signature, Dx12ShaderStage 
 		case D3D12_DESCRIPTOR_RANGE_TYPE_SRV: descriptor_type = D3D12_ROOT_PARAMETER_TYPE_SRV; break;
 		case D3D12_DESCRIPTOR_RANGE_TYPE_UAV: descriptor_type = D3D12_ROOT_PARAMETER_TYPE_UAV; break;
 		case D3D12_DESCRIPTOR_RANGE_TYPE_CBV: descriptor_type = D3D12_ROOT_PARAMETER_TYPE_CBV; break;
+		// Samplers are only in tables, and only asked about to tell why a
+		// shader of a mod was refused: the static ones are not known
+		case D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER: descriptor_type = (D3D12_ROOT_PARAMETER_TYPE)-1; break;
 		default: return false;
 	}
 

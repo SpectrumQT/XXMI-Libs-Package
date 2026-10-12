@@ -10,6 +10,7 @@
 
 #include "Bridge.h"
 #include "BufferHash.h"
+#include "Dxc.h"
 #include "FrameDump.h"
 #include "HashDump.h"
 #include "ShimContext.h"
@@ -44,6 +45,9 @@ static struct {
 	unsigned buffers_unpacked, skin_stood_in, skin_aliased;
 	// Draws of mods given a buffer the mods wrote in place of the game's
 	unsigned written_swapped;
+	// Draws of mods with shaders of their own: made with those, and made
+	// with the game's for want of a pipeline with them
+	unsigned custom_draws, custom_failed;
 	// Only counted with dx12_dump_hashes, in QueryPerformanceCounter ticks
 	UINT64 wait_ticks, before_ticks, buffer_ticks, draw_ticks, after_ticks;
 } stats;
@@ -1383,13 +1387,22 @@ struct Dx12DrawScope {
 	// signature is NULL if the game's is not known.
 	const Dx12PipelineInfo *pipeline;
 	const Dx12RootSignatureInfo *signature;
+	// The shaders the next draw runs with: the game's, but for the stages
+	// a mod has given its own for a draw of its own, see apply_pipeline.
+	// Those are made up of the mod's ShimShader for the draw.
+	const Dx12ShaderInfo *shaders[DX12_STAGE_COUNT];
+	Dx12ShaderInfo mod_shaders[DX12_STAGE_COUNT];
+	// Bit per stage of those that is the mod's
+	UINT custom_stages;
+	// A mod's shaders could not be given to the draw being applied
+	bool custom_failed;
 
 	// What has been changed on the list and is to be put back
 	UINT vbs_changed;
 	bool ib_changed;
 	bool topology_changed;
-	// The game's pipeline made again with the input layout of a mod, if
-	// that is what the list has set, see apply_input_layout
+	// The game's pipeline made again with the input layout or the shaders
+	// of a mod, if that is what the list has set, see apply_pipeline
 	ID3D12PipelineState *variant;
 	// What the engine was given for the input layout of the game's
 	// pipeline, once it asked (Dx12PublishInputLayout). Not referenced.
@@ -1404,6 +1417,9 @@ struct Dx12DrawScope {
 	// Set once trying to switch to the side heap failed in this scope
 	bool side_impossible;
 	D3D12_GPU_DESCRIPTOR_HANDLE side_base[DX12_MAX_ROOT_ARGUMENTS];
+	// How many descriptors each of those copies has: as many as the shaders
+	// of the draw it was made for read, see grow_side_tables
+	UINT side_size[DX12_MAX_ROOT_ARGUMENTS];
 };
 
 static Dx12DrawScope *scope;
@@ -1419,6 +1435,11 @@ static void log_once(bool *reported, const char *message)
 bool Dx12InDrawScope()
 {
 	return !!scope;
+}
+
+bool Dx12ScopeHasShader(Dx12ShaderStage stage)
+{
+	return !!scope->pipeline->shaders[stage];
 }
 
 void Dx12ScopeUnsupported(const char *what)
@@ -1902,43 +1923,50 @@ static void restore_overrides()
 	scope->topology_changed = false;
 }
 
-// Puts the list back as the game left it, for a draw of the game or the end
-// of the scope
-static void restore_list()
+// Sets the game's heaps on the list again in place of the side heap. With
+// them every table the game had set is set again, of the graphics and of the
+// compute root signature, which covers the tables a mod changed.
+static void restore_heaps()
 {
 	const Dx12CmdState *game = &scope->list->mState;
 	ID3D12GraphicsCommandList *list = scope->list->mOrig;
 	size_t i;
 	int side;
 
-	if (scope->heaps_changed) {
-		// With the game's heaps back every table it had set is set
-		// again, of the graphics and of the compute root signature,
-		// which covers the tables a mod changed
-		list->SetDescriptorHeaps(game->heap_count, game->heaps);
-		for (side = 0; side < 2; side++) {
-			const Dx12RootSignatureInfo *signature = Dx12ListRootSignature(scope->list, !!side);
-			const Dx12RootArguments *set = side ? &game->compute : &game->graphics;
+	list->SetDescriptorHeaps(game->heap_count, game->heaps);
+	for (side = 0; side < 2; side++) {
+		const Dx12RootSignatureInfo *signature = Dx12ListRootSignature(scope->list, !!side);
+		const Dx12RootArguments *set = side ? &game->compute : &game->graphics;
 
-			for (i = 0; signature && i < signature->parameters.size() && i < DX12_MAX_ROOT_ARGUMENTS; i++) {
-				const Dx12DescriptorHeap *heap;
+		for (i = 0; signature && i < signature->parameters.size() && i < DX12_MAX_ROOT_ARGUMENTS; i++) {
+			const Dx12DescriptorHeap *heap;
 
-				if (signature->parameters[i].type != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE || !(set->set & (1ull << i)))
-					continue;
-				// One set while the game had another heap set is
-				// one it has no use for any more
-				heap = is_sampler_table(signature, i) ? game->sampler_heap : game->view_heap;
-				if (heap && (set->values[i] < heap->mGpuStart || set->values[i] - heap->mGpuStart >= (UINT64)heap->mCount * heap->mIncrement))
-					continue;
-				set_root_argument(list, !!side, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, (UINT)i, set->values[i]);
-			}
-		}
-		scope->heaps_changed = false;
-		for (i = scope->parameters.size(); i--;) {
-			if (scope->parameters[i].type == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
-				scope->parameters.erase(scope->parameters.begin() + i);
+			if (signature->parameters[i].type != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE || !(set->set & (1ull << i)))
+				continue;
+			// One set while the game had another heap set is one it
+			// has no use for any more
+			heap = is_sampler_table(signature, i) ? game->sampler_heap : game->view_heap;
+			if (heap && (set->values[i] < heap->mGpuStart || set->values[i] - heap->mGpuStart >= (UINT64)heap->mCount * heap->mIncrement))
+				continue;
+			set_root_argument(list, !!side, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, (UINT)i, set->values[i]);
 		}
 	}
+	scope->heaps_changed = false;
+	for (i = scope->parameters.size(); i--;) {
+		if (scope->parameters[i].type == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
+			scope->parameters.erase(scope->parameters.begin() + i);
+	}
+}
+
+// Puts the list back as the game left it, for a draw of the game or the end
+// of the scope
+static void restore_list()
+{
+	const Dx12CmdState *game = &scope->list->mState;
+	ID3D12GraphicsCommandList *list = scope->list->mOrig;
+
+	if (scope->heaps_changed)
+		restore_heaps();
 
 	restore_overrides();
 
@@ -1996,7 +2024,7 @@ static bool table_size(UINT parameter, UINT *size)
 	const Dx12RootParameter &table = signature->parameters[parameter];
 
 	for (i = 0; i < stage_count; i++) {
-		const Dx12ShaderInfo *shader = scope->pipeline->shaders[stages[i]];
+		const Dx12ShaderInfo *shader = scope->shaders[stages[i]];
 
 		if (table.visibility != D3D12_SHADER_VISIBILITY_ALL && table.visibility != visibilities[stages[i]])
 			continue;
@@ -2191,6 +2219,7 @@ static bool prepare_side_tables()
 	for (i = 0; i < count; i++) {
 		D3D12_CPU_DESCRIPTOR_HANDLE cpu;
 
+		scope->side_size[i] = sizes[i];
 		if (!sizes[i])
 			continue;
 		if (!side_alloc(sizes[i], &cpu, &scope->side_base[i])) {
@@ -2234,6 +2263,54 @@ static bool prepare_side_tables()
 	return true;
 }
 
+// The copies in the side heap are as large as the shaders of the draw they
+// were made for read, and the draws after it in the scope may be made with
+// others: a mod's in place of the game's or the other way around. A table
+// those read further into is copied again, before a mod changes any. False
+// if one cannot be: the draw is then not to be made with the side heap.
+static bool grow_side_tables()
+{
+	const Dx12CmdState *game = &scope->list->mState;
+	const Dx12RootArguments *arguments = scope->compute ? &game->compute : &game->graphics;
+	const Dx12RootSignatureInfo *signature = scope->signature;
+	Dx12DescriptorHeap *heap = game->view_heap;
+	D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+	D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+	UINT64 first;
+	UINT size;
+	size_t i, count = signature ? min(signature->parameters.size(), (size_t)DX12_MAX_ROOT_ARGUMENTS) : 0;
+
+	for (i = 0; i < count; i++) {
+		if (signature->parameters[i].type != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE || !(arguments->set & (1ull << i))
+		    || is_sampler_table(signature, i))
+			continue;
+		if (!table_size((UINT)i, &size)) {
+			stats.table_unbounded++;
+			return false;
+		}
+		if (!size)
+			continue;
+		first = arguments->values[i] >= heap->mGpuStart ? (arguments->values[i] - heap->mGpuStart) / heap->mIncrement : heap->mCount;
+		// Not in the heap that is known, so nothing to copy it from
+		if (first >= heap->mCount)
+			return false;
+		size = (UINT)min((UINT64)size, heap->mCount - first);
+		if (size <= scope->side_size[i])
+			continue;
+		if (!side_alloc(size, &cpu, &gpu)) {
+			stats.table_no_room++;
+			return false;
+		}
+		stats.side_base_copies++;
+		stats.table_descriptors += size;
+		dx12_shim->device->CopyDescriptorsSimple(size, cpu, heap->MirrorCpuHandle(arguments->values[i]), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		scope->side_base[i] = gpu;
+		scope->side_size[i] = size;
+		set_root_argument(scope->list->mOrig, scope->compute, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, (UINT)i, gpu.ptr);
+	}
+	return true;
+}
+
 // Has the list use the copies of the tables with what the mod has bound
 static void bind_changed_tables()
 {
@@ -2264,12 +2341,14 @@ static bool locate(Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE_TYPE type, UINT
 {
 	const Dx12CmdState *game = &scope->list->mState;
 	const Dx12RootArguments *arguments = scope->compute ? &game->compute : &game->graphics;
-	const Dx12ShaderInfo *shader = scope->pipeline->shaders[stage];
+	const Dx12ShaderInfo *shader = scope->shaders[stage];
 
 	// A root signature has room for the registers of every shader it is
 	// used with. What the shader of this draw does not declare it does not
 	// read, and giving it that would cost a copy of the table for nothing:
-	// IniParams is bound for every draw the engine looks at.
+	// IniParams is bound for every draw the engine looks at. A shader of a
+	// mod may read a register the game's does not, which the copy of the
+	// table may then be too short for if it was made for the game's.
 	if (!shader)
 		return false;
 	if (shader->reflected) {
@@ -3318,13 +3397,101 @@ static void note_input_layout(const ShimInputLayout *layout, ID3D12PipelineState
 	Dx12DumpNote("%s\n", text);
 }
 
-// An input layout of a mod is what the engine set that is not the game's. On
-// D3D12 that takes the game's pipeline state made again with it, which is set
-// on the list until the layout is another or the scope closes.
-static void apply_input_layout(const ShimState *mod)
+// What locate and table_size go by for a shader of a mod
+static void shader_info_of_mod(const ShimShader *shader, Dx12ShaderInfo *info)
+{
+	*info = {};
+	info->hash = shader->hash;
+	info->stage = shader->stage;
+	info->size = (UINT32)shader->bytecode.size();
+	info->dxil = shader->dxil;
+	info->reflected = shader->reflected;
+	info->srv[0] = shader->srv_used[0];
+	info->srv[1] = shader->srv_used[1];
+	info->cbv = shader->cbv_used;
+	info->uav = shader->uav_used;
+	info->targets = shader->targets;
+	info->bytecode = shader->bytecode.data();
+}
+
+// Why D3D12 may have refused a pipeline with the shaders of a mod: the
+// registers they read that the game's root signature has nothing for. Once
+// for each pipeline and set of shaders.
+static void note_custom_shader_failure(UINT stages, const char *why)
+{
+	static std::unordered_set<UINT64> noted;
+	static const struct {
+		D3D12_DESCRIPTOR_RANGE_TYPE type;
+		char letter;
+		UINT count;
+	} kinds[] = {
+		{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 't', 128 }, { D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 'b', SHIM_CBV_SLOTS },
+		{ D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 'u', 64 }, { D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 's', SHIM_SAMPLER_SLOTS },
+	};
+	const ShimState *mod = dx12_shim->shim_context->mState;
+	Dx12RegisterLocation location;
+	char text[1024], part[32];
+	UINT64 key = (UINT64)(uintptr_t)scope->pipeline;
+	bool missing = false, samplers = false;
+	UINT reg;
+
+	for (Dx12ShaderStage stage : graphics_stages) {
+		if (stages & 1u << stage)
+			key = key * 0x9e3779b97f4a7c15ull ^ scope->mod_shaders[stage].hash;
+	}
+	if (noted.size() >= 64 || !noted.insert(key).second)
+		return;
+
+	_snprintf_s(text, _TRUNCATE, "*** A mod's draw was made with the game's shaders instead of its own: %s.", why);
+	if (!scope->signature) {
+		strncat_s(text, " The game's root signature is not known.", _TRUNCATE);
+	} else {
+		strncat_s(text, " Registers of the mod's shaders the root signature has nothing for:", _TRUNCATE);
+		for (Dx12ShaderStage stage : graphics_stages) {
+			const ShimShader *shader = stages & 1u << stage ? ShimShaderOf(mod->stages[stage].shader) : NULL;
+
+			if (!shader)
+				continue;
+			for (const auto &kind : kinds) {
+				for (reg = 0; reg < kind.count; reg++) {
+					bool used;
+
+					switch (kind.type) {
+					case D3D12_DESCRIPTOR_RANGE_TYPE_SRV: used = !!(shader->srv_used[reg / 64] & 1ull << reg % 64); break;
+					case D3D12_DESCRIPTOR_RANGE_TYPE_CBV: used = !!(shader->cbv_used & 1u << reg); break;
+					case D3D12_DESCRIPTOR_RANGE_TYPE_UAV: used = !!(shader->uav_used & 1ull << reg); break;
+					default: used = !!(shader->sampler_used & 1u << reg); break;
+					}
+					if (!used || Dx12LocateRegister(scope->signature, stage, kind.type, reg, &location))
+						continue;
+					_snprintf_s(part, _TRUNCATE, " %s-%c%u", dx12_stage_names[stage], kind.letter, reg);
+					strncat_s(text, part, _TRUNCATE);
+					missing = true;
+					samplers |= kind.type == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+				}
+			}
+		}
+		if (!missing)
+			strncat_s(text, " none", _TRUNCATE);
+		else if (samplers)
+			strncat_s(text, " (the static samplers of a root signature are not read, so a sampler may be there after all)", _TRUNCATE);
+	}
+	Dx12DumpNote("%s\n", text);
+}
+
+// An input layout of a mod is what the engine set that is not the game's, and
+// shaders of a mod are what it set for a draw of its own. On D3D12 either
+// takes the game's pipeline state made again with them, which is set on the
+// list until the next draw wants another or the scope closes. The game's own
+// draw is never made with a mod's shaders.
+static void apply_pipeline(const ShimState *mod, bool mod_draw)
 {
 	ID3D12GraphicsCommandList *list = scope->list->mOrig;
 	ID3D12PipelineState *variant = NULL;
+	Dx12PipelineVariantDesc wanted = {};
+	const char *why = NULL;
+	bool game_dxil = false;
+	UINT stages = 0;
 
 	if (scope->game_layout && mod->input_layout && mod->input_layout != scope->game_layout) {
 		const ShimInputLayout *layout = static_cast<const ShimInputLayout*>(mod->input_layout);
@@ -3335,8 +3502,76 @@ static void apply_input_layout(const ShimState *mod)
 			hash = hash * 0x9e3779b97f4a7c15ull
 				^ fnv_64_buf(&element.SemanticIndex, sizeof(element) - offsetof(D3D12_INPUT_ELEMENT_DESC, SemanticIndex));
 		}
-		variant = Dx12PipelineWithInputLayout(scope->pipeline, dx12_shim->device, hash, layout->mElements.data(),
-				(UINT)layout->mElements.size());
+		wanted.layout_hash = hash;
+		wanted.elements = layout->mElements.data();
+		wanted.element_count = (UINT)layout->mElements.size();
+	}
+	if (mod_draw && !scope->compute && !scope->skin) {
+		// A pipeline state is all DXBC or all DXIL
+		for (Dx12ShaderStage stage : graphics_stages) {
+			if (scope->pipeline->shaders[stage]) {
+				game_dxil = scope->pipeline->shaders[stage]->dxil;
+				break;
+			}
+		}
+		for (Dx12ShaderStage stage : graphics_stages) {
+			const ShimShader *shader = ShimShaderOf(mod->stages[stage].shader);
+
+			if (!shader) {
+				if (mod->stages[stage].shader_unbound && scope->pipeline->shaders[stage])
+					wanted.removed_stages |= 1u << stage;
+				continue;
+			}
+			if (game_dxil && shader->dxil_form)
+				shader = shader->dxil_form;
+			shader_info_of_mod(shader, &scope->mod_shaders[stage]);
+			wanted.shaders[stage] = &scope->mod_shaders[stage];
+			stages |= 1u << stage;
+		}
+	}
+	// A pixel shader of a mod reads what the stage before it wrote in the
+	// D3D11 game, which the D3D12 game's may not all write
+	if (stages & 1u << DX12_STAGE_PS) {
+		static const Dx12ShaderStage upstream_stages[] = { DX12_STAGE_GS, DX12_STAGE_DS, DX12_STAGE_VS };
+		const Dx12ShaderInfo *upstream = NULL, *fitted = NULL;
+		const char *unfit = NULL;
+
+		for (Dx12ShaderStage stage : upstream_stages) {
+			if (wanted.removed_stages & 1u << stage)
+				continue;
+			upstream = wanted.shaders[stage] ? wanted.shaders[stage] : scope->pipeline->shaders[stage];
+			if (upstream)
+				break;
+		}
+		if (upstream && Dx12DxcFitPixelShader(wanted.shaders[DX12_STAGE_PS], upstream, &fitted, &unfit) < 0) {
+			wanted.shaders[DX12_STAGE_PS] = NULL;
+			stages &= ~(1u << DX12_STAGE_PS);
+			stats.custom_failed++;
+			scope->custom_failed = true;
+			if (G->dx12_dump_hashes)
+				note_custom_shader_failure(1u << DX12_STAGE_PS, unfit);
+		} else if (fitted) {
+			wanted.shaders[DX12_STAGE_PS] = fitted;
+		}
+	}
+
+	if (wanted.elements || stages || wanted.removed_stages)
+		variant = Dx12PipelineVariant(scope->pipeline, dx12_shim->device, &wanted, &why);
+
+	for (Dx12ShaderStage stage : graphics_stages) {
+		if (variant && (wanted.removed_stages & 1u << stage))
+			scope->shaders[stage] = NULL;
+		else
+			scope->shaders[stage] = variant && wanted.shaders[stage] ? wanted.shaders[stage] : scope->pipeline->shaders[stage];
+	}
+	scope->custom_stages = variant ? stages : 0;
+	if (stages && variant) {
+		stats.custom_draws++;
+	} else if (stages || wanted.removed_stages && !variant) {
+		stats.custom_failed++;
+		scope->custom_failed = true;
+		if (G->dx12_dump_hashes)
+			note_custom_shader_failure(stages, why);
 	}
 
 	if (G->dx12_dump_hashes && mod->input_layout && mod->input_layout != scope->game_layout)
@@ -3368,6 +3603,18 @@ static void apply_overrides(bool mod_draw)
 	size_t i;
 
 	restore_overrides();
+	// Before the bindings, which go by the shaders of the draw
+	scope->custom_failed = false;
+	apply_pipeline(mod, mod_draw);
+	// With the game's heaps and tables the draw reads all it would have,
+	// but for what a mod binds through a table
+	if (scope->heaps_changed && !grow_side_tables()) {
+		static bool no_growth;
+
+		log_once(&no_growth, "The tables of a draw could not be copied again to a heap of ours for shaders that read further. What a mod replaces in them was ignored.");
+		restore_heaps();
+		scope->side_impossible = true;
+	}
 
 	for (i = 0; i < stage_count; i++) {
 		const ShimStageState *bound = &mod->stages[stages[i]];
@@ -3503,8 +3750,6 @@ static void apply_overrides(bool mod_draw)
 		list->IASetPrimitiveTopology((D3D12_PRIMITIVE_TOPOLOGY)mod->topology);
 		scope->topology_changed = true;
 	}
-
-	apply_input_layout(mod);
 }
 
 // What a draw of a mod came to, once for each kind of them
@@ -3523,8 +3768,11 @@ static void note_mod_draw(bool indexed, UINT count, UINT start)
 	key = (pipeline->shaders[DX12_STAGE_VS] ? pipeline->shaders[DX12_STAGE_VS]->hash : 0) * 31
 		+ game->index_buffer.BufferLocation * 7 + game->vertex_buffers[0].BufferLocation + count * 0x9e3779b97f4a7c15ull + start;
 	// Once more for other formats of the game's textures or other textures
-	// of the mod, which is what differs where a mod picks them by format
+	// of the mod, which is what differs where a mod picks them by format,
+	// and for shaders of the mod's
 	key = key * 31 + ps->srv_mask[0];
+	for (Dx12ShaderStage stage : graphics_stages)
+		key = key * 31 + (scope->custom_stages & 1u << stage ? scope->shaders[stage]->hash : 0);
 	for (word = 0; word < 8 && scope->signature; word++) {
 		Dx12DescriptorSlot view = {};
 
@@ -3536,10 +3784,12 @@ static void note_mod_draw(bool indexed, UINT count, UINT start)
 	if (noted.size() >= 3000 || !noted.insert(key).second)
 		return;
 
-	_snprintf_s(text, _TRUNCATE, "Mod draw: %u from %u%s, vs %016llx ps %016llx, the game's index buffer %s%s. Vertex buffers:",
+	_snprintf_s(text, _TRUNCATE, "Mod draw: %u from %u%s, vs %016llx%s ps %016llx%s, the game's index buffer %s%s. Vertex buffers:",
 		count, start, indexed ? " indexed" : "",
-		pipeline->shaders[DX12_STAGE_VS] ? pipeline->shaders[DX12_STAGE_VS]->hash : 0,
-		pipeline->shaders[DX12_STAGE_PS] ? pipeline->shaders[DX12_STAGE_PS]->hash : 0,
+		scope->shaders[DX12_STAGE_VS] ? scope->shaders[DX12_STAGE_VS]->hash : 0,
+		scope->custom_stages & 1u << DX12_STAGE_VS ? " (the mod's)" : "",
+		scope->shaders[DX12_STAGE_PS] ? scope->shaders[DX12_STAGE_PS]->hash : 0,
+		scope->custom_stages & 1u << DX12_STAGE_PS ? " (the mod's)" : scope->custom_failed ? " (the mod's could not be)" : "",
 		scope->ib_changed ? "replaced" : "kept", scope->heaps_changed ? ", tables in our heap" : "");
 	for (mask = pipeline->vb_slots; _BitScanForward(&bit, mask); mask &= mask - 1) {
 		const D3D12_VERTEX_BUFFER_VIEW *view;
@@ -3611,14 +3861,6 @@ void Dx12ScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT bas
 		Dx12ScopeUnsupported("to draw");
 		return;
 	}
-	// Drawing with the game's shaders is what works. A custom shader
-	// would need a pipeline state of ours on the game's list.
-	for (Dx12ShaderStage stage : graphics_stages) {
-		if (mod->stages[stage].shader) {
-			Dx12ScopeUnsupported("to draw with a custom shader");
-			return;
-		}
-	}
 
 	// D3D11 reads every index as 0 without an index buffer, which draws
 	// nothing. The game's is still bound to its list here and would draw
@@ -3627,6 +3869,11 @@ void Dx12ScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT bas
 		return;
 
 	apply_overrides(true);
+	// A mod whose shaders could not be given to the game's pipeline is
+	// drawn with the game's: seen without its effect rather than not at all
+	static const bool draw_with_game_shaders_instead = true;
+	if (scope->custom_failed && !draw_with_game_shaders_instead)
+		return;
 	stats.mod_draws++;
 	if (G->dx12_dump_hashes)
 		note_mod_draw(indexed, count, start);
@@ -3666,6 +3913,9 @@ static void open_scope(Dx12DrawScope *opened, Dx12GraphicsCommandList *list, con
 	opened->skin = NULL;
 	opened->pipeline = pipeline;
 	opened->signature = Dx12ListRootSignature(list, compute);
+	memcpy(opened->shaders, pipeline->shaders, sizeof(opened->shaders));
+	opened->custom_stages = 0;
+	opened->custom_failed = false;
 	opened->vbs_changed = 0;
 	opened->ib_changed = false;
 	opened->topology_changed = false;
@@ -4569,6 +4819,8 @@ void Dx12DrawPathFramePresented()
 			stats.table_descriptors, stats.side_switches, stats.table_unbounded, stats.table_no_room);
 		Dx12DumpNote("  Buffers of the game that mods write: %u have one of ours standing in, which %u vertex buffers of mod draws were swapped for\n",
 			dx12_standins_live, stats.written_swapped);
+		Dx12DumpNote("  Mod draws with shaders of their own: %u made with them, %u with the game's for want of a pipeline with them\n",
+			stats.custom_draws, stats.custom_failed);
 		Dx12DumpNote("  The fence was signalled %lld times for what game lists had pinned, which %lld times were executed on "
 			"another queue than ours, which was made to wait for ours %lld times and %lld times ran them without, not being able to; "
 			"%lld pages of upload memory were created and %lld released; %lld times a resource "

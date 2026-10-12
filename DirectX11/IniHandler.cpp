@@ -17,6 +17,7 @@
 #include "ShaderRegex.h"
 #include "cursor.h"
 #include "dx12/Bridge.h"
+#include "dx12/PipelineRegistry.h"
 #include <chrono>
 #include <mutex>
 #include <atomic>
@@ -4440,6 +4441,13 @@ static void ParseCustomShaderSections()
 			IniWarningBeep();
 			continue;
 		}
+
+		// On D3D12 drawing with these takes making a pipeline of the game
+		// again. The built in ones only draw at present.
+		if (wcsncmp(shader_id->c_str(), L"builtincustomshader", 19)
+		    && (custom_shader->vs_override || custom_shader->hs_override || custom_shader->ds_override
+			|| custom_shader->gs_override || custom_shader->ps_override))
+			dx12_keep_shader_bytecode = true;
 
 		ParseBlendState(custom_shader, shader_id->c_str());
 		ParseDepthStencilState(custom_shader, shader_id->c_str());

@@ -2,8 +2,11 @@
 
 #include <d3dcompiler.h>
 
+#include "Dxc.h"
+#include "PipelineRegistry.h"
 #include "ShimContext.h"
 #include "ShimPipeline.h"
+#include "util.h"
 
 ShimDevice::ShimDevice() :
 	mRef(1)
@@ -1021,23 +1024,28 @@ static void reflect_declarations(ShimShader *shader)
 	}
 }
 
-static void reflect_shader(ShimShader *shader)
+// The reflection of DXBC and that of DXIL have the same methods on different
+// interfaces. False if the reflection could not be read.
+template <class Reflection, class ShaderDesc, class BindDesc, class ParameterDesc>
+static bool reflect_bindings(Reflection *reflection, ShimShader *shader)
 {
-	ID3D11ShaderReflection *reflection = NULL;
-	D3D11_SHADER_INPUT_BIND_DESC bind;
-	D3D11_SHADER_DESC desc;
+	BindDesc bind;
+	ParameterDesc output;
+	ShaderDesc desc;
 	UINT i, reg;
 
-	if (FAILED(D3DReflect(shader->bytecode.data(), shader->bytecode.size(), IID_PPV_ARGS(&reflection)))
-	    || FAILED(reflection->GetDesc(&desc))) {
-		Dx12LogInfo("*** No reflection for a %s shader of a mod, it will be given no resources\n",
-			dx12_stage_names[shader->stage]);
-		if (reflection)
-			reflection->Release();
-		return;
+	if (FAILED(reflection->GetDesc(&desc)))
+		return false;
+	shader->reflected = true;
+
+	if (shader->stage == DX12_STAGE_PS) {
+		for (i = 0; i < desc.OutputParameters; i++) {
+			if (SUCCEEDED(reflection->GetOutputParameterDesc(i, &output)) && !_stricmp(output.SemanticName, "SV_Target"))
+				shader->targets++;
+		}
 	}
 
-	if (!desc.BoundResources)
+	if (!desc.BoundResources && !shader->dxil)
 		reflect_declarations(shader);
 
 	for (i = 0; i < desc.BoundResources; i++) {
@@ -1103,7 +1111,44 @@ static void reflect_shader(ShimShader *shader)
 		}
 	}
 
-	reflection->Release();
+	return true;
+}
+
+static void reflect_shader(ShimShader *shader)
+{
+	ID3D11ShaderReflection *reflection11 = NULL;
+	ID3D12ShaderReflection *reflection12 = NULL;
+	bool read = false;
+
+	shader->dxil = Dx12BytecodeIsDxil(shader->bytecode.data(), shader->bytecode.size());
+	if (shader->dxil) {
+		if (Dx12DxcReflect(shader->bytecode.data(), shader->bytecode.size(), &reflection12)) {
+			read = reflect_bindings<ID3D12ShaderReflection, D3D12_SHADER_DESC, D3D12_SHADER_INPUT_BIND_DESC,
+				D3D12_SIGNATURE_PARAMETER_DESC>(reflection12, shader);
+			reflection12->Release();
+		}
+	} else if (SUCCEEDED(D3DReflect(shader->bytecode.data(), shader->bytecode.size(), IID_PPV_ARGS(&reflection11)))) {
+		read = reflect_bindings<ID3D11ShaderReflection, D3D11_SHADER_DESC, D3D11_SHADER_INPUT_BIND_DESC,
+			D3D11_SIGNATURE_PARAMETER_DESC>(reflection11, shader);
+		reflection11->Release();
+	}
+	if (!read) {
+		Dx12LogInfo("*** No reflection for a %s %s shader of a mod, it will be given no resources\n",
+			shader->dxil ? "DXIL" : "DXBC", dx12_stage_names[shader->stage]);
+	}
+}
+
+void ShimSetShaderDxil(ID3D11DeviceChild *shader, const void *bytecode, size_t length)
+{
+	ShimShader *dxbc = ShimShaderOf(shader), *dxil = new ShimShader();
+
+	dxil->stage = dxbc->stage;
+	dxil->hash = fnv_64_buf(bytecode, length);
+	dxil->bytecode.assign((const BYTE*)bytecode, (const BYTE*)bytecode + length);
+	reflect_shader(dxil);
+
+	delete dxbc->dxil_form;
+	dxbc->dxil_form = dxil;
 }
 
 template <class Interface>
@@ -1119,6 +1164,7 @@ static HRESULT create_shader(Dx12ShaderStage stage, const void *bytecode, SIZE_T
 	shader = new ShimShaderObject<Interface>();
 	shader->s.stage = stage;
 	shader->s.id = ShimNextId();
+	shader->s.hash = fnv_64_buf(bytecode, length);
 	shader->s.bytecode.assign((const BYTE*)bytecode, (const BYTE*)bytecode + length);
 	reflect_shader(&shader->s);
 

@@ -140,16 +140,33 @@ void ShimContext::ResetState()
 // -----------------------------------------------------------------------------
 // Shader stages
 
+// What GetShader gives for the shader of the game's that a draw scope runs
+// with, which there is no object of ours for: the engine saves it to set it
+// back, and that has to be told from setting none
+static ID3D11DeviceChild* game_shader()
+{
+	static ID3D11DeviceChild *shader = new ShimShaderObject<ID3D11DeviceChild>();
+
+	return shader;
+}
+
 void ShimContext::SetShader(Dx12ShaderStage stage, ID3D11DeviceChild *shader)
 {
+	mState->stages[stage].shader_unbound = !shader;
+	if (shader == game_shader())
+		shader = NULL;
 	assign(mState->stages[stage].shader, shader);
 	mChanged = true;
 }
 
 void ShimContext::GetShader(Dx12ShaderStage stage, ID3D11DeviceChild **shader, UINT *class_instances)
 {
+	ID3D11DeviceChild *bound = mState->stages[stage].shader;
+
+	if (!bound && !mState->stages[stage].shader_unbound && Dx12InDrawScope() && Dx12ScopeHasShader(stage))
+		bound = game_shader();
 	if (shader)
-		get(mState->stages[stage].shader, shader);
+		get(bound, shader);
 	if (class_instances)
 		*class_instances = 0;
 }

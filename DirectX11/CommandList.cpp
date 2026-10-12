@@ -18,8 +18,11 @@
 #include "Hunting.h"
 #include "cursor.h"
 #include "dx12/Bridge.h"
+#include "dx12/Dxc.h"
+#include "dx12/HashDump.h"
 #include "dx12/PipelineRegistry.h"
 #include "dx12/PresentPass.h"
+#include "dx12/ShimDevice.h"
 
 #include <D3DCompiler.h>
 
@@ -2648,7 +2651,7 @@ CustomShader::CustomShader() :
 	stencil_ref(0), stencil_ref_mask(~0),
 	rs_override(0), rs_state(NULL),
 	topology(D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED),
-	substantiated(false),
+	substantiated(false), dxil_added(false),
 	max_executions_per_frame(0),
 	frame_no(0),
 	executions_this_frame(0),
@@ -2763,6 +2766,7 @@ bool CustomShader::compile(char type, wchar_t *filename, const wstring *wname, c
 	ID3DBlob **ppBytecode = NULL;
 	ID3DBlob *pErrorMsgs = NULL;
 	const D3D_SHADER_MACRO *macros = NULL;
+	wstring *source = NULL;
 	bool found = false;
 	FILETIME timestamp;
 
@@ -2772,31 +2776,37 @@ bool CustomShader::compile(char type, wchar_t *filename, const wstring *wname, c
 		case 'v':
 			ppBytecode = &vs_bytecode;
 			macros = vs_macros;
+			source = &vs_source;
 			vs_override = true;
 			break;
 		case 'h':
 			ppBytecode = &hs_bytecode;
 			macros = hs_macros;
+			source = &hs_source;
 			hs_override = true;
 			break;
 		case 'd':
 			ppBytecode = &ds_bytecode;
 			macros = ds_macros;
+			source = &ds_source;
 			ds_override = true;
 			break;
 		case 'g':
 			ppBytecode = &gs_bytecode;
 			macros = gs_macros;
+			source = &gs_source;
 			gs_override = true;
 			break;
 		case 'p':
 			ppBytecode = &ps_bytecode;
 			macros = ps_macros;
+			source = &ps_source;
 			ps_override = true;
 			break;
 		case 'c':
 			ppBytecode = &cs_bytecode;
 			macros = cs_macros;
+			source = &cs_source;
 			cs_override = true;
 			break;
 		default:
@@ -2835,6 +2845,7 @@ bool CustomShader::compile(char type, wchar_t *filename, const wstring *wname, c
 		LogOverlayW(LOG_WARNING, L"Shader not found: %ls\n", wpath);
 		goto err;
 	}
+	*source = wpath;
 
 	// Currently always using shader model 5, could allow this to be
 	// overridden in the future:
@@ -2916,10 +2927,118 @@ err:
 	return true;
 }
 
+// A shader of a mod drawn with a pipeline of a D3D12 game whose shaders are
+// DXIL has to be DXIL too (Dx12PipelineVariant), which takes compiling the
+// HLSL again with the DirectX Shader Compiler. Cached next to the source like
+// the output of D3DCompile. The shader keeps its DXBC for the pipelines that
+// are, and is given the DXIL as well.
+static void compile_dxil(char type, const wstring &source, D3DCompileFlags compile_flags, ID3D11DeviceChild *shader)
+{
+	static const struct {
+		char type;
+		const wchar_t *target;
+		const D3D_SHADER_MACRO *macros;
+	} stages[] = {
+		{ 'v', L"vs_6_0", vs_macros }, { 'h', L"hs_6_0", hs_macros }, { 'd', L"ds_6_0", ds_macros },
+		{ 'g', L"gs_6_0", gs_macros }, { 'p', L"ps_6_0", ps_macros }, { 'c', L"cs_6_0", cs_macros },
+	};
+	wchar_t cache_path[MAX_PATH];
+	const wchar_t *target = NULL, *ext;
+	const D3D_SHADER_MACRO *macros = NULL;
+	vector<char> src;
+	DWORD size, read;
+	FILETIME timestamp;
+	ID3DBlob *dxil = NULL;
+	string errors;
+	HANDLE f;
+
+	for (const auto &stage : stages) {
+		if (stage.type == type) {
+			target = stage.target;
+			macros = stage.macros;
+		}
+	}
+	if (!shader || source.empty() || !target)
+		return;
+
+	f = CreateFile(source.c_str(), GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (f == INVALID_HANDLE_VALUE)
+		return;
+	ext = wcsrchr(source.c_str(), L'.');
+	if (ext > wcsrchr(source.c_str(), L'\\'))
+		swprintf_s(cache_path, MAX_PATH, L"%.*s.%s.%x.bin", (int)(ext - source.c_str()), source.c_str(), target, (UINT)compile_flags);
+	else
+		swprintf_s(cache_path, MAX_PATH, L"%s.%s.%x.bin", source.c_str(), target, (UINT)compile_flags);
+	GetFileTime(f, NULL, NULL, &timestamp);
+	if (load_cached_shader(timestamp, cache_path, &dxil)) {
+		CloseHandle(f);
+		Dx12DxcRemember(dxil->GetBufferPointer(), dxil->GetBufferSize(), source.c_str(), target, macros, (UINT)compile_flags);
+		ShimSetShaderDxil(shader, dxil->GetBufferPointer(), dxil->GetBufferSize());
+		dxil->Release();
+		return;
+	}
+
+	size = GetFileSize(f, 0);
+	src.resize(size);
+	if (!ReadFile(f, src.data(), size, &read, 0) || size != read) {
+		CloseHandle(f);
+		return;
+	}
+	CloseHandle(f);
+
+	Dx12DxcCompile(src.data(), size, source.c_str(), target, macros, (UINT)compile_flags, &dxil, &errors);
+	if (!errors.empty()) {
+		LogInfo("--------------------------------------------- BEGIN ---------------------------------------------\n");
+		LogOverlay(dxil ? LOG_NOTICE : LOG_WARNING, "%s\n", errors.c_str());
+		LogInfo("---------------------------------------------- END ----------------------------------------------\n");
+	}
+	if (!dxil) {
+		LogOverlayW(LOG_WARNING, L"Error compiling custom shader %ls as %ls\n", source.c_str(), target);
+		Dx12DumpNote("*** %S could not be compiled as %S, so it stays DXBC: %s\n", source.c_str(), target, errors.c_str());
+		return;
+	}
+	Dx12DumpNote("Compiled %S as %S\n", source.c_str(), target);
+	Dx12DxcRemember(dxil->GetBufferPointer(), dxil->GetBufferSize(), source.c_str(), target, macros, (UINT)compile_flags);
+
+	if (G->CACHE_SHADERS) {
+		FILE *fw;
+
+		wfopen_ensuring_access(&fw, cache_path, L"wb");
+		if (fw) {
+			fwrite(dxil->GetBufferPointer(), 1, dxil->GetBufferSize(), fw);
+			fclose(fw);
+			set_file_last_write_time(cache_path, &timestamp);
+		}
+	}
+
+	ShimSetShaderDxil(shader, dxil->GetBufferPointer(), dxil->GetBufferSize());
+	dxil->Release();
+}
+
+// Once the game has made a pipeline of DXIL, which it may not have by the time
+// the shaders are first run. A compute shader is dispatched on its own and
+// stays as it is.
+void CustomShader::add_dxil(ID3D11Device *mOrigDevice1)
+{
+	if (dxil_added || !dx12_shim || mOrigDevice1 != static_cast<ID3D11Device*>(dx12_shim->shim_device) || !Dx12GameHasDxilShaders())
+		return;
+	dxil_added = true;
+
+	if (!Dx12DxcAvailable())
+		return;
+	compile_dxil('v', vs_source, compile_flags, vs);
+	compile_dxil('h', hs_source, compile_flags, hs);
+	compile_dxil('d', ds_source, compile_flags, ds);
+	compile_dxil('g', gs_source, compile_flags, gs);
+	compile_dxil('p', ps_source, compile_flags, ps);
+}
+
 void CustomShader::substantiate(ID3D11Device *mOrigDevice1)
 {
-	if (substantiated)
+	if (substantiated) {
+		add_dxil(mOrigDevice1);
 		return;
+	}
 	substantiated = true;
 
 	if (vs_bytecode) {
@@ -2970,6 +3089,8 @@ void CustomShader::substantiate(ID3D11Device *mOrigDevice1)
 
 	if (sampler_override == 1)
 		mOrigDevice1->CreateSamplerState(&sampler_desc, &sampler_state);
+
+	add_dxil(mOrigDevice1);
 }
 
 // Similar to memcpy, but also takes a mask. Any bits in the mask that are set

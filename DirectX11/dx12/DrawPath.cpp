@@ -160,6 +160,12 @@ struct Published {
 	ID3D11UnorderedAccessView *standin_uav;
 	UINT standin_frame;
 	bool standin_drawn;
+	// Holds what the mods wrote for what the game has in its buffer now,
+	// and the scope a dispatch of a mod last wrote it in
+	bool standin_valid;
+	UINT64 standin_scope;
+	// Dx12ResourceInfo::serial of the buffer of the game it was written for
+	UINT64 standin_serial;
 
 	UINT frame;
 };
@@ -187,7 +193,7 @@ static void set_resource_hash(ID3D11Resource *resource, D3D11_RESOURCE_DIMENSION
 	ForgetTextureOverrideMiss(resource);
 }
 
-static UINT standins_live;
+volatile UINT dx12_standins_live;
 
 static void release_standin(Published *entry)
 {
@@ -195,10 +201,11 @@ static void release_standin(Published *entry)
 		entry->standin_uav->Release();
 	if (entry->standin) {
 		entry->standin->Release();
-		standins_live--;
+		dx12_standins_live--;
 	}
 	entry->standin_uav = NULL;
 	entry->standin = NULL;
+	entry->standin_valid = false;
 }
 
 static void release_published(Published *entry)
@@ -1421,9 +1428,23 @@ void Dx12ScopeUnsupported(const char *what)
 		Dx12DumpNote("*** A mod tried %s for a draw or dispatch of the game, which is not possible on D3D12 yet. Ignored.\n", what);
 }
 
-void Dx12ScopeDispatched()
+// The buffers Dx12ScopeWrittenBuffer gave out for the dispatch being prepared
+static std::vector<Published*> standins_pending;
+// Counts the scopes opened, to tell whether a mod wrote in the current one
+static UINT64 scope_serial;
+
+void Dx12ScopeDispatched(bool recorded)
 {
-	stats.mod_dispatches++;
+	for (Published *entry : standins_pending) {
+		if (!recorded)
+			continue;
+		entry->standin_valid = true;
+		entry->standin_drawn = false;
+		entry->standin_frame = dx12_frame;
+		entry->standin_scope = scope_serial;
+	}
+	standins_pending.clear();
+	stats.mod_dispatches += recorded;
 }
 
 static bool skin_output_at(UINT64 va);
@@ -1649,6 +1670,16 @@ ID3D11UnorderedAccessView* Dx12ScopeUnorderedAccess(UINT slot)
 // The game clears such a buffer before the dispatches that add up in it, with
 // a dispatch the mods know nothing of. Ours is cleared the first time a frame
 // has it written, and when it was drawn with since.
+//
+// Ours only stands for the game's while the mods wrote it for what the game
+// has in its own. A dispatch of the game that writes its buffer with no mod
+// writing ours in its place starts the buffer over as far as we can tell: the
+// clear, or the mesh of a mod that is switched off, or another mesh that got
+// the buffer. What ours holds is not drawn with from then until a mod writes
+// it again, cleared first. That goes for every dispatch of the game, also the
+// ones no mod has a section for (Dx12GameDispatched). Writes of the game that
+// are not dispatches are not seen: a copy, a clear of the view, an indirect
+// dispatch.
 
 static UINT standin_bytes(const Published *entry)
 {
@@ -1670,6 +1701,7 @@ ID3D11UnorderedAccessView* Dx12ScopeWrittenBuffer(UINT slot)
 	D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
 	D3D11_BUFFER_DESC desc = {};
 	Dx12DescriptorSlot view;
+	Dx12ResourceInfo info;
 	Published *entry;
 	UINT bytes, element;
 
@@ -1678,6 +1710,12 @@ ID3D11UnorderedAccessView* Dx12ScopeWrittenBuffer(UINT slot)
 	entry = publish_register(DX12_STAGE_CS, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, slot, &view);
 	if (!entry || entry->desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || entry->desc.Width > UINT_MAX)
 		return NULL;
+	if (!Dx12GetResourceInfo(view.resource, &info))
+		return NULL;
+	// Written for a buffer that is gone, with this one at its address
+	if (entry->standin_serial != info.serial)
+		entry->standin_valid = false;
+	entry->standin_serial = info.serial;
 	// Typed views of the whole buffer are what can be made again on a
 	// buffer of another size
 	element = dxgi_format_size((DXGI_FORMAT)view.format);
@@ -1707,7 +1745,7 @@ ID3D11UnorderedAccessView* Dx12ScopeWrittenBuffer(UINT slot)
 			log_once(&failed, "Unable to create a buffer for a mod to write in place of one of the game. Not written.");
 			return NULL;
 		}
-		standins_live++;
+		dx12_standins_live++;
 		entry->standin_drawn = true;
 		Dx12DumpNote("Buffer %p of %llu bytes that the game's compute shaders write is %u bytes for the mods, which write a buffer of ours instead\n",
 			view.resource, entry->desc.Width, bytes);
@@ -1722,11 +1760,58 @@ ID3D11UnorderedAccessView* Dx12ScopeWrittenBuffer(UINT slot)
 		}
 	}
 
-	if (entry->standin_drawn || entry->standin_frame != dx12_frame)
+	if (!entry->standin_valid || entry->standin_drawn || entry->standin_frame != dx12_frame) {
 		dx12_shim->shim_context->ClearUnorderedAccessViewUint(entry->standin_uav, clear);
-	entry->standin_drawn = false;
-	entry->standin_frame = dx12_frame;
+		// Nothing of a mod is in it until the dispatch is recorded,
+		// see Dx12ScopeDispatched
+		entry->standin_valid = false;
+		entry->standin_drawn = false;
+		entry->standin_frame = dx12_frame;
+	}
+	standins_pending.push_back(entry);
 	return entry->standin_uav;
+}
+
+// After a dispatch of the game that is on its list: what it wrote that no mod
+// wrote a buffer of ours for in the scope, if it had one, is the game's alone
+// from here on. Where there is no telling what it wrote, that goes for every
+// buffer.
+static void game_wrote_buffers(Dx12GraphicsCommandList *list, UINT64 written_scope)
+{
+	const Dx12PipelineInfo *pipeline = Dx12ListPipeline(list);
+	const Dx12ShaderInfo *shader = pipeline ? pipeline->shaders[DX12_STAGE_CS] : NULL;
+	const Dx12RootSignatureInfo *signature = Dx12ListRootSignature(list, true);
+	UINT64 mask = shader && shader->reflected && !shader->unmasked ? shader->uav : ~0ull, offset;
+	Dx12DescriptorSlot view;
+	ID3D12Resource *resource;
+	unsigned long slot;
+
+	if (!signature) {
+		for (auto &entry : published) {
+			if (entry.second.standin_scope != written_scope)
+				entry.second.standin_valid = false;
+		}
+		return;
+	}
+	for (; _BitScanForward64(&slot, mask); mask &= mask - 1) {
+		if (!Dx12ResolveRegister(&list->mState, signature, DX12_STAGE_CS, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, slot, &view))
+			continue;
+		resource = view.resource;
+		if (!resource && (!view.offset || !Dx12FindBuffer(view.offset, &resource, &offset)))
+			continue;
+		auto found = published.find({ resource, 0, PUBLISHED_RESOURCE });
+		if (found != published.end() && found->second.standin && found->second.standin_scope != written_scope)
+			found->second.standin_valid = false;
+	}
+}
+
+void Dx12GameDispatched(Dx12GraphicsCommandList *list)
+{
+	Dx12ShimLock();
+	// No scope of this dispatch has a number: 0 is none
+	if (dx12_standins_live)
+		game_wrote_buffers(list, 0);
+	Dx12ShimUnlock();
 }
 
 // What a mod's compute shaders wrote in place of the buffer the game has at
@@ -1739,10 +1824,11 @@ static Published* written_buffer_at(UINT64 va, UINT64 *offset)
 	if (!Dx12FindBuffer(va, &resource, offset))
 		return NULL;
 	auto found = published.find({ resource, 0, PUBLISHED_RESOURCE });
-	if (found == published.end() || !found->second.standin)
+	if (found == published.end() || !found->second.standin || !found->second.standin_valid)
 		return NULL;
 	// The address may have passed on to another buffer
-	if (!Dx12GetResourceInfo(resource, &info) || memcmp(&found->second.desc, &info.desc, sizeof(info.desc)))
+	if (!Dx12GetResourceInfo(resource, &info) || found->second.standin_serial != info.serial
+	    || memcmp(&found->second.desc, &info.desc, sizeof(info.desc)))
 		return NULL;
 	return &found->second;
 }
@@ -3353,7 +3439,7 @@ static void apply_overrides(bool mod_draw)
 
 	// Only for a mod's own draws: the game's own are of its mesh, which
 	// goes with what the game wrote
-	for (mask = mod_draw && standins_live ? scope->pipeline->vb_slots & ~scope->vbs_changed : 0; _BitScanForward(&bit, mask); mask &= mask - 1) {
+	for (mask = mod_draw && dx12_standins_live ? scope->pipeline->vb_slots & ~scope->vbs_changed : 0; _BitScanForward(&bit, mask); mask &= mask - 1) {
 		D3D11_BUFFER_DESC written_desc;
 		Published *written;
 		UINT64 offset;
@@ -3575,6 +3661,7 @@ static void open_scope(Dx12DrawScope *opened, Dx12GraphicsCommandList *list, con
 		reset_scope_state();
 	context->mChanged = false;
 
+	scope_serial++;
 	scope = opened;
 }
 
@@ -4202,7 +4289,7 @@ bool Dx12Dispatch(Dx12GraphicsCommandList *list, UINT x, UINT y, UINT z)
 	DispatchContext c(x, y, z);
 	SkinDispatch skin;
 
-	bool skinning, unconfirmed = false;
+	bool skinning, unconfirmed = false, ran;
 	SlowReason reason;
 
 	if (!pipeline || !pipeline->shaders[DX12_STAGE_CS])
@@ -4256,6 +4343,8 @@ bool Dx12Dispatch(Dx12GraphicsCommandList *list, UINT x, UINT y, UINT z)
 		// own is not to find it without any
 		restore_list();
 		list->mOrig->Dispatch(x, y, z);
+		if (dx12_standins_live)
+			game_wrote_buffers(list, scope_serial);
 		if (!draw.call_info.skip) {
 			forget_skin_output(skin.output_va);
 			if (G->dx12_dump_hashes)
@@ -4271,11 +4360,14 @@ bool Dx12Dispatch(Dx12GraphicsCommandList *list, UINT x, UINT y, UINT z)
 
 	open_scope(&scope_storage, list, pipeline, true);
 
-	if (dx12_shim->hacker_context->Dx12BeforeDispatch(&c, pipeline->shaders[DX12_STAGE_CS]->hash)) {
+	ran = dx12_shim->hacker_context->Dx12BeforeDispatch(&c, pipeline->shaders[DX12_STAGE_CS]->hash);
+	if (ran) {
 		apply_overrides(false);
 		list->mOrig->Dispatch(x, y, z);
 	}
 	dx12_shim->hacker_context->Dx12AfterDispatch(&c);
+	if (ran && dx12_standins_live)
+		game_wrote_buffers(list, scope_serial);
 
 	close_scope();
 	Dx12ShimUnlock();
@@ -4453,7 +4545,7 @@ void Dx12DrawPathFramePresented()
 			skin_outputs.size(), stats.skin_filter_misses, stats.table_copies, stats.side_copies, stats.side_base_copies,
 			stats.table_descriptors, stats.side_switches, stats.table_unbounded, stats.table_no_room);
 		Dx12DumpNote("  Buffers of the game that mods write: %u have one of ours standing in, which %u vertex buffers of mod draws were swapped for\n",
-			standins_live, stats.written_swapped);
+			dx12_standins_live, stats.written_swapped);
 		Dx12DumpNote("  The fence was signalled %lld times for what game lists had pinned, which %lld times were executed on "
 			"another queue than ours, which was made to wait for ours %lld times and %lld times ran them without, not being able to; "
 			"%lld pages of upload memory were created and %lld released; %lld times a resource "

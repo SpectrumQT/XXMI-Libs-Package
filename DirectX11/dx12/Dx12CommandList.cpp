@@ -187,6 +187,8 @@ void STDMETHODCALLTYPE Dx12GraphicsCommandList::Dispatch(UINT ThreadGroupCountX,
 	if (Dx12DrawWanted(this) && Dx12Dispatch(this, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ))
 		return;
 	mOrig->Dispatch(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
+	if (dx12_standins_live)
+		Dx12GameDispatched(this);
 }
 
 // What an indirect call executes depends on its command signature, which is

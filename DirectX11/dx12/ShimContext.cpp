@@ -692,15 +692,17 @@ void STDMETHODCALLTYPE ShimContext::Dispatch(UINT ThreadGroupCountX, UINT Thread
 				mState->cs_uavs[slot] = NULL;
 			}
 		}
-		if (!prepared)
+		if (!prepared) {
+			Dx12ScopeDispatched(false);
 			return;
+		}
 	} else if (!Dx12ShimPrepareDispatch(mState)) {
 		return;
 	}
 
 	Dx12ShimList()->Dispatch(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
 	if (Dx12InDrawScope())
-		Dx12ScopeDispatched();
+		Dx12ScopeDispatched(true);
 }
 
 void STDMETHODCALLTYPE ShimContext::ClearRenderTargetView(ID3D11RenderTargetView *pRenderTargetView, const FLOAT ColorRGBA[4])

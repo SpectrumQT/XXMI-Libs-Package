@@ -34,6 +34,10 @@ struct Dx12ResourceInfo {
 	uint32_t data_hash;
 	// D3D12 does not tell a cube map from a 2D array until a view is made
 	bool cube;
+
+	// Tells the resource from one created at its address after it was
+	// destroyed. Never 0.
+	UINT64 serial;
 };
 
 // Calls back once when D3D12 destroys the object. One callback per object.

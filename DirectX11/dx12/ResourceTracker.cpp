@@ -114,6 +114,8 @@ UINT64 Dx12FindBufferStamp(UINT64 va)
 	return (UINT64)va_stamp_all + (UINT64)*va_stamp(va >> VA_STAMP_SHIFT);
 }
 
+static volatile LONG64 resource_serial;
+
 static ResourceShard* shard_of(ID3D12Resource *resource)
 {
 	return &shards[((UINT64)(uintptr_t)resource * 0x9e3779b97f4a7c15ull) >> 58];
@@ -160,6 +162,7 @@ void Dx12TrackResource(REFIID riid, void **ppvResource, LONG initial_state)
 
 	info.desc = resource->GetDesc();
 	info.state = initial_state;
+	info.serial = InterlockedIncrement64(&resource_serial);
 	// Fails for reserved resources, which have no heap of their own
 	if (SUCCEEDED(resource->GetHeapProperties(&heap, NULL))) {
 		info.heap_type = heap.Type;

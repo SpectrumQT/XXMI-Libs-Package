@@ -85,6 +85,12 @@ bool Dx12Draw(Dx12GraphicsCommandList *list, bool indexed, UINT count, UINT inst
 		INT base_vertex, UINT start_instance);
 bool Dx12Dispatch(Dx12GraphicsCommandList *list, UINT x, UINT y, UINT z);
 
+// Whether mods have written buffers of ours in place of buffers of the game,
+// which a dispatch of the game that Dx12Dispatch did not deal with then has
+// to be told of once it is on the list: it may write the game's again
+extern volatile UINT dx12_standins_live;
+void Dx12GameDispatched(Dx12GraphicsCommandList *list);
+
 // Once per present, with the lock of Bridge.h held
 void Dx12DrawPathFramePresented();
 // After the configuration was read again, which threw away what was worked
@@ -120,4 +126,6 @@ ID3D11UnorderedAccessView* Dx12ScopeUnorderedAccess(UINT slot);
 ID3D11UnorderedAccessView* Dx12ScopeWrittenBuffer(UINT slot);
 void Dx12ScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT base_vertex, UINT start_instance);
 void Dx12ScopeUnsupported(const char *what);
-void Dx12ScopeDispatched();
+// Once a dispatch of a mod made it to our list, or was dropped: only the
+// first leaves what Dx12ScopeWrittenBuffer gave out written
+void Dx12ScopeDispatched(bool recorded);

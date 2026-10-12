@@ -3073,8 +3073,9 @@ static void note_stride_mismatch(UINT slot, UINT mod_stride)
 
 // The other half of pack_positions: a vertex buffer of a mod made for such a
 // D3D11 renderer has halves where the pipeline state of the draw reads floats.
-// A copy with floats is made of it once, by a shader of ours, and bound in its
-// place.
+// A copy with floats is made of it by a shader of ours and bound in its place.
+// The copy is made again when the mod has written the buffer since, as one
+// that animates its mesh with a compute shader does every frame.
 static const char unpack_hlsl[] = R"(
 Buffer<uint> packed : register(t0);
 RWBuffer<uint> unpacked : register(u0);
@@ -3098,16 +3099,21 @@ void main(uint3 id : SV_DispatchThreadID)
 
 static ID3D11ComputeShader *unpack_shader;
 static bool unpack_failed;
-// By the mod's buffer, which is referenced so that no other takes its place.
-// NULL where it could not be done.
-static std::unordered_map<ID3D11Buffer*, ID3D11Buffer*> unpacked_buffers;
+struct UnpackedBuffer {
+	// NULL where it could not be done
+	ID3D11Buffer *copy;
+	// ShimResource::version of the mod's buffer the copy was made of
+	UINT64 version;
+};
+// By the mod's buffer, which is referenced so that no other takes its place
+static std::unordered_map<ID3D11Buffer*, UnpackedBuffer> unpacked_buffers;
 
 static void forget_unpacked_buffers()
 {
 	for (auto &entry : unpacked_buffers) {
 		entry.first->Release();
-		if (entry.second)
-			entry.second->Release();
+		if (entry.second.copy)
+			entry.second.copy->Release();
 	}
 	unpacked_buffers.clear();
 }
@@ -3133,7 +3139,9 @@ static bool reads_float_positions(UINT slot)
 	return found;
 }
 
-static ID3D11Buffer* unpack_buffer(ID3D11Buffer *buffer, UINT stride)
+// into is the copy made before, to be written again. The lists of the game
+// that draw with it keep what it held, see ShimRenameResource.
+static ID3D11Buffer* unpack_buffer(ID3D11Buffer *buffer, UINT stride, ID3D11Buffer *into)
 {
 	D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
 	D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
@@ -3141,11 +3149,12 @@ static ID3D11Buffer* unpack_buffer(ID3D11Buffer *buffer, UINT stride)
 	D3D11_SUBRESOURCE_DATA initial = {};
 	ID3D11ShaderResourceView *srv = NULL;
 	ID3D11UnorderedAccessView *uav = NULL;
-	ID3D11Buffer *out = NULL, *params = NULL;
+	ID3D11Buffer *out = into, *params = NULL;
 	ID3DBlob *blob = NULL, *errors = NULL;
 	ShimResource *resource = ShimResourceOf(buffer);
 	ShimState state = {};
 	UINT values[4] = {};
+	bool done = false;
 	HRESULT hr;
 
 	if (!unpack_shader && !unpack_failed) {
@@ -3185,7 +3194,7 @@ static ID3D11Buffer* unpack_buffer(ID3D11Buffer *buffer, UINT stride)
 	uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
 	uav_desc.Buffer.NumElements = out_desc.ByteWidth / 4;
 
-	if (SUCCEEDED(dx12_shim->shim_device->CreateBuffer(&out_desc, NULL, &out))
+	if ((out || SUCCEEDED(dx12_shim->shim_device->CreateBuffer(&out_desc, NULL, &out)))
 	    && SUCCEEDED(dx12_shim->shim_device->CreateBuffer(&params_desc, &initial, &params))
 	    && SUCCEEDED(dx12_shim->shim_device->CreateShaderResourceView(buffer, &srv_desc, &srv))
 	    && SUCCEEDED(dx12_shim->shim_device->CreateUnorderedAccessView(out, &uav_desc, &uav))) {
@@ -3198,12 +3207,12 @@ static ID3D11Buffer* unpack_buffer(ID3D11Buffer *buffer, UINT stride)
 		if (Dx12ShimPrepareDispatch(&state)) {
 			Dx12ShimList()->Dispatch((values[0] + 63) / 64, 1, 1);
 			stats.buffers_unpacked++;
-		} else {
-			out->Release();
-			out = NULL;
+			done = true;
 		}
-	} else if (out) {
-		out->Release();
+	}
+	if (!done) {
+		if (out && out != into)
+			out->Release();
 		out = NULL;
 	}
 	if (params)
@@ -3224,13 +3233,24 @@ static ID3D11Buffer* unpacked_buffer(ID3D11Buffer *buffer, UINT slot, UINT strid
 	if (!reads_float_positions(slot))
 		return NULL;
 
+	UINT64 version = ShimResourceOf(buffer)->version;
 	auto found = unpacked_buffers.find(buffer);
-	if (found != unpacked_buffers.end())
-		return found->second;
+	if (found != unpacked_buffers.end()) {
+		UnpackedBuffer *unpacked = &found->second;
+
+		if (!unpacked->copy || unpacked->version == version)
+			return unpacked->copy;
+		if (!unpack_buffer(buffer, stride, unpacked->copy)) {
+			unpacked->copy->Release();
+			unpacked->copy = NULL;
+		}
+		unpacked->version = version;
+		return unpacked->copy;
+	}
 
 	buffer->AddRef();
-	ID3D11Buffer *out = unpack_buffer(buffer, stride);
-	unpacked_buffers[buffer] = out;
+	ID3D11Buffer *out = unpack_buffer(buffer, stride, NULL);
+	unpacked_buffers[buffer] = { out, version };
 	if (out) {
 		Dx12DumpNote("A mod's vertex buffer of stride %u was copied with its positions as floats for a draw that reads vertices of %u bytes\n",
 			stride, stride + 4);

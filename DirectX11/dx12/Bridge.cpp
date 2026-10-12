@@ -538,6 +538,8 @@ void Dx12ShimTransition(ShimResource *resource, D3D12_RESOURCE_STATES state)
 	// is, see Bridge.h
 	if ((state & ~READ_STATES) && !resource->foreign && game_list_uses(resource->resource))
 		ShimRenameResource(resource);
+	if (state & ~READ_STATES)
+		resource->version++;
 
 	if (!resource->foreign && resource->touched_epoch != dx12_shim_epoch) {
 		resource->touched_epoch = dx12_shim_epoch;

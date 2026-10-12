@@ -128,6 +128,8 @@ struct ShimResource {
 	UINT64 upload_va;
 	UINT64 upload_version;
 	UINT upload_epoch;
+	// Counts the writes: of the shadow of a cpu_only buffer, and the times
+	// a list of ours was to write a resource (Dx12ShimTransition)
 	UINT64 version;
 	// The same for use by the game's lists, where the upload has to
 	// outlive our submissions. Referenced.

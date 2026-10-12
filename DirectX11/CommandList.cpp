@@ -2592,6 +2592,8 @@ void Draw3DMigotoOverlayCommand::run(CommandListState *state)
 	if (mHackerSwapChain && mHackerSwapChain->mOverlay) {
 		mHackerSwapChain->mOverlay->DrawOverlay();
 		G->suppress_overlay = true;
+	} else if (dx12_shim && Dx12DrawOverlay()) {
+		G->suppress_overlay = true;
 	}
 }
 

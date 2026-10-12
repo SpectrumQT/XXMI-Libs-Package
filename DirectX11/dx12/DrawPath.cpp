@@ -19,6 +19,8 @@
 
 #include "../globals.h"
 #include "../HackerContext.h"
+#include "../Hunting.h"
+#include "../Overlay.h"
 #include "../ResourceHash.h"
 
 volatile bool dx12_draw_path_active;
@@ -4035,9 +4037,20 @@ void HackerContext::Dx12BeforeDraw(DrawContext &data, const UINT64 *shader_hashe
 	mCurrentHullShader = shader_hashes[DX12_STAGE_HS];
 	mCurrentDomainShader = shader_hashes[DX12_STAGE_DS];
 
-	// What the Set*Shader methods do for hunting under D3D11
+	// What the Set*Shader and IASet* methods do for hunting under D3D11
 	if (G->hunting == HUNTING_MODE_ENABLED) {
+		DXGI_FORMAT format;
+		UINT slot, stride;
+
+		// The hashes a TextureOverride section would match the buffers by
+		mCurrentIndexBuffer = data.call_info.IndexCount ? GetResourceHash(Dx12ScopeIndexBuffer(&format)) : 0;
+		for (slot = 0; slot < ARRAYSIZE(mCurrentVertexBuffers); slot++)
+			mCurrentVertexBuffers[slot] = GetResourceHash(Dx12ScopeVertexBuffer(slot, &stride));
+
 		EnterCriticalSectionPretty(&G->mCriticalSection);
+		RegisterVisitedIndexBufferNoLock(mCurrentIndexBuffer);
+		for (slot = 0; slot < ARRAYSIZE(mCurrentVertexBuffers); slot++)
+			RegisterVisitedVertexBufferNoLock(mCurrentVertexBuffers[slot], slot);
 		if (mCurrentVertexShader)
 			G->mVisitedVertexShaders.insert(mCurrentVertexShader);
 		if (mCurrentPixelShader)
@@ -4282,12 +4295,12 @@ void Dx12DumpMarkedShader(UINT64 hash, const char *type)
 	FILE *file = NULL;
 
 	if (!shader || !shader->bytecode) {
-		Dx12LogInfo("*** Shader %016llx was created with hunting off and has not been kept\n", hash);
+		LogOverlay(LOG_WARNING, "> Shader %016llx was created with hunting off and has not been kept\n", hash);
 		return;
 	}
 
 	if (!G->SHADER_PATH[0]) {
-		Dx12LogInfo("*** No override_directory to write the marked shader to\n");
+		LogOverlay(LOG_WARNING, "> No override_directory to write the marked shader to\n");
 		return;
 	}
 
@@ -4295,15 +4308,21 @@ void Dx12DumpMarkedShader(UINT64 hash, const char *type)
 	swprintf_s(path, MAX_PATH, L"%ls\\%016llx-%S.%ls", G->SHADER_PATH, hash, type, shader->dxil ? L"dxil" : L"dxbc");
 	_wfopen_s(&file, path, L"wb");
 	if (!file) {
-		Dx12LogInfo("*** Unable to create %S\n", path);
+		LogOverlay(LOG_WARNING, "> Unable to create %S\n", path);
 		return;
 	}
 	fwrite(shader->bytecode, 1, shader->size, file);
 	fclose(file);
 	Dx12LogInfo("Marked shader written to %S\n", path);
+
+	// The disassembler and the decompiler only read DXBC
+	if (shader->dxil)
+		LogOverlay(LOG_INFO, "> DXIL shader written as the game gave it: %S\n", path);
+	else
+		CopyBytecodeToFixes(hash, type, shader->bytecode, shader->size);
 }
 
-// There is no overlay to show what the hunting keys moved to
+// The hashes in a form to copy from, which the overlay is not
 static void log_selected_shaders()
 {
 	static const char *const names[] = { "vertex", "pixel", "geometry", "hull", "domain", "compute" };

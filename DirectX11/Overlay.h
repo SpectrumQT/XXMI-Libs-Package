@@ -114,9 +114,11 @@ public:
 	Overlay(HackerDevice *pDevice, HackerContext *pContext, IDXGISwapChain *pSwapChain);
 	~Overlay();
 
-	void DrawOverlay(void);
+	// False if nothing was drawn
+	bool DrawOverlay(void);
 };
 
+bool OverlayHasAnythingToDraw();
 void ClearNotices();
 void LogOverlayW(LogLevel level, wchar_t *fmt, ...);
 void LogOverlay(LogLevel level, char *fmt, ...);

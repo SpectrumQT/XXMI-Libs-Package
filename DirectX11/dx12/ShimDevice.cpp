@@ -912,6 +912,115 @@ HRESULT STDMETHODCALLTYPE ShimDevice::CreateDepthStencilView(ID3D11Resource *pRe
 // -----------------------------------------------------------------------------
 // Shaders
 
+// A shader stripped of its reflection data, as the ones DirectXTK draws the
+// overlay with are, still declares what it reads in its code. Shader model 4
+// and 5.0 only, where a register is its own binding.
+static void reflect_declarations(ShimShader *shader)
+{
+	static const BYTE dimensions[] = {
+		0, D3D12_SRV_DIMENSION_BUFFER, D3D12_SRV_DIMENSION_TEXTURE1D, D3D12_SRV_DIMENSION_TEXTURE2D,
+		D3D12_SRV_DIMENSION_TEXTURE2DMS, D3D12_SRV_DIMENSION_TEXTURE3D, D3D12_SRV_DIMENSION_TEXTURECUBE,
+		D3D12_SRV_DIMENSION_TEXTURE1DARRAY, D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
+		D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY, D3D12_SRV_DIMENSION_TEXTURECUBEARRAY,
+	};
+	const BYTE *data = shader->bytecode.data();
+	size_t size = shader->bytecode.size();
+	const UINT32 *code = NULL, *end, *operand;
+	// Opcodes of the shader bytecode, from d3d11TokenizedProgramFormat.hpp
+	enum {
+		CUSTOMDATA = 53, DCL_RESOURCE = 88, DCL_CONSTANT_BUFFER = 89, DCL_SAMPLER = 90,
+		DCL_UAV_TYPED = 156, DCL_UAV_RAW = 157, DCL_UAV_STRUCTURED = 158,
+		DCL_RESOURCE_RAW = 161, DCL_RESOURCE_STRUCTURED = 162,
+	};
+	UINT32 chunks, offset, bytes = 0, token, opcode, length, reg, dimension, i;
+
+	if (size < 32 || memcmp(data, "DXBC", 4))
+		return;
+	memcpy(&chunks, data + 28, 4);
+	for (i = 0; i < chunks && 32 + (size_t)(i + 1) * 4 <= size; i++) {
+		memcpy(&offset, data + 32 + i * 4, 4);
+		if ((size_t)offset + 8 > size)
+			return;
+		memcpy(&bytes, data + offset + 4, 4);
+		if ((!memcmp(data + offset, "SHDR", 4) || !memcmp(data + offset, "SHEX", 4))
+		    && bytes >= 8 && (size_t)offset + 8 + bytes <= size) {
+			code = (const UINT32*)(data + offset + 8);
+			break;
+		}
+	}
+	if (!code || (code[0] >> 4 & 0xf) > 5 || ((code[0] >> 4 & 0xf) == 5 && (code[0] & 0xf)))
+		return;
+
+	end = code + min(code[1], bytes / 4);
+	for (code += 2; code < end; code += length) {
+		token = code[0];
+		opcode = token & 0x7ff;
+		length = opcode == CUSTOMDATA ? (code + 1 < end ? code[1] : 0) : token >> 24 & 0x7f;
+		if (!length || code + length > end)
+			return;
+		if (opcode != DCL_RESOURCE && opcode != DCL_CONSTANT_BUFFER && opcode != DCL_SAMPLER
+		    && opcode != DCL_RESOURCE_RAW && opcode != DCL_RESOURCE_STRUCTURED
+		    && opcode != DCL_UAV_TYPED && opcode != DCL_UAV_RAW && opcode != DCL_UAV_STRUCTURED)
+			continue;
+
+		// Past the extensions of the opcode and of the operand to
+		// the first index of the operand, the register
+		for (operand = code; operand + 1 < code + length && (*operand & 0x80000000); operand++);
+		for (operand++; operand + 1 < code + length && (*operand & 0x80000000); operand++);
+		if (operand + 1 >= code + length)
+			continue;
+		reg = operand[1];
+
+		switch (opcode) {
+		case DCL_CONSTANT_BUFFER:
+			if (reg < SHIM_CBV_SLOTS) {
+				shader->cbv_used |= 1u << reg;
+				shader->cbv_count = max(shader->cbv_count, reg + 1);
+			}
+			break;
+		case DCL_SAMPLER:
+			if (reg < SHIM_SAMPLER_SLOTS) {
+				shader->sampler_used |= 1u << reg;
+				shader->sampler_count = max(shader->sampler_count, reg + 1);
+			}
+			break;
+		case DCL_RESOURCE:
+			dimension = token >> 11 & 0x1f;
+			if (reg < SHIM_SRV_SLOTS && dimension && dimension < ARRAYSIZE(dimensions)) {
+				shader->srv_used[reg / 64] |= 1ull << (reg % 64);
+				shader->srv_count = max(shader->srv_count, reg + 1);
+				shader->srv_dimension[reg] = dimensions[dimension];
+			}
+			break;
+		case DCL_RESOURCE_RAW:
+		case DCL_RESOURCE_STRUCTURED:
+			if (reg < SHIM_SRV_SLOTS) {
+				shader->srv_used[reg / 64] |= 1ull << (reg % 64);
+				shader->srv_count = max(shader->srv_count, reg + 1);
+				shader->srv_dimension[reg] = D3D12_SRV_DIMENSION_BUFFER;
+			}
+			break;
+		case DCL_UAV_TYPED:
+		case DCL_UAV_RAW:
+		case DCL_UAV_STRUCTURED:
+			if (reg >= SHIM_UAV_SLOTS)
+				break;
+			shader->uav_used |= 1ull << reg;
+			shader->uav_count = max(shader->uav_count, reg + 1);
+			shader->uav_dimension[reg] = D3D12_UAV_DIMENSION_BUFFER;
+			// Of a typed view only, in the values of DCL_RESOURCE
+			switch (opcode == DCL_UAV_TYPED ? token >> 11 & 0x1f : 1) {
+			case 2: shader->uav_dimension[reg] = D3D12_UAV_DIMENSION_TEXTURE1D; break;
+			case 3: shader->uav_dimension[reg] = D3D12_UAV_DIMENSION_TEXTURE2D; break;
+			case 5: shader->uav_dimension[reg] = D3D12_UAV_DIMENSION_TEXTURE3D; break;
+			case 7: shader->uav_dimension[reg] = D3D12_UAV_DIMENSION_TEXTURE1DARRAY; break;
+			case 8: shader->uav_dimension[reg] = D3D12_UAV_DIMENSION_TEXTURE2DARRAY; break;
+			}
+			break;
+		}
+	}
+}
+
 static void reflect_shader(ShimShader *shader)
 {
 	ID3D11ShaderReflection *reflection = NULL;
@@ -927,6 +1036,9 @@ static void reflect_shader(ShimShader *shader)
 			reflection->Release();
 		return;
 	}
+
+	if (!desc.BoundResources)
+		reflect_declarations(shader);
 
 	for (i = 0; i < desc.BoundResources; i++) {
 		if (FAILED(reflection->GetResourceBindingDesc(i, &bind)))

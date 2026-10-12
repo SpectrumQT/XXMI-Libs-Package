@@ -331,7 +331,7 @@ static void MarkingScreenShots(HackerDevice *device, HashType hash, char *short_
 // This is pretty heavyweight obviously, so it is only being done during Mark operations.
 // Todo: another copy/paste job, we really need some subroutines, utility library.
 
-static string Decompile(ID3DBlob *pShaderByteCode, string *asmText)
+static string Decompile(const void *bytecode, string *asmText)
 {
 	LogInfo("    creating HLSL representation.\n");
 
@@ -340,7 +340,7 @@ static string Decompile(ID3DBlob *pShaderByteCode, string *asmText)
 	bool errorOccurred = false;
 
 	ParseParameters p;
-	p.bytecode = pShaderByteCode->GetBufferPointer();
+	p.bytecode = bytecode;
 	p.decompiled = asmText->c_str();
 	p.decompiledSize = asmText->size();
 	p.ZeroOutput = false;
@@ -836,15 +836,14 @@ err:
 	goto out;
 }
 
-static bool WriteASM(string *asmText, string *hlslText, string *errText,
-		UINT64 hash, OriginalShaderInfo shader_info, HackerDevice *device, wstring *tagline = NULL)
+static bool WriteASMFile(string *asmText, string *hlslText, string *errText,
+		UINT64 hash, const wchar_t *shaderType, wstring *tagline, wchar_t fileName[MAX_PATH])
 {
-	wchar_t fileName[MAX_PATH];
 	wchar_t fullName[MAX_PATH];
 	std::string token;
 	FILE *f;
 
-	swprintf_s(fileName, MAX_PATH, L"%016llx-%ls.txt", hash, shader_info.shaderType.c_str());
+	swprintf_s(fileName, MAX_PATH, L"%016llx-%ls.txt", hash, shaderType);
 	swprintf_s(fullName, MAX_PATH, L"%ls\\%ls", G->SHADER_PATH, fileName);
 
 	wfopen_ensuring_access(&f, fullName, L"wb");
@@ -881,6 +880,16 @@ static bool WriteASM(string *asmText, string *hlslText, string *errText,
 	}
 
 	fclose(f);
+	return true;
+}
+
+static bool WriteASM(string *asmText, string *hlslText, string *errText,
+		UINT64 hash, OriginalShaderInfo shader_info, HackerDevice *device, wstring *tagline = NULL)
+{
+	wchar_t fileName[MAX_PATH];
+
+	if (!WriteASMFile(asmText, hlslText, errText, hash, shader_info.shaderType.c_str(), tagline, fileName))
+		return false;
 
 	// Lastly, reload the shader generated, to check for decompile errors, set it as the active
 	// shader code, in case there are visual errors, and make it the match the code in the file.
@@ -896,16 +905,13 @@ static bool WriteASM(string *asmText, string *hlslText, string *errText,
 // and thus is not different than the file on disk.
 // If a file was already extant in the ShaderFixes, it will be picked up at game launch as the master shaderByteCode.
 
-static bool WriteHLSL(string *asmText, string *hlslText, string *errText,
-		UINT64 hash, OriginalShaderInfo shader_info, HackerDevice *device, bool remove_failed)
+static bool WriteHLSLFile(string *asmText, string *hlslText, const void *bytecode,
+		UINT64 hash, const wchar_t *shaderType, wchar_t fileName[MAX_PATH], wchar_t fullName[MAX_PATH])
 {
-	wchar_t fileName[MAX_PATH];
-	wchar_t fullName[MAX_PATH];
 	FILE *fw;
-	bool ret;
 
 	// Try to decompile the current byte code into HLSL:
-	*hlslText = Decompile(shader_info.byteCode, asmText);
+	*hlslText = Decompile(bytecode, asmText);
 	if (hlslText->empty())
 		return false;
 
@@ -913,7 +919,7 @@ static bool WriteHLSL(string *asmText, string *hlslText, string *errText,
 	// this has been moved to the earlier shader_already_dumped() routine,
 	// and that no longer modifies the file when touching it.
 
-	swprintf_s(fileName, MAX_PATH, L"%016llx-%ls_replace.txt", hash, shader_info.shaderType.c_str());
+	swprintf_s(fileName, MAX_PATH, L"%016llx-%ls_replace.txt", hash, shaderType);
 	swprintf_s(fullName, MAX_PATH, L"%ls\\%ls", G->SHADER_PATH, fileName);
 	wfopen_ensuring_access(&fw, fullName, L"wb");
 	if (!fw)
@@ -931,6 +937,19 @@ static bool WriteHLSL(string *asmText, string *hlslText, string *errText,
 	fprintf_s(fw, "\n//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/\n");
 
 	fclose(fw);
+	return true;
+}
+
+static bool WriteHLSL(string *asmText, string *hlslText, string *errText,
+		UINT64 hash, OriginalShaderInfo shader_info, HackerDevice *device, bool remove_failed)
+{
+	wchar_t fileName[MAX_PATH];
+	wchar_t fullName[MAX_PATH];
+	bool ret;
+
+	if (!WriteHLSLFile(asmText, hlslText, shader_info.byteCode->GetBufferPointer(), hash,
+			shader_info.shaderType.c_str(), fileName, fullName))
+		return false;
 
 	// Lastly, reload the shader generated, to check for decompile errors, set it as the active
 	// shader code, in case there are visual errors, and make it the match the code in the file.
@@ -1087,6 +1106,41 @@ static void CopyToFixes(UINT64 hash, HackerDevice *device)
 	}
 	else
 	{
+		LogOverlay(LOG_WARNING, "> FAILED to copy Marked shader to ShaderFixes\n");
+		BeepFailure();
+	}
+}
+
+void CopyBytecodeToFixes(UINT64 hash, const char *type, const void *bytecode, size_t size)
+{
+	bool asm_enabled = !!(G->marking_actions & MarkingAction::ASM);
+	wstring shaderType(type, type + strlen(type));
+	wchar_t fileName[MAX_PATH], fullName[MAX_PATH];
+	string asmText, hlslText;
+	bool success = false;
+
+	// ShaderRegex patches no shaders that are not D3D11 shader objects,
+	// so there is nothing for marking_actions=regex to show
+	if (!(G->marking_actions & MarkingAction::HLSL) && !asm_enabled)
+		return;
+
+	if (G->marking_actions & MarkingAction::HLSL) {
+		asmText = BinaryToAsmText(bytecode, size, false);
+		if (!asmText.empty())
+			success = WriteHLSLFile(&asmText, &hlslText, bytecode, hash, shaderType.c_str(), fileName, fullName);
+		if (!success && asm_enabled)
+			LogOverlay(LOG_NOTICE, "> HLSL decompilation failed. Falling back to assembly\n");
+	}
+
+	if (!success && asm_enabled) {
+		asmText = BinaryToAsmText(bytecode, size, G->patch_cb_offsets);
+		if (!asmText.empty())
+			success = WriteASMFile(&asmText, &hlslText, NULL, hash, shaderType.c_str(), NULL, fileName);
+	}
+
+	if (success) {
+		LogOverlayW(LOG_INFO, L"> copied Marked shader to ShaderFixes for reference: %ls\n", fileName);
+	} else {
 		LogOverlay(LOG_WARNING, "> FAILED to copy Marked shader to ShaderFixes\n");
 		BeepFailure();
 	}
@@ -1734,9 +1788,10 @@ static void MarkShaderEnd(HackerDevice *device, char *long_type, char *short_typ
 	if (G->marking_actions & MarkingAction::CLIPBOARD)
 		HashToClipboard(long_type, selected);
 
-	// Neither screenshots nor a decompiler for D3D12 shaders yet
+	// No screenshots for D3D12 yet, and its shaders are not in
+	// mReloadedShaders for CopyToFixes to find
 	if (dx12_shim) {
-		if (G->marking_actions & MarkingAction::DUMP_MASK)
+		if (!shader_already_dumped(selected, short_type) && (G->marking_actions & MarkingAction::DUMP_MASK))
 			Dx12DumpMarkedShader(selected, short_type);
 		LeaveCriticalSection(&G->mCriticalSection);
 		return;
@@ -2173,4 +2228,25 @@ void PurgeStaleVisitedBufferHashes(HackerDevice* device)
 	PurgeStaleBuffers(&G->mVisitedVertexBuffers, &G->mVisitedVertexBuffersLastSeenFrame, &G->mSelectedVertexBuffer, &G->mSelectedVertexBufferPos);
 	PurgeStaleBuffers(&G->mVisitedIndexBuffers, &G->mVisitedIndexBuffersLastSeenFrame, &G->mSelectedIndexBuffer, &G->mSelectedIndexBufferPos);
 	LeaveCriticalSection(&G->mCriticalSection);
+}
+
+void UpdateHuntingBufferSelection(HackerDevice* device)
+{
+	if (G->overlay_buffer_hash_lifetime >= 0)
+		PurgeStaleVisitedBufferHashes(device);
+	if (G->mSelectedIndexBufferPos == INT_MAX && !G->mVisitedIndexBuffers.empty()) {
+		G->mSelectedIndexBufferPos = G->mVisitedIndexBuffers.size() - 1;
+		G->mSelectedIndexBuffer = *std::prev(G->mVisitedIndexBuffers.end());
+	}
+	if (G->mSelectedVertexBufferPos == INT_MAX && !G->mVisitedVertexBuffers.empty()) {
+		G->mSelectedVertexBufferPos = G->mVisitedVertexBuffers.size() - 1;
+		G->mSelectedVertexBuffer = *std::prev(G->mVisitedVertexBuffers.end());
+	}
+	if (G->gResetSelectedVertexBufferSlotId) {
+		if (!G->mVisitedVertexBuffers.empty()) {
+			G->mSelectedVertexBuffer = *G->mVisitedVertexBuffers.begin();
+			G->mSelectedVertexBufferPos = 0;
+			G->gResetSelectedVertexBufferSlotId = false;
+		}
+	}
 }

@@ -16,6 +16,11 @@ void Dx12PresentEnd(Dx12SwapChain *swap_chain);
 // for good
 void Dx12SwapChainBuffersReleased(Dx12SwapChain *swap_chain, bool destroyed);
 
+// Draws the hunting overlay and the notices to the buffer that will be
+// presented next. Needs the shim's lock, which the command lists run under.
+// False if it was not drawn, as from the command list of a draw of the game.
+bool Dx12DrawOverlay();
+
 // What "bb" is in a command list: the buffer that will be presented next,
 // with a reference. NULL if nothing is being presented through us.
 ID3D11Resource* Dx12ShimBackBuffer();

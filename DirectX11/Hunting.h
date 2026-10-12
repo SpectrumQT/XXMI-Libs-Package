@@ -26,3 +26,10 @@ void RegisterVisitedIndexBuffer(uint32_t hash);
 void RegisterVisitedVertexBufferNoLock(uint32_t hash, uint32_t slot_id);
 void RegisterVisitedVertexBuffer(uint32_t hash, uint32_t slot_id);
 void PurgeStaleVisitedBufferHashes(HackerDevice* device);
+// Once a frame while hunting, before the keys are looked at
+void UpdateHuntingBufferSelection(HackerDevice* device);
+
+// For a shader that never was a D3D11 shader object of the game: writes what
+// marking_actions asks for of DXBC bytecode to ShaderFixes, without loading
+// the result in place of anything
+void CopyBytecodeToFixes(UINT64 hash, const char *type, const void *bytecode, size_t size);

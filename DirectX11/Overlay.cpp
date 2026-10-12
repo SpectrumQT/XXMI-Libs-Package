@@ -17,6 +17,7 @@
 
 #include "HackerDevice.h"
 #include "HackerContext.h"
+#include "dx12/PresentPass.h"
 
 #include <stdexcept>
 
@@ -112,8 +113,9 @@ Overlay::Overlay(HackerDevice *pDevice, HackerContext *pContext, IDXGISwapChain 
 	// now, so this is technically unecessary, but since the overlay code
 	// still accesses these it is more safer to leave this in place (more
 	// resistant to code changes in the swap chain breaking this).
-	mHackerDevice->AddRef();
-	mHackerContext->AddRef();
+	//
+	// Taken at the end of the constructor: the destructor that releases
+	// them does not run if anything below throws.
 
 	// The courierbold.spritefont is now included as binary resource data attached
 	// to the d3d11.dll.  We can fetch that resource and pass it to new SpriteFont
@@ -177,6 +179,9 @@ Overlay::Overlay(HackerDevice *pDevice, HackerContext *pContext, IDXGISwapChain 
 		throw std::runtime_error("CreateInputLayout failed");
 
 	mPrimitiveBatch.reset(new DirectX::PrimitiveBatch<DirectX::VertexPositionColor>(mOrigContext));
+
+	mHackerDevice->AddRef();
+	mHackerContext->AddRef();
 }
 
 Overlay::~Overlay()
@@ -451,8 +456,16 @@ HRESULT Overlay::InitDrawState()
 	HRESULT hr;
 
 	ID3D11Texture2D *pBackBuffer;
-	hr = mOrigSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&pBackBuffer);
-	if (FAILED(hr)) {
+	if (!mOrigSwapChain) {
+		// The game presents with D3D12 and we draw through the shim
+		ID3D11Resource *resource = Dx12ShimBackBuffer();
+		if (!resource)
+			return E_FAIL;
+		hr = resource->QueryInterface(__uuidof(ID3D11Texture2D), (LPVOID*)&pBackBuffer);
+		resource->Release();
+		if (FAILED(hr))
+			return hr;
+	} else if (FAILED(hr = mOrigSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&pBackBuffer))) {
 		// The back buffer doesn't support the D3D11 Texture2D
 		// interface. Maybe this is DX12 - if we have been built with
 		// the Win 10 SDK we can handle that via 11On12:
@@ -784,13 +797,18 @@ static void CreateInfoString(wchar_t* info)
 	swprintf_s(info, maxstring, L"Shader Hunting Mode (marking: %ls)", marking_mode);
 }
 
-void Overlay::DrawOverlay(void)
+bool OverlayHasAnythingToDraw()
+{
+	return G->hunting == HUNTING_MODE_ENABLED || has_notice || Profiling::mode != Profiling::Mode::NONE;
+}
+
+bool Overlay::DrawOverlay(void)
 {
 	Profiling::State profiling_state;
 	HRESULT hr;
 
-	if (G->hunting != HUNTING_MODE_ENABLED && !has_notice && Profiling::mode == Profiling::Mode::NONE)
-		return;
+	if (!OverlayHasAnythingToDraw())
+		return false;
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::start(&profiling_state);
@@ -843,6 +861,8 @@ fail_restore:
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::end(&profiling_state, &Profiling::overlay_overhead);
+
+	return SUCCEEDED(hr);
 }
 
 OverlayNotice::OverlayNotice(std::wstring message) :

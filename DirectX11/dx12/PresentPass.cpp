@@ -19,6 +19,7 @@
 #include "../Hunting.h"
 #include "../IniHandler.h"
 #include "../input.h"
+#include "../Overlay.h"
 #include "../Override.h"
 
 // Frame actions are run for one swap chain at a time, the first one that
@@ -124,8 +125,36 @@ static bool begin(Dx12SwapChain *swap_chain)
 	return true;
 }
 
+// The engine's overlay, drawing through the shim to the buffer about to be
+// presented. Only made once there is something to show.
+static Overlay *overlay;
+
+bool Dx12DrawOverlay()
+{
+	static ULONGLONG retry_at;
+
+	// Within a draw of the game what the context draws goes to the game's
+	// list with the game's pipeline, which the overlay's shaders are not for
+	if (!dx12_shim || Dx12InDrawScope() || !OverlayHasAnythingToDraw())
+		return false;
+
+	if (!overlay) {
+		// Not every frame: what failed may take a while to pass
+		if (GetTickCount64() < retry_at)
+			return false;
+		try {
+			overlay = new Overlay(dx12_shim->hacker_device, dx12_shim->hacker_context, NULL);
+		} catch (...) {
+			Dx12LogInfo("*** Failed to create the overlay, trying again in a while\n");
+			retry_at = GetTickCount64() + 5000;
+			return false;
+		}
+	}
+	return overlay->DrawOverlay();
+}
+
 // HackerSwapChain::RunFrameActions without what needs a D3D11 swap chain:
-// the overlay and frame analysis
+// frame analysis
 static void frame_actions()
 {
 	HackerDevice *device = dx12_shim->hacker_device;
@@ -141,6 +170,9 @@ static void frame_actions()
 		RunCommandList(device, dx12_shim->hacker_context, &G->present_command_list, NULL, false);
 
 	G->analyse_frame = false;
+
+	if (G->hunting == HUNTING_MODE_ENABLED)
+		UpdateHuntingBufferSelection(device);
 
 	new_event = DispatchInputEvents(device);
 
@@ -160,6 +192,10 @@ static void frame_actions()
 		ReloadConfig(device);
 		Dx12DrawPathConfigReloaded();
 	}
+
+	if (!G->suppress_overlay)
+		Dx12DrawOverlay();
+	G->suppress_overlay = false;
 
 	G->frame_no++;
 	dx12_shim->hacker_context->ResetCallCounters();

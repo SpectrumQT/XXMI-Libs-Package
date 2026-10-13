@@ -3481,10 +3481,23 @@ void HackerContext::Dx12PublishInputLayout()
 {
 	std::vector<D3D11_INPUT_ELEMENT_DESC> elements;
 	ID3D11InputLayout *layout = NULL;
+	UINT64 hash;
 
 	if (!scope) {
-		if (!VkInDrawScope() || VkScopeGameLayout() || !VkScopeInputElements(&elements))
+		if (!VkInDrawScope() || VkScopeGameLayout())
 			return;
+		hash = VkScopeLayoutHash();
+		if (hash)
+			layout = mHackerDevice->FindCustomInputLayout(hash);
+		if (layout) {
+			IASetInputLayout(layout);
+			VkScopeSetGameLayout(static_cast<HackerInputLayout*>(layout)->GetOrigInputLayout());
+			layout->Release();
+			return;
+		}
+		if (!VkScopeInputElements(&elements))
+			return;
+		VkScopeSetLayoutHash(CalculateInputLayoutHash(elements.data(), (UINT)elements.size(), NULL, 0));
 	} else if (scope->compute || scope->skin || scope->game_layout) {
 		return;
 	}

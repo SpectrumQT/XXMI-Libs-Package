@@ -881,10 +881,9 @@ static bool is_buffer(ShimResource *resource)
 
 static UINT texture_shadow_pitch(ShimResource *resource, UINT *rows)
 {
-	D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout;
 	UINT64 row_size;
 
-	dx12_shim->device->GetCopyableFootprints(&resource->desc, 0, 1, 0, &layout, rows, &row_size, NULL);
+	ShimFootprint(resource, NULL, rows, &row_size, NULL);
 	return (UINT)row_size;
 }
 

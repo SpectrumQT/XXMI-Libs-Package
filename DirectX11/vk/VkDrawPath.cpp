@@ -44,6 +44,17 @@ enum SlowReason {
 	SLOW_REASONS
 };
 
+// What the time in the engine is told apart by for the report
+enum TimedPart {
+	// Telling it what the game has bound
+	TIMED_ANSWERS,
+	// Bringing what a mod draws with to the game's device
+	TIMED_MOD_DRAWS,
+	// and recording its draws
+	TIMED_RECORDING,
+	TIMED_PARTS
+};
+
 // Since the last report, with the lock of dx12/Bridge.h held
 static struct {
 	unsigned draws, skipped, mod_draws, mod_draws_failed;
@@ -57,13 +68,24 @@ static struct {
 	// Buffers of mods brought over for a shader of the game to read, of
 	// which from the GPU, and what that took
 	unsigned brought, brought_from_gpu, sets_made, submits_waited;
+	// Submissions that had the GPU wait for the D3D12 device, not the thread
+	unsigned submits_chained;
 	UINT64 brought_bytes, submit_ticks;
+	// Of those from the GPU, what never left it, see shared_buffers
+	unsigned shared;
+	UINT64 shared_bytes;
+	// What was looked at of the storage buffers of the game for a shader of
+	// a mod, and what of it the D3D12 device had to be given
+	UINT64 compared_bytes, uploaded_bytes, upload_ticks;
 	unsigned variants_made, variants_failed;
 	UINT64 variant_ticks;
 	unsigned textures_made, textures_failed, textures_set;
 	unsigned apart_draws, textures_shown;
 	UINT64 textures_bytes;
 	UINT64 wait_ticks, engine_ticks;
+	UINT64 part_ticks[TIMED_PARTS];
+	// Draws the engine was run for that it neither skipped nor drew for
+	unsigned idle_draws;
 } stats;
 
 static UINT64 ticks()
@@ -73,6 +95,18 @@ static UINT64 ticks()
 	QueryPerformanceCounter(&now);
 	return now.QuadPart;
 }
+
+struct Timed {
+	int part;
+	UINT64 start;
+
+	Timed(int part) : part(part), start(G->vk_dump_hashes ? ticks() : 0) {}
+	~Timed()
+	{
+		if (start)
+			stats.part_ticks[part] += ticks() - start;
+	}
+};
 
 // -----------------------------------------------------------------------------
 // Shaders and pipelines
@@ -115,6 +149,9 @@ struct ShaderLayout {
 struct PipelineRecipe {
 	std::vector<std::unique_ptr<BYTE[]>> memory;
 	VkGraphicsPipelineCreateInfo info;
+	// Of the input layout the engine made of its vertex input, once it
+	// did: see VkScopeLayoutHash
+	volatile UINT64 layout_hash;
 };
 
 // A pipeline made of that for a mod: by the input layout the mod has set, 0
@@ -767,6 +804,7 @@ void VkModsMemoryUnmapped(VkDeviceMemory memory)
 // With the lock of dx12/Bridge.h held, before anything is looked up in
 // published: the handle of a buffer that is gone may be another's by now
 static void forget_dead_constants(VkBuffer buffer);
+static void forget_region_memos(const std::vector<VkBuffer> &gone);
 
 static void forget_dead_buffers()
 {
@@ -787,6 +825,8 @@ static void forget_dead_buffers()
 		found->second.object->Release();
 		published.erase(found);
 	}
+	if (!dead.empty())
+		forget_region_memos(dead);
 }
 
 // With memory_lock held. NULL if the game does not have the bytes mapped.
@@ -807,18 +847,81 @@ static const BYTE* mapped_bytes(VkBuffer buffer, VkDeviceSize offset, VkDeviceSi
 	return mapping->second.data + (start - mapping->second.offset);
 }
 
+// The memory is read the way copy_mapped reads it, which takes the samples
+// from where a load of that kind can be: the multiple of their size before
+// where they would be, or the first one within the region
 static void take_samples(const BYTE *data, UINT bytes, BYTE *samples)
 {
+	const BYTE *at;
 	UINT i;
 
 	memset(samples, 0, REGION_SAMPLES * REGION_SAMPLE_BYTES);
-	if (bytes <= REGION_SAMPLE_BYTES) {
+	if (bytes < REGION_SAMPLE_BYTES * 2) {
 		memcpy(samples, data, bytes);
 		return;
 	}
 	for (i = 0; i < REGION_SAMPLES; i++) {
-		memcpy(samples + i * REGION_SAMPLE_BYTES,
-			data + (UINT64)(bytes - REGION_SAMPLE_BYTES) * i / (REGION_SAMPLES - 1), REGION_SAMPLE_BYTES);
+		at = data + (UINT64)(bytes - REGION_SAMPLE_BYTES) * i / (REGION_SAMPLES - 1);
+		at = (const BYTE*)((size_t)at & ~(size_t)(REGION_SAMPLE_BYTES - 1));
+		if (at < data)
+			at += REGION_SAMPLE_BYTES;
+		_mm_storeu_si128((__m128i*)(samples + i * REGION_SAMPLE_BYTES), _mm_stream_load_si128((__m128i*)at));
+	}
+}
+
+// Most draws that have the index count of some section have other indices
+// than any section is for, and the engine would be run for each only to find
+// that out. What region_hash last found of a region is kept here as well, for
+// the threads recording to go by themselves: where the samples are still what
+// they were, the hash is, and a hash no section has needs no engine.
+const UINT REGION_MEMOS = 1 << 13;
+
+struct RegionMemo {
+	// Odd while it is written, which is with the lock of dx12/Bridge.h held
+	volatile LONG sequence;
+	VkBuffer buffer;
+	VkDeviceSize offset;
+	UINT bytes;
+	uint32_t hash;
+	UINT hashed_frame;
+	BYTE samples[REGION_SAMPLES * REGION_SAMPLE_BYTES];
+};
+
+static RegionMemo region_memos[REGION_MEMOS];
+
+static RegionMemo* region_memo(VkBuffer buffer, VkDeviceSize offset, UINT bytes)
+{
+	UINT64 key = ((UINT64)buffer ^ (offset * 0x9e3779b97f4a7c15ull) ^ ((UINT64)bytes << 32)) * 0xff51afd7ed558ccdull;
+
+	return &region_memos[key >> 51];
+}
+
+static void remember_region(VkBuffer buffer, VkDeviceSize offset, UINT bytes, const Region *region)
+{
+	RegionMemo *memo = region_memo(buffer, offset, bytes);
+
+	if (memo->buffer == buffer && memo->offset == offset && memo->bytes == bytes && memo->hash == region->hash
+	    && memo->hashed_frame == region->hashed_frame)
+		return;
+
+	InterlockedIncrement(&memo->sequence);
+	memo->buffer = buffer;
+	memo->offset = offset;
+	memo->bytes = bytes;
+	memo->hash = region->hash;
+	memo->hashed_frame = region->hashed_frame;
+	memcpy(memo->samples, region->samples, sizeof(memo->samples));
+	InterlockedIncrement(&memo->sequence);
+}
+
+static void forget_region_memos(const std::vector<VkBuffer> &gone)
+{
+	for (RegionMemo &memo : region_memos) {
+		if (!memo.buffer || std::find(gone.begin(), gone.end(), memo.buffer) == gone.end())
+			continue;
+		InterlockedIncrement(&memo.sequence);
+		memo.buffer = VK_NULL_HANDLE;
+		InterlockedIncrement(&memo.sequence);
 	}
 }
 
@@ -830,8 +933,10 @@ static uint32_t region_hash(VkBuffer buffer, PublishedBuffer *entry, VkDeviceSiz
 	UINT frame = vk_frame;
 	const BYTE *data;
 
-	if (region->hashed && region->checked_frame == frame)
+	if (region->hashed && region->checked_frame == frame) {
+		remember_region(buffer, offset, bytes, region);
 		return region->hash;
+	}
 
 	AcquireSRWLockShared(&memory_lock);
 
@@ -858,6 +963,7 @@ static uint32_t region_hash(VkBuffer buffer, PublishedBuffer *entry, VkDeviceSiz
 	ReleaseSRWLockShared(&memory_lock);
 
 	region->checked_frame = frame;
+	remember_region(buffer, offset, bytes, region);
 	return region->hash;
 }
 
@@ -955,6 +1061,10 @@ struct ConstantsSource {
 	ConstantsKey key;
 	std::vector<bool> pages;
 	UINT pages_left;
+	// Of one with a resource, the pages the resource does not have as the
+	// shadow has them. Empty until the resource was given any, see
+	// VkScopeUploadShadow.
+	std::vector<BYTE> stale;
 };
 
 static std::unordered_map<ShimResource*, ConstantsSource> constants_sources;
@@ -1006,14 +1116,17 @@ static void copy_mapped_wide(BYTE *dst, const BYTE *src, size_t bytes)
 	_mm256_zeroupper();
 }
 
+// What a thread does of something large: the part from one place to another
+typedef void (*CopyJob)(void *context, size_t from, size_t to);
+
 // The threads that take the parts of a large copy. They are kept: starting
 // one in a game takes about as long as the copy it is for. Whoever copies has
 // the lock of dx12/Bridge.h, so there is one copy at a time.
 static struct CopyWorker {
 	HANDLE thread, start, done;
-	BYTE *dst;
-	const BYTE *src;
-	size_t bytes;
+	CopyJob job;
+	void *context;
+	size_t from, to;
 } copy_workers[COPY_THREADS - 1];
 
 static DWORD WINAPI copy_worker(void *argument)
@@ -1022,7 +1135,7 @@ static DWORD WINAPI copy_worker(void *argument)
 
 	for (;;) {
 		WaitForSingleObject(worker->start, INFINITE);
-		copy_mapped_wide(worker->dst, worker->src, worker->bytes);
+		worker->job(worker->context, worker->from, worker->to);
 		SetEvent(worker->done);
 	}
 }
@@ -1046,6 +1159,40 @@ static bool start_copy_workers()
 	return true;
 }
 
+// Has the job done for all from 0 to count, by as many threads as there are,
+// each for a multiple of unit
+static void run_in_parts(CopyJob job, void *context, size_t count, size_t unit)
+{
+	size_t part = count / COPY_THREADS / unit * unit, i;
+
+	if (!part || !start_copy_workers()) {
+		job(context, 0, count);
+		return;
+	}
+	for (i = 0; i < COPY_THREADS - 1; i++) {
+		copy_workers[i].job = job;
+		copy_workers[i].context = context;
+		copy_workers[i].from = i * part;
+		copy_workers[i].to = (i + 1) * part;
+		SetEvent(copy_workers[i].start);
+	}
+	job(context, i * part, count);
+	for (CopyWorker &worker : copy_workers)
+		WaitForSingleObject(worker.done, INFINITE);
+}
+
+struct WideCopy {
+	BYTE *dst;
+	const BYTE *src;
+};
+
+static void wide_copy_job(void *context, size_t from, size_t to)
+{
+	const WideCopy *copy = (const WideCopy*)context;
+
+	copy_mapped_wide(copy->dst + from, copy->src + from, to - from);
+}
+
 // The memory a device lets be mapped is write combined as a rule, which takes
 // hundreds of times as long to read the ordinary way as it does like this.
 // Memory of the GPU itself is slower still, and what is read of that is the
@@ -1055,7 +1202,8 @@ static void copy_mapped(BYTE *dst, const BYTE *src, size_t bytes)
 {
 	static const bool wide = !!IsProcessorFeaturePresent(PF_AVX2_INSTRUCTIONS_AVAILABLE);
 	size_t head = min(bytes, (32 - ((size_t)src & 31)) & 31);
-	size_t body, part, i;
+	WideCopy copy;
+	size_t body;
 
 	if (!wide) {
 		head = min(bytes, (16 - ((size_t)src & 15)) & 15);
@@ -1072,17 +1220,9 @@ static void copy_mapped(BYTE *dst, const BYTE *src, size_t bytes)
 	bytes -= head;
 	body = bytes & ~(size_t)31;
 
-	if (body >= COPY_THREAD_BYTES * 2 && start_copy_workers()) {
-		part = (body / COPY_THREADS) & ~(size_t)31;
-		for (i = 0; i < COPY_THREADS - 1; i++) {
-			copy_workers[i].dst = dst + i * part;
-			copy_workers[i].src = src + i * part;
-			copy_workers[i].bytes = part;
-			SetEvent(copy_workers[i].start);
-		}
-		copy_mapped_wide(dst + i * part, src + i * part, body - i * part);
-		for (CopyWorker &worker : copy_workers)
-			WaitForSingleObject(worker.done, INFINITE);
+	if (body >= COPY_THREAD_BYTES * 2) {
+		copy = { dst, src };
+		run_in_parts(wide_copy_job, &copy, body, 32);
 	} else {
 		copy_mapped_wide(dst, src, body);
 	}
@@ -1138,12 +1278,128 @@ void VkScopeFillShadow(ShimResource *resource, UINT64 offset, UINT64 size)
 		}
 		read_constants(resource->shadow.data() + start, std::get<0>(source->key), std::get<1>(source->key) + start,
 			min(page * SHADOW_PAGE, bytes) - start);
+		if (!source->stale.empty())
+			memset(&source->stale[start / SHADOW_PAGE], 1, page - start / SHADOW_PAGE);
 		read = true;
 	}
 	if (read)
 		resource->version++;
 	if (!source->pages_left)
 		resource->shadow_pending = false;
+}
+
+// The bones of everything the game draws are megabytes that a shader of a mod
+// reads a few of, where nothing tells which. The resource of the D3D12 device
+// that shader reads has what it was given the frame before, and most of that
+// is what the game still has: so the pages are compared with the shadow as
+// they are read, and the resource is given those that are not the same.
+
+// The pages given to the resource in one piece at most. A larger piece has
+// Dx12ShimUpload make a buffer for it alone.
+const UINT UPLOAD_RUN_PAGES = 256;
+// Up to this many pages that are as they were go along with those around them
+// that are not, for fewer pieces
+const UINT UPLOAD_GAP_PAGES = 4;
+
+struct Refresh {
+	BYTE *shadow;
+	const BYTE *data;
+	UINT bytes;
+	const std::vector<bool> *read;
+	BYTE *stale;
+};
+
+// For the pages from one to another that have not been read this frame
+static void refresh_job(void *context, size_t from, size_t to)
+{
+	const Refresh *refresh = (const Refresh*)context;
+	__declspec(align(32)) BYTE now[SHADOW_PAGE];
+	size_t page, start, size;
+
+	for (page = from; page < to; page++) {
+		if ((*refresh->read)[page])
+			continue;
+		start = page * SHADOW_PAGE;
+		size = min((size_t)SHADOW_PAGE, refresh->bytes - start);
+		copy_mapped(now, refresh->data + start, size);
+		if (!memcmp(now, refresh->shadow + start, size))
+			continue;
+		memcpy(refresh->shadow + start, now, size);
+		refresh->stale[page] = 1;
+	}
+}
+
+bool VkScopeUploadShadow(ShimResource *resource)
+{
+	auto found = constants_sources.find(resource);
+	UINT64 start_ticks = G->vk_dump_hashes ? ticks() : 0, read_ticks = 0;
+	UINT bytes, pages, page, first, last, start, size;
+	ConstantsSource *source;
+	Refresh refresh;
+
+	if (found == constants_sources.end())
+		return false;
+	source = &found->second;
+	bytes = (UINT)min((UINT64)std::get<2>(source->key), min((UINT64)resource->shadow.size(), resource->desc.Width));
+	pages = (bytes + SHADOW_PAGE - 1) / SHADOW_PAGE;
+	if (pages > source->pages.size())
+		return false;
+	// All of it the first time
+	if (source->stale.empty())
+		source->stale.assign(source->pages.size(), 1);
+
+	if (source->pages_left) {
+		AcquireSRWLockShared(&memory_lock);
+		refresh = { resource->shadow.data(), mapped_bytes(std::get<0>(source->key), std::get<1>(source->key), bytes),
+			bytes, &source->pages, source->stale.data() };
+		if (!refresh.data) {
+			for (page = 0; page < pages; page++) {
+				if (source->pages[page])
+					continue;
+				memset(refresh.shadow + page * SHADOW_PAGE, 0, min(SHADOW_PAGE, bytes - page * SHADOW_PAGE));
+				source->stale[page] = 1;
+			}
+		} else if (bytes >= COPY_THREAD_BYTES * 2) {
+			run_in_parts(refresh_job, &refresh, pages, 1);
+		} else {
+			refresh_job(&refresh, 0, pages);
+		}
+		ReleaseSRWLockShared(&memory_lock);
+
+		stats.constants_read++;
+		stats.constants_bytes += (UINT64)source->pages_left * SHADOW_PAGE;
+		stats.compared_bytes += (UINT64)source->pages_left * SHADOW_PAGE;
+		source->pages.assign(source->pages.size(), true);
+		source->pages_left = 0;
+		if (start_ticks) {
+			read_ticks = ticks();
+			stats.constants_ticks += read_ticks - start_ticks;
+		}
+	}
+	resource->shadow_pending = false;
+
+	for (page = 0; page < pages;) {
+		if (!source->stale[page]) {
+			page++;
+			continue;
+		}
+		first = last = page;
+		for (; page < pages && page - first < UPLOAD_RUN_PAGES && page - last <= UPLOAD_GAP_PAGES; page++) {
+			if (source->stale[page])
+				last = page;
+		}
+		page = last + 1;
+		start = first * SHADOW_PAGE;
+		size = min(page * SHADOW_PAGE, bytes) - start;
+		// The rest is left for the next time it is asked for
+		if (!ShimWriteBuffer(resource, start, resource->shadow.data() + start, size))
+			break;
+		memset(&source->stale[first], 0, page - first);
+		stats.uploaded_bytes += size;
+	}
+	if (start_ticks)
+		stats.upload_ticks += ticks() - (read_ticks ? read_ticks : start_ticks);
+	return true;
 }
 
 static PublishedConstants* publish_constants(VkBuffer buffer, VkDeviceSize offset, UINT bytes, UINT stride)
@@ -1257,9 +1513,15 @@ struct MirrorBlock {
 struct Mirror {
 	VkBuffer buffer;
 	MirrorBlock *block;
+	// Where in the buffer the contents start
+	VkDeviceSize offset;
 	VkDeviceSize size;
 	// ShimResource::version of the contents
 	UINT64 version;
+	// In a buffer that is shared with the D3D12 device (share_from_gpu),
+	// which is only the place of these contents for the frame
+	bool shared;
+	UINT frame;
 };
 
 struct RetiredMirror {
@@ -1346,7 +1608,8 @@ static bool place_mirror(Mirror *mirror, const VkMemoryRequirements *needed, VkD
 
 static void retire_mirror(const Mirror *mirror)
 {
-	retired_mirrors.push_back({ mirror->buffer, mirror->block, vk_frame });
+	if (!mirror->shared)
+		retired_mirrors.push_back({ mirror->buffer, mirror->block, vk_frame });
 }
 
 static void destroy_retired_mirrors(bool all)
@@ -1375,6 +1638,7 @@ static const BYTE* buffer_contents(const ShimResource *resource)
 }
 
 static bool transfer_from_gpu(ShimResource *resource, UINT64 offset, UINT64 bytes, BYTE *dst);
+static bool share_from_gpu(ShimResource *resource, UINT64 offset, UINT64 bytes, UINT64 reach, VkBuffer *buffer, VkDeviceSize *at);
 
 // Vertices a shader of the mod wrote are only where that left them, and are
 // copied from there like what a shader of the game is to read (see below)
@@ -1392,7 +1656,7 @@ static Mirror* mirror_of(ShimBuffer *buffer)
 
 	auto found = mirrors.find(resource);
 	if (found != mirrors.end()) {
-		if (found->second.version == resource->version)
+		if (found->second.version == resource->version && (!found->second.shared || found->second.frame == vk_frame))
 			return &found->second;
 		// The command buffers recorded so far draw what it held then
 		retire_mirror(&found->second);
@@ -1400,6 +1664,18 @@ static Mirror* mirror_of(ShimBuffer *buffer)
 	}
 
 	info.size = data ? min((size_t)buffer->mDesc.ByteWidth, resource->shadow.size()) : buffer->mDesc.ByteWidth;
+	if (!data && share_from_gpu(resource, 0, info.size, info.size, &mirror.buffer, &mirror.offset)) {
+		mirror.size = info.size;
+		mirror.version = resource->version;
+		mirror.shared = true;
+		mirror.frame = vk_frame;
+		resource->mirrored = true;
+		stats.mirrored++;
+		stats.mirrored_from_gpu++;
+		stats.mirrored_bytes += info.size;
+		return &(mirrors[resource] = mirror);
+	}
+
 	info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
 	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	if (api.CreateBuffer(mods_device, &info, NULL, &mirror.buffer) != VK_SUCCESS)
@@ -1645,40 +1921,298 @@ static void release_readbacks()
 	readbacks.clear();
 }
 
+// Bringing what a shader of a mod wrote past the CPU is two copies of all of
+// it, one of them out of the memory of the GPU, and a skeleton is megabytes
+// for every part of a mesh. Where the game's device takes the memory of
+// another for its own, the copy is one the GPU makes for itself: to a buffer
+// of the D3D12 device that the game's device has a buffer of in the same
+// place. Like the transients, one is given out again some frames later.
+
+const VkDeviceSize SHARED_BYTES = 16 << 20;
+// Frames one is kept for without anything given out
+const UINT SHARED_KEEP_FRAMES = 600;
+
+struct SharedBuffer {
+	ID3D12Resource *resource;
+	VkBuffer buffer;
+	VkDeviceMemory memory;
+	VkDeviceSize size, used;
+	// The last it had anything given out
+	UINT frame;
+};
+
+static std::vector<SharedBuffer> shared_buffers;
+static PFN_vkGetMemoryWin32HandlePropertiesKHR handle_properties;
+// Not tried for every buffer of every draw once it did not work
+static bool sharing_failed;
+// A list of the shim has copies to shared buffers that the game's command
+// buffers read
+static bool copies_pending;
+
+static SharedBuffer* new_shared_buffer(VkDeviceSize size)
+{
+	const VkExternalMemoryHandleTypeFlagBits type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT;
+	VkExternalMemoryBufferCreateInfo external = { VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO };
+	VkBufferCreateInfo info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	VkMemoryWin32HandlePropertiesKHR properties = { VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR };
+	VkMemoryDedicatedAllocateInfo dedicated = { VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO };
+	VkImportMemoryWin32HandleInfoKHR import = { VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR };
+	VkMemoryAllocateInfo allocate = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+	D3D12_HEAP_PROPERTIES heap = {};
+	D3D12_RESOURCE_DESC desc = {};
+	VkMemoryRequirements needed;
+	SharedBuffer shared = {};
+	HANDLE handle = NULL;
+	unsigned long index;
+	bool made = false;
+
+	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = max(size, SHARED_BYTES);
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	// In the common state, which a buffer leaves by itself for a copy and
+	// is back in once the list has been executed
+	if (FAILED(dx12_shim->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_SHARED, &desc,
+			D3D12_RESOURCE_STATE_COMMON, NULL, IID_PPV_ARGS(&shared.resource))))
+		return NULL;
+	if (FAILED(dx12_shim->device->CreateSharedHandle(shared.resource, NULL, GENERIC_ALL, NULL, &handle))) {
+		shared.resource->Release();
+		return NULL;
+	}
+
+	external.handleTypes = type;
+	info.pNext = &external;
+	info.size = desc.Width;
+	info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+		| VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	if (api.CreateBuffer(mods_device, &info, NULL, &shared.buffer) == VK_SUCCESS) {
+		api.GetBufferMemoryRequirements(mods_device, shared.buffer, &needed);
+		if (handle_properties(mods_device, type, handle, &properties) == VK_SUCCESS
+		    && _BitScanForward(&index, needed.memoryTypeBits & properties.memoryTypeBits)) {
+			dedicated.buffer = shared.buffer;
+			import.pNext = &dedicated;
+			import.handleType = type;
+			import.handle = handle;
+			allocate.pNext = &import;
+			allocate.allocationSize = needed.size;
+			allocate.memoryTypeIndex = index;
+			made = api.AllocateMemory(mods_device, &allocate, NULL, &shared.memory) == VK_SUCCESS;
+			if (made && api.BindBufferMemory(mods_device, shared.buffer, shared.memory, 0) != VK_SUCCESS) {
+				api.FreeMemory(mods_device, shared.memory, NULL);
+				made = false;
+			}
+		}
+		if (!made)
+			api.DestroyBuffer(mods_device, shared.buffer, NULL);
+	}
+	// The memory is the resource's, which the handle was only the name of
+	CloseHandle(handle);
+	if (!made) {
+		shared.resource->Release();
+		return NULL;
+	}
+
+	shared.size = desc.Width;
+	shared.frame = vk_frame;
+	shared_buffers.push_back(shared);
+	return &shared_buffers.back();
+}
+
+// As transient_bytes gives out memory, of a buffer a list of the shim writes
+static SharedBuffer* shared_bytes(VkDeviceSize bytes, VkDeviceSize reach, VkDeviceSize *offset)
+{
+	SharedBuffer *found = NULL;
+	VkDeviceSize start = 0;
+	UINT frame = vk_frame;
+
+	if (sharing_failed || !handle_properties || !dx12_shim)
+		return NULL;
+
+	for (SharedBuffer &shared : shared_buffers) {
+		if (shared.frame != frame) {
+			if (frame - shared.frame <= MIRROR_KEEP_FRAMES)
+				continue;
+			shared.frame = frame;
+			shared.used = 0;
+		}
+		start = (shared.used + TRANSIENT_ALIGNMENT - 1) & ~(TRANSIENT_ALIGNMENT - 1);
+		if (start + reach <= shared.size) {
+			found = &shared;
+			break;
+		}
+	}
+	if (!found) {
+		found = new_shared_buffer(reach);
+		start = 0;
+	}
+	if (!found) {
+		sharing_failed = true;
+		VkDumpNote("*** Mods: the D3D12 device and the game's could not be given a buffer in the same memory. "
+			"What the shaders of mods write is brought to the game's device by the CPU.\n");
+		return NULL;
+	}
+
+	found->used = start + bytes;
+	*offset = start;
+	return found;
+}
+
+// False if the two devices share no memory, and the bytes have to be brought
+// another way
+static bool share_from_gpu(ShimResource *resource, UINT64 offset, UINT64 bytes, UINT64 reach, VkBuffer *buffer, VkDeviceSize *at)
+{
+	SharedBuffer *shared;
+
+	if (!resource->resource || offset + bytes > resource->desc.Width)
+		return false;
+	shared = shared_bytes(bytes, max(reach, bytes), at);
+	if (!shared)
+		return false;
+
+	Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+	Dx12ShimList()->CopyBufferRegion(shared->resource, *at, resource->resource, offset, bytes);
+	*buffer = shared->buffer;
+	copies_pending = true;
+	transfers_pending = true;
+	stats.shared++;
+	stats.shared_bytes += bytes;
+	return true;
+}
+
+static void destroy_shared_buffers(bool all)
+{
+	size_t kept = 0;
+
+	for (const SharedBuffer &shared : shared_buffers) {
+		if (!all && vk_frame - shared.frame <= SHARED_KEEP_FRAMES) {
+			shared_buffers[kept++] = shared;
+			continue;
+		}
+		api.DestroyBuffer(mods_device, shared.buffer, NULL);
+		api.FreeMemory(mods_device, shared.memory, NULL);
+		shared.resource->Release();
+	}
+	shared_buffers.resize(kept);
+}
+
 static void submit_uploads(VkQueue queue);
 
-// With the lock of dx12/Bridge.h held
-static void finish_transfers(VkQueue queue)
+// What the D3D12 device copies to a shared buffer has to be there before the
+// game's command buffers read it. Waiting for that here is a wait for the GPU
+// on the thread the game renders with, every frame. The fence the shim's queue
+// signals can be a semaphore of the game's device instead, which the
+// submission of the game waits for on the GPU.
+
+struct ShimSemaphore {
+	ID3D12Fence *fence;
+	VkSemaphore semaphore;
+};
+
+// More than one only if the shim was made again: the one before may still be
+// waited for
+static std::vector<ShimSemaphore> shim_semaphores;
+static PFN_vkImportSemaphoreWin32HandleKHR import_semaphore;
+static bool chaining_failed;
+
+static VkSemaphore shim_semaphore(ID3D12Fence *fence)
 {
+	VkImportSemaphoreWin32HandleInfoKHR import = { VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR };
+	VkSemaphoreCreateInfo info = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+	ShimSemaphore made = { fence };
+	HANDLE handle = NULL;
+
+	if (chaining_failed || !import_semaphore || !fence)
+		return VK_NULL_HANDLE;
+	if (!shim_semaphores.empty() && shim_semaphores.back().fence == fence)
+		return shim_semaphores.back().semaphore;
+
+	if (SUCCEEDED(dx12_shim->device->CreateSharedHandle(fence, NULL, GENERIC_ALL, NULL, &handle))
+	    && api.CreateSemaphore(mods_device, &info, NULL, &made.semaphore) == VK_SUCCESS) {
+		import.semaphore = made.semaphore;
+		import.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT;
+		import.handle = handle;
+		if (import_semaphore(mods_device, &import) != VK_SUCCESS) {
+			api.DestroySemaphore(mods_device, made.semaphore, NULL);
+			made.semaphore = VK_NULL_HANDLE;
+		}
+	}
+	if (handle)
+		CloseHandle(handle);
+	if (!made.semaphore) {
+		chaining_failed = true;
+		VkDumpNote("*** Mods: the game's device could not be given the fence of the D3D12 device to wait for. "
+			"The thread that submits waits for it.\n");
+		return VK_NULL_HANDLE;
+	}
+	// Kept for as long as the device is: one is only made when another
+	// shim is, and that fence is not released for a fence of the same address
+	fence->AddRef();
+	shim_semaphores.push_back(made);
+	return made.semaphore;
+}
+
+static void destroy_shim_semaphores()
+{
+	for (const ShimSemaphore &made : shim_semaphores) {
+		api.DestroySemaphore(mods_device, made.semaphore, NULL);
+		made.fence->Release();
+	}
+	shim_semaphores.clear();
+}
+
+// With the lock of dx12/Bridge.h held
+static VkSemaphore finish_transfers(VkQueue queue, UINT64 *value)
+{
+	VkSemaphore semaphore = VK_NULL_HANDLE;
 	UINT64 start;
 
 	if (!transfers_pending)
-		return;
+		return VK_NULL_HANDLE;
 
 	start = ticks();
-	if (dx12_shim && !transfers.empty()) {
+	// Nothing the CPU has to copy once the GPU is done
+	if (value && dx12_shim && transfers.empty() && copies_pending) {
+		semaphore = shim_semaphore(Dx12ShimFence(value));
+		if (semaphore) {
+			Dx12ShimSubmit();
+			Dx12ShimFence(value);
+			copies_pending = false;
+			stats.submits_chained++;
+		}
+	}
+	if (dx12_shim && (!transfers.empty() || copies_pending)) {
 		Dx12ShimSubmitAndWait();
 		for (const Transfer &transfer : transfers)
 			memcpy(transfer.dst, transfer.src, transfer.bytes);
 	}
 	transfers.clear();
+	copies_pending = false;
 	for (Readback &readback : readbacks)
 		readback.used = 0;
 	submit_uploads(queue);
 	transfers_pending = false;
 
-	stats.submits_waited++;
+	stats.submits_waited += !semaphore;
 	stats.submit_ticks += ticks() - start;
+	return semaphore;
 }
 
-void VkModsBeforeSubmit(VkQueue queue)
+VkSemaphore VkModsBeforeSubmit(VkQueue queue, UINT64 *value)
 {
+	VkSemaphore semaphore;
+
 	if (!transfers_pending)
-		return;
+		return VK_NULL_HANDLE;
 
 	Dx12ShimLock();
-	finish_transfers(queue);
+	semaphore = finish_transfers(queue, value);
 	Dx12ShimUnlock();
+	return semaphore;
 }
 
 // Where a shader of the game is to read from, and how far
@@ -1724,18 +2258,24 @@ static bool bring_buffer(ShimResource *resource, UINT64 offset, UINT64 bytes, UI
 	}
 
 	reach = max(reach, bytes);
-	dst = transient_bytes(bytes, reach, &buffer->buffer, &buffer->offset);
-	if (!dst)
-		return false;
 	buffer->range = reach;
 
 	data = buffer_contents(resource);
-	if (data && offset + bytes <= resource->shadow.size()) {
-		memcpy(dst, data + offset, (size_t)bytes);
-	} else {
-		if (!transfer_from_gpu(resource, offset, bytes, dst))
-			return false;
+	if (data && offset + bytes > resource->shadow.size())
+		data = NULL;
+	if (!data && share_from_gpu(resource, offset, bytes, reach, &buffer->buffer, &buffer->offset)) {
 		stats.brought_from_gpu++;
+	} else {
+		dst = transient_bytes(bytes, reach, &buffer->buffer, &buffer->offset);
+		if (!dst)
+			return false;
+		if (data) {
+			memcpy(dst, data + offset, (size_t)bytes);
+		} else {
+			if (!transfer_from_gpu(resource, offset, bytes, dst))
+				return false;
+			stats.brought_from_gpu++;
+		}
 	}
 	stats.brought++;
 	stats.brought_bytes += bytes;
@@ -2240,7 +2780,8 @@ void VkScopeForgetResource(ShimResource *resource)
 static void destroy_mod_sets();
 static void destroy_variants(bool all);
 
-void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkModsApi *functions)
+void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkModsApi *functions,
+		PFN_vkGetMemoryWin32HandlePropertiesKHR handle_properties_function, PFN_vkImportSemaphoreWin32HandleKHR import_semaphore_function)
 {
 	const void *const *function = (const void *const *)functions;
 	size_t i;
@@ -2259,6 +2800,10 @@ void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkMod
 		api.GetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
 		mods_device_key = *(void**)device;
 		mods_device = device;
+		handle_properties = handle_properties_function;
+		sharing_failed = false;
+		import_semaphore = import_semaphore_function;
+		chaining_failed = false;
 	}
 	Dx12ShimUnlock();
 }
@@ -2269,10 +2814,14 @@ void VkModsForgetDevice(VkDevice device)
 	if (device == mods_device) {
 		for (auto &mirror : mirrors) {
 			mirror.first->mirrored = false;
-			api.DestroyBuffer(mods_device, mirror.second.buffer, NULL);
+			if (!mirror.second.shared)
+				api.DestroyBuffer(mods_device, mirror.second.buffer, NULL);
 		}
 		mirrors.clear();
 		destroy_retired_mirrors(true);
+		destroy_shared_buffers(true);
+		destroy_shim_semaphores();
+		copies_pending = false;
 		destroy_mod_sets();
 		destroy_variants(true);
 		// What is still to be copied would be copied to memory that goes
@@ -3319,6 +3868,9 @@ static void destroy_variants(bool all)
 const UINT INDEX_COUNT_BITS = 1 << 16;
 static volatile LONG64 index_count_bits[2][INDEX_COUNT_BITS / 64];
 static volatile LONG64 *volatile wanted_index_counts;
+// The same of the hashes those sections are for, which go with the bits of
+// the counts: a region with a hash whose bit is not set has no section
+static volatile LONG64 region_hash_bits[2][INDEX_COUNT_BITS / 64];
 // Sections that match by the description of a resource may match any buffer
 static volatile bool fuzzy_sections;
 
@@ -3331,23 +3883,78 @@ static UINT index_count_bit(UINT count)
 static void collect_index_counts()
 {
 	volatile LONG64 *bits = index_count_bits[wanted_index_counts == index_count_bits[0]];
+	volatile LONG64 *hashes = region_hash_bits[wanted_index_counts == index_count_bits[0]];
 	UINT bit;
 
 	memset((void*)bits, 0, sizeof(index_count_bits[0]));
+	memset((void*)hashes, 0, sizeof(region_hash_bits[0]));
 	for (const auto &entry : G->mTextureOverrideDrawIndexMap) {
 		bit = index_count_bit(entry.first);
 		bits[bit / 64] |= 1ll << (bit % 64);
+		for (const TextureOverrideFuzzyMatch &section : entry.second) {
+			bit = index_count_bit(section.hash);
+			hashes[bit / 64] |= 1ll << (bit % 64);
+		}
 	}
 	fuzzy_sections = !G->mFuzzyTextureOverrides.empty();
 	MemoryBarrier();
 	wanted_index_counts = bits;
 }
 
-static volatile LONG fast_draws;
+static volatile LONG fast_draws, quiet_draws;
+
+// Without the lock. True if the indices of the draw are known to be what they
+// were when region_hash had their hash, and no section is for that.
+static bool region_is_quiet(const CmdState *state, uint32_t count, uint32_t first, const volatile LONG64 *hashes)
+{
+	UINT index_bytes = state->index_type == VK_INDEX_TYPE_UINT16 ? 2 : state->index_type == VK_INDEX_TYPE_UINT32 ? 4 : 0;
+	BYTE samples[REGION_SAMPLES * REGION_SAMPLE_BYTES];
+	VkDeviceSize offset;
+	const BYTE *data;
+	RegionMemo *memo;
+	RegionMemo was;
+	LONG sequence;
+	UINT bit;
+
+	// As the engine works out the region it asks about
+	if (!index_bytes || !state->ib || (UINT64)count * index_bytes > UINT_MAX || (UINT64)first * index_bytes > UINT_MAX)
+		return false;
+	offset = state->ib_offset + (VkDeviceSize)first * index_bytes;
+
+	memo = region_memo(state->ib, offset, count * index_bytes);
+	sequence = memo->sequence;
+	if (sequence & 1)
+		return false;
+	was.buffer = memo->buffer;
+	was.offset = memo->offset;
+	was.bytes = memo->bytes;
+	was.hash = memo->hash;
+	was.hashed_frame = memo->hashed_frame;
+	memcpy(was.samples, memo->samples, sizeof(was.samples));
+	MemoryBarrier();
+	if (memo->sequence != sequence)
+		return false;
+
+	// Without a hash the engine goes by that of the buffer instead, and it
+	// is region_hash that has the indices hashed again every so often
+	if (was.buffer != state->ib || was.offset != offset || was.bytes != count * index_bytes || !was.hash
+	    || vk_frame - was.hashed_frame >= REGION_REHASH_FRAMES)
+		return false;
+	bit = index_count_bit(was.hash);
+	if (hashes[bit / 64] & 1ll << (bit % 64))
+		return false;
+
+	AcquireSRWLockShared(&memory_lock);
+	data = mapped_bytes(state->ib, offset, was.bytes);
+	if (data)
+		take_samples(data, was.bytes, samples);
+	ReleaseSRWLockShared(&memory_lock);
+	return data && !memcmp(samples, was.samples, sizeof(samples));
+}
 
 // Without the lock. True only if the engine would look at the draw and leave
 // it at that.
-static bool draw_is_boring(Pipeline *pipeline, bool indexed, uint32_t count, SlowReason *reason)
+static bool draw_is_boring(Pipeline *pipeline, const CmdState *state, bool indexed, uint32_t count, uint32_t first, SlowReason *reason)
 {
 	volatile LONG64 *bits = wanted_index_counts;
 	Dx12DrawFilter filter;
@@ -3384,7 +3991,13 @@ static bool draw_is_boring(Pipeline *pipeline, bool indexed, uint32_t count, Slo
 	if (!G->track_region_hashes)
 		return true;
 	bit = index_count_bit(count);
-	return !(bits[bit / 64] & 1ll << (bit % 64));
+	if (!(bits[bit / 64] & 1ll << (bit % 64)))
+		return true;
+	if (!region_is_quiet(state, count, first, region_hash_bits[bits == index_count_bits[1]]))
+		return false;
+	if (G->vk_dump_hashes)
+		InterlockedIncrement(&quiet_draws);
+	return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -3491,6 +4104,7 @@ bool VkScopeInputElements(std::vector<D3D11_INPUT_ELEMENT_DESC> *elements)
 
 	if (!scope)
 		return false;
+	Timed timed(TIMED_ANSWERS);
 
 	AcquireSRWLockShared(&registry_lock);
 	recipe = scope->state.pipeline->recipe;
@@ -3530,6 +4144,29 @@ void VkScopeSetGameLayout(ID3D11InputLayout *layout)
 {
 	if (scope)
 		scope->game_layout = layout;
+}
+
+UINT64 VkScopeLayoutHash()
+{
+	UINT64 hash = 0;
+
+	if (!scope)
+		return 0;
+	AcquireSRWLockShared(&registry_lock);
+	if (scope->state.pipeline->recipe)
+		hash = scope->state.pipeline->recipe->layout_hash;
+	ReleaseSRWLockShared(&registry_lock);
+	return hash;
+}
+
+void VkScopeSetLayoutHash(UINT64 hash)
+{
+	if (!scope)
+		return;
+	AcquireSRWLockShared(&registry_lock);
+	if (scope->state.pipeline->recipe)
+		scope->state.pipeline->recipe->layout_hash = hash;
+	ReleaseSRWLockShared(&registry_lock);
 }
 
 ID3D11InputLayout* VkScopeGameLayout()
@@ -3575,9 +4212,13 @@ static const char* bound_buffer(const SpirvBinding *slot, SetBuffer *bound)
 static void note_constants(int stage, UINT slot, const SpirvBinding *block, const char *why)
 {
 	static std::unordered_set<std::string> noted;
+	static std::unordered_set<UINT64> seen;
 	char text[256];
 
 	if (!G->vk_dump_hashes || noted.size() >= 48)
+		return;
+	// Not written out again for every draw to find it noted
+	if (!seen.insert(((((UINT64)stage * 131 + slot) * 131 + block->bytes) * 131 + block->set) * 131 + block->binding + (why ? 1ull << 63 : 0)).second)
 		return;
 	_snprintf_s(text, _TRUNCATE, "Mods: %cs-cb%u is %u bytes at set %u binding %u%s%s", "vpghdc"[stage], slot, block->bytes,
 		block->set, block->binding, why ? ", NOT SHOWN: " : "", why ? why : "");
@@ -3600,6 +4241,7 @@ ID3D11Buffer* VkScopeConstantBuffer(int stage, UINT slot)
 		return scope->cbs[stage][slot];
 	scope->cbs_asked[stage] |= 1u << slot;
 	scope->cbs[stage][slot] = NULL;
+	Timed timed(TIMED_ANSWERS);
 
 	shader = scope->state.pipeline->layouts[stage];
 	if (!shader || slot >= shader->cbs.size() || !shader->cbs[slot].bytes)
@@ -3633,9 +4275,13 @@ const VkDeviceSize VIEW_MAX_BYTES = 64 << 20;
 static void note_view(int stage, UINT slot, const SpirvBinding *view, VkDeviceSize bytes, VkDeviceSize buffer_bytes, const char *why)
 {
 	static std::unordered_set<std::string> noted;
+	static std::unordered_set<UINT64> seen;
 	char text[320];
 
 	if (!G->vk_dump_hashes || noted.size() >= 48)
+		return;
+	if (!seen.insert((((((UINT64)stage * 131 + slot) * 131 + view->set) * 131 + view->binding) * 0x9e3779b97f4a7c15ull + bytes)
+			* 0x9e3779b97f4a7c15ull + buffer_bytes + (why ? 1ull << 63 : 0)).second)
 		return;
 	_snprintf_s(text, _TRUNCATE, "Mods: %cs-t%u is a buffer with a stride of %u, %llu bytes at set %u binding %u, of a buffer of %llu bytes%s%s",
 		"vpghdc"[stage], slot, view->stride, bytes, view->set, view->binding, buffer_bytes, why ? ", NOT SHOWN: " : "", why ? why : "");
@@ -3741,6 +4387,7 @@ ID3D11ShaderResourceView* VkScopeShaderResource(int stage, UINT slot)
 		return scope->srvs[stage][slot];
 	scope->srvs_asked[stage] |= 1u << slot;
 	scope->srvs[stage][slot] = NULL;
+	Timed timed(TIMED_ANSWERS);
 
 	shader = scope->state.pipeline->layouts[stage];
 	if (!shader || slot >= shader->views.size())
@@ -3910,11 +4557,17 @@ static void note_mod_bindings(const ModDraw *draw, Mirror *const *replaced)
 	static std::unordered_set<std::string> noted;
 	const CmdState *game = &scope->state;
 	const Pipeline *pipeline = game->pipeline;
+	static std::unordered_set<UINT64> seen;
 	char text[1024] = "", part[128];
+	UINT64 strides = pipeline->vbs;
 	std::string key;
 	UINT slot;
 
 	if (noted.size() >= 16)
+		return;
+	for (slot = 0; slot < MAX_VBS; slot++)
+		strides = strides * 0x9e3779b97f4a7c15ull + ((pipeline->vbs & 1u << slot) ? pipeline->vb_strides[slot] : 0);
+	if (!seen.insert(strides).second)
 		return;
 
 	for (slot = 0; slot < MAX_VBS; slot++) {
@@ -3993,7 +4646,7 @@ static bool bind_for_mod(const ShimState *mod, ModDraw *draw)
 		if (other < MAX_VBS) {
 			draw->vbs_set |= 1u << slot;
 			draw->vbs[slot] = replaced[other]->buffer;
-			draw->vb_offsets[slot] = mod->vb_offsets[other];
+			draw->vb_offsets[slot] = replaced[other]->offset + mod->vb_offsets[other];
 			strides[slot] = strides[other];
 			continue;
 		}
@@ -4014,7 +4667,7 @@ static bool bind_for_mod(const ShimState *mod, ModDraw *draw)
 			continue;
 		draw->vbs_set |= 1u << slot;
 		draw->vbs[slot] = replaced[slot]->buffer;
-		draw->vb_offsets[slot] = mod->vb_offsets[slot];
+		draw->vb_offsets[slot] = replaced[slot]->offset + mod->vb_offsets[slot];
 	}
 	if (layout || memcmp(strides, pipeline->vb_strides, sizeof(strides))) {
 		draw->pipeline = pipeline_variant(game->pipeline, layout, strides);
@@ -4048,7 +4701,7 @@ static bool bind_for_mod(const ShimState *mod, ModDraw *draw)
 		return false;
 	}
 	draw->ib = mirror->buffer;
-	draw->ib_offset = mod->ib_offset;
+	draw->ib_offset = mirror->offset + mod->ib_offset;
 	draw->index_type = mod->ib_format == DXGI_FORMAT_R16_UINT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
 	return true;
 }
@@ -4056,6 +4709,7 @@ static bool bind_for_mod(const ShimState *mod, ModDraw *draw)
 static void record_mod_draws()
 {
 	const CmdState *game = &scope->state;
+	Timed timed(TIMED_RECORDING);
 	UINT slot;
 
 	for (const ModDraw &draw : mod_draws) {
@@ -4178,8 +4832,8 @@ static bool collect_replaced(const ShimState *mod, Replaced *replaced, UINT *cou
 	const ID3D11ShaderResourceView *ini_params = dx12_shim->hacker_device->mIniResourceView;
 	const CmdState *game = &scope->state;
 	UINT64 offset, bytes, stride;
+	UINT i, cbs, srvs, word;
 	unsigned long slot;
-	UINT i, cbs;
 	int stage;
 
 	for (stage = 0; stage < DX12_STAGE_COUNT; stage++) {
@@ -4222,60 +4876,61 @@ static bool collect_replaced(const ShimState *mod, Replaced *replaced, UINT *cou
 			replaced[(*count)++].slot = &shader->cbs[slot];
 		}
 
-		for (i = 0; stage == DX12_STAGE_PS && shader && i < SHIM_SRV_SLOTS; i++) {
-			ShimView *view;
+		for (word = 0; shader && word < ARRAYSIZE(state->srv_mask); word++) {
+			for (srvs = state->srv_mask[word]; _BitScanForward(&slot, srvs); srvs &= srvs - 1) {
+				ShimView *view;
 
-			if (!(state->srv_mask[i / 32] & 1u << (i % 32)) || state->srvs[i] == ini_params)
-				continue;
-			view = ShimViewOf(state->srvs[i]);
-			if (i >= shader->views.size() || shader->views[i].kind != SPIRV_TEXTURE || !view || *count == MAX_REPLACED) {
-				if (G->vk_dump_hashes && i < 64)
-					note_mod_texture(i, shader, view, false);
-				continue;
-			}
-			replaced[*count].view = bring_texture(view, &shader->views[i]);
-			if (G->vk_dump_hashes)
-				note_mod_texture(i, shader, view, replaced[*count].view != VK_NULL_HANDLE);
-			if (!replaced[*count].view)
-				continue;
-			stats.textures_set++;
-			replaced[(*count)++].slot = &shader->views[i];
-		}
+				i = word * 32 + slot;
+				if (state->srvs[i] == ini_params)
+					continue;
 
-		for (i = 0; stage != DX12_STAGE_PS && i < SHIM_SRV_SLOTS; i++) {
-			ShimView *view;
+				if (stage == DX12_STAGE_PS) {
+					view = ShimViewOf(state->srvs[i]);
+					if (i >= shader->views.size() || shader->views[i].kind != SPIRV_TEXTURE || !view || *count == MAX_REPLACED) {
+						if (G->vk_dump_hashes && i < 64)
+							note_mod_texture(i, shader, view, false);
+						continue;
+					}
+					replaced[*count].view = bring_texture(view, &shader->views[i]);
+					if (G->vk_dump_hashes)
+						note_mod_texture(i, shader, view, replaced[*count].view != VK_NULL_HANDLE);
+					if (!replaced[*count].view)
+						continue;
+					stats.textures_set++;
+					replaced[(*count)++].slot = &shader->views[i];
+					continue;
+				}
 
-			if (!(state->srv_mask[i / 32] & 1u << (i % 32)) || state->srvs[i] == ini_params)
-				continue;
-			if (i < SCOPE_SRVS && (scope->srvs_asked[stage] & 1u << i) && state->srvs[i] == scope->srvs[stage][i])
-				continue;
-			if (!shader || i >= shader->views.size())
-				continue;
-			if (shader->views[i].kind != SPIRV_SSBO) {
-				mod_draw_failed("the mod has set a buffer or texture for a stage before the pixel shader where the shader "
-					"of the game reads a texture");
-				return false;
-			}
+				if (i < SCOPE_SRVS && (scope->srvs_asked[stage] & 1u << i) && state->srvs[i] == scope->srvs[stage][i])
+					continue;
+				if (i >= shader->views.size())
+					continue;
+				if (shader->views[i].kind != SPIRV_SSBO) {
+					mod_draw_failed("the mod has set a buffer or texture for a stage before the pixel shader where the shader "
+						"of the game reads a texture");
+					return false;
+				}
 
-			view = ShimViewOf(state->srvs[i]);
-			if (!view || view->resource->dimension != D3D11_RESOURCE_DIMENSION_BUFFER) {
-				mod_draw_failed("the mod has set a texture for a stage before the pixel shader where the shader of the "
-					"game reads a buffer");
-				return false;
+				view = ShimViewOf(state->srvs[i]);
+				if (!view || view->resource->dimension != D3D11_RESOURCE_DIMENSION_BUFFER) {
+					mod_draw_failed("the mod has set a texture for a stage before the pixel shader where the shader of the "
+						"game reads a buffer");
+					return false;
+				}
+				// A view without one is of a buffer of values of a format:
+				// all of it then, if that is what the view is of
+				stride = view->desc12.srv.Buffer.StructureByteStride;
+				offset = view->desc12.srv.Buffer.FirstElement * stride;
+				bytes = view->desc12.srv.Buffer.NumElements * stride;
+				if (!stride && !view->desc12.srv.Buffer.FirstElement)
+					bytes = view->resource->desc.Width;
+				if (*count == MAX_REPLACED || !bytes || !bring_buffer(view->resource, offset, bytes, bytes, &replaced[*count].buffer)) {
+					mod_draw_failed("a buffer the mod has set for a stage before the pixel shader could not be brought to the "
+						"device of the game");
+					return false;
+				}
+				replaced[(*count)++].slot = &shader->views[i];
 			}
-			// A view without one is of a buffer of values of a format:
-			// all of it then, if that is what the view is of
-			stride = view->desc12.srv.Buffer.StructureByteStride;
-			offset = view->desc12.srv.Buffer.FirstElement * stride;
-			bytes = view->desc12.srv.Buffer.NumElements * stride;
-			if (!stride && !view->desc12.srv.Buffer.FirstElement)
-				bytes = view->resource->desc.Width;
-			if (*count == MAX_REPLACED || !bytes || !bring_buffer(view->resource, offset, bytes, bytes, &replaced[*count].buffer)) {
-				mod_draw_failed("a buffer the mod has set for a stage before the pixel shader could not be brought to the "
-					"device of the game");
-				return false;
-			}
-			replaced[(*count)++].slot = &shader->views[i];
 		}
 	}
 	return true;
@@ -4377,6 +5032,7 @@ static bool replace_buffers(const ShimState *mod, ModDraw *draw)
 void VkScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT base_vertex, UINT start_instance)
 {
 	const ShimState *mod = dx12_shim->shim_context->mState;
+	Timed timed(TIMED_MOD_DRAWS);
 	ModDraw draw = {};
 
 	stats.mod_draws++;
@@ -4417,6 +5073,7 @@ bool VkScopeRegionHash(ID3D11Buffer *buffer, UINT offset, UINT size, uint32_t *h
 {
 	if (!scope || !scope->ib || buffer != scope->ib->object)
 		return false;
+	Timed timed(TIMED_ANSWERS);
 
 	*hash = region_hash(scope->state.ib, scope->ib, scope->state.ib_offset + offset, size);
 	return true;
@@ -4429,6 +5086,7 @@ bool VkModsDraw(VkCommandBuffer cmd, bool indexed, uint32_t count, uint32_t inst
 	bool timed = G->vk_dump_hashes;
 	static thread_local LONG uncounted;
 	UINT64 times[3] = {};
+	unsigned mod_draws_before;
 	CmdState *state;
 	SlowReason reason;
 
@@ -4437,7 +5095,7 @@ bool VkModsDraw(VkCommandBuffer cmd, bool indexed, uint32_t count, uint32_t inst
 	state = cmd_state(cmd);
 	if (!state->pipeline || !pipeline_wanted(state->pipeline))
 		return false;
-	if (draw_is_boring(state->pipeline, indexed, count, &reason)) {
+	if (draw_is_boring(state->pipeline, state, indexed, count, first, &reason)) {
 		if (timed && ++uncounted == 256) {
 			InterlockedAdd(&fast_draws, uncounted);
 			uncounted = 0;
@@ -4489,9 +5147,11 @@ bool VkModsDraw(VkCommandBuffer cmd, bool indexed, uint32_t count, uint32_t inst
 		? DrawContext(DrawCall::DrawIndexedInstanced, 0, count, instances, vertex_offset, first, first_instance, NULL, 0)
 		: DrawContext(DrawCall::DrawInstanced, count, 0, instances, first, 0, first_instance, NULL, 0);
 
+	mod_draws_before = stats.mod_draws;
 	dx12_shim->hacker_context->Dx12BeforeDraw(c, opened.state.pipeline->shaders);
 	stats.draws++;
 	stats.skipped += c.call_info.skip;
+	stats.idle_draws += !c.call_info.skip && stats.mod_draws == mod_draws_before;
 	if (!opened.mod_draws_failed)
 		record_mod_draws();
 	// A mesh the mod was to replace and could not is better seen as it was
@@ -4584,6 +5244,7 @@ void VkModsConfigReloaded()
 
 static void report()
 {
+	UINT64 held = 0, held_shared = 0;
 	LARGE_INTEGER frequency;
 	double per_frame, per_draw;
 
@@ -4605,12 +5266,22 @@ static void report()
 		"by a template\n",
 		stats.constants_shown, stats.constants_read, stats.constants_bytes >> 10, stats.constants_ticks * per_frame, stats.constants_unmapped,
 		stats.constants_unbound, published_constants.size(), sets_allocated, sets_written, sets_written_by_template);
-	VkDumpNote("  Storage buffers of the game: shown %u times, not shown %u. Buffers of mods for the shaders of the game: %u brought over "
-		"(%llu KB), %u of them from the GPU, which %u submissions of the game waited %.2f ms per frame for; %u descriptor sets made, "
-		"%Iu held, %Iu MB of buffers for them\n",
-		stats.views_shown, stats.views_missing, stats.brought, stats.brought_bytes >> 10, stats.brought_from_gpu,
-		stats.submits_waited, stats.submit_ticks * per_frame, stats.sets_made, mod_sets.size(),
-		(size_t)(transients.size() * TRANSIENT_BYTES >> 20));
+	for (const Transient &transient : transients)
+		held += transient.size;
+	for (const SharedBuffer &shared : shared_buffers)
+		held_shared += shared.size;
+	VkDumpNote("  Storage buffers of the game: shown %u times, not shown %u; %llu KB looked at for the shaders of mods, of which %llu KB "
+		"had changed and went to the D3D12 device, %.2f ms per frame. Buffers of mods for the shaders of the game: %u brought over "
+		"(%llu KB), %u of them from the GPU (%u without leaving it, %llu KB), which %u submissions of the game waited %.2f ms per "
+		"frame for and %u had the GPU wait for; %u descriptor sets made, %Iu held, %llu MB of buffers for them and %llu MB shared with the D3D12 device\n",
+		stats.views_shown, stats.views_missing, stats.compared_bytes >> 10, stats.uploaded_bytes >> 10, stats.upload_ticks * per_frame,
+		stats.brought, stats.brought_bytes >> 10, stats.brought_from_gpu, stats.shared, stats.shared_bytes >> 10,
+		stats.submits_waited, stats.submit_ticks * per_frame, stats.submits_chained, stats.sets_made, mod_sets.size(),
+		held >> 20, held_shared >> 20);
+	VkDumpNote("  Of the time in the engine, per frame: %.2f ms telling it what the game has bound, %.2f ms bringing what the mods "
+		"draw with to the game's device, %.2f ms recording their draws; %u draws had no mod skip or draw anything\n",
+		stats.part_ticks[TIMED_ANSWERS] * per_frame, stats.part_ticks[TIMED_MOD_DRAWS] * per_frame,
+		stats.part_ticks[TIMED_RECORDING] * per_frame, stats.idle_draws);
 	VkDumpNote("  Pipelines made again for the vertex buffers of mods: %u, %u of them not, %.2f ms per frame; %u pipelines of the game "
 		"kept to be made again, %u could not be, the first structure not known: %d\n",
 		stats.variants_made, stats.variants_failed, stats.variant_ticks * per_frame, recipes_kept, recipes_failed,
@@ -4622,9 +5293,9 @@ static void report()
 		image_blocks.size(), stats.apart_draws, stats.textures_shown, (int)images_hashed, (int)images_not_mapped);
 	VkDumpNote("  The draws were stopped for because of: settings %u, a pipeline not looked at yet, command lists doing more than asking "
 		"or a condition of one %u, an index count a section asks for %u, a constant buffer a list asks for %u; "
-		"about %u more were not stopped for\n",
+		"about %u more were not stopped for, %u of them with such an index count and indices no section is for\n",
 		stats.slow[SLOW_SETTINGS], stats.slow[SLOW_LISTS], stats.slow[SLOW_INDEX_COUNT], stats.slow[SLOW_CONSTANTS],
-		(unsigned)InterlockedExchange(&fast_draws, 0));
+		(unsigned)InterlockedExchange(&fast_draws, 0), (unsigned)InterlockedExchange(&quiet_draws, 0));
 	stats = {};
 	AcquireSRWLockExclusive(&descriptor_lock);
 	sets_allocated = sets_written = sets_written_by_template = 0;
@@ -4664,7 +5335,7 @@ void VkModsPresent(VkQueue queue)
 	}
 
 	// Whatever was recorded with them has been handed to a queue by now
-	finish_transfers(queue);
+	finish_transfers(queue, NULL);
 	brought.clear();
 	if (!(vk_frame & 255))
 		release_readbacks();
@@ -4673,6 +5344,7 @@ void VkModsPresent(VkQueue queue)
 	forget_unused_constants(false);
 	if (mods_device) {
 		destroy_retired_mirrors(false);
+		destroy_shared_buffers(false);
 		destroy_retired_textures(false);
 		destroy_big_transients();
 		release_unused_mod_sets();

@@ -1060,6 +1060,12 @@ void Dx12ShimSubmitAndWait()
 	release_retired();
 }
 
+ID3D12Fence* Dx12ShimFence(UINT64 *signalled)
+{
+	*signalled = fence_signalled;
+	return fence;
+}
+
 void Dx12ShimSetQueue(Dx12CommandQueue *queue)
 {
 	if (shim.queue == queue->mOrig)
@@ -1103,7 +1109,7 @@ bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue)
 		return false;
 	}
 
-	if (FAILED(shim.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))
+	if (FAILED(shim.device->CreateFence(0, G->vulkan ? D3D12_FENCE_FLAG_SHARED : D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))
 	    || FAILED(shim.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator.allocator)))
 	    || FAILED(shim.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.allocator, NULL, IID_PPV_ARGS(&shim_list)))) {
 		Dx12LogInfo("*** Failed to create the command list for mods, they will not be applied\n");

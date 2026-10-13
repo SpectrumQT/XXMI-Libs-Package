@@ -117,6 +117,9 @@ private:
 	void ClearInputLayoutCache();
 
 public:
+	// What CreateCustomInputLayout keeps by the hash of its elements, referenced, or NULL
+	HackerInputLayout* FindCustomInputLayout(uint64_t hash) { return FindCachedInputLayout(hash); }
+
 	ID3D11ShaderResourceView *mZBufferResourceView;
 	ID3D11Texture1D *mIniTexture;
 	ID3D11ShaderResourceView *mIniResourceView;

@@ -110,6 +110,23 @@ bool ShimWriteBuffer(ShimResource *resource, UINT64 offset, const void *data, UI
 	return true;
 }
 
+void ShimFootprint(ShimResource *resource, D3D12_PLACED_SUBRESOURCE_FOOTPRINT *layout, UINT *rows, UINT64 *row_size, UINT64 *total)
+{
+	if (!resource->footprint_known) {
+		dx12_shim->device->GetCopyableFootprints(&resource->desc, 0, 1, 0, &resource->footprint, &resource->footprint_rows,
+			&resource->footprint_row_size, &resource->footprint_total);
+		resource->footprint_known = true;
+	}
+	if (layout)
+		*layout = resource->footprint;
+	if (rows)
+		*rows = resource->footprint_rows;
+	if (row_size)
+		*row_size = resource->footprint_row_size;
+	if (total)
+		*total = resource->footprint_total;
+}
+
 bool ShimWriteSubresource(ShimResource *resource, UINT subresource, const void *data, UINT row_pitch, UINT slice_pitch)
 {
 	D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout;
@@ -121,7 +138,10 @@ bool ShimWriteSubresource(ShimResource *resource, UINT subresource, const void *
 	if (!resource->resource || !data)
 		return false;
 
-	dx12_shim->device->GetCopyableFootprints(&resource->desc, subresource, 1, 0, &layout, &rows, &row_size, &total);
+	if (!subresource)
+		ShimFootprint(resource, &layout, &rows, &row_size, &total);
+	else
+		dx12_shim->device->GetCopyableFootprints(&resource->desc, subresource, 1, 0, &layout, &rows, &row_size, &total);
 	if (total == UINT64_MAX)
 		return false;
 
@@ -281,6 +301,8 @@ void ShimUploadShadow(ShimResource *resource)
 		return;
 
 	resource->upload_pending = false;
+	if (VkScopeUploadShadow(resource))
+		return;
 	ShimReadShadow(resource);
 	ShimWriteBuffer(resource, 0, resource->shadow.data(), min((UINT64)resource->shadow.size(), resource->desc.Width));
 }

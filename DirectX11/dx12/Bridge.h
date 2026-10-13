@@ -114,6 +114,10 @@ ID3D12GraphicsCommandList* Dx12ShimList();
 void Dx12ShimSubmit();
 // The same, and does not return before the GPU is done with it
 void Dx12ShimSubmitAndWait();
+// The fence the queue signals after what was submitted, and the last value it
+// was told to. One of a device mods are applied for with vulkan = 1 is shared,
+// for the device of the game to wait for.
+ID3D12Fence* Dx12ShimFence(UINT64 *signalled);
 // Dx12ShimSubmit for a caller without the lock, which is only taken if there
 // is anything to submit: the queue proxy, before it hands lists to the queue
 void Dx12ShimFlush();

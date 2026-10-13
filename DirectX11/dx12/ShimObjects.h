@@ -157,6 +157,13 @@ struct ShimResource {
 	// (ShimFlushWrite): IniParams is written for many draws that read none
 	// of it, and each copy uploads all of it.
 	bool write_pending;
+	// What the device says of how subresource 0 lies in an upload, asked
+	// once (ShimFootprint): it is wanted every time a texture is mapped
+	// or written
+	bool footprint_known = false;
+	D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+	UINT footprint_rows;
+	UINT64 footprint_row_size, footprint_total;
 
 	// Staging buffers: what was copied into them from the GPU lands in
 	// this readback buffer, and reaches shadow when the engine maps them

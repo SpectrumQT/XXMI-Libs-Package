@@ -107,11 +107,17 @@ struct VkModsApi {
 	PFN_vkCmdPipelineBarrier CmdPipelineBarrier;
 	PFN_vkCmdCopyBufferToImage CmdCopyBufferToImage;
 	PFN_vkQueueSubmit QueueSubmit;
+	PFN_vkCreateSemaphore CreateSemaphore;
+	PFN_vkDestroySemaphore DestroySemaphore;
 	PFN_vkCmdDraw CmdDraw;
 	PFN_vkCmdDrawIndexed CmdDrawIndexed;
 };
 
-void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkModsApi *api);
+// handle_properties is NULL for a device without VK_KHR_external_memory_win32,
+// which then shares no memory with the D3D12 device, and import_semaphore for
+// one without VK_KHR_external_semaphore_win32, which cannot wait for it
+void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkModsApi *api,
+		PFN_vkGetMemoryWin32HandlePropertiesKHR handle_properties, PFN_vkImportSemaphoreWin32HandleKHR import_semaphore);
 void VkModsForgetDevice(VkDevice device);
 // A queue the game got, and the family it is of
 void VkModsImageCreated(VkImage image, const VkImageCreateInfo *info);
@@ -148,7 +154,12 @@ void VkModsBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint bind_poin
 // Before command buffers are handed to a queue: what their draws read of the
 // mods has to be where they read it by then. The caller is the one using the
 // queue, as the game is by calling.
-void VkModsBeforeSubmit(VkQueue queue);
+//
+// One who can have the command buffers wait for a fence of the D3D12 device
+// asks with a value: what is returned then is a semaphore that is such a
+// fence, if what the draws read is there once the fence has reached the value
+// and not before. Nothing is waited for here in that case.
+VkSemaphore VkModsBeforeSubmit(VkQueue queue, UINT64 *value);
 
 // True if the draw was dealt with, which includes making it with whichever of
 // the two functions it is for: the caller then has nothing left to do

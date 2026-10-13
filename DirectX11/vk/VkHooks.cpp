@@ -530,17 +530,64 @@ static void VKAPI_CALL Hooked_vkCmdDispatch(VkCommandBuffer cmd, uint32_t x, uin
 	next_CmdDispatch(cmd)(cmd, x, y, z);
 }
 
+// Whether a submission can be given a fence of the D3D12 device to wait for:
+// one batch, the command buffers of which are then all that waits, and no
+// values for its semaphores yet, which would have to be put together with ours
+static bool can_wait_for_fence(uint32_t count, const VkSubmitInfo *submits)
+{
+	const VkBaseInStructure *next;
+
+	if (count != 1)
+		return false;
+	for (next = (const VkBaseInStructure*)submits->pNext; next; next = next->pNext) {
+		if (next->sType == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO
+		    || next->sType == VK_STRUCTURE_TYPE_D3D12_FENCE_SUBMIT_INFO_KHR)
+			return false;
+	}
+	return true;
+}
+
 static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence)
 {
+	static thread_local std::vector<VkSemaphore> semaphores;
+	static thread_local std::vector<VkPipelineStageFlags> stages;
+	static thread_local std::vector<uint64_t> values, signals;
+	VkD3D12FenceSubmitInfoKHR fences = { VK_STRUCTURE_TYPE_D3D12_FENCE_SUBMIT_INFO_KHR };
+	VkSemaphore semaphore = VK_NULL_HANDLE;
+	VkSubmitInfo waiting;
+	UINT64 value = 0;
+
 	if (vk_mods_active)
-		VkModsBeforeSubmit(queue);
-	return next_QueueSubmit(queue)(queue, count, submits, fence);
+		semaphore = VkModsBeforeSubmit(queue, can_wait_for_fence(count, submits) ? &value : NULL);
+	if (!semaphore)
+		return next_QueueSubmit(queue)(queue, count, submits, fence);
+
+	waiting = *submits;
+	semaphores.assign(submits->pWaitSemaphores, submits->pWaitSemaphores + submits->waitSemaphoreCount);
+	stages.assign(submits->pWaitDstStageMask, submits->pWaitDstStageMask + submits->waitSemaphoreCount);
+	values.assign(submits->waitSemaphoreCount, 0);
+	signals.assign(submits->signalSemaphoreCount, 0);
+	semaphores.push_back(semaphore);
+	// Before anything of the command buffers
+	stages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+	values.push_back(value);
+
+	fences.pNext = submits->pNext;
+	fences.waitSemaphoreValuesCount = (uint32_t)values.size();
+	fences.pWaitSemaphoreValues = values.data();
+	fences.signalSemaphoreValuesCount = (uint32_t)signals.size();
+	fences.pSignalSemaphoreValues = signals.data();
+	waiting.pNext = &fences;
+	waiting.waitSemaphoreCount = (uint32_t)semaphores.size();
+	waiting.pWaitSemaphores = semaphores.data();
+	waiting.pWaitDstStageMask = stages.data();
+	return next_QueueSubmit(queue)(queue, 1, &waiting, fence);
 }
 
 static VkResult VKAPI_CALL Hooked_vkQueueSubmit2(VkQueue queue, uint32_t count, const VkSubmitInfo2 *submits, VkFence fence)
 {
 	if (vk_mods_active)
-		VkModsBeforeSubmit(queue);
+		VkModsBeforeSubmit(queue, NULL);
 	return next_QueueSubmit2(queue)(queue, count, submits, fence);
 }
 
@@ -576,7 +623,7 @@ static void hook_device_exports()
 #undef X
 }
 
-static void register_device(VkDevice device, VkPhysicalDevice physical_device)
+static void register_device(VkDevice device, VkPhysicalDevice physical_device, bool external_memory, bool external_semaphore)
 {
 	HINSTANCE vulkan = NktHookLibHelpers::GetModuleBaseAddress(L"vulkan-1.dll");
 	PFN_vkGetDeviceProcAddr get = fnOrigGetDeviceProcAddr;
@@ -654,9 +701,14 @@ static void register_device(VkDevice device, VkPhysicalDevice physical_device)
 		api.CmdPipelineBarrier = (PFN_vkCmdPipelineBarrier)get(device, "vkCmdPipelineBarrier");
 		api.CmdCopyBufferToImage = (PFN_vkCmdCopyBufferToImage)get(device, "vkCmdCopyBufferToImage");
 		api.QueueSubmit = next.QueueSubmit;
+		api.CreateSemaphore = (PFN_vkCreateSemaphore)get(device, "vkCreateSemaphore");
+		api.DestroySemaphore = (PFN_vkDestroySemaphore)get(device, "vkDestroySemaphore");
 		api.CmdDraw = next.CmdDraw;
 		api.CmdDrawIndexed = next.CmdDrawIndexed;
-		VkModsDevice(device, physical_device, &api);
+		VkModsDevice(device, physical_device, &api, !external_memory ? NULL
+			: (PFN_vkGetMemoryWin32HandlePropertiesKHR)get(device, "vkGetMemoryWin32HandlePropertiesKHR"),
+			!external_semaphore ? NULL
+			: (PFN_vkImportSemaphoreWin32HandleKHR)get(device, "vkImportSemaphoreWin32HandleKHR"));
 	}
 }
 
@@ -664,6 +716,7 @@ static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_devic
 		const VkAllocationCallbacks *allocator, VkDevice *device)
 {
 	VkResult result = fnOrigCreateDevice(physical_device, info, allocator, device);
+	bool external_memory = false, external_semaphore = false;
 	uint32_t i;
 
 	if (result != VK_SUCCESS || !device || !*device)
@@ -678,7 +731,11 @@ static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_devic
 	vk_dump_active = G->vk_dump_hashes;
 	vk_mods_active = G->vulkan;
 	hook_device_exports();
-	register_device(*device, physical_device);
+	for (i = 0; info && i < info->enabledExtensionCount; i++) {
+		external_memory |= !strcmp(info->ppEnabledExtensionNames[i], VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
+		external_semaphore |= !strcmp(info->ppEnabledExtensionNames[i], VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
+	}
+	register_device(*device, physical_device, external_memory, external_semaphore);
 
 	VkDumpNote("vkCreateDevice = %p, %u extensions\n", *device, info ? info->enabledExtensionCount : 0);
 	for (i = 0; info && i < info->enabledExtensionCount; i++)

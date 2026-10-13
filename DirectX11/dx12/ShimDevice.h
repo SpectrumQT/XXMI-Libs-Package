@@ -25,6 +25,9 @@ bool ShimBufferToGpu(ShimResource *resource);
 // upload_pending is written what its shadow holds
 void ShimUploadShadow(ShimResource *resource);
 bool ShimWriteSubresource(ShimResource *resource, UINT subresource, const void *data, UINT row_pitch, UINT slice_pitch);
+// How subresource 0 lies in an upload, as GetCopyableFootprints says. Any of
+// the four may be NULL.
+void ShimFootprint(ShimResource *resource, D3D12_PLACED_SUBRESOURCE_FOOTPRINT *layout, UINT *rows, UINT64 *row_size, UINT64 *total);
 // Copies the shadow of a texture with write_pending to it. Dx12ShimTransition
 // does, which whatever uses a resource goes through first.
 void ShimFlushWrite(ShimResource *resource);

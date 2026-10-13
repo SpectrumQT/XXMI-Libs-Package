@@ -37,6 +37,11 @@ bool VkScopeInputElements(std::vector<D3D11_INPUT_ELEMENT_DESC> *elements);
 // sets another. Not referenced.
 void VkScopeSetGameLayout(ID3D11InputLayout *layout);
 ID3D11InputLayout* VkScopeGameLayout();
+// The hash the engine keeps that layout by, 0 until one was made for the
+// pipeline of the draw: the elements are not put together for every draw of
+// a mod to find the layout they make
+UINT64 VkScopeLayoutHash();
+void VkScopeSetLayoutHash(UINT64 hash);
 // A draw of a mod in place of or besides the game's, with what the mod has
 // bound on the shim context
 void VkScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT base_vertex, UINT start_instance);
@@ -48,6 +53,10 @@ void VkScopeForgetResource(ShimResource *resource);
 // about to be read. The version of the resource changes if that had the
 // shadow written.
 void VkScopeFillShadow(ShimResource *resource, UINT64 offset, UINT64 size);
+// The resource of one that is marked as upload_pending is about to be read by
+// a list of the shim, and is given what the game has there by now. False if
+// the contents are not from here.
+bool VkScopeUploadShadow(ShimResource *resource);
 
 // After the configuration was read again
 void VkModsConfigReloaded();

@@ -14,20 +14,30 @@ uint64_t CalculateInputLayoutHash(const D3D11_INPUT_ELEMENT_DESC* pElements, UIN
 
 		if (element.SemanticName)
 		{
-			// Normalize semantic name the same way HackerInputLayout does (case-insensitive comparison)
+			// Normalize semantic name the same way HackerInputLayout does (case-insensitive comparison).
+			// Not toupper: that asks for the locale for every letter, of every
+			// draw a mod reads its vertices another way for. A piece at a time
+			// gives the hash a letter at a time does.
+			char upper[64];
+			size_t length = 0;
+
 			for (const char* p = element.SemanticName; *p; ++p)
 			{
-				char c = static_cast<char>(std::toupper(static_cast<unsigned char>(*p)));
-				layoutHash = crc32c_hw(layoutHash, &c, sizeof(c));
+				upper[length++] = (*p >= 'a' && *p <= 'z') ? static_cast<char>(*p - 'a' + 'A') : *p;
+				if (length == sizeof(upper))
+				{
+					layoutHash = crc32c_hw(layoutHash, upper, length);
+					length = 0;
+				}
 			}
+			if (length)
+				layoutHash = crc32c_hw(layoutHash, upper, length);
 		}
 
-		layoutHash = crc32c_hw(layoutHash, &element.SemanticIndex, sizeof(element.SemanticIndex));
-		layoutHash = crc32c_hw(layoutHash, &element.Format, sizeof(element.Format));
-		layoutHash = crc32c_hw(layoutHash, &element.InputSlot, sizeof(element.InputSlot));
-		layoutHash = crc32c_hw(layoutHash, &element.AlignedByteOffset, sizeof(element.AlignedByteOffset));
-		layoutHash = crc32c_hw(layoutHash, &element.InputSlotClass, sizeof(element.InputSlotClass));
-		layoutHash = crc32c_hw(layoutHash, &element.InstanceDataStepRate, sizeof(element.InstanceDataStepRate));
+		// The six members after the name, which are one after the other
+		static_assert(offsetof(D3D11_INPUT_ELEMENT_DESC, InstanceDataStepRate) + sizeof(element.InstanceDataStepRate)
+			- offsetof(D3D11_INPUT_ELEMENT_DESC, SemanticIndex) == 6 * sizeof(UINT), "members of D3D11_INPUT_ELEMENT_DESC not packed");
+		layoutHash = crc32c_hw(layoutHash, &element.SemanticIndex, 6 * sizeof(UINT));
 	}
 
 	uint32_t signatureHash = 0;

@@ -4840,6 +4840,7 @@ void LoadConfigFile()
 	G->dx12_dump_hashes = GetIniBool(L"Hunting", L"dx12_dump_hashes", false, NULL);
 	G->vk_dump_hashes = GetIniBool(L"Hunting", L"vk_dump_hashes", false, NULL);
 	G->vulkan = GetIniBool(L"Rendering", L"vulkan", false, NULL);
+	G->vk_buffers_first = GetIniBool(L"Rendering", L"vk_buffers_first", false, NULL);
 	G->dx12_debug_layer = GetIniBool(L"Rendering", L"dx12_debug_layer", false, NULL);
 
 	if (GetIniStringAndLog(L"Rendering", L"override_directory", 0, G->SHADER_PATH, MAX_PATH))

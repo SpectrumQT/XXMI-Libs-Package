@@ -49,7 +49,7 @@ static struct {
 	unsigned draws, skipped, mod_draws, mod_draws_failed;
 	unsigned slow[SLOW_REASONS];
 	unsigned regions_hashed, regions_checked, regions_unmapped;
-	unsigned mirrored;
+	unsigned mirrored, mirrored_from_gpu;
 	UINT64 mirrored_bytes;
 	unsigned constants_shown, constants_read, constants_unmapped, constants_unbound;
 	UINT64 constants_bytes, constants_ticks;
@@ -250,6 +250,7 @@ static ShaderLayout* reflect_shader(const uint32_t *code, size_t bytes)
 {
 	ShaderLayout *layout = new ShaderLayout();
 	SpirvInfo info;
+	int stage;
 
 	SpirvReflect(code, bytes / sizeof(uint32_t), &info);
 	for (const SpirvBinding &binding : info.bindings) {
@@ -267,6 +268,11 @@ static ShaderLayout* reflect_shader(const uint32_t *code, size_t bytes)
 				layout->views.push_back(binding);
 				break;
 		}
+	}
+	stage = stage_of((VkShaderStageFlagBits)info.stage);
+	if (G->vk_buffers_first && stage >= 0 && stage != DX12_STAGE_PS && stage != DX12_STAGE_CS) {
+		std::stable_partition(layout->views.begin(), layout->views.end(),
+			[](const SpirvBinding &view) { return view.kind == SPIRV_SSBO; });
 	}
 	layout->declared = NULL;
 	declare_as_d3d11(info, layout);
@@ -1358,6 +1364,10 @@ static const BYTE* buffer_contents(const ShimResource *resource)
 	return resource->shadow.data();
 }
 
+static bool transfer_from_gpu(ShimResource *resource, UINT64 offset, UINT64 bytes, BYTE *dst);
+
+// Vertices a shader of the mod wrote are only where that left them, and are
+// copied from there like what a shader of the game is to read (see below)
 static Mirror* mirror_of(ShimBuffer *buffer)
 {
 	VkBufferCreateInfo info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -1367,7 +1377,7 @@ static Mirror* mirror_of(ShimBuffer *buffer)
 	VkDeviceSize offset;
 	Mirror mirror = {};
 
-	if (!data)
+	if (!data && (!resource->resource || resource->cpu_only))
 		return NULL;
 
 	auto found = mirrors.find(resource);
@@ -1379,7 +1389,7 @@ static Mirror* mirror_of(ShimBuffer *buffer)
 		mirrors.erase(found);
 	}
 
-	info.size = min((size_t)buffer->mDesc.ByteWidth, resource->shadow.size());
+	info.size = data ? min((size_t)buffer->mDesc.ByteWidth, resource->shadow.size()) : buffer->mDesc.ByteWidth;
 	info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
 	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	if (api.CreateBuffer(mods_device, &info, NULL, &mirror.buffer) != VK_SUCCESS)
@@ -1396,7 +1406,16 @@ static Mirror* mirror_of(ShimBuffer *buffer)
 		return NULL;
 	}
 
-	memcpy(mirror.block->data + offset, data, (size_t)info.size);
+	if (data) {
+		memcpy(mirror.block->data + offset, data, (size_t)info.size);
+	} else {
+		if (!transfer_from_gpu(resource, 0, info.size, mirror.block->data + offset)) {
+			mirror.block->live--;
+			api.DestroyBuffer(mods_device, mirror.buffer, NULL);
+			return NULL;
+		}
+		stats.mirrored_from_gpu++;
+	}
 	mirror.size = info.size;
 	mirror.version = resource->version;
 	resource->mirrored = true;
@@ -4497,11 +4516,11 @@ static void report()
 
 	// A note is cut off past a thousand characters
 	VkDumpNote("Mods, frame %u (D3D12 frame %u), since the last of these lines: the engine saw %u draws and skipped %u, mods drew %u times "
-		"of which %u could not be made, %u buffers of mods copied (%llu KB), %Iu held; "
+		"of which %u could not be made, %u buffers of mods copied (%llu KB, %u from the GPU), %Iu held; "
 		"index regions hashed %u, found as they were %u, not mapped %u; per frame the draws took %.2f ms waiting for the lock "
 		"and %.2f ms in the engine, %.2f us a draw; %Iu shaders linked to ShaderRegex (%Iu by what they declare), %Iu ShaderOverride hashes, %Iu buffers published\n",
 		vk_frame, dx12_frame, stats.draws, stats.skipped, stats.mod_draws, stats.mod_draws_failed, stats.mirrored,
-		stats.mirrored_bytes >> 10, mirrors.size(), stats.regions_hashed, stats.regions_checked,
+		stats.mirrored_bytes >> 10, stats.mirrored_from_gpu, mirrors.size(), stats.regions_hashed, stats.regions_checked,
 		stats.regions_unmapped, stats.wait_ticks * per_frame, stats.engine_ticks * per_frame, stats.engine_ticks * per_draw,
 		linked_shaders, matched_shaders, G->mShaderOverrideMap.size(), published.size());
 	VkDumpNote("  Constant buffers of the game: shown %u times, read %u times (%llu KB, %.2f ms per frame), not mapped %u, no buffer seen set at the "

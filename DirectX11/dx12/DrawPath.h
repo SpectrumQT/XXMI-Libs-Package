@@ -57,7 +57,14 @@ static inline const Dx12PipelineInfo* Dx12ListPipeline(Dx12GraphicsCommandList *
 	ID3D12PipelineState *pipeline = list->mState.pipeline;
 
 	if (list->mInfoPipeline != pipeline) {
-		list->mInfo = pipeline ? Dx12FindPipeline(pipeline) : NULL;
+		Dx12GraphicsCommandList::PipelineMemo *memo = list->MemoOf(pipeline);
+
+		if (!pipeline || memo->pipeline != pipeline) {
+			memo->pipeline = pipeline;
+			memo->info = pipeline ? Dx12FindPipeline(pipeline) : NULL;
+			memo->wanted_generation = 0;
+		}
+		list->mInfo = memo->info;
 		list->mInfoPipeline = pipeline;
 	}
 	return list->mInfo;
@@ -89,6 +96,10 @@ static inline bool Dx12DrawWanted(Dx12GraphicsCommandList *list)
 bool Dx12Draw(Dx12GraphicsCommandList *list, bool indexed, UINT count, UINT instances, UINT start,
 		INT base_vertex, UINT start_instance);
 bool Dx12Dispatch(Dx12GraphicsCommandList *list, UINT x, UINT y, UINT z);
+// The draws and dispatches of the list that were not stopped for are counted
+// on it, and handed on here: before the engine is asked about one that is, and
+// when the list is closed
+void Dx12FlushFastDraws(Dx12GraphicsCommandList *list);
 
 // Whether mods have written buffers of ours in place of buffers of the game,
 // which a dispatch of the game that Dx12Dispatch did not deal with then has

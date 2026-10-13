@@ -30,6 +30,9 @@ bool Dx12FindBufferHash(ID3D12Resource *resource, UINT64 offset, Dx12BufferHash 
 // before asking, or what was written in between goes unnoticed. False if the
 // range is too large to be told apart from the rest of its resource.
 bool Dx12BufferHashStamp(ID3D12Resource *resource, UINT64 offset, UINT64 bytes, UINT64 *stamp);
+// The counters that stamp is the sum of, like Dx12FindBufferStampCounters:
+// how many of them, 0 where there is no stamp or they are more than max
+UINT Dx12BufferHashStampCounters(ID3D12Resource *resource, UINT64 offset, UINT64 bytes, const volatile LONG64 **counters, UINT max);
 void Dx12ForgetBufferHashes(ID3D12Resource *resource);
 
 // The hash HackerDevice::CreateBuffer would have calculated for a default

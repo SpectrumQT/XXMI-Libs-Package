@@ -52,6 +52,10 @@ struct ShimState {
 	// A mod set no index buffer, as with a file of it that is missing,
 	// which is not the same as ib being NULL for the game's being kept
 	bool ib_unbound;
+
+	// Whether any of these slots was set since the state was last reset,
+	// which tells ShimContext::ClearState what it need not go through
+	bool samplers_set, cs_uavs_set, om_uavs_set, vbs_set;
 };
 
 bool Dx12ShimPipelineInit();

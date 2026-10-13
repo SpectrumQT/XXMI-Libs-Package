@@ -96,10 +96,13 @@ void STDMETHODCALLTYPE ShimContext::ClearState()
 
 	for (ShimStageState &stage : mState->stages) {
 		assign(stage.shader, (ID3D11DeviceChild*)NULL);
+		stage.shader_unbound = false;
 		while (_BitScanForward(&bit, stage.cb_mask)) {
 			stage.cb_mask &= stage.cb_mask - 1;
 			assign(stage.cbs[bit], (ID3D11Buffer*)NULL);
 		}
+		memset(stage.cb_first, 0, sizeof(stage.cb_first));
+		memset(stage.cb_count, 0, sizeof(stage.cb_count));
 		for (UINT &mask : stage.srv_mask) {
 			i = (UINT)(&mask - stage.srv_mask) * 32;
 			while (_BitScanForward(&bit, mask)) {
@@ -107,13 +110,13 @@ void STDMETHODCALLTYPE ShimContext::ClearState()
 				assign(stage.srvs[i + bit], (ID3D11ShaderResourceView*)NULL);
 			}
 		}
-		for (i = 0; i < SHIM_SAMPLER_SLOTS; i++)
+		for (i = 0; mState->samplers_set && i < SHIM_SAMPLER_SLOTS; i++)
 			assign(stage.samplers[i], (ID3D11SamplerState*)NULL);
 	}
-	for (i = 0; i < SHIM_UAV_SLOTS; i++) {
+	for (i = 0; mState->cs_uavs_set && i < SHIM_UAV_SLOTS; i++)
 		assign(mState->cs_uavs[i], (ID3D11UnorderedAccessView*)NULL);
+	for (i = 0; mState->om_uavs_set && i < SHIM_UAV_SLOTS; i++)
 		assign(mState->om_uavs[i], (ID3D11UnorderedAccessView*)NULL);
-	}
 	for (i = 0; i < ARRAYSIZE(mState->rtvs); i++)
 		assign(mState->rtvs[i], (ID3D11RenderTargetView*)NULL);
 	assign(mState->dsv, (ID3D11DepthStencilView*)NULL);
@@ -121,11 +124,17 @@ void STDMETHODCALLTYPE ShimContext::ClearState()
 	assign(mState->depth_stencil, (ID3D11DepthStencilState*)NULL);
 	assign(mState->rasterizer, (ID3D11RasterizerState*)NULL);
 	assign(mState->input_layout, (ID3D11InputLayout*)NULL);
-	for (i = 0; i < ARRAYSIZE(mState->vbs); i++)
+	for (i = 0; mState->vbs_set && i < ARRAYSIZE(mState->vbs); i++)
 		assign(mState->vbs[i], (ID3D11Buffer*)NULL);
 	assign(mState->ib, (ID3D11Buffer*)NULL);
 
-	ResetState();
+	// The stages are as ResetState would leave them by now, and they are
+	// most of the state: this runs after every draw a mod changed
+	memset(&mState->cs_uavs, 0, sizeof(*mState) - offsetof(ShimState, cs_uavs));
+	for (FLOAT &factor : mState->blend_factor)
+		factor = 1.0f;
+	mState->sample_mask = 0xffffffff;
+	mChanged = true;
 }
 
 void ShimContext::ResetState()
@@ -291,6 +300,7 @@ void ShimContext::SetSamplers(Dx12ShaderStage stage, UINT start, UINT count, ID3
 
 	for (i = 0; i < count && start + i < SHIM_SAMPLER_SLOTS; i++)
 		assign(mState->stages[stage].samplers[start + i], samplers ? samplers[i] : NULL);
+	mState->samplers_set = true;
 	mChanged = true;
 }
 
@@ -357,6 +367,7 @@ void STDMETHODCALLTYPE ShimContext::CSSetUnorderedAccessViews(UINT StartSlot, UI
 
 	for (i = 0; i < NumUAVs && StartSlot + i < SHIM_UAV_SLOTS; i++)
 		assign(mState->cs_uavs[StartSlot + i], ppUnorderedAccessViews ? ppUnorderedAccessViews[i] : NULL);
+	mState->cs_uavs_set = true;
 	mChanged = true;
 }
 
@@ -391,6 +402,7 @@ void STDMETHODCALLTYPE ShimContext::IASetVertexBuffers(UINT StartSlot, UINT NumB
 {
 	UINT i;
 
+	mState->vbs_set = true;
 	for (i = 0; i < NumBuffers && StartSlot + i < ARRAYSIZE(mState->vbs); i++) {
 		assign(mState->vbs[StartSlot + i], ppVertexBuffers ? ppVertexBuffers[i] : NULL);
 		mState->vb_strides[StartSlot + i] = pStrides ? pStrides[i] : 0;
@@ -489,8 +501,9 @@ void STDMETHODCALLTYPE ShimContext::OMSetRenderTargets(UINT NumViews, ID3D11Rend
 	UINT i;
 
 	SetRenderTargets(NumViews, ppRenderTargetViews, pDepthStencilView);
-	for (i = 0; i < SHIM_UAV_SLOTS; i++)
+	for (i = 0; mState->om_uavs_set && i < SHIM_UAV_SLOTS; i++)
 		assign(mState->om_uavs[i], (ID3D11UnorderedAccessView*)NULL);
+	mState->om_uavs_set = false;
 }
 
 void STDMETHODCALLTYPE ShimContext::OMSetRenderTargetsAndUnorderedAccessViews(UINT NumRTVs, ID3D11RenderTargetView *const *ppRenderTargetViews, ID3D11DepthStencilView *pDepthStencilView, UINT UAVStartSlot, UINT NumUAVs, ID3D11UnorderedAccessView *const *ppUnorderedAccessViews, const UINT *pUAVInitialCounts)
@@ -502,6 +515,7 @@ void STDMETHODCALLTYPE ShimContext::OMSetRenderTargetsAndUnorderedAccessViews(UI
 	if (NumUAVs == D3D11_KEEP_UNORDERED_ACCESS_VIEWS)
 		return;
 	mChanged = true;
+	mState->om_uavs_set = true;
 
 	for (i = 0; i < SHIM_UAV_SLOTS; i++) {
 		assign(mState->om_uavs[i], i >= UAVStartSlot && i - UAVStartSlot < NumUAVs && ppUnorderedAccessViews

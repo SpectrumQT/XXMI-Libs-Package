@@ -28,6 +28,7 @@ Dx12GraphicsCommandList::Dx12GraphicsCommandList(Dx12Device *device, ID3D12Graph
 	mRef(1),
 	mDraws(0),
 	mDispatches(0),
+	mFastDraws(0),
 	mResets(0),
 	mWantedPipeline(NULL),
 	mWantedGeneration(0),
@@ -123,6 +124,7 @@ HRESULT STDMETHODCALLTYPE Dx12GraphicsCommandList::Close()
 		InterlockedAdd64(&dx12_stats.dispatches, mDispatches);
 	InterlockedIncrement64(&dx12_stats.lists_closed);
 	mDraws = mDispatches = 0;
+	Dx12FlushFastDraws(this);
 
 	return mOrig->Close();
 }
@@ -134,11 +136,12 @@ void Dx12GraphicsCommandList::ForgetInfo()
 	mInfoSignature[0] = mInfoSignature[1] = (ID3D12RootSignature*)(uintptr_t)-1;
 	mInfo = NULL;
 	mSignatureInfo[0] = mSignatureInfo[1] = NULL;
+	memset(mPipelineMemo, 0, sizeof(mPipelineMemo));
 }
 
 HRESULT STDMETHODCALLTYPE Dx12GraphicsCommandList::Reset(ID3D12CommandAllocator *pAllocator, ID3D12PipelineState *pInitialState)
 {
-	mDraws = mDispatches = 0;
+	mDraws = mDispatches = mFastDraws = 0;
 	mResets++;
 	Dx12ResetCmdState(&mState, pInitialState);
 	ForgetInfo();

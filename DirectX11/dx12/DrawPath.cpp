@@ -77,11 +77,15 @@ bool Dx12DrawPipelineWanted(Dx12GraphicsCommandList *list)
 {
 	ID3D12PipelineState *state = list->mState.pipeline;
 	UINT generation = dx12_draw_generation;
+	Dx12GraphicsCommandList::PipelineMemo *memo;
 	const Dx12PipelineInfo *pipeline;
 	bool wanted = false;
 
 	pipeline = Dx12ListPipeline(list);
-	if (pipeline) {
+	memo = list->MemoOf(state);
+	if (memo->pipeline == state && memo->wanted_generation == generation) {
+		wanted = memo->wanted;
+	} else if (pipeline) {
 		if (want_all) {
 			wanted = true;
 		} else {
@@ -99,6 +103,10 @@ bool Dx12DrawPipelineWanted(Dx12GraphicsCommandList *list)
 	if (wanted && Dx12ShimQueueUnordered(list->mQueue))
 		wanted = false;
 
+	if (memo->pipeline == state) {
+		memo->wanted_generation = generation;
+		memo->wanted = wanted;
+	}
 	list->mWantedPipeline = state;
 	list->mWantedGeneration = generation;
 	list->mWanted = wanted;
@@ -854,18 +862,60 @@ static void update_reaches()
 	}
 }
 
+// What publish_resource and remember_texture came to for a resource, which a
+// mod's draw asks for every texture it has: good while the stamp of what is
+// known of the resource is the one taken before asking, and for the pointer
+// while buffer_cache_generation is the same.
+struct PublishedMemo {
+	ID3D12Resource *resource;
+	UINT64 stamp;
+	UINT config, generation;
+	Published *entry;
+	// remember_texture left its word in one of the two here, or found no
+	// use for one with boring NULL
+	bool remembered;
+	volatile LONG64 *boring;
+	LONG64 boring_word;
+};
+static PublishedMemo published_memos[4096];
+
+static PublishedMemo* published_memo(ID3D12Resource *resource)
+{
+	return &published_memos[((UINT64)(uintptr_t)resource * 0x9e3779b97f4a7c15ull) >> 52];
+}
+
+static bool published_memo_holds(const PublishedMemo *memo, ID3D12Resource *resource, UINT64 stamp)
+{
+	return memo->resource == resource && memo->stamp == stamp && memo->config == config_generation
+		&& memo->generation == buffer_cache_generation;
+}
+
 static Published* publish_resource(ID3D12Resource *resource)
 {
+	PublishedMemo *memo = published_memo(resource);
+	UINT64 stamp = Dx12TextureStamp(resource);
 	Published *entry;
 	Dx12ResourceInfo info;
 	D3D11_TEXTURE2D_DESC desc2d;
 	D3D11_RESOURCE_DIMENSION dimension;
+
+	if (published_memo_holds(memo, resource, stamp)) {
+		memo->entry->frame = dx12_frame;
+		return memo->entry;
+	}
 
 	if (!Dx12GetResourceInfo(resource, &info))
 		return NULL;
 
 	entry = &published[{ resource, 0, PUBLISHED_RESOURCE }];
 	entry->frame = dx12_frame;
+
+	memo->resource = resource;
+	memo->stamp = stamp;
+	memo->config = config_generation;
+	memo->generation = buffer_cache_generation;
+	memo->entry = entry;
+	memo->remembered = false;
 
 	if (entry->resource && !memcmp(&entry->desc, &info.desc, sizeof(info.desc))) {
 		if (entry->has_data_hash == info.has_data_hash && entry->data_hash == info.data_hash && entry->config == config_generation)
@@ -902,29 +952,32 @@ struct BufferCacheEntry {
 	UINT kind, stride, ib_bytes, ib_format;
 
 	UINT generation, config;
-	Published *entry;
-	UINT entry_version;
-	VertexReach *reach;
-
+	UINT64 stamp;
+	// No TextureOverride section can match the buffer
+	bool boring;
+	bool ib_asked, ib_found;
+	bool has_hash, ib_hashed;
 	// What the stamp is of
 	ID3D12Resource *resource, *ib;
 	UINT64 offset, span, ib_offset, ib_span;
-	bool ib_asked, ib_found;
-	UINT64 stamp;
+
+	// Up to here is what a thread recording reads of a buffer whose stamp
+	// has not changed, see buffer_is_boring: kept together for the memory
+	// that has to be fetched for it
+	Published *entry;
+	UINT entry_version;
+	VertexReach *reach;
 	// What the lookups the stamp is of came to, for when it has changed:
 	// the counters it is made of are shared, and the game writes
 	// hundreds of other ranges every frame
-	bool has_hash, ib_hashed;
 	Dx12BufferHash data, ib_data;
-
-	// No TextureOverride section can match the buffer
-	bool boring;
 };
 
 // Written with the lock held. The threads recording read it without, to tell
-// whether a draw is worth stopping for: seq is odd while data is being
-// written, and has changed if it was written since.
-struct BufferCacheSlot {
+// whether a draw is worth stopping for, and may put a newer stamp to it: seq is
+// odd while data is being written, which whoever made it so does, and has
+// changed if it was written since.
+struct alignas(64) BufferCacheSlot {
 	volatile LONG seq;
 	BufferCacheEntry data;
 };
@@ -932,11 +985,17 @@ struct BufferCacheSlot {
 // buffers that share theirs with another would be looked up for every draw
 const UINT BUFFER_CACHE_WAYS = 4;
 static BufferCacheSlot buffer_cache[32768];
+// A word per slot made of what the slot was asked, never 0: the slots of a
+// bucket that are for something else are told by these, a bucket of them to
+// the cache line, without fetching the slots. Written before the slot is.
+static volatile UINT64 buffer_cache_tags[ARRAYSIZE(buffer_cache)];
 
 // The first slot of the bucket
 static BufferCacheSlot* buffer_cache_slot(BufferCacheEntry *asked, UINT64 va, UINT64 bytes, UINT kind, UINT stride,
-		const D3D12_INDEX_BUFFER_VIEW *indices)
+		const D3D12_INDEX_BUFFER_VIEW *indices, UINT64 *tag)
 {
+	UINT64 mixed;
+
 	asked->va = va;
 	asked->bytes = bytes;
 	asked->kind = kind;
@@ -946,8 +1005,10 @@ static BufferCacheSlot* buffer_cache_slot(BufferCacheEntry *asked, UINT64 va, UI
 		asked->ib_bytes = indices->SizeInBytes;
 		asked->ib_format = indices->Format;
 	}
-	return &buffer_cache[(((va ^ (asked->ib_va * 0x9e3779b97f4a7c15ull) ^ bytes ^ ((UINT64)stride << 40) ^ ((UINT64)kind << 60))
-		* 0xff51afd7ed558ccdull) >> 49) & ~(UINT64)(BUFFER_CACHE_WAYS - 1)];
+	mixed = (va ^ (asked->ib_va * 0x9e3779b97f4a7c15ull) ^ bytes ^ ((UINT64)stride << 40) ^ ((UINT64)kind << 60))
+		* 0xff51afd7ed558ccdull;
+	*tag = mixed | 1;
+	return &buffer_cache[(mixed >> 49) & ~(UINT64)(BUFFER_CACHE_WAYS - 1)];
 }
 
 static bool same_buffer_asked(const BufferCacheEntry *a, const BufferCacheEntry *b)
@@ -957,13 +1018,14 @@ static bool same_buffer_asked(const BufferCacheEntry *a, const BufferCacheEntry 
 }
 
 // The slot of the bucket that is for what is asked, or to put it in
-static BufferCacheSlot* buffer_cache_way(BufferCacheSlot *bucket, const BufferCacheEntry *asked, bool store)
+static BufferCacheSlot* buffer_cache_way(BufferCacheSlot *bucket, const BufferCacheEntry *asked, UINT64 tag, bool store)
 {
+	const volatile UINT64 *tags = &buffer_cache_tags[bucket - buffer_cache];
 	static UINT next;
 	UINT way;
 
 	for (way = 0; way < BUFFER_CACHE_WAYS; way++) {
-		if (same_buffer_asked(&bucket[way].data, asked))
+		if (tags[way] == tag && same_buffer_asked(&bucket[way].data, asked))
 			return &bucket[way];
 	}
 	if (!store)
@@ -1074,24 +1136,21 @@ static void remember_buffer(BufferCacheEntry *cached, bool has_hash, const Dx12B
 	cached->generation = buffer_cache_generation;
 }
 
+static Published* look_up_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride, const D3D12_INDEX_BUFFER_VIEW *indices);
+
 // stride and indices are for a vertex buffer
 static Published* publish_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride, const D3D12_INDEX_BUFFER_VIEW *indices)
 {
-	D3D12_RESOURCE_DESC desc = {};
-	const Dx12BufferHash *reach = NULL;
-	Dx12BufferHash data = {};
-	ReachLookup lookup = {};
-	BufferCacheEntry *cached, asked = {};
-	BufferCacheSlot *bucket, *slot;
-	ID3D12Resource *resource;
-	Published *entry;
-	UINT64 offset, stamp;
-	uint32_t hash;
-	bool has_hash;
-	LONG64 word;
+	// Only what is asked is filled in, the rest of it is not looked at
+	// here: a mod's draw comes by for each of its buffers
+	BufferCacheEntry *cached, asked;
+	BufferCacheSlot *slot;
+	UINT64 stamp, tag;
 
-	bucket = buffer_cache_slot(&asked, va, bytes, kind, stride, indices);
-	slot = buffer_cache_way(bucket, &asked, false);
+	asked.ib_va = 0;
+	asked.ib_bytes = 0;
+	asked.ib_format = 0;
+	slot = buffer_cache_way(buffer_cache_slot(&asked, va, bytes, kind, stride, indices, &tag), &asked, tag, false);
 	cached = slot ? &slot->data : NULL;
 
 	// In this order: the pointers are only good with the generation
@@ -1104,6 +1163,25 @@ static Published* publish_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride
 			cached->reach->frame = dx12_frame;
 		return cached->entry;
 	}
+	return look_up_buffer(va, bytes, kind, stride, indices);
+}
+
+static Published* look_up_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride, const D3D12_INDEX_BUFFER_VIEW *indices)
+{
+	D3D12_RESOURCE_DESC desc = {};
+	const Dx12BufferHash *reach = NULL;
+	Dx12BufferHash data = {};
+	ReachLookup lookup = {};
+	BufferCacheEntry asked = {};
+	BufferCacheSlot *bucket, *slot;
+	ID3D12Resource *resource;
+	Published *entry;
+	UINT64 offset, tag;
+	uint32_t hash;
+	bool has_hash;
+	LONG64 word;
+
+	bucket = buffer_cache_slot(&asked, va, bytes, kind, stride, indices, &tag);
 	stats.buffers_looked_up++;
 
 	if (!Dx12FindBuffer(va, &resource, &offset)) {
@@ -1146,11 +1224,21 @@ static Published* publish_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride
 					stats.lookups_unstamped++;
 				// What could not be remembered still replaces
 				// what was, which no longer goes
-				slot = buffer_cache_way(bucket, &asked, asked.generation != 0);
+				slot = buffer_cache_way(bucket, &asked, tag, asked.generation != 0);
 				if (slot) {
-					InterlockedIncrement(&slot->seq);
+					LONG seq;
+
+					// A thread recording may be putting a newer
+					// stamp to what the slot had
+					for (;;) {
+						seq = slot->seq;
+						if (!(seq & 1) && InterlockedCompareExchange(&slot->seq, seq + 1, seq) == seq)
+							break;
+						YieldProcessor();
+					}
+					InterlockedExchange64((volatile LONG64*)&buffer_cache_tags[slot - buffer_cache], (LONG64)tag);
 					slot->data = asked;
-					InterlockedIncrement(&slot->seq);
+					InterlockedExchange(&slot->seq, seq + 2);
 				}
 			} else {
 				stats.lookups_unsettled++;
@@ -1207,27 +1295,51 @@ static volatile LONG64* boring_texture_slot(ID3D12Resource *resource, const Dx12
 	return &boring_textures[(((UINT64)(uintptr_t)resource * 0x9e3779b97f4a7c15ull) >> 51) & ~1ull];
 }
 
+// Nearly every draw asks about a texture, and what is known of one is behind a
+// lock: so what texture_is_boring came to is kept by the address alone, in a
+// word made of the address, the configuration and the stamp of what is known
+// of the resource there, which is not the same word once any of them changed.
+static volatile LONG64 boring_texture_addresses[8192];
+
 // Without the lock
 static bool texture_is_boring(ID3D12Resource *resource)
 {
+	UINT64 stamp = Dx12TextureStamp(resource);
+	UINT64 mixed = ((UINT64)(uintptr_t)resource ^ (stamp * 0x9e3779b97f4a7c15ull) ^ ((UINT64)config_generation << 44))
+		* 0xff51afd7ed558ccdull;
+	// Never what an empty slot has
+	LONG64 remembered = (LONG64)((mixed ^ (mixed >> 29)) | 1);
+	volatile LONG64 *address = &boring_texture_addresses[((UINT64)(uintptr_t)resource * 0x9e3779b97f4a7c15ull) >> 51];
 	volatile LONG64 *slot;
 	Dx12ResourceInfo info;
 	LONG64 word;
 
-	// The engine is not shown what is not known, see publish_resource
-	if (!Dx12GetResourceInfo(resource, &info))
+	if (*address == remembered)
 		return true;
-	slot = boring_texture_slot(resource, &info, &word);
-	return slot[0] == word || slot[1] == word;
+
+	// The engine is not shown what is not known, see publish_resource
+	if (Dx12GetResourceInfo(resource, &info)) {
+		slot = boring_texture_slot(resource, &info, &word);
+		if (slot[0] != word && slot[1] != word)
+			return false;
+	}
+	InterlockedExchange64(address, remembered);
+	return true;
 }
 
 // entry is what publish_resource returned for the resource
 static void remember_texture(ID3D12Resource *resource, const Published *entry)
 {
 	static UINT next;
+	PublishedMemo *memo = published_memo(resource);
+	bool known = memo->entry == entry && published_memo_holds(memo, resource, Dx12TextureStamp(resource));
 	volatile LONG64 *slot;
 	Dx12ResourceInfo info;
 	LONG64 word;
+
+	// The word may have made way for another texture's since
+	if (known && memo->remembered && (!memo->boring || memo->boring[0] == memo->boring_word || memo->boring[1] == memo->boring_word))
+		return;
 
 	// Only if the entry is of the resource as it is by now
 	if (!Dx12GetResourceInfo(resource, &info) || memcmp(&entry->desc, &info.desc, sizeof(info.desc))
@@ -1235,10 +1347,17 @@ static void remember_texture(ID3D12Resource *resource, const Published *entry)
 		return;
 
 	slot = boring_texture_slot(resource, &info, &word);
+	if (known) {
+		memo->remembered = true;
+		memo->boring = slot;
+		memo->boring_word = word;
+	}
 	if (slot[0] == word || slot[1] == word)
 		return;
 	if (TextureOverrideCandidatesEmpty(entry->resource))
 		InterlockedExchange64(&slot[next++ & 1], word);
+	else if (known)
+		memo->boring = NULL;
 }
 
 // A constant buffer is bound by address and the game hands out a new address
@@ -3966,6 +4085,15 @@ static volatile LONG fast_draws, fast_draws_pending;
 // Dispatches that skin let through the same way, see skin_is_boring
 static volatile LONG fast_skins;
 
+void Dx12FlushFastDraws(Dx12GraphicsCommandList *list)
+{
+	if (!list->mFastDraws)
+		return;
+	InterlockedAdd(&fast_draws, list->mFastDraws);
+	InterlockedAdd(&fast_draws_pending, list->mFastDraws);
+	list->mFastDraws = 0;
+}
+
 // Why the others were, for the report
 enum SlowReason {
 	SLOW_SETTINGS,
@@ -4164,19 +4292,96 @@ static bool ini_params_reach_shaders(const Dx12RootSignatureInfo *signature)
 	return located;
 }
 
-static SlowReason buffer_is_boring(UINT64 va, UINT64 bytes, UINT kind, UINT stride, const D3D12_INDEX_BUFFER_VIEW *indices)
+// What a draw found boring went by, as far as its buffers go: the counters
+// that the stamps of their cache entries were the sums of, each with how many
+// times it was in them, and the sum of those stamps. While the counters come
+// to that sum the entries would say the same of the same buffers, see
+// DrawMemo.
+const UINT DRAW_MEMO_COUNTERS = 14;
+struct DrawStamps {
+	const volatile LONG64 *counters[DRAW_MEMO_COUNTERS];
+	BYTE times[DRAW_MEMO_COUNTERS];
+	UINT count;
+	UINT64 total;
+	// Not if a buffer was not answered for by its cache entry, or the
+	// counters are more than there is room for
+	bool whole;
+};
+
+static void add_draw_stamp_counters(DrawStamps *stamps, const volatile LONG64 *const *counters, UINT count)
+{
+	UINT i, j;
+
+	for (i = 0; i < count; i++) {
+		for (j = 0; j < stamps->count && stamps->counters[j] != counters[i]; j++)
+			;
+		if (j == stamps->count) {
+			if (j == DRAW_MEMO_COUNTERS) {
+				stamps->whole = false;
+				return;
+			}
+			stamps->counters[j] = counters[i];
+			stamps->times[j] = 0;
+			stamps->count++;
+		}
+		if (stamps->times[j] == 255) {
+			stamps->whole = false;
+			return;
+		}
+		stamps->times[j]++;
+	}
+}
+
+// The counters buffer_cache_stamp adds up for an entry, and what they came to
+// when the entry was found to go by them
+static void add_draw_stamps(DrawStamps *stamps, const BufferCacheEntry *cached, UINT64 stamp)
+{
+	const volatile LONG64 *counters[2 + 17];
+	UINT count;
+
+	if (!stamps->whole)
+		return;
+
+	Dx12FindBufferStampCounters(cached->va, counters);
+	count = Dx12BufferHashStampCounters(cached->resource, cached->offset, cached->span, counters + 2, 17);
+	if (!count) {
+		stamps->whole = false;
+		return;
+	}
+	add_draw_stamp_counters(stamps, counters, 2 + count);
+
+	if (cached->ib_asked) {
+		Dx12FindBufferStampCounters(cached->ib_va, counters);
+		count = 0;
+		if (cached->ib_found) {
+			count = Dx12BufferHashStampCounters(cached->ib, cached->ib_offset, cached->ib_span, counters + 2, 17);
+			if (!count) {
+				stamps->whole = false;
+				return;
+			}
+		}
+		add_draw_stamp_counters(stamps, counters, 2 + count);
+	}
+	stamps->total += stamp;
+}
+
+static SlowReason buffer_is_boring(UINT64 va, UINT64 bytes, UINT kind, UINT stride, const D3D12_INDEX_BUFFER_VIEW *indices,
+		DrawStamps *stamps = NULL)
 {
 	BufferCacheEntry asked = {}, cached;
-	BufferCacheSlot *slot = buffer_cache_slot(&asked, va, bytes, kind, stride, indices);
-	UINT64 stamp;
+	UINT64 stamp, tag;
+	BufferCacheSlot *slot = buffer_cache_slot(&asked, va, bytes, kind, stride, indices, &tag);
+	const volatile UINT64 *tags = &buffer_cache_tags[slot - buffer_cache];
 	LONG seq;
 	UINT way;
 
 	for (way = 0; way < BUFFER_CACHE_WAYS; way++, slot++) {
+		if (tags[way] != tag)
+			continue;
 		seq = slot->seq;
 		if (seq & 1)
 			continue;
-		cached = slot->data;
+		memcpy(&cached, &slot->data, offsetof(BufferCacheEntry, entry));
 		if (slot->seq != seq || !same_buffer_asked(&cached, &asked))
 			continue;
 
@@ -4189,13 +4394,137 @@ static SlowReason buffer_is_boring(UINT64 va, UINT64 bytes, UINT kind, UINT stri
 			return SLOW_VB_WANTED;
 		if (!buffer_cache_stamp(&cached, &stamp))
 			return SLOW_VB_CHANGED;
+		if (stamp == cached.stamp) {
+			if (stamps)
+				add_draw_stamps(stamps, &cached, stamp);
+			return SLOW_NOT;
+		}
 		// A stamp that moved says something was written near the
-		// buffer, which is rarely the buffer
-		if (stamp != cached.stamp && !buffer_as_remembered(&cached))
+		// buffer, which is rarely the buffer. That takes the rest of
+		// what the slot has.
+		cached = slot->data;
+		if (slot->seq != seq)
 			return SLOW_VB_CHANGED;
+		if (!buffer_as_remembered(&cached))
+			return SLOW_VB_CHANGED;
+		// The lookups came to the same after the stamp was taken, so it
+		// goes for them: left as it was, every draw to come would make
+		// them again
+		if (InterlockedCompareExchange(&slot->seq, seq + 1, seq) == seq) {
+			slot->data.stamp = stamp;
+			InterlockedExchange(&slot->seq, seq + 2);
+		}
+		if (stamps)
+			add_draw_stamps(stamps, &cached, stamp);
 		return SLOW_NOT;
 	}
+	if (stamps)
+		stamps->whole = false;
 	return unhashed_buffer_is_boring(va, bytes, kind) ? SLOW_NOT : SLOW_VB_UNKNOWN;
+}
+
+// The buffers of a draw all at once: most draws of a frame are of meshes drawn
+// the frame before, with the same vertex and index buffers, and asking the
+// cache for each of those is most of what a draw not stopped for costs. So
+// what the entries of all of them went by is kept together, by what was asked.
+const UINT DRAW_MEMO_BUFFERS = 4;
+struct DrawMemoKey {
+	UINT64 vb_va[DRAW_MEMO_BUFFERS];
+	// As bound, which the vertex buffers are asked with: 0 without one
+	UINT64 ib_va;
+	UINT vb_bytes[DRAW_MEMO_BUFFERS];
+	UINT vb_stride[DRAW_MEMO_BUFFERS];
+	// Bit per slot asked about, in the order of the above
+	UINT vb_slots;
+	UINT ib_bytes, ib_format;
+	// Whether the index buffer is asked about as well
+	UINT ib_asked;
+};
+struct alignas(64) DrawMemo {
+	// Odd while being written
+	volatile LONG seq;
+	UINT config;
+	UINT64 tag;
+	UINT64 total;
+	UINT count;
+	// From draw_memos to the counters
+	INT32 counters[DRAW_MEMO_COUNTERS];
+	BYTE times[DRAW_MEMO_COUNTERS];
+	DrawMemoKey key;
+};
+const UINT DRAW_MEMO_WAYS = 2;
+static DrawMemo draw_memos[8192];
+
+static DrawMemo* draw_memo_bucket(const DrawMemoKey *key, UINT64 *tag)
+{
+	UINT64 mixed = key->ib_va * 0x9e3779b97f4a7c15ull ^ key->vb_slots ^ ((UINT64)key->ib_asked << 40);
+	UINT i;
+
+	for (i = 0; i < DRAW_MEMO_BUFFERS; i++)
+		mixed = (mixed ^ key->vb_va[i] ^ ((UINT64)key->vb_bytes[i] << 32) ^ key->vb_stride[i]) * 0xff51afd7ed558ccdull;
+	mixed ^= mixed >> 32;
+	*tag = mixed | 1;
+	return &draw_memos[(mixed >> 20) & (ARRAYSIZE(draw_memos) - DRAW_MEMO_WAYS)];
+}
+
+// Without the lock: whether the buffers asked were found boring before with
+// nothing they went by changed since
+static bool draw_memo_holds(const DrawMemoKey *key)
+{
+	DrawMemo memo, *slot;
+	UINT64 tag, total;
+	UINT way, i;
+	LONG seq;
+
+	slot = draw_memo_bucket(key, &tag);
+	for (way = 0; way < DRAW_MEMO_WAYS; way++, slot++) {
+		if (slot->tag != tag)
+			continue;
+		seq = slot->seq;
+		if (seq & 1)
+			continue;
+		memcpy(&memo.config, &slot->config, sizeof(memo) - offsetof(DrawMemo, config));
+		if (slot->seq != seq || memo.tag != tag || memcmp(&memo.key, key, sizeof(*key)))
+			continue;
+		if (memo.config != config_generation || memo.count > DRAW_MEMO_COUNTERS)
+			return false;
+
+		total = 0;
+		for (i = 0; i < memo.count; i++)
+			total += (UINT64)*(const volatile LONG64*)((const BYTE*)draw_memos + memo.counters[i]) * memo.times[i];
+		return total == memo.total;
+	}
+	return false;
+}
+
+static void remember_draw(const DrawMemoKey *key, const DrawStamps *stamps)
+{
+	DrawMemo *bucket, *slot = NULL;
+	UINT64 tag;
+	UINT way, i;
+	LONG seq;
+
+	bucket = draw_memo_bucket(key, &tag);
+	for (way = 0; way < DRAW_MEMO_WAYS && !slot; way++) {
+		if (bucket[way].tag == tag || !bucket[way].tag || bucket[way].config != config_generation)
+			slot = &bucket[way];
+	}
+	if (!slot)
+		slot = &bucket[(tag >> 1) % DRAW_MEMO_WAYS];
+
+	seq = slot->seq;
+	if ((seq & 1) || InterlockedCompareExchange(&slot->seq, seq + 1, seq) != seq)
+		return;
+	slot->tag = tag;
+	slot->config = config_generation;
+	slot->total = stamps->total;
+	slot->count = stamps->count;
+	for (i = 0; i < stamps->count; i++) {
+		slot->counters[i] = (INT32)((const BYTE*)stamps->counters[i] - (const BYTE*)draw_memos);
+		slot->times[i] = stamps->times[i];
+	}
+	slot->key = *key;
+	InterlockedExchange(&slot->seq, seq + 2);
 }
 
 // A frame being analysed has the dumps of the command lists do something,
@@ -4241,6 +4570,9 @@ static SlowReason draw_is_boring(Dx12GraphicsCommandList *list, const Dx12Pipeli
 	const Dx12CmdState *game = &list->mState;
 	const Dx12RootSignatureInfo *signature;
 	Dx12DrawFilter worked_out;
+	DrawMemoKey memo_key = {};
+	DrawStamps stamps;
+	UINT memo_buffers = 0;
 	unsigned long slot;
 	LONG64 word;
 	UINT vbs, i;
@@ -4259,22 +4591,48 @@ static SlowReason draw_is_boring(Dx12GraphicsCommandList *list, const Dx12Pipeli
 	if (reason != SLOW_NOT)
 		return reason;
 
+	stamps.count = 0;
+	stamps.total = 0;
+	stamps.whole = true;
+
 	signature = Dx12ListRootSignature(list, false);
 	if (signature && ini_params_reach_shaders(signature))
 		return SLOW_INI_PARAMS;
 
 	// What is not there is not looked up, see the Dx12Scope functions
+	memo_key.ib_va = game->index_buffer.BufferLocation;
+	memo_key.ib_bytes = game->index_buffer.SizeInBytes;
+	memo_key.ib_format = game->index_buffer.Format;
+	memo_key.ib_asked = worked_out.ib && game->index_buffer.BufferLocation;
 	for (vbs = worked_out.vbs & pipeline->vb_slots; _BitScanForward(&slot, vbs); vbs &= vbs - 1) {
 		if (slot >= ARRAYSIZE(game->vertex_buffers) || !game->vertex_buffers[slot].BufferLocation)
 			continue;
-		reason = buffer_is_boring(game->vertex_buffers[slot].BufferLocation, game->vertex_buffers[slot].SizeInBytes,
-				PUBLISHED_VERTEX_BUFFER, game->vertex_buffers[slot].StrideInBytes, &game->index_buffer);
-		if (reason != SLOW_NOT)
-			return reason;
+		if (memo_buffers == DRAW_MEMO_BUFFERS) {
+			stamps.whole = false;
+			break;
+		}
+		memo_key.vb_va[memo_buffers] = game->vertex_buffers[slot].BufferLocation;
+		memo_key.vb_bytes[memo_buffers] = game->vertex_buffers[slot].SizeInBytes;
+		memo_key.vb_stride[memo_buffers] = game->vertex_buffers[slot].StrideInBytes;
+		memo_key.vb_slots |= 1u << slot;
+		memo_buffers++;
 	}
-	if (worked_out.ib && game->index_buffer.BufferLocation
-	    && buffer_is_boring(game->index_buffer.BufferLocation, game->index_buffer.SizeInBytes, PUBLISHED_INDEX_BUFFER, 0, NULL) != SLOW_NOT)
-		return SLOW_IB;
+	if (!stamps.whole || !draw_memo_holds(&memo_key)) {
+		for (vbs = worked_out.vbs & pipeline->vb_slots; _BitScanForward(&slot, vbs); vbs &= vbs - 1) {
+			if (slot >= ARRAYSIZE(game->vertex_buffers) || !game->vertex_buffers[slot].BufferLocation)
+				continue;
+			reason = buffer_is_boring(game->vertex_buffers[slot].BufferLocation, game->vertex_buffers[slot].SizeInBytes,
+					PUBLISHED_VERTEX_BUFFER, game->vertex_buffers[slot].StrideInBytes, &game->index_buffer, &stamps);
+			if (reason != SLOW_NOT)
+				return reason;
+		}
+		if (worked_out.ib && game->index_buffer.BufferLocation
+		    && buffer_is_boring(game->index_buffer.BufferLocation, game->index_buffer.SizeInBytes, PUBLISHED_INDEX_BUFFER, 0, NULL,
+				&stamps) != SLOW_NOT)
+			return SLOW_IB;
+		if (stamps.whole)
+			remember_draw(&memo_key, &stamps);
+	}
 
 	for (i = 0; i < worked_out.cb_count; i++) {
 		Dx12ShaderStage stage = (Dx12ShaderStage)worked_out.cbs[i].stage;
@@ -4481,10 +4839,10 @@ bool Dx12Draw(Dx12GraphicsCommandList *list, bool indexed, UINT count, UINT inst
 		return false;
 	reason = draw_is_boring(list, pipeline);
 	if (reason == SLOW_NOT) {
-		InterlockedIncrement(&fast_draws);
-		InterlockedIncrement(&fast_draws_pending);
+		list->mFastDraws++;
 		return false;
 	}
+	Dx12FlushFastDraws(list);
 	if (timed)
 		InterlockedIncrement(&slow_draws[reason]);
 
@@ -4578,13 +4936,16 @@ bool Dx12Dispatch(Dx12GraphicsCommandList *list, UINT x, UINT y, UINT z)
 	if (skinning) {
 		reason = skin_is_boring(pipeline, &skin);
 		if (reason == SLOW_NOT) {
-			InterlockedIncrement(&fast_skins);
-			InterlockedIncrement(&fast_draws_pending);
+			if (G->dx12_dump_hashes)
+				InterlockedIncrement(&fast_skins);
+			list->mFastDraws++;
 			return false;
 		}
 		if (G->dx12_dump_hashes)
 			InterlockedIncrement(&slow_draws[reason]);
 	}
+
+	Dx12FlushFastDraws(list);
 
 	Dx12ShimLock();
 	if (!dx12_shim || scope) {

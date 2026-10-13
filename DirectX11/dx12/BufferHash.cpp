@@ -34,19 +34,29 @@ static std::unordered_map<ID3D12Resource*, std::map<UINT64, BufferRange>> ranges
 // one per resource for what covers too many of those to count them all up.
 const UINT STAMP_SHIFT = 16;
 const UINT64 STAMP_MAX_SPAN = 16;
-static volatile LONG64 range_stamps[8192];
+static volatile LONG64 range_stamps[65536];
 static volatile LONG64 resource_stamps[1024];
 
 static volatile LONG64* range_stamp(ID3D12Resource *resource, UINT64 granule)
 {
 	UINT64 hash = ((UINT64)(uintptr_t)resource ^ (granule * 0x9e3779b97f4a7c15ull)) * 0xff51afd7ed558ccdull;
 
-	return &range_stamps[hash >> 51];
+	return &range_stamps[hash >> 48];
 }
 
 static volatile LONG64* resource_stamp(ID3D12Resource *resource)
 {
 	return &resource_stamps[((UINT64)(uintptr_t)resource * 0x9e3779b97f4a7c15ull) >> 54];
+}
+
+// How many of the resources that hash to a slot have ranges, counted with the
+// lock held: most of the buffers a draw is asked about were never written by a
+// copy, which Dx12FindBufferHash can then say without the lock
+static volatile LONG resources_with_ranges[4096];
+
+static volatile LONG* with_ranges(ID3D12Resource *resource)
+{
+	return &resources_with_ranges[((UINT64)(uintptr_t)resource * 0x9e3779b97f4a7c15ull) >> 52];
 }
 
 // With the lock held, so that whoever finds the stamp unchanged afterwards
@@ -77,6 +87,20 @@ bool Dx12BufferHashStamp(ID3D12Resource *resource, UINT64 offset, UINT64 bytes, 
 	return true;
 }
 
+UINT Dx12BufferHashStampCounters(ID3D12Resource *resource, UINT64 offset, UINT64 bytes, const volatile LONG64 **counters, UINT max)
+{
+	UINT64 first = offset >> STAMP_SHIFT, last = (offset + (bytes ? bytes - 1 : 0)) >> STAMP_SHIFT;
+	UINT count = 0;
+
+	if (last - first >= STAMP_MAX_SPAN || last - first + 2 > max)
+		return 0;
+
+	counters[count++] = resource_stamp(resource);
+	for (; first <= last; first++)
+		counters[count++] = range_stamp(resource, first);
+	return count;
+}
+
 uint32_t Dx12BufferDescHash(const Dx12BufferHash *hash, UINT bind_flags)
 {
 	D3D11_BUFFER_DESC desc = {};
@@ -96,7 +120,10 @@ static bool note_write(ID3D12Resource *resource, UINT64 offset, UINT64 bytes)
 
 	AcquireSRWLockExclusive(&lock);
 
-	std::map<UINT64, BufferRange> &map = ranges[resource];
+	auto inserted = ranges.try_emplace(resource);
+	if (inserted.second)
+		InterlockedIncrement(with_ranges(resource));
+	std::map<UINT64, BufferRange> &map = inserted.first->second;
 
 	// Whatever this write overlaps is no longer what was hashed
 	auto i = map.lower_bound(offset);
@@ -196,6 +223,9 @@ bool Dx12FindBufferHash(ID3D12Resource *resource, UINT64 offset, Dx12BufferHash 
 {
 	bool found = false;
 
+	if (!*with_ranges(resource))
+		return false;
+
 	AcquireSRWLockShared(&lock);
 	auto i = ranges.find(resource);
 	if (i != ranges.end()) {
@@ -215,7 +245,8 @@ bool Dx12FindBufferHash(ID3D12Resource *resource, UINT64 offset, Dx12BufferHash 
 void Dx12ForgetBufferHashes(ID3D12Resource *resource)
 {
 	AcquireSRWLockExclusive(&lock);
-	ranges.erase(resource);
+	if (ranges.erase(resource))
+		InterlockedDecrement(with_ranges(resource));
 	InterlockedIncrement64(resource_stamp(resource));
 	ReleaseSRWLockExclusive(&lock);
 }

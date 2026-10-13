@@ -84,16 +84,19 @@ struct BufferRange {
 static SRWLOCK buffer_lock = SRWLOCK_INIT;
 static std::map<UINT64, BufferRange> buffers;
 
-// See Dx12FindBufferStamp. A counter per 64 MiB of address space, shared with
-// whatever else hashes to it, and one for buffers covering too many of those.
-const UINT VA_STAMP_SHIFT = 26;
-const UINT64 VA_STAMP_MAX_SPAN = 64;
-static volatile LONG64 va_stamps[1024];
+// See Dx12FindBufferStamp. A counter per 64 KiB of address space, which is
+// what D3D12 aligns buffers to, shared with whatever else hashes to it, and
+// one for buffers covering too many of those. Engines create and destroy
+// buffers all the time: counters that many buffers shared would have every
+// one of them looked up again for each.
+const UINT VA_STAMP_SHIFT = 16;
+const UINT64 VA_STAMP_MAX_SPAN = 256;
+static volatile LONG64 va_stamps[16384];
 static volatile LONG64 va_stamp_all;
 
 static volatile LONG64* va_stamp(UINT64 granule)
 {
-	return &va_stamps[(granule * 0x9e3779b97f4a7c15ull) >> 54];
+	return &va_stamps[(granule * 0x9e3779b97f4a7c15ull) >> 50];
 }
 
 // With buffer_lock held
@@ -114,7 +117,26 @@ UINT64 Dx12FindBufferStamp(UINT64 va)
 	return (UINT64)va_stamp_all + (UINT64)*va_stamp(va >> VA_STAMP_SHIFT);
 }
 
+void Dx12FindBufferStampCounters(UINT64 va, const volatile LONG64 *counters[2])
+{
+	counters[0] = &va_stamp_all;
+	counters[1] = va_stamp(va >> VA_STAMP_SHIFT);
+}
+
 static volatile LONG64 resource_serial;
+
+// See Dx12TextureStamp. Counted up with the lock of the resource's shard held.
+static volatile LONG64 texture_stamps[4096];
+
+static volatile LONG64* texture_stamp(ID3D12Resource *resource)
+{
+	return &texture_stamps[((UINT64)(uintptr_t)resource * 0x9e3779b97f4a7c15ull) >> 52];
+}
+
+UINT64 Dx12TextureStamp(ID3D12Resource *resource)
+{
+	return (UINT64)*texture_stamp(resource);
+}
 
 static ResourceShard* shard_of(ID3D12Resource *resource)
 {
@@ -133,6 +155,7 @@ static void resource_destroyed(void *object)
 		va = i->second.va;
 		shard->resources.erase(i);
 	}
+	InterlockedIncrement64(texture_stamp(resource));
 	ReleaseSRWLockExclusive(&shard->lock);
 
 	if (va) {
@@ -178,6 +201,7 @@ void Dx12TrackResource(REFIID riid, void **ppvResource, LONG initial_state)
 	shard = shard_of(resource);
 	AcquireSRWLockExclusive(&shard->lock);
 	shard->resources[resource] = info;
+	InterlockedIncrement64(texture_stamp(resource));
 	ReleaseSRWLockExclusive(&shard->lock);
 
 	if (info.va) {
@@ -249,9 +273,10 @@ void Dx12SetTextureDataHash(ID3D12Resource *resource, bool has_data_hash, uint32
 
 	AcquireSRWLockExclusive(&shard->lock);
 	auto i = shard->resources.find(resource);
-	if (i != shard->resources.end()) {
+	if (i != shard->resources.end() && (i->second.has_data_hash != has_data_hash || i->second.data_hash != data_hash)) {
 		i->second.has_data_hash = has_data_hash;
 		i->second.data_hash = data_hash;
+		InterlockedIncrement64(texture_stamp(resource));
 	}
 	ReleaseSRWLockExclusive(&shard->lock);
 }
@@ -262,17 +287,51 @@ void Dx12MarkCubeTexture(ID3D12Resource *resource)
 
 	AcquireSRWLockExclusive(&shard->lock);
 	auto i = shard->resources.find(resource);
-	if (i != shard->resources.end())
+	if (i != shard->resources.end() && !i->second.cube) {
 		i->second.cube = true;
+		InterlockedIncrement64(texture_stamp(resource));
+	}
 	ReleaseSRWLockExclusive(&shard->lock);
 }
 
+// The buffers found before, by the 64 KiB of address space asked about, for
+// the threads recording: they ask for the buffers of every draw that are not
+// the same from frame to frame, with the map behind a lock they all share.
+// What a slot has goes while the stamp of where it was asked is the one taken
+// before asking. seq is odd while a slot is being written.
+struct FoundBuffer {
+	volatile LONG seq;
+	UINT64 granule, start, end, stamp;
+	ID3D12Resource *resource;
+};
+static FoundBuffer found_buffers[4096];
+
 bool Dx12FindBuffer(UINT64 va, ID3D12Resource **resource, UINT64 *offset)
 {
+	FoundBuffer *slot, remembered;
+	UINT64 stamp;
 	bool found = false;
+	LONG seq;
 
 	if (!va)
 		return false;
+
+	stamp = Dx12FindBufferStamp(va);
+	slot = &found_buffers[((va >> VA_STAMP_SHIFT) * 0x9e3779b97f4a7c15ull) >> 52];
+	seq = slot->seq;
+	if (!(seq & 1)) {
+		remembered.granule = slot->granule;
+		remembered.start = slot->start;
+		remembered.end = slot->end;
+		remembered.stamp = slot->stamp;
+		remembered.resource = slot->resource;
+		if (slot->seq == seq && remembered.granule == va >> VA_STAMP_SHIFT && remembered.stamp == stamp
+		    && va >= remembered.start && va < remembered.end) {
+			*resource = remembered.resource;
+			*offset = va - remembered.start;
+			return true;
+		}
+	}
 
 	AcquireSRWLockShared(&buffer_lock);
 	auto i = buffers.upper_bound(va);
@@ -281,10 +340,21 @@ bool Dx12FindBuffer(UINT64 va, ID3D12Resource **resource, UINT64 *offset)
 		if (va < i->second.end) {
 			*resource = i->second.resource;
 			*offset = va - i->first;
+			remembered.start = i->first;
+			remembered.end = i->second.end;
 			found = true;
 		}
 	}
 	ReleaseSRWLockShared(&buffer_lock);
+
+	if (found && !(seq & 1) && InterlockedCompareExchange(&slot->seq, seq + 1, seq) == seq) {
+		slot->granule = va >> VA_STAMP_SHIFT;
+		slot->start = remembered.start;
+		slot->end = remembered.end;
+		slot->stamp = stamp;
+		slot->resource = *resource;
+		InterlockedExchange(&slot->seq, seq + 2);
+	}
 
 	return found;
 }

@@ -29,6 +29,8 @@ public:
 	// Since the last Reset. A list is recorded by one thread at a time.
 	UINT mDraws;
 	UINT mDispatches;
+	// See Dx12FlushFastDraws
+	UINT mFastDraws;
 	// Counts the times the list was reset, to tell one recording of it
 	// from the next
 	UINT mResets;
@@ -63,6 +65,21 @@ public:
 	const Dx12PipelineInfo *mInfo;
 	ID3D12RootSignature *mInfoSignature[2];
 	const Dx12RootSignatureInfo *mSignatureInfo[2];
+	// The same for the pipeline states asked about before: a renderer goes
+	// back and forth between those of its materials from one draw to the
+	// next, and the registry is behind a lock that all lists share.
+	// wanted is what Dx12DrawWanted came to as of wanted_generation.
+	struct PipelineMemo {
+		ID3D12PipelineState *pipeline;
+		const Dx12PipelineInfo *info;
+		UINT wanted_generation;
+		bool wanted;
+	} mPipelineMemo[16];
+
+	PipelineMemo* MemoOf(ID3D12PipelineState *pipeline)
+	{
+		return &mPipelineMemo[((UINT64)(uintptr_t)pipeline * 0x9e3779b97f4a7c15ull) >> 60];
+	}
 
 	// The resource states this list leaves behind, in recording order.
 	// They only become true when the list is executed, which is when the

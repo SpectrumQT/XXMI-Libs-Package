@@ -8,6 +8,8 @@
 #include "ShimPipeline.h"
 #include "util.h"
 
+#include "../globals.h"
+
 ShimDevice::ShimDevice() :
 	mRef(1)
 {
@@ -277,6 +279,7 @@ HRESULT STDMETHODCALLTYPE ShimDevice::CreateBuffer(const D3D11_BUFFER_DESC *pDes
 	const UINT address_binds = D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER;
 	D3D12_RESOURCE_DESC desc = {};
 	ShimBuffer *buffer;
+	bool keep_contents;
 	ShimResource *r;
 	HRESULT hr;
 
@@ -317,7 +320,12 @@ HRESULT STDMETHODCALLTYPE ShimDevice::CreateBuffer(const D3D11_BUFFER_DESC *pDes
 		}
 	}
 
-	if (r->cpu_only || pDesc->Usage == D3D11_USAGE_DYNAMIC) {
+	// A Vulkan game draws a mesh of a mod from a buffer of its own device,
+	// which is filled from here
+	keep_contents = G->vulkan && pInitialData && pInitialData->pSysMem
+		&& (pDesc->BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER));
+
+	if (r->cpu_only || pDesc->Usage == D3D11_USAGE_DYNAMIC || keep_contents) {
 		// Padded like the resource would be, so a constant buffer
 		// view of the whole of it stays within what is uploaded
 		r->shadow.resize((size_t)ShimAlign(pDesc->ByteWidth, 256));
@@ -326,6 +334,7 @@ HRESULT STDMETHODCALLTYPE ShimDevice::CreateBuffer(const D3D11_BUFFER_DESC *pDes
 	}
 	if (!r->cpu_only && pInitialData && pInitialData->pSysMem)
 		ShimWriteBuffer(r, 0, pInitialData->pSysMem, pDesc->ByteWidth);
+	r->shadow_version = r->version;
 
 	*ppBuffer = buffer;
 	return S_OK;

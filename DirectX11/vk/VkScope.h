@@ -15,8 +15,13 @@ bool VkScopeHasShader(int stage);
 // The object stands for the index buffer as the draw has it bound: its
 // contents start at the offset the game bound the buffer with. Not referenced.
 ID3D11Buffer* VkScopeIndexBuffer(DXGI_FORMAT *format);
-// A draw of a mod in place of or besides the game's
-void VkScopeDraw();
+// A draw of a mod in place of or besides the game's, with what the mod has
+// bound on the shim context
+void VkScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT base_vertex, UINT start_instance);
+
+// A resource of the shim that is marked as mirrored is going
+struct ShimResource;
+void VkScopeForgetResource(ShimResource *resource);
 
 // After the configuration was read again
 void VkModsConfigReloaded();

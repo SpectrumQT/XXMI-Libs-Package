@@ -4,6 +4,7 @@
 
 #include "ShimDevice.h"
 #include "ShimPipeline.h"
+#include "../vk/VkScope.h"
 
 UINT64 ShimNextId()
 {
@@ -130,6 +131,8 @@ HRESULT ShimPrivateData::SetInterface(REFGUID guid, const IUnknown *pData)
 void ShimDestroyResource(ShimResource *resource)
 {
 	Dx12ShimForgetResource(resource);
+	if (resource->mirrored)
+		VkScopeForgetResource(resource);
 
 	if (resource->resource && !resource->foreign) {
 		Dx12ShimDeferRelease(resource->resource);

@@ -25,13 +25,40 @@
 //     indices drawn, read from the memory behind the buffer, which the game
 //     has to have mapped.
 //   - handling = skip
+//   - A mod draws with vertex and index buffers of its own, as long as their
+//     contents came from the CPU (a file, or data in the ini): they are
+//     copied to buffers of the game's device, and the draw is recorded to the
+//     game's command buffer with everything else as the game has it. The
+//     pipeline is the game's, so a vertex buffer has to have the stride the
+//     game's has in its place.
 //
-// Not yet: anything a mod binds or draws, the game's vertex buffers, constant
-// buffers and textures, indirect draws, dispatches.
+// Not yet: anything else a mod binds, buffers a mod has the GPU write, the
+// game's vertex buffers, constant buffers and textures, indirect draws,
+// dispatches.
 
 // Set once a device has been taken on, for the hooks to tell whether to
 // report here
 extern bool vk_mods_active;
+
+// The functions of a device as they are past the hooks, for what is made and
+// recorded here
+struct VkModsApi {
+	PFN_vkGetPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties;
+	PFN_vkGetBufferMemoryRequirements GetBufferMemoryRequirements;
+	PFN_vkAllocateMemory AllocateMemory;
+	PFN_vkFreeMemory FreeMemory;
+	PFN_vkMapMemory MapMemory;
+	PFN_vkCreateBuffer CreateBuffer;
+	PFN_vkDestroyBuffer DestroyBuffer;
+	PFN_vkBindBufferMemory BindBufferMemory;
+	PFN_vkCmdBindVertexBuffers CmdBindVertexBuffers;
+	PFN_vkCmdBindIndexBuffer CmdBindIndexBuffer;
+	PFN_vkCmdDraw CmdDraw;
+	PFN_vkCmdDrawIndexed CmdDrawIndexed;
+};
+
+void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkModsApi *api);
+void VkModsForgetDevice(VkDevice device);
 
 void VkModsShaderModule(VkShaderModule module, const VkShaderModuleCreateInfo *info);
 void VkModsForgetShaderModule(VkShaderModule module);
@@ -46,6 +73,7 @@ void VkModsMemoryUnmapped(VkDeviceMemory memory);
 
 void VkModsBeginCommands(VkCommandBuffer cmd);
 void VkModsBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint bind_point, VkPipeline pipeline);
+void VkModsBindVertexBuffers(VkCommandBuffer cmd, uint32_t first, uint32_t count, const VkBuffer *buffers, const VkDeviceSize *offsets);
 void VkModsBindIndexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkIndexType type);
 
 // True if the draw was dealt with, which includes making it with whichever of

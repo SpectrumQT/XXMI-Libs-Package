@@ -108,6 +108,8 @@ static void VKAPI_CALL Hooked_vkDestroyDevice(VkDevice device, const VkAllocatio
 			}
 		}
 		ReleaseSRWLockExclusive(&dispatch_lock);
+		if (vk_mods_active)
+			VkModsForgetDevice(device);
 		VkLogInfo("vkDestroyDevice(%p)\n", device);
 	}
 
@@ -320,6 +322,8 @@ static void VKAPI_CALL Hooked_vkCmdBindVertexBuffers(VkCommandBuffer cmd, uint32
 {
 	if (vk_dump_active)
 		VkDumpBindVertexBuffers(cmd, first, count, buffers, offsets);
+	if (vk_mods_active)
+		VkModsBindVertexBuffers(cmd, first, count, buffers, offsets);
 	next_CmdBindVertexBuffers(cmd)(cmd, first, count, buffers, offsets);
 }
 
@@ -408,7 +412,7 @@ static void hook_device_exports()
 #undef X
 }
 
-static void register_device(VkDevice device)
+static void register_device(VkDevice device, VkPhysicalDevice physical_device)
 {
 	HINSTANCE vulkan = NktHookLibHelpers::GetModuleBaseAddress(L"vulkan-1.dll");
 	PFN_vkGetDeviceProcAddr get = fnOrigGetDeviceProcAddr;
@@ -448,6 +452,25 @@ static void register_device(VkDevice device)
 
 	if (!slot)
 		VkDumpNote("*** Too many Vulkan devices, calls of %p are only seen where they go through the exports\n", device);
+
+	if (slot && vk_mods_active) {
+		VkModsApi api = {};
+
+		api.GetPhysicalDeviceMemoryProperties = (PFN_vkGetPhysicalDeviceMemoryProperties)
+			NktHookLibHelpers::GetProcedureAddress(vulkan, "vkGetPhysicalDeviceMemoryProperties");
+		api.GetBufferMemoryRequirements = (PFN_vkGetBufferMemoryRequirements)get(device, "vkGetBufferMemoryRequirements");
+		api.AllocateMemory = (PFN_vkAllocateMemory)get(device, "vkAllocateMemory");
+		api.CreateBuffer = next.CreateBuffer;
+		api.DestroyBuffer = next.DestroyBuffer;
+		api.BindBufferMemory = next.BindBufferMemory;
+		api.MapMemory = next.MapMemory;
+		api.FreeMemory = next.FreeMemory;
+		api.CmdBindVertexBuffers = next.CmdBindVertexBuffers;
+		api.CmdBindIndexBuffer = next.CmdBindIndexBuffer;
+		api.CmdDraw = next.CmdDraw;
+		api.CmdDrawIndexed = next.CmdDrawIndexed;
+		VkModsDevice(device, physical_device, &api);
+	}
 }
 
 static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
@@ -468,7 +491,7 @@ static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_devic
 	vk_dump_active = G->vk_dump_hashes;
 	vk_mods_active = G->vulkan;
 	hook_device_exports();
-	register_device(*device);
+	register_device(*device, physical_device);
 
 	VkDumpNote("vkCreateDevice = %p, %u extensions\n", *device, info ? info->enabledExtensionCount : 0);
 	for (i = 0; info && i < info->enabledExtensionCount; i++)

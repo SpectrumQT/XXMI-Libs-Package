@@ -3981,7 +3981,7 @@ void Dx12ScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT bas
 	ID3D12GraphicsCommandList *list;
 
 	if (!scope) {
-		VkScopeDraw();
+		VkScopeDraw(indexed, count, instances, start, base_vertex, start_instance);
 		return;
 	}
 	list = scope->list->mOrig;

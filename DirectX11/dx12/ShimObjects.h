@@ -131,6 +131,13 @@ struct ShimResource {
 	// Counts the writes: of the shadow of a cpu_only buffer, and the times
 	// a list of ours was to write a resource (Dx12ShimTransition)
 	UINT64 version;
+	// The version at which the shadow of a buffer with a resource was all
+	// of its contents. At another, something wrote the resource that the
+	// shadow knows nothing of.
+	UINT64 shadow_version;
+	// vk/VkDrawPath has a Vulkan buffer with the contents, and is told
+	// when this goes
+	bool mirrored;
 	// The same for use by the game's lists, where the upload has to
 	// outlive our submissions. Referenced.
 	ID3D12Resource *game_upload;

@@ -917,6 +917,7 @@ void STDMETHODCALLTYPE ShimContext::Unmap(ID3D11Resource *pResource, UINT Subres
 	} else if (is_buffer(resource)) {
 		ShimGetResourceDesc(pResource, &desc);
 		ShimWriteBuffer(resource, 0, resource->shadow.data(), desc.byte_width);
+		resource->shadow_version = resource->version;
 	} else {
 		resource->write_pending = true;
 	}
@@ -927,6 +928,7 @@ void STDMETHODCALLTYPE ShimContext::UpdateSubresource(ID3D11Resource *pDstResour
 	static bool reported;
 	ShimResource *resource = ShimResourceOf(pDstResource);
 	ShimResourceDesc desc;
+	bool shadow_whole;
 	UINT offset, size;
 
 	if (!resource || !pSrcData)
@@ -947,12 +949,15 @@ void STDMETHODCALLTYPE ShimContext::UpdateSubresource(ID3D11Resource *pDstResour
 		return;
 	size = min(size, desc.byte_width - offset);
 
+	shadow_whole = !resource->shadow.empty() && resource->shadow_version == resource->version;
 	if (!resource->shadow.empty())
 		memcpy(resource->shadow.data() + offset, pSrcData, size);
 	if (resource->cpu_only)
 		resource->version++;
 	else
 		ShimWriteBuffer(resource, offset, pSrcData, size);
+	if (shadow_whole)
+		resource->shadow_version = resource->version;
 }
 
 void STDMETHODCALLTYPE ShimContext::UpdateSubresource1(ID3D11Resource *pDstResource, UINT DstSubresource, const D3D11_BOX *pDstBox, const void *pSrcData, UINT SrcRowPitch, UINT SrcDepthPitch, UINT CopyFlags)

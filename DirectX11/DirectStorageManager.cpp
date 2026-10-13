@@ -220,7 +220,8 @@ bool DirectStorageManager::Initialize(ID3D11Device *gameDevice)
 			fclose(g_dsLogFile);
 			g_dsLogFile = nullptr;
 		}
-		if (_wfopen_s(&g_dsLogFile, g_dsLogPath.c_str(), L"w, ccs=UTF-8") == 0 && g_dsLogFile) {
+		g_dsLogFile = _wfsopen(g_dsLogPath.c_str(), L"w, ccs=UTF-8", _SH_DENYNO);
+		if (g_dsLogFile) {
 			fputws(L"======================================================================\n", g_dsLogFile);
 			fputws(L" XXMI DirectStorage 1.3 Diagnostics Log\n", g_dsLogFile);
 			fputws(L"======================================================================\n", g_dsLogFile);

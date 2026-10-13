@@ -3258,6 +3258,44 @@ static void parse_texture_override_common(const wchar_t *id, TextureOverride *ov
 	}
 
 	ParseCommandList(id, &override->command_list, &override->post_command_list, TextureOverrideIniKeys, register_command_lists);
+
+	if (override->match_vertex_count.op != FuzzyMatchOp::ALWAYS ||
+	    override->match_first_vertex.op != FuzzyMatchOp::ALWAYS ||
+	    IniHasKey(id, L"override_vertex_count") ||
+	    IniHasKey(id, L"override_byte_stride"))
+	{
+		override->is_vertex_buffer_override = true;
+	}
+
+	for (int slot = 0; slot < 16; ++slot) {
+		wchar_t vb_key[8];
+		swprintf_s(vb_key, L"vb%d", slot);
+		if (IniHasKey(id, vb_key)) {
+			override->is_vertex_buffer_override = true;
+			break;
+		}
+	}
+
+	if (override->match_index_count.op != FuzzyMatchOp::ALWAYS ||
+	    override->match_first_index.op != FuzzyMatchOp::ALWAYS ||
+	    IniHasKey(id, L"ib"))
+	{
+		override->is_index_buffer_override = true;
+	}
+
+	if (override->override_byte_width != -1) {
+		if (override->is_vertex_buffer_override)
+			override->is_vertex_buffer_override = true;
+		else
+			override->is_index_buffer_override = true;
+	}
+
+	if (IniHasKey(id, L"handling") || IniHasKey(id, L"draw") || IniHasKey(id, L"drawindexed")) {
+		if (!override->is_vertex_buffer_override && !override->is_index_buffer_override) {
+			override->is_vertex_buffer_override = true;
+			override->is_index_buffer_override = true;
+		}
+	}
 }
 
 static bool texture_override_section_has_fuzzy_match_keys(const wchar_t *section)
@@ -4431,21 +4469,76 @@ void BuildTextureOverrideDrawMaps()
 {
 	G->mTextureOverrideDrawIndexMap.clear();
 	G->mTextureOverrideDrawVertexMap.clear();
+	G->mVertexBufferOverrideHashes.clear();
+	G->mIndexBufferOverrideHashes.clear();
+	G->mTextureOverrideBloom.Clear();
+	G->mVertexBufferBloom.Clear();
+	G->mIndexBufferBloom.Clear();
+	G->has_vertex_buffer_overrides = false;
+	G->has_index_buffer_overrides = false;
 
 	for (auto& pair : G->mTextureOverrideMap)
 	{
 		uint32_t hash = pair.first;
+		G->mTextureOverrideBloom.Add(hash);
 		TextureOverrideList& list = pair.second;
 
 		for (TextureOverride& ov : list)
 		{
+			if (ov.is_vertex_buffer_override) {
+				G->has_vertex_buffer_overrides = true;
+				G->mVertexBufferOverrideHashes.insert(hash);
+				G->mVertexBufferBloom.Add(hash);
+			}
+			if (ov.is_index_buffer_override) {
+				G->has_index_buffer_overrides = true;
+				G->mIndexBufferOverrideHashes.insert(hash);
+				G->mIndexBufferBloom.Add(hash);
+			}
+
 			if (ov.match_index_count.op == FuzzyMatchOp::EQUAL && ov.match_index_count.rhs_type1 == FuzzyMatchOperandType::VALUE) {
 				G->mTextureOverrideDrawIndexMap[ov.match_index_count.val].emplace_back(TextureOverrideFuzzyMatch{ hash, const_cast<TextureOverride*>(&ov) });
-				continue;
+				G->has_index_buffer_overrides = true;
+				G->mIndexBufferOverrideHashes.insert(hash);
+				G->mIndexBufferBloom.Add(hash);
 			}
-			if (ov.match_vertex_count.op == FuzzyMatchOp::EQUAL && ov.match_vertex_count.rhs_type1 == FuzzyMatchOperandType::VALUE) {
+			else if (ov.match_vertex_count.op == FuzzyMatchOp::EQUAL && ov.match_vertex_count.rhs_type1 == FuzzyMatchOperandType::VALUE) {
 				G->mTextureOverrideDrawVertexMap[ov.match_vertex_count.val].emplace_back(TextureOverrideFuzzyMatch{ hash, const_cast<TextureOverride*>(&ov) });
-				continue;
+				G->has_vertex_buffer_overrides = true;
+				G->mVertexBufferOverrideHashes.insert(hash);
+				G->mVertexBufferBloom.Add(hash);
+			}
+		}
+	}
+
+	G->has_fuzzy_vb_overrides = false;
+	G->has_non_fallback_fuzzy_ib_overrides = false;
+	G->has_fuzzy_tex_overrides = false;
+	for (const auto& fuzzy : G->mFuzzyTextureOverrides) {
+		if (fuzzy->matches_buffer) {
+			D3D11_BUFFER_DESC vb_desc = {};
+			vb_desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+			if (fuzzy->BindFlags.matches(vb_desc.BindFlags, &vb_desc)) {
+				G->has_fuzzy_vb_overrides = true;
+				G->has_vertex_buffer_overrides = true;
+			}
+
+			D3D11_BUFFER_DESC ib_desc = {};
+			ib_desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+			if (fuzzy->BindFlags.matches(ib_desc.BindFlags, &ib_desc)) {
+				G->has_index_buffer_overrides = true;
+				if (!fuzzy->texture_override || fuzzy->texture_override->priority > -9000) {
+					G->has_non_fallback_fuzzy_ib_overrides = true;
+				}
+			}
+		}
+		if (fuzzy->matches_tex1d || fuzzy->matches_tex2d || fuzzy->matches_tex3d) {
+			D3D11_TEXTURE2D_DESC tex_desc = {};
+			tex_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+			if (fuzzy->BindFlags.matches(tex_desc.BindFlags, &tex_desc)) {
+				if (!fuzzy->texture_override || fuzzy->texture_override->filter_index == FLT_MAX) {
+					G->has_fuzzy_tex_overrides = true;
+				}
 			}
 		}
 	}
@@ -4900,9 +4993,8 @@ void LoadConfigFile()
 	ParseShaderRegexSections();
 	ParseTextureOverrideSections();
 
-	// Build match_index_cound and match_vertex_count based cache for TextureOverride's
-	if (G->track_region_hashes)
-		BuildTextureOverrideDrawMaps();
+	// Build draw index/vertex maps and buffer override set for fast early-out
+	BuildTextureOverrideDrawMaps();
 
 	LogInfo("[Present]\n");
 	G->present_command_list.clear();

@@ -57,6 +57,9 @@
     <ClCompile Include="dx12\ShimDevice.cpp" />
     <ClCompile Include="dx12\ShimObjects.cpp" />
     <ClCompile Include="dx12\ShimPipeline.cpp" />
+    <ClCompile Include="vk\Spirv.cpp" />
+    <ClCompile Include="vk\VkDump.cpp" />
+    <ClCompile Include="vk\VkHooks.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="d3d11Wrapper.def" />
@@ -119,6 +122,10 @@
     <ClInclude Include="dx12\ShimDevice.h" />
     <ClInclude Include="dx12\ShimObjects.h" />
     <ClInclude Include="dx12\ShimPipeline.h" />
+    <ClInclude Include="vk\Spirv.h" />
+    <ClInclude Include="vk\VkCommon.h" />
+    <ClInclude Include="vk\VkDump.h" />
+    <ClInclude Include="vk\VkHooks.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="DirectX11.rc" />

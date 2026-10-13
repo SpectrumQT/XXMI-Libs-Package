@@ -6,6 +6,7 @@
 #include "globals.h"
 #include "dx12/Bridge.h"
 #include "dx12/Dx12Hooks.h"
+#include "vk/VkHooks.h"
 
 HINSTANCE migoto_handle;
 
@@ -362,6 +363,7 @@ BOOL WINAPI DllMain(
 			// Only possible if d3d12.dll is already in the process.
 			// Hooked_LoadLibraryExW catches it otherwise.
 			Dx12HookExports();
+			VkHookExports();
 
 			tls_idx = TlsAlloc();
 			if (tls_idx == TLS_OUT_OF_INDEXES)

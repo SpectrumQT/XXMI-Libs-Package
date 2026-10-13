@@ -5,6 +5,7 @@
 #include "IniHandler.h"
 #include "HookedDXGI.h"
 #include "dx12/Dx12Hooks.h"
+#include "vk/VkHooks.h"
 
 #include <locale>
 #include <chrono>
@@ -1199,11 +1200,12 @@ HMODULE __stdcall Hooked_LoadLibraryExW(_In_ LPCWSTR lpLibFileName, _Reserved_ H
 	// Normal unchanged case.
 	module = fnOrigLoadLibraryExW(lpLibFileName, hFile, dwFlags);
 
-	// d3d12.dll may only have come in now, either directly or as a
+	// d3d12.dll or vulkan-1.dll may only have come in now, either directly or as a
 	// dependency of what was loaded. The caller still needs the error code
 	// of its own call.
 	DWORD last_error = GetLastError();
 	Dx12HookExports();
+	VkHookExports();
 	SetLastError(last_error);
 
 	return module;

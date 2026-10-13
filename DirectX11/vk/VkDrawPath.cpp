@@ -86,7 +86,20 @@ static struct {
 	UINT64 part_ticks[TIMED_PARTS];
 	// Draws the engine was run for that it neither skipped nor drew for
 	unsigned idle_draws;
+	// Presents of the game's device, of which on another thread than the
+	// draws were last submitted on, submissions with draws the engine was
+	// shown and the frames counted by them
+	unsigned presents, presents_apart, frame_submits, frames_counted;
 } stats;
+
+// Submissions without such draws while something was yet to be brought for
+// the draws recorded: not the game's, which would have been taken for it
+static volatile LONG submits_apart;
+
+// The frames the game has drawn, which what is kept for some frames is kept
+// by: frame generation presents more often than that, see
+// frames_by_submission
+static volatile UINT mods_frame;
 
 static UINT64 ticks()
 {
@@ -930,7 +943,7 @@ static uint32_t region_hash(VkBuffer buffer, PublishedBuffer *entry, VkDeviceSiz
 {
 	Region *region = &entry->regions[std::make_pair(offset, bytes)];
 	BYTE samples[sizeof(region->samples)];
-	UINT frame = vk_frame;
+	UINT frame = mods_frame;
 	const BYTE *data;
 
 	if (region->hashed && region->checked_frame == frame) {
@@ -1093,7 +1106,7 @@ static void forget_dead_constants(VkBuffer buffer)
 
 static void forget_unused_constants(bool all)
 {
-	UINT frame = vk_frame;
+	UINT frame = mods_frame;
 
 	for (auto i = published_constants.begin(); i != published_constants.end();) {
 		if (all || frame - i->second.used_frame > CONSTANTS_KEEP_FRAMES)
@@ -1413,7 +1426,7 @@ static PublishedConstants* publish_constants(VkBuffer buffer, VkDeviceSize offse
 	ShimBuffer *object;
 	bool mapped;
 
-	if (found != published_constants.end() && found->second.shown && found->second.used_frame == vk_frame) {
+	if (found != published_constants.end() && found->second.shown && found->second.used_frame == mods_frame) {
 		stats.constants_shown++;
 		return &found->second;
 	}
@@ -1456,7 +1469,7 @@ static PublishedConstants* publish_constants(VkBuffer buffer, VkDeviceSize offse
 		constants_sources[&object->r].key = key;
 	}
 	object = found->second.object;
-	found->second.used_frame = vk_frame;
+	found->second.used_frame = mods_frame;
 	found->second.shown = true;
 	stats.constants_shown++;
 
@@ -1609,7 +1622,7 @@ static bool place_mirror(Mirror *mirror, const VkMemoryRequirements *needed, VkD
 static void retire_mirror(const Mirror *mirror)
 {
 	if (!mirror->shared)
-		retired_mirrors.push_back({ mirror->buffer, mirror->block, vk_frame });
+		retired_mirrors.push_back({ mirror->buffer, mirror->block, mods_frame });
 }
 
 static void destroy_retired_mirrors(bool all)
@@ -1617,7 +1630,7 @@ static void destroy_retired_mirrors(bool all)
 	size_t kept = 0;
 
 	for (const RetiredMirror &retired : retired_mirrors) {
-		if (!all && vk_frame - retired.frame < MIRROR_KEEP_FRAMES) {
+		if (!all && mods_frame - retired.frame < MIRROR_KEEP_FRAMES) {
 			retired_mirrors[kept++] = retired;
 			continue;
 		}
@@ -1656,7 +1669,7 @@ static Mirror* mirror_of(ShimBuffer *buffer)
 
 	auto found = mirrors.find(resource);
 	if (found != mirrors.end()) {
-		if (found->second.version == resource->version && (!found->second.shared || found->second.frame == vk_frame))
+		if (found->second.version == resource->version && (!found->second.shared || found->second.frame == mods_frame))
 			return &found->second;
 		// The command buffers recorded so far draw what it held then
 		retire_mirror(&found->second);
@@ -1668,7 +1681,7 @@ static Mirror* mirror_of(ShimBuffer *buffer)
 		mirror.size = info.size;
 		mirror.version = resource->version;
 		mirror.shared = true;
-		mirror.frame = vk_frame;
+		mirror.frame = mods_frame;
 		resource->mirrored = true;
 		stats.mirrored++;
 		stats.mirrored_from_gpu++;
@@ -1766,7 +1779,7 @@ static Transient* new_transient(VkDeviceSize size)
 	transient.block = placed.block;
 	transient.data = placed.block->data + offset;
 	transient.size = info.size;
-	transient.frame = vk_frame;
+	transient.frame = mods_frame;
 	transients.push_back(transient);
 	return &transients.back();
 }
@@ -1778,7 +1791,7 @@ static BYTE* transient_bytes(VkDeviceSize bytes, VkDeviceSize reach, VkBuffer *b
 {
 	Transient *found = NULL;
 	VkDeviceSize start = 0;
-	UINT frame = vk_frame;
+	UINT frame = mods_frame;
 
 	for (Transient &transient : transients) {
 		if (transient.frame != frame) {
@@ -1813,7 +1826,7 @@ static void destroy_big_transients()
 	size_t kept = 0, i;
 
 	for (const Transient &transient : transients) {
-		if (transient.size <= TRANSIENT_BYTES || vk_frame - transient.frame <= MIRROR_KEEP_FRAMES) {
+		if (transient.size <= TRANSIENT_BYTES || mods_frame - transient.frame <= MIRROR_KEEP_FRAMES) {
 			transients[kept++] = transient;
 			continue;
 		}
@@ -2018,7 +2031,7 @@ static SharedBuffer* new_shared_buffer(VkDeviceSize size)
 	}
 
 	shared.size = desc.Width;
-	shared.frame = vk_frame;
+	shared.frame = mods_frame;
 	shared_buffers.push_back(shared);
 	return &shared_buffers.back();
 }
@@ -2028,7 +2041,7 @@ static SharedBuffer* shared_bytes(VkDeviceSize bytes, VkDeviceSize reach, VkDevi
 {
 	SharedBuffer *found = NULL;
 	VkDeviceSize start = 0;
-	UINT frame = vk_frame;
+	UINT frame = mods_frame;
 
 	if (sharing_failed || !handle_properties || !dx12_shim)
 		return NULL;
@@ -2089,7 +2102,7 @@ static void destroy_shared_buffers(bool all)
 	size_t kept = 0;
 
 	for (const SharedBuffer &shared : shared_buffers) {
-		if (!all && vk_frame - shared.frame <= SHARED_KEEP_FRAMES) {
+		if (!all && mods_frame - shared.frame <= SHARED_KEEP_FRAMES) {
 			shared_buffers[kept++] = shared;
 			continue;
 		}
@@ -2202,12 +2215,19 @@ static VkSemaphore finish_transfers(VkQueue queue, UINT64 *value)
 	return semaphore;
 }
 
-VkSemaphore VkModsBeforeSubmit(VkQueue queue, UINT64 *value)
+VkSemaphore VkModsBeforeSubmit(VkQueue queue, UINT64 *value, bool shown)
 {
 	VkSemaphore semaphore;
 
 	if (!transfers_pending)
 		return VK_NULL_HANDLE;
+	// Frame generation submits work of its own while the game records, to
+	// a queue of its own: the wait would be that submission's, and the
+	// game's draws left to read what is not there yet
+	if (!shown) {
+		InterlockedIncrement(&submits_apart);
+		return VK_NULL_HANDLE;
+	}
 
 	Dx12ShimLock();
 	semaphore = finish_transfers(queue, value);
@@ -2476,7 +2496,7 @@ static void destroy_retired_textures(bool all)
 	size_t kept = 0;
 
 	for (const RetiredTexture &retired : retired_textures) {
-		if (!all && vk_frame - retired.frame < MIRROR_KEEP_FRAMES + 4) {
+		if (!all && mods_frame - retired.frame < MIRROR_KEEP_FRAMES + 4) {
 			retired_textures[kept++] = retired;
 			continue;
 		}
@@ -2486,7 +2506,7 @@ static void destroy_retired_textures(bool all)
 
 	kept = 0;
 	for (const UploadCommands &commands : upload_commands) {
-		if (!all && vk_frame - commands.frame < MIRROR_KEEP_FRAMES) {
+		if (!all && mods_frame - commands.frame < MIRROR_KEEP_FRAMES) {
 			upload_commands[kept++] = commands;
 			continue;
 		}
@@ -2670,8 +2690,8 @@ static VkImageView bring_texture(const ShimView *view, const SpirvBinding *slot)
 
 	// The rest of what a mod has just had loaded is there some frames
 	// later, rather than all of it after one frame that takes that long
-	if (texture_frame != vk_frame) {
-		texture_frame = vk_frame;
+	if (texture_frame != mods_frame) {
+		texture_frame = mods_frame;
 		texture_frame_bytes = 0;
 	}
 	copied = stats.textures_bytes;
@@ -2713,7 +2733,7 @@ static void submit_uploads(VkQueue queue)
 		uploads.clear();
 		return;
 	}
-	upload_commands.push_back({ *pool, cmd, vk_frame });
+	upload_commands.push_back({ *pool, cmd, mods_frame });
 
 	if (api.BeginCommandBuffer(cmd, &begin) != VK_SUCCESS) {
 		uploads.clear();
@@ -2760,7 +2780,7 @@ void VkScopeForgetResource(ShimResource *resource)
 	auto texture = mod_textures.find(resource);
 
 	if (texture != mod_textures.end()) {
-		retired_textures.push_back({ texture->second, vk_frame });
+		retired_textures.push_back({ texture->second, mods_frame });
 		mod_textures.erase(texture);
 	}
 	auto first = brought.lower_bound(std::make_tuple(resource, (UINT64)0, (UINT64)0));
@@ -3379,6 +3399,8 @@ struct CmdState {
 	VkPipelineLayout layouts[MAX_SETS];
 	BYTE dynamic_count[MAX_SETS];
 	uint32_t dynamic[MAX_SETS][MAX_DYNAMIC];
+	// A draw recorded to it, or to one it executes, was shown to the engine
+	bool shown;
 };
 
 // One for every handle there has been, which is what lets a thread remember
@@ -3418,6 +3440,73 @@ static CmdState* cmd_state(VkCommandBuffer cmd)
 void VkModsBeginCommands(VkCommandBuffer cmd)
 {
 	*cmd_state(cmd) = {};
+}
+
+bool VkModsCommandsShown(VkCommandBuffer cmd)
+{
+	bool shown = false;
+
+	AcquireSRWLockShared(&cmd_lock);
+	auto found = cmd_states.find(cmd);
+	if (found != cmd_states.end())
+		shown = found->second->shown;
+	ReleaseSRWLockShared(&cmd_lock);
+	return shown;
+}
+
+void VkModsExecuteCommands(VkCommandBuffer cmd, uint32_t count, const VkCommandBuffer *cmds)
+{
+	uint32_t i;
+
+	for (i = 0; i < count; i++) {
+		if (VkModsCommandsShown(cmds[i])) {
+			cmd_state(cmd)->shown = true;
+			return;
+		}
+	}
+}
+
+// The engine counts a frame for every present of the D3D12 device, which is
+// the game's frame for as long as the driver presents each once. Frame
+// generation has it present more often, and at any time while the game
+// records the next: what a mod keeps for "one frame" by FRAME_NUMBER is then
+// gone before the game has drawn again. So frames are counted here instead,
+// where the game hands the draws of one to a queue, for as long as it does.
+static bool frames_by_submission;
+// A submission is of another frame than the last only after a present
+static bool frame_presented;
+static UINT presents_without_frame;
+static DWORD submit_thread;
+// More than frame generation makes of one frame of the game
+const UINT PRESENTS_WITHOUT_FRAME_MAX = 16;
+
+void VkModsFrameSubmitted()
+{
+	Dx12ShimLock();
+	if (dx12_shim) {
+		if (frame_presented) {
+			frame_presented = false;
+			G->frame_no++;
+			mods_frame++;
+			stats.frames_counted++;
+		}
+		frames_by_submission = true;
+		presents_without_frame = 0;
+		submit_thread = GetCurrentThreadId();
+		stats.frame_submits++;
+	}
+	Dx12ShimUnlock();
+}
+
+bool VkModsCountFrames()
+{
+	if (!frames_by_submission)
+		return false;
+	if (++presents_without_frame > PRESENTS_WITHOUT_FRAME_MAX) {
+		frames_by_submission = false;
+		return false;
+	}
+	return true;
 }
 
 void VkModsBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint bind_point, VkPipeline pipeline)
@@ -3602,7 +3691,7 @@ static VkDescriptorSet mod_set(const GameSet *game, const std::vector<SetReplace
 
 	auto found = mod_sets.find(key);
 	if (found != mod_sets.end()) {
-		found->second.used_frame = vk_frame;
+		found->second.used_frame = mods_frame;
 		return found->second.set;
 	}
 
@@ -3651,7 +3740,7 @@ static VkDescriptorSet mod_set(const GameSet *game, const std::vector<SetReplace
 	}
 	api.UpdateDescriptorSets(mods_device, (uint32_t)writes.size(), writes.data(), (uint32_t)copies.size(), copies.data());
 
-	mod_sets[key] = { set, game->layout, vk_frame };
+	mod_sets[key] = { set, game->layout, mods_frame };
 	stats.sets_made++;
 	return set;
 }
@@ -3660,7 +3749,7 @@ static VkDescriptorSet mod_set(const GameSet *game, const std::vector<SetReplace
 // done with, like the buffers of the mods
 static void release_unused_mod_sets()
 {
-	UINT frame = vk_frame;
+	UINT frame = mods_frame;
 
 	for (auto i = mod_sets.begin(); i != mod_sets.end();) {
 		if (frame - i->second.used_frame <= MIRROR_KEEP_FRAMES) {
@@ -3938,7 +4027,7 @@ static bool region_is_quiet(const CmdState *state, uint32_t count, uint32_t firs
 	// Without a hash the engine goes by that of the buffer instead, and it
 	// is region_hash that has the indices hashed again every so often
 	if (was.buffer != state->ib || was.offset != offset || was.bytes != count * index_bytes || !was.hash
-	    || vk_frame - was.hashed_frame >= REGION_REHASH_FRAMES)
+	    || mods_frame - was.hashed_frame >= REGION_REHASH_FRAMES)
 		return false;
 	bit = index_count_bit(was.hash);
 	if (hashes[bit / 64] & 1ll << (bit % 64))
@@ -5116,6 +5205,7 @@ bool VkModsDraw(VkCommandBuffer cmd, bool indexed, uint32_t count, uint32_t inst
 	forget_dead_buffers();
 	Dx12WorkOutFilter(&state->pipeline->filter, state->pipeline->shaders);
 	stats.slow[reason]++;
+	state->shown = true;
 
 	opened.cmd = cmd;
 	opened.state = *state;
@@ -5296,6 +5386,12 @@ static void report()
 		"about %u more were not stopped for, %u of them with such an index count and indices no section is for\n",
 		stats.slow[SLOW_SETTINGS], stats.slow[SLOW_LISTS], stats.slow[SLOW_INDEX_COUNT], stats.slow[SLOW_CONSTANTS],
 		(unsigned)InterlockedExchange(&fast_draws, 0), (unsigned)InterlockedExchange(&quiet_draws, 0));
+	VkDumpNote("  Frames: %u presents of the game's device, %u of them on another thread than its draws were submitted on; "
+		"%u submissions with draws the engine was shown, %u frames counted by them (FRAME_NUMBER %u, %s); %u other submissions "
+		"while something was yet to be brought for the draws\n",
+		stats.presents, stats.presents_apart, stats.frame_submits, stats.frames_counted, G->frame_no,
+		frames_by_submission ? "counted by the submissions" : "counted by the presents of the D3D12 device",
+		(unsigned)InterlockedExchange(&submits_apart, 0));
 	stats = {};
 	AcquireSRWLockExclusive(&descriptor_lock);
 	sets_allocated = sets_written = sets_written_by_template = 0;
@@ -5309,6 +5405,11 @@ void VkModsPresent(VkQueue queue)
 	bool all;
 
 	Dx12ShimLock();
+	frame_presented = true;
+	if (!frames_by_submission)
+		mods_frame++;
+	stats.presents++;
+	stats.presents_apart += GetCurrentThreadId() != submit_thread;
 
 	if (!dx12_shim) {
 		draw_path_active = false;

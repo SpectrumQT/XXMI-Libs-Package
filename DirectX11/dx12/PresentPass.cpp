@@ -201,7 +201,8 @@ static void frame_actions()
 		Dx12DrawOverlay();
 	G->suppress_overlay = false;
 
-	G->frame_no++;
+	if (!VkModsCountFrames())
+		G->frame_no++;
 	dx12_shim->hacker_context->ResetCallCounters();
 
 	if (G->hunting != HUNTING_MODE_ENABLED)

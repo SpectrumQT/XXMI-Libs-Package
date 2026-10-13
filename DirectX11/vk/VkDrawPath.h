@@ -139,6 +139,7 @@ void VkModsMemoryMapped(VkDeviceMemory memory, VkDeviceSize offset, VkDeviceSize
 void VkModsMemoryUnmapped(VkDeviceMemory memory);
 
 void VkModsBeginCommands(VkCommandBuffer cmd);
+void VkModsExecuteCommands(VkCommandBuffer cmd, uint32_t count, const VkCommandBuffer *cmds);
 void VkModsBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint bind_point, VkPipeline pipeline);
 void VkModsBindVertexBuffers(VkCommandBuffer cmd, uint32_t first, uint32_t count, const VkBuffer *buffers, const VkDeviceSize *offsets);
 void VkModsBindIndexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkIndexType type);
@@ -159,7 +160,15 @@ void VkModsBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint bind_poin
 // asks with a value: what is returned then is a semaphore that is such a
 // fence, if what the draws read is there once the fence has reached the value
 // and not before. Nothing is waited for here in that case.
-VkSemaphore VkModsBeforeSubmit(VkQueue queue, UINT64 *value);
+//
+// shown is whether any of the command buffers has draws the engine was shown,
+// see VkModsCommandsShown: no other submission is one to wait.
+VkSemaphore VkModsBeforeSubmit(VkQueue queue, UINT64 *value, bool shown);
+
+// Whether the command buffer has draws the engine was shown, and that such
+// are handed to a queue: the game's frame, which the engine counts by
+bool VkModsCommandsShown(VkCommandBuffer cmd);
+void VkModsFrameSubmitted();
 
 // True if the draw was dealt with, which includes making it with whichever of
 // the two functions it is for: the caller then has nothing left to do

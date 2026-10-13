@@ -60,6 +60,10 @@ bool VkScopeUploadShadow(ShimResource *resource);
 
 // After the configuration was read again
 void VkModsConfigReloaded();
+// At a present of the D3D12 device, with the lock of dx12/Bridge.h held: true
+// if the frames of the engine are counted by what the game submits, not by
+// the presents
+bool VkModsCountFrames();
 
 // For GetRegionHash. False if the buffer is not one of the above, and the
 // hash is the engine's to work out.

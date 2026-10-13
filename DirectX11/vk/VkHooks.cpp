@@ -32,7 +32,7 @@
 	X(MapMemory) \
 	X(UnmapMemory) \
 	X(FreeMemory) \
-	X(BeginCommandBuffer) \
+	X(BeginCommandBuffer) 	X(CmdExecuteCommands) \
 	X(FlushMappedMemoryRanges) \
 	X(CmdCopyBuffer) \
 	X(CmdCopyBuffer2) \
@@ -321,6 +321,13 @@ static VkResult VKAPI_CALL Hooked_vkBeginCommandBuffer(VkCommandBuffer cmd, cons
 	return next_BeginCommandBuffer(cmd)(cmd, info);
 }
 
+static void VKAPI_CALL Hooked_vkCmdExecuteCommands(VkCommandBuffer cmd, uint32_t count, const VkCommandBuffer *cmds)
+{
+	if (vk_mods_active)
+		VkModsExecuteCommands(cmd, count, cmds);
+	next_CmdExecuteCommands(cmd)(cmd, count, cmds);
+}
+
 static VkResult VKAPI_CALL Hooked_vkCreateImage(VkDevice device, const VkImageCreateInfo *info,
 		const VkAllocationCallbacks *allocator, VkImage *image)
 {
@@ -556,9 +563,18 @@ static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, c
 	VkSemaphore semaphore = VK_NULL_HANDLE;
 	VkSubmitInfo waiting;
 	UINT64 value = 0;
+	bool shown = false;
+	uint32_t i, j;
 
-	if (vk_mods_active)
-		semaphore = VkModsBeforeSubmit(queue, can_wait_for_fence(count, submits) ? &value : NULL);
+	if (vk_mods_active) {
+		for (i = 0; i < count && !shown; i++) {
+			for (j = 0; j < submits[i].commandBufferCount && !shown; j++)
+				shown = VkModsCommandsShown(submits[i].pCommandBuffers[j]);
+		}
+		if (shown)
+			VkModsFrameSubmitted();
+		semaphore = VkModsBeforeSubmit(queue, can_wait_for_fence(count, submits) ? &value : NULL, shown);
+	}
 	if (!semaphore)
 		return next_QueueSubmit(queue)(queue, count, submits, fence);
 
@@ -586,8 +602,18 @@ static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, c
 
 static VkResult VKAPI_CALL Hooked_vkQueueSubmit2(VkQueue queue, uint32_t count, const VkSubmitInfo2 *submits, VkFence fence)
 {
-	if (vk_mods_active)
-		VkModsBeforeSubmit(queue, NULL);
+	bool shown = false;
+	uint32_t i, j;
+
+	if (vk_mods_active) {
+		for (i = 0; i < count && !shown; i++) {
+			for (j = 0; j < submits[i].commandBufferInfoCount && !shown; j++)
+				shown = VkModsCommandsShown(submits[i].pCommandBufferInfos[j].commandBuffer);
+		}
+		if (shown)
+			VkModsFrameSubmitted();
+		VkModsBeforeSubmit(queue, NULL, shown);
+	}
 	return next_QueueSubmit2(queue)(queue, count, submits, fence);
 }
 

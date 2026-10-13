@@ -9,6 +9,7 @@
 #include <iterator>
 #include <memory>
 #include <atomic>
+#include <functional>
 
 #include "util.h"
 #include "DrawCallInfo.h"
@@ -454,6 +455,13 @@ struct ResourceHandleInfo
 	// Should be called when the underlying resource contents change.
 	void ClearDataCache();
 	uint8_t* GetCachedData();
+	// The same, for reading size bytes at offset: a cache set up with
+	// SetLazyDataCache has them read first.
+	uint8_t* GetCachedData(size_t offset, size_t size);
+	// A cache whose data is read from where the resource has it only when
+	// it is asked for, a page at a time. read is given the offset in the
+	// data and has to fill all it is asked for.
+	void SetLazyDataCache(size_t size, std::function<void(uint8_t *dst, size_t offset, size_t size)> read);
 
 	void CacheRegionHash(const RegionHashKeyL2& key, uint32_t hash);
 	uint32_t GetCachedRegionHash(const RegionHashKeyL2& key);

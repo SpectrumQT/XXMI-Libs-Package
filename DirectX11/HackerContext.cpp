@@ -2055,7 +2055,7 @@ void CopySubresourceRegionCache(ID3D11Resource* pSrcResource, ID3D11Resource* pD
 		if (!dst_info->cached_data_size)
 			dst_info->InitializeDataCache(dst_desc.ByteWidth);
 
-		dst_info->SetDataCacheRegion(src_info->GetCachedData() + src_offset, region_size, DstX);
+		dst_info->SetDataCacheRegion(src_info->GetCachedData(src_offset, region_size) + src_offset, region_size, DstX);
 
 		//dst_info->cached_data_hash = crc32c_hw(0, dst_info->cached_data, dst_desc.ByteWidth);
 	}

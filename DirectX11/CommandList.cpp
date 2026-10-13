@@ -2254,7 +2254,7 @@ bool StoreCommand::TryReadValueFromCache(ID3D11Resource* resource, UINT64 byte_o
 		return false;
 	}
 
-	const uint8_t* cached_data = handle_info->GetCachedData();
+	const uint8_t* cached_data = handle_info->GetCachedData((size_t)byte_offset, sizeof(float));
 	memcpy(&value, cached_data + byte_offset, sizeof(float));
 
 	return true;
@@ -3684,8 +3684,10 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
 		UINT64 hash = mHackerContext->Dx12CurrentShader(shader_target.shader_type);
 		if (!hash)
 			return -0.0;  // Negative zero means no shader bound.
-		if (shader_target.evaluation_mode != ShaderTargetEvaluationMode::SHADER)
-			return 0.0;
+		if (shader_target.evaluation_mode != ShaderTargetEvaluationMode::SHADER) {
+			const ShaderBindings *declared = mHackerContext->Dx12CurrentShaderBindings(shader_target.shader_type);
+			return declared ? evaluate_shader_bindings(state, *declared) : 0.0f;
+		}
 
 		ShaderOverrideMap::iterator override = lookup_shaderoverride(hash);
 		if (override == G->mShaderOverrideMap.end())
@@ -3718,19 +3720,24 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
 		return 0.0;  // Safety check, should never happen;
 	}
 
+	return evaluate_shader_bindings(state, it->second);
+}
+
+float CommandListOperand::evaluate_shader_bindings(CommandListState *state, const ShaderBindings &bindings)
+{
 	UINT slot_id = (UINT)shader_target.member_args[0].GetValue(state);
 
 	switch (shader_target.evaluation_mode)
 	{
 	case ShaderTargetEvaluationMode::DCL_CB_TYPE:
 	{
-		ShaderConstantBuffer& cb = it->second.constant_buffers[slot_id];
+		const ShaderConstantBuffer& cb = bindings.constant_buffers[slot_id];
 
 		return (float)cb.type;
 	}
 	case ShaderTargetEvaluationMode::DCL_CB_SIZE:
 	{
-		ShaderConstantBuffer& cb = it->second.constant_buffers[slot_id];
+		const ShaderConstantBuffer& cb = bindings.constant_buffers[slot_id];
 
 		if (cb.type == ShaderConstantBufferType::NONE)
 			return -1.0;  // Negative one means CB is not declared for this slot.
@@ -3739,13 +3746,13 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
 	}
 	case ShaderTargetEvaluationMode::DCL_SRV_TYPE:
 	{
-		ShaderResource& t = it->second.resources[slot_id];
+		const ShaderResource& t = bindings.resources[slot_id];
 
 		return (float)t.type;
 	}
 	case ShaderTargetEvaluationMode::DCL_SRV_STRIDE:
 	{
-		ShaderResource& t = it->second.resources[slot_id];
+		const ShaderResource& t = bindings.resources[slot_id];
 
 		if (t.type == ShaderResourceType::NONE)
 			return -1.0;  // Negative one means SRV is not declared for this slot.
@@ -3754,7 +3761,7 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
 	}
 	case ShaderTargetEvaluationMode::DCL_SRV_DIMENSION:
 	{
-		ShaderResource& t = it->second.resources[slot_id];
+		const ShaderResource& t = bindings.resources[slot_id];
 
 		if (t.type == ShaderResourceType::NONE)
 			return -1.0;  // Negative one means SRV is not declared for this slot.

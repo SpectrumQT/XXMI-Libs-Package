@@ -28,6 +28,7 @@ enum {
 	DecorationBufferBlock = 3,
 	DecorationArrayStride = 6,
 	DecorationMatrixStride = 7,
+	DecorationNonWritable = 24,
 	DecorationLocation = 30,
 	DecorationBinding = 33,
 	DecorationDescriptorSet = 34,
@@ -57,7 +58,7 @@ struct Id {
 	std::string name;
 	uint32_t set, binding, location;
 	uint32_t array_stride;
-	bool buffer_block;
+	bool buffer_block, non_writable;
 	// By member, for a struct
 	std::vector<uint32_t> offsets, matrix_strides;
 };
@@ -123,8 +124,9 @@ static uint32_t type_bytes(const std::vector<Id> &ids, uint32_t type, uint32_t m
 
 static void describe_resource(const std::vector<Id> &ids, const Id *variable, uint32_t storage, SpirvInfo *info)
 {
-	const Id *pointer, *type = NULL;
-	const char *kind = NULL;
+	static const char *const kinds[] = { "ubo", "ssbo", "tex", "samp", "texsamp", "img", "tbuf", "itbuf", "as" };
+	const Id *pointer, *type = NULL, *image = NULL;
+	SpirvBinding binding = {};
 	uint32_t type_id, bytes = 0;
 	const std::string *name = &variable->name;
 	char text[64];
@@ -157,35 +159,49 @@ static void describe_resource(const std::vector<Id> &ids, const Id *variable, ui
 				info->resources += text;
 				return;
 			}
-			kind = (storage == StorageStorageBuffer || type->buffer_block) ? "ssbo" : "ubo";
+			binding.kind = (storage == StorageStorageBuffer || type->buffer_block) ? SPIRV_SSBO : SPIRV_UBO;
+			binding.bytes = bytes;
+			if (binding.kind == SPIRV_SSBO && type->count) {
+				uint32_t last = type->operands[type->count - 1];
+
+				if (last < ids.size() && (ids[last].op == OpTypeRuntimeArray || ids[last].op == OpTypeArray))
+					binding.stride = ids[last].array_stride;
+				binding.read_only = type->non_writable || variable->non_writable;
+			}
 			// Compilers name the block and leave its instance without
 			if (name->empty())
 				name = &type->name;
 			break;
 		case OpTypeSampledImage:
-			kind = "texsamp";
-			if (type->count >= 1 && type->operands[0] < ids.size()) {
-				const Id *image = &ids[type->operands[0]];
-				if (image->op == OpTypeImage && image->count >= 2 && image->operands[1] == DIM_BUFFER)
-					kind = "tbuf";
+			binding.kind = SPIRV_TEXTURE_SAMPLER;
+			if (type->count >= 1 && type->operands[0] < ids.size() && ids[type->operands[0]].op == OpTypeImage) {
+				image = &ids[type->operands[0]];
+				if (image->count >= 2 && image->operands[1] == DIM_BUFFER)
+					binding.kind = SPIRV_TEXEL_BUFFER;
 			}
 			break;
 		case OpTypeImage:
 			if (type->count < 6)
 				return;
+			image = type;
 			if (type->operands[1] == DIM_BUFFER)
-				kind = type->operands[5] == 2 ? "itbuf" : "tbuf";
+				binding.kind = type->operands[5] == 2 ? SPIRV_STORAGE_TEXEL_BUFFER : SPIRV_TEXEL_BUFFER;
 			else
-				kind = type->operands[5] == 2 ? "img" : "tex";
+				binding.kind = type->operands[5] == 2 ? SPIRV_STORAGE_IMAGE : SPIRV_TEXTURE;
 			break;
 		case OpTypeSampler:
-			kind = "samp";
+			binding.kind = SPIRV_SAMPLER;
 			break;
 		case OpTypeAccelerationStructureKHR:
-			kind = "as";
+			binding.kind = SPIRV_ACCELERATION_STRUCTURE;
 			break;
 		default:
 			return;
+	}
+	// Sampled type, Dim, Depth, Arrayed, ...
+	if (image && image->count >= 4) {
+		binding.dim = image->operands[1];
+		binding.arrayed = !!image->operands[3];
 	}
 
 	if (variable->set == NONE || variable->binding == NONE)
@@ -196,7 +212,11 @@ static void describe_resource(const std::vector<Id> &ids, const Id *variable, ui
 	else
 		info->named++;
 
-	_snprintf_s(text, _TRUNCATE, "s%ub%u:%s", variable->set, variable->binding, kind);
+	binding.set = variable->set;
+	binding.binding = variable->binding;
+	info->bindings.push_back(binding);
+
+	_snprintf_s(text, _TRUNCATE, "s%ub%u:%s", variable->set, variable->binding, kinds[binding.kind]);
 	info->resources += text;
 	if (type->op == OpTypeStruct) {
 		_snprintf_s(text, _TRUNCATE, ":%u", bytes);
@@ -254,6 +274,8 @@ void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info)
 					break;
 				if (ins[2] == DecorationBufferBlock)
 					ids[ins[1]].buffer_block = true;
+				if (ins[2] == DecorationNonWritable)
+					ids[ins[1]].non_writable = true;
 				if (count < 4)
 					break;
 				if (ins[2] == DecorationDescriptorSet)
@@ -266,6 +288,8 @@ void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info)
 					ids[ins[1]].array_stride = ins[3];
 				break;
 			case OpMemberDecorate:
+				if (count >= 4 && ins[1] < ids.size() && ins[3] == DecorationNonWritable)
+					ids[ins[1]].non_writable = true;
 				if (count < 5 || ins[1] >= ids.size() || ins[2] >= 4096)
 					break;
 				if (ins[3] == DecorationOffset) {

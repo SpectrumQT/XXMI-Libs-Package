@@ -898,6 +898,7 @@ HRESULT STDMETHODCALLTYPE ShimContext::Map(ID3D11Resource *pResource, UINT Subre
 		pMappedResource->DepthPitch = pMappedResource->RowPitch * rows;
 	}
 
+	ShimReadShadow(resource);
 	pMappedResource->pData = resource->shadow.data();
 	resource->mapped_for_write = MapType != D3D11_MAP_READ;
 	return S_OK;
@@ -1020,6 +1021,7 @@ static void copy_buffer(ID3D11Resource *dst11, UINT64 dst_offset, ID3D11Resource
 	size = min(size, min(src_desc.byte_width - src_offset, dst_desc.byte_width - dst_offset));
 
 	src_in_shadow = src->cpu_only && !src->readback_pending;
+	ShimReadShadow(src, src_offset, size);
 	if (src->cpu_only && !src_in_shadow) {
 		// Possible once the GPU is done, but nothing asks for it
 		Dx12ShimNotImplemented("Copying from a staging buffer the GPU has not filled yet", &from_staging_reported);

@@ -1617,6 +1617,7 @@ class CommandListOperand :
 	public CommandListEvaluatable {
 	float process_texture_filter(CommandListState*);
 	float process_shader_filter(CommandListState*);
+	float evaluate_shader_bindings(CommandListState*, const struct ShaderBindings&);
 public:
 	// TODO: Break up into separate classes for each operand type
 	ParamOverrideType type;

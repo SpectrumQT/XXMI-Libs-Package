@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "Bridge.h"
+#include "../vk/VkScope.h"
 #include "PipelineRegistry.h"
 
 // The D3D11 objects the engine holds on D3D12. They have to be real COM
@@ -138,6 +139,9 @@ struct ShimResource {
 	// vk/VkDrawPath has a Vulkan buffer with the contents, and is told
 	// when this goes
 	bool mirrored;
+	// The shadow of a constant buffer of a Vulkan game is yet to be read
+	// from where the game has the contents, see ShimReadShadow
+	bool shadow_pending;
 	// The same for use by the game's lists, where the upload has to
 	// outlive our submissions. Referenced.
 	ID3D12Resource *game_upload;
@@ -200,6 +204,13 @@ public:
 static inline ShimResource* ShimResourceOf(ID3D11Resource *resource)
 {
 	return resource ? &static_cast<ShimResourceObject<ID3D11Resource>*>(resource)->r : NULL;
+}
+
+// Before that much of the shadow of a buffer is read
+inline void ShimReadShadow(ShimResource *resource, UINT64 offset = 0, UINT64 size = UINT64_MAX)
+{
+	if (resource->shadow_pending)
+		VkScopeFillShadow(resource, offset, size);
 }
 
 class ShimBuffer final : public ShimResourceObject<ID3D11Buffer>

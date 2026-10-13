@@ -811,6 +811,7 @@ static bool upload_for_game_lists(ShimResource *resource, UINT64 bytes, bool alo
 	}
 
 	cpu = page.cpu + start;
+	ShimReadShadow(resource);
 	memcpy(cpu, resource->shadow.data(), resource->shadow.size());
 	memset(cpu + resource->shadow.size(), 0, bytes - resource->shadow.size());
 

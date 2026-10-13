@@ -1,17 +1,23 @@
 #include "VkDrawPath.h"
 
+#include <smmintrin.h>
+
 #include <map>
+#include <memory>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include "Spirv.h"
 #include "VkDump.h"
 #include "VkScope.h"
 
 #include "../dx12/Bridge.h"
 #include "../dx12/DrawPath.h"
 #include "../dx12/ShimContext.h"
+#include "../dx12/ShimDevice.h"
 #include "../dx12/ShimObjects.h"
 #include "util.h"
 
@@ -33,6 +39,7 @@ enum SlowReason {
 	SLOW_SETTINGS,
 	SLOW_LISTS,
 	SLOW_INDEX_COUNT,
+	SLOW_CONSTANTS,
 	SLOW_REASONS
 };
 
@@ -43,6 +50,8 @@ static struct {
 	unsigned regions_hashed, regions_checked, regions_unmapped;
 	unsigned mirrored;
 	UINT64 mirrored_bytes;
+	unsigned constants_shown, constants_read, constants_unmapped, constants_unbound;
+	UINT64 constants_bytes, constants_ticks;
 	UINT64 wait_ticks, engine_ticks;
 } stats;
 
@@ -73,9 +82,23 @@ static int stage_of(VkShaderStageFlagBits stage)
 // The vertex bindings kept track of, which are more than a mesh has streams
 const UINT MAX_VBS = 16;
 
+// What a shader reads, by the register a D3D11 one would have it at. Vulkan
+// has none for a mod to name it by, a shader says which binding of which
+// descriptor set. So the uniform blocks of a stage are taken for its cb0, cb1
+// and so on in the order the shader declares them, and the textures and
+// buffers it only reads for its t0, t1 and so on likewise. That is where the
+// mods of the game this was written for expect what they look for.
+struct ShaderLayout {
+	std::vector<SpirvBinding> cbs, views;
+	// The same as the engine has it of a D3D11 shader, once it asked. With
+	// the lock of dx12/Bridge.h held.
+	ShaderBindings *declared;
+};
+
 struct Pipeline {
 	// By Dx12ShaderStage, 0 where it has none
 	UINT64 shaders[DX12_STAGE_COUNT];
+	ShaderLayout *layouts[DX12_STAGE_COUNT];
 	// The vertex bindings it was created with, if that is known: a bit for
 	// each, and their strides
 	bool vbs_known;
@@ -96,6 +119,8 @@ struct SeenShader {
 
 static SRWLOCK registry_lock = SRWLOCK_INIT;
 static std::unordered_map<VkShaderModule, UINT64> shader_modules;
+// By hash, and kept: pipelines point at them
+static std::unordered_map<UINT64, ShaderLayout*> shader_layouts;
 static std::unordered_map<VkPipeline, Pipeline*> pipelines;
 // A command buffer may be left pointing at the pipeline it had bound when
 // that is destroyed, so these are never freed, only used again
@@ -114,9 +139,37 @@ static volatile bool want_all;
 // How many of seen_shaders the ShaderRegex sections have been linked to
 static size_t linked_shaders;
 
+static ShaderLayout* reflect_shader(const uint32_t *code, size_t bytes)
+{
+	ShaderLayout *layout = new ShaderLayout();
+	SpirvInfo info;
+
+	SpirvReflect(code, bytes / sizeof(uint32_t), &info);
+	for (const SpirvBinding &binding : info.bindings) {
+		switch (binding.kind) {
+			case SPIRV_UBO:
+				layout->cbs.push_back(binding);
+				break;
+			case SPIRV_SSBO:
+				// One the shader writes would be at a u register
+				if (!binding.read_only)
+					break;
+			case SPIRV_TEXTURE:
+			case SPIRV_TEXTURE_SAMPLER:
+			case SPIRV_TEXEL_BUFFER:
+				layout->views.push_back(binding);
+				break;
+		}
+	}
+	layout->declared = NULL;
+	return layout;
+}
+
 void VkModsShaderModule(VkShaderModule module, const VkShaderModuleCreateInfo *info)
 {
+	ShaderLayout *layout;
 	UINT64 hash;
+	bool known;
 
 	if (!info || !info->pCode || !info->codeSize)
 		return;
@@ -124,6 +177,15 @@ void VkModsShaderModule(VkShaderModule module, const VkShaderModuleCreateInfo *i
 
 	AcquireSRWLockExclusive(&registry_lock);
 	shader_modules[module] = hash;
+	known = !!shader_layouts.count(hash);
+	ReleaseSRWLockExclusive(&registry_lock);
+	if (known)
+		return;
+
+	layout = reflect_shader(info->pCode, info->codeSize);
+	AcquireSRWLockExclusive(&registry_lock);
+	if (!shader_layouts.emplace(hash, layout).second)
+		delete layout;
 	ReleaseSRWLockExclusive(&registry_lock);
 }
 
@@ -152,6 +214,7 @@ void VkModsGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 		| VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT));
 	const VkPipelineVertexInputStateCreateInfo *input = library ? NULL : info->pVertexInputState;
 	UINT64 shaders[DX12_STAGE_COUNT] = {};
+	ShaderLayout *layouts[DX12_STAGE_COUNT] = {};
 	Pipeline *entry;
 	uint32_t i;
 	int stage;
@@ -174,10 +237,16 @@ void VkModsGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 				shaders[stage] = module->second;
 		} else if (code && code->pCode && code->codeSize) {
 			shaders[stage] = fnv_64_buf(code->pCode, code->codeSize);
+			if (!shader_layouts.count(shaders[stage]))
+				shader_layouts[shaders[stage]] = reflect_shader(code->pCode, code->codeSize);
 		}
 
 		if (shaders[stage]) {
 			UINT *stages = &seen_stages[shaders[stage]];
+			auto layout = shader_layouts.find(shaders[stage]);
+
+			if (layout != shader_layouts.end())
+				layouts[stage] = layout->second;
 
 			if (!(*stages & 1u << stage)) {
 				*stages |= 1u << stage;
@@ -193,6 +262,7 @@ void VkModsGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 		spare_pipelines.pop_back();
 	}
 	memcpy(entry->shaders, shaders, sizeof(shaders));
+	memcpy(entry->layouts, layouts, sizeof(layouts));
 	entry->vbs = 0;
 	entry->vbs_per_instance = 0;
 	// Set while the pipeline is bound instead, the pointer is not looked at
@@ -357,6 +427,8 @@ void VkModsMemoryUnmapped(VkDeviceMemory memory)
 
 // With the lock of dx12/Bridge.h held, before anything is looked up in
 // published: the handle of a buffer that is gone may be another's by now
+static void forget_dead_constants(VkBuffer buffer);
+
 static void forget_dead_buffers()
 {
 	std::vector<VkBuffer> dead;
@@ -369,6 +441,7 @@ static void forget_dead_buffers()
 	ReleaseSRWLockExclusive(&memory_lock);
 
 	for (VkBuffer buffer : dead) {
+		forget_dead_constants(buffer);
 		auto found = published.find(buffer);
 		if (found == published.end())
 			continue;
@@ -449,6 +522,22 @@ static uint32_t region_hash(VkBuffer buffer, PublishedBuffer *entry, VkDeviceSiz
 	return region->hash;
 }
 
+// What the engine keeps of a resource it is to know
+static void register_buffer(ShimBuffer *object, uint32_t hash)
+{
+	// Has the engine's record of the object removed along with it
+	new ResourceReleaseTracker(object);
+
+	EnterCriticalSectionPretty(&G->mResourcesLock);
+	ResourceHandleInfo *handle = &G->mResources[object];
+	handle->type = D3D11_RESOURCE_DIMENSION_BUFFER;
+	handle->hash = hash;
+	handle->orig_hash = hash;
+	handle->data_hash = 0;
+	handle->texture_override_candidates_valid = false;
+	LeaveCriticalSection(&G->mResourcesLock);
+}
+
 static PublishedBuffer* publish_buffer(VkBuffer buffer, UINT bind_flags)
 {
 	VkDeviceSize size = 0;
@@ -476,22 +565,210 @@ static PublishedBuffer* publish_buffer(VkBuffer buffer, UINT bind_flags)
 	object->mDesc = {};
 	object->mDesc.ByteWidth = (UINT)min(size, (VkDeviceSize)UINT_MAX);
 	object->mDesc.BindFlags = bind_flags;
-	// Has the engine's record of the object removed along with it
-	new ResourceReleaseTracker(object);
-
-	// None to match by: the buffer as a whole is not what a mesh is
-	EnterCriticalSectionPretty(&G->mResourcesLock);
-	ResourceHandleInfo *handle = &G->mResources[object];
-	handle->type = D3D11_RESOURCE_DIMENSION_BUFFER;
-	handle->hash = 0;
-	handle->orig_hash = 0;
-	handle->data_hash = 0;
-	handle->texture_override_candidates_valid = false;
-	LeaveCriticalSection(&G->mResourcesLock);
+	// No hash to match by: the buffer as a whole is not what a mesh is
+	register_buffer(object, 0);
 
 	PublishedBuffer *entry = &published[buffer];
 	entry->object = object;
 	return entry;
+}
+
+// -----------------------------------------------------------------------------
+// The constant buffers of the game
+//
+// A uniform block a draw reads is some bytes of a buffer the game writes
+// through mapped memory, other ones for every draw. The engine is given them
+// as a constant buffer of the shim that has those bytes for its contents, like
+// one a mod would have filled itself: a mod can read values from it, take the
+// hash of a part or bind it elsewhere, also to a shader of its own that runs
+// on the D3D12 device. There is one for every place and size asked about, for
+// as long as the game keeps drawing with that.
+//
+// Most that are asked about are only asked how large they are, and reading
+// all of them took longer than everything else. So the contents are read when
+// something wants them: by the engine a page at a time (a lazy data cache),
+// and by the shim all of it (ShimReadShadow). Once a frame at most: the game
+// is taken to have written what a draw reads before recording the draw, and
+// not to write there again before the frame is done.
+
+// Frames one is kept for without a draw asking for it
+const UINT CONSTANTS_KEEP_FRAMES = 4;
+
+struct PublishedConstants {
+	ShimBuffer *object;
+	UINT used_frame;
+	bool shown;
+};
+
+typedef std::tuple<VkBuffer, VkDeviceSize, UINT> ConstantsKey;
+
+// By buffer, offset and size, with the lock of dx12/Bridge.h held
+static std::map<ConstantsKey, PublishedConstants> published_constants;
+
+// Where the shadow of one is read from, and the pages of it that have been
+const UINT SHADOW_PAGE = 4096;
+
+struct ConstantsSource {
+	ConstantsKey key;
+	std::vector<bool> pages;
+	UINT pages_left;
+};
+
+static std::unordered_map<ShimResource*, ConstantsSource> constants_sources;
+
+static void forget_constants(std::map<ConstantsKey, PublishedConstants>::iterator *entry)
+{
+	ShimBuffer *object = (*entry)->second.object;
+
+	// A mod may keep it
+	object->r.shadow_pending = false;
+	constants_sources.erase(&object->r);
+	object->Release();
+	*entry = published_constants.erase(*entry);
+}
+
+static void forget_dead_constants(VkBuffer buffer)
+{
+	auto i = published_constants.lower_bound(std::make_tuple(buffer, (VkDeviceSize)0, 0u));
+
+	while (i != published_constants.end() && std::get<0>(i->first) == buffer)
+		forget_constants(&i);
+}
+
+static void forget_unused_constants(bool all)
+{
+	UINT frame = vk_frame;
+
+	for (auto i = published_constants.begin(); i != published_constants.end();) {
+		if (all || frame - i->second.used_frame > CONSTANTS_KEEP_FRAMES)
+			forget_constants(&i);
+		else
+			++i;
+	}
+}
+
+// The memory a device lets be mapped is write combined as a rule, which takes
+// hundreds of times as long to read the ordinary way as it does like this
+static void copy_mapped(BYTE *dst, const BYTE *src, size_t bytes)
+{
+	size_t head = min(bytes, (16 - ((size_t)src & 15)) & 15);
+
+	memcpy(dst, src, head);
+	for (dst += head, src += head, bytes -= head; bytes >= 16; dst += 16, src += 16, bytes -= 16)
+		_mm_storeu_si128((__m128i*)dst, _mm_stream_load_si128((__m128i*)src));
+	memcpy(dst, src, bytes);
+}
+
+// What the game has there now, zeroes if it no longer has it mapped. With the
+// lock of dx12/Bridge.h held, as everything is that runs the engine.
+static void read_constants(BYTE *dst, VkBuffer buffer, VkDeviceSize offset, size_t bytes)
+{
+	UINT64 start = G->vk_dump_hashes ? ticks() : 0;
+	const BYTE *data;
+
+	AcquireSRWLockShared(&memory_lock);
+	data = mapped_bytes(buffer, offset, bytes);
+	if (data)
+		copy_mapped(dst, data, bytes);
+	else
+		memset(dst, 0, bytes);
+	ReleaseSRWLockShared(&memory_lock);
+
+	stats.constants_read++;
+	stats.constants_bytes += bytes;
+	if (start)
+		stats.constants_ticks += ticks() - start;
+}
+
+void VkScopeFillShadow(ShimResource *resource, UINT64 offset, UINT64 size)
+{
+	auto found = constants_sources.find(resource);
+	ConstantsSource *source;
+	UINT bytes, page, start;
+	bool read = false;
+
+	if (found == constants_sources.end()) {
+		resource->shadow_pending = false;
+		return;
+	}
+	source = &found->second;
+	bytes = std::get<2>(source->key);
+	if (offset >= bytes)
+		return;
+	size = min(size, bytes - offset);
+
+	for (page = (UINT)(offset / SHADOW_PAGE); (UINT64)page * SHADOW_PAGE < offset + size; page++) {
+		if (source->pages[page])
+			continue;
+		source->pages[page] = true;
+		source->pages_left--;
+		start = page * SHADOW_PAGE;
+		read_constants(resource->shadow.data() + start, std::get<0>(source->key), std::get<1>(source->key) + start,
+			min(SHADOW_PAGE, bytes - start));
+		read = true;
+	}
+	if (read)
+		resource->version++;
+	if (!source->pages_left)
+		resource->shadow_pending = false;
+}
+
+static ShimBuffer* publish_constants(VkBuffer buffer, VkDeviceSize offset, UINT bytes)
+{
+	ConstantsKey key = std::make_tuple(buffer, offset, bytes);
+	auto found = published_constants.find(key);
+	D3D11_BUFFER_DESC desc = {};
+	ID3D11Buffer *created = NULL;
+	ShimBuffer *object;
+	bool mapped;
+
+	if (found != published_constants.end() && found->second.shown && found->second.used_frame == vk_frame) {
+		stats.constants_shown++;
+		return found->second.object;
+	}
+
+	AcquireSRWLockShared(&memory_lock);
+	mapped = !!mapped_bytes(buffer, offset, bytes);
+	any_published = true;
+	ReleaseSRWLockShared(&memory_lock);
+	if (!mapped) {
+		stats.constants_unmapped++;
+		return NULL;
+	}
+
+	if (found == published_constants.end()) {
+		desc.ByteWidth = (bytes + 15) & ~15u;
+		desc.Usage = D3D11_USAGE_DYNAMIC;
+		desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+		desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		if (FAILED(dx12_shim->shim_device->CreateBuffer(&desc, NULL, &created)))
+			return NULL;
+		object = static_cast<ShimBuffer*>(created);
+		// What a D3D11 game's buffer of the size would have for its hash
+		register_buffer(object, crc32c_hw(0, &desc, sizeof(desc)));
+		found = published_constants.emplace(key, PublishedConstants{ object, 0, false }).first;
+		constants_sources[&object->r].key = key;
+	}
+	object = found->second.object;
+	found->second.used_frame = vk_frame;
+	found->second.shown = true;
+	stats.constants_shown++;
+
+	// Other contents than the frame before, as far as anyone knows
+	ConstantsSource *source = &constants_sources[&object->r];
+	source->pages.assign((bytes + SHADOW_PAGE - 1) / SHADOW_PAGE, false);
+	source->pages_left = (UINT)source->pages.size();
+	object->r.shadow_pending = true;
+	object->r.version++;
+	EnterCriticalSectionPretty(&G->mCriticalSection);
+	ResourceHandleInfo *handle = GetResourceHandleInfo(object);
+	if (handle) {
+		handle->SetLazyDataCache(bytes, [buffer, offset](uint8_t *dst, size_t at, size_t size) {
+			read_constants(dst, buffer, offset + at, size);
+		});
+	}
+	LeaveCriticalSection(&G->mCriticalSection);
+	return object;
 }
 
 // -----------------------------------------------------------------------------
@@ -738,10 +1015,235 @@ void VkModsForgetDevice(VkDevice device)
 			delete block;
 		}
 		mirror_blocks.clear();
+		forget_unused_constants(true);
 		mods_device = NULL;
 		mods_device_key = NULL;
 	}
 	Dx12ShimUnlock();
+}
+
+// -----------------------------------------------------------------------------
+// Descriptor sets: the buffers the game has at the bindings its shaders read
+
+// How many sets of a command buffer are kept track of, and how many of the
+// offsets each is bound with
+const UINT MAX_SETS = 8;
+const UINT MAX_DYNAMIC = 16;
+const UINT MAX_BINDINGS = 256;
+
+struct SetBinding {
+	bool buffer, dynamic;
+	UINT count;
+	// Of its first descriptor among those of the set that are buffers, and
+	// among those that are bound with an offset
+	UINT first, first_dynamic;
+};
+
+struct DescriptorLayout {
+	// By binding number
+	std::vector<SetBinding> bindings;
+	UINT buffers, dynamic;
+};
+
+struct SetBuffer {
+	VkBuffer buffer;
+	VkDeviceSize offset, range;
+};
+
+struct DescriptorSet {
+	std::shared_ptr<const DescriptorLayout> layout;
+	std::vector<SetBuffer> buffers;
+};
+
+static SRWLOCK descriptor_lock = SRWLOCK_INIT;
+static std::unordered_map<VkDescriptorSetLayout, std::shared_ptr<const DescriptorLayout>> set_layouts;
+// One for every handle there has been: a pool is reset without a word about
+// its sets, whose handles are then given out again
+static std::unordered_map<VkDescriptorSet, DescriptorSet*> descriptor_sets;
+
+// For the report, with descriptor_lock held: sets allocated, and updates of
+// buffers by vkUpdateDescriptorSets and by a template
+static unsigned sets_allocated, sets_written, sets_written_by_template;
+
+static bool is_buffer_descriptor(VkDescriptorType type)
+{
+	return type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+		|| type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER || type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+}
+
+void VkModsSetLayout(VkDescriptorSetLayout handle, const VkDescriptorSetLayoutCreateInfo *info)
+{
+	std::shared_ptr<DescriptorLayout> layout = std::make_shared<DescriptorLayout>();
+	uint32_t i;
+
+	layout->buffers = 0;
+	layout->dynamic = 0;
+	for (i = 0; info->pBindings && i < info->bindingCount; i++) {
+		const VkDescriptorSetLayoutBinding *described = &info->pBindings[i];
+		SetBinding *binding;
+
+		if (described->binding >= MAX_BINDINGS)
+			continue;
+		if (layout->bindings.size() <= described->binding)
+			layout->bindings.resize(described->binding + 1);
+		binding = &layout->bindings[described->binding];
+		binding->buffer = is_buffer_descriptor(described->descriptorType);
+		binding->dynamic = described->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+			|| described->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+		binding->count = described->descriptorCount;
+	}
+	// The offsets a set is bound with are in the order of its bindings
+	for (SetBinding &binding : layout->bindings) {
+		if (!binding.buffer)
+			continue;
+		binding.first = layout->buffers;
+		layout->buffers += binding.count;
+		if (!binding.dynamic)
+			continue;
+		binding.first_dynamic = layout->dynamic;
+		layout->dynamic += binding.count;
+	}
+
+	AcquireSRWLockExclusive(&descriptor_lock);
+	set_layouts[handle] = layout;
+	ReleaseSRWLockExclusive(&descriptor_lock);
+}
+
+void VkModsSetsAllocated(const VkDescriptorSetAllocateInfo *info, const VkDescriptorSet *sets)
+{
+	uint32_t i;
+
+	AcquireSRWLockExclusive(&descriptor_lock);
+	sets_allocated += info->descriptorSetCount;
+	for (i = 0; i < info->descriptorSetCount; i++) {
+		DescriptorSet **slot = &descriptor_sets[sets[i]];
+		auto layout = set_layouts.find(info->pSetLayouts[i]);
+
+		if (!*slot)
+			*slot = new DescriptorSet();
+		(*slot)->layout = layout != set_layouts.end() ? layout->second : NULL;
+		(*slot)->buffers.assign((*slot)->layout ? (*slot)->layout->buffers : 0, SetBuffer{});
+	}
+	ReleaseSRWLockExclusive(&descriptor_lock);
+}
+
+// The descriptor a write or a copy has got to, which goes on into the bindings
+// after the one it started at. With descriptor_lock held. False past the last
+// of the set; buffer is NULL for one that is no buffer.
+static bool next_descriptor(DescriptorSet *set, uint32_t *binding, uint32_t *element, SetBuffer **buffer)
+{
+	const std::vector<SetBinding> &bindings = set->layout->bindings;
+
+	while (*binding < bindings.size() && *element >= bindings[*binding].count) {
+		*element = 0;
+		++*binding;
+	}
+	if (*binding >= bindings.size())
+		return false;
+
+	*buffer = bindings[*binding].buffer ? &set->buffers[bindings[*binding].first + *element] : NULL;
+	++*element;
+	return true;
+}
+
+static DescriptorSet* find_set(VkDescriptorSet handle)
+{
+	auto found = descriptor_sets.find(handle);
+
+	return found != descriptor_sets.end() && found->second->layout ? found->second : NULL;
+}
+
+void VkModsSetsUpdated(uint32_t write_count, const VkWriteDescriptorSet *writes, uint32_t copy_count, const VkCopyDescriptorSet *copies)
+{
+	uint32_t i, j, binding, element, src_binding, src_element;
+	SetBuffer *buffer, *src_buffer;
+	DescriptorSet *set, *src;
+	bool any = copy_count != 0;
+
+	for (i = 0; i < write_count && !any; i++)
+		any = is_buffer_descriptor(writes[i].descriptorType) && writes[i].pBufferInfo;
+	if (!any)
+		return;
+
+	AcquireSRWLockExclusive(&descriptor_lock);
+	sets_written++;
+
+	for (i = 0; i < write_count; i++) {
+		const VkWriteDescriptorSet *write = &writes[i];
+
+		if (!is_buffer_descriptor(write->descriptorType) || !write->pBufferInfo || !(set = find_set(write->dstSet)))
+			continue;
+		binding = write->dstBinding;
+		element = write->dstArrayElement;
+		for (j = 0; j < write->descriptorCount && next_descriptor(set, &binding, &element, &buffer); j++) {
+			if (buffer)
+				*buffer = { write->pBufferInfo[j].buffer, write->pBufferInfo[j].offset, write->pBufferInfo[j].range };
+		}
+	}
+
+	for (i = 0; i < copy_count; i++) {
+		const VkCopyDescriptorSet *copy = &copies[i];
+
+		if (!(set = find_set(copy->dstSet)) || !(src = find_set(copy->srcSet)))
+			continue;
+		binding = copy->dstBinding;
+		element = copy->dstArrayElement;
+		src_binding = copy->srcBinding;
+		src_element = copy->srcArrayElement;
+		for (j = 0; j < copy->descriptorCount && next_descriptor(set, &binding, &element, &buffer)
+				&& next_descriptor(src, &src_binding, &src_element, &src_buffer); j++) {
+			if (buffer && src_buffer)
+				*buffer = *src_buffer;
+		}
+	}
+
+	ReleaseSRWLockExclusive(&descriptor_lock);
+}
+
+// Of a template for updating a set, the entries that are for buffers
+static std::unordered_map<VkDescriptorUpdateTemplate, std::shared_ptr<const std::vector<VkDescriptorUpdateTemplateEntry>>> update_templates;
+
+void VkModsUpdateTemplate(VkDescriptorUpdateTemplate handle, const VkDescriptorUpdateTemplateCreateInfo *info)
+{
+	auto entries = std::make_shared<std::vector<VkDescriptorUpdateTemplateEntry>>();
+	uint32_t i;
+
+	// One for push descriptors is of no set
+	for (i = 0; info->templateType == VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET && i < info->descriptorUpdateEntryCount; i++) {
+		if (is_buffer_descriptor(info->pDescriptorUpdateEntries[i].descriptorType))
+			entries->push_back(info->pDescriptorUpdateEntries[i]);
+	}
+
+	AcquireSRWLockExclusive(&descriptor_lock);
+	update_templates[handle] = entries;
+	ReleaseSRWLockExclusive(&descriptor_lock);
+}
+
+void VkModsSetUpdatedWithTemplate(VkDescriptorSet handle, VkDescriptorUpdateTemplate update_template, const void *data)
+{
+	uint32_t j, binding, element;
+	DescriptorSet *set;
+	SetBuffer *buffer;
+
+	if (!data)
+		return;
+
+	AcquireSRWLockExclusive(&descriptor_lock);
+	auto found = update_templates.find(update_template);
+	if (found != update_templates.end() && !found->second->empty() && (set = find_set(handle))) {
+		sets_written_by_template++;
+		for (const VkDescriptorUpdateTemplateEntry &entry : *found->second) {
+			binding = entry.dstBinding;
+			element = entry.dstArrayElement;
+			for (j = 0; j < entry.descriptorCount && next_descriptor(set, &binding, &element, &buffer); j++) {
+				const VkDescriptorBufferInfo *info = (const VkDescriptorBufferInfo*)((const BYTE*)data + entry.offset + j * entry.stride);
+
+				if (buffer)
+					*buffer = { info->buffer, info->offset, info->range };
+			}
+		}
+	}
+	ReleaseSRWLockExclusive(&descriptor_lock);
 }
 
 // -----------------------------------------------------------------------------
@@ -754,6 +1256,11 @@ struct CmdState {
 	VkIndexType index_type;
 	VkBuffer vbs[MAX_VBS];
 	VkDeviceSize vb_offsets[MAX_VBS];
+	// By set number, and the offsets each was bound with for its dynamic
+	// buffers
+	VkDescriptorSet sets[MAX_SETS];
+	BYTE dynamic_count[MAX_SETS];
+	uint32_t dynamic[MAX_SETS][MAX_DYNAMIC];
 };
 
 // One for every handle there has been, which is what lets a thread remember
@@ -831,6 +1338,50 @@ void VkModsBindIndexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize of
 	state->index_type = type;
 }
 
+void VkModsBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint bind_point, uint32_t first, uint32_t count,
+		const VkDescriptorSet *sets, uint32_t dynamic_count, const uint32_t *dynamic_offsets)
+{
+	bool locked = false, lost = false;
+	uint32_t i, index, dynamic;
+	CmdState *state;
+
+	if (bind_point != VK_PIPELINE_BIND_POINT_GRAPHICS)
+		return;
+	state = cmd_state(cmd);
+
+	for (i = 0; i < count; i++) {
+		index = first + i;
+		dynamic = 0;
+		// The offsets are those of all the sets, of each as many as its
+		// layout has dynamic buffers
+		if (dynamic_count && count == 1) {
+			dynamic = dynamic_count;
+		} else if (dynamic_count && !lost) {
+			if (!locked)
+				AcquireSRWLockShared(&descriptor_lock);
+			locked = true;
+
+			auto found = descriptor_sets.find(sets[i]);
+			if (found != descriptor_sets.end() && found->second->layout)
+				dynamic = min(found->second->layout->dynamic, dynamic_count);
+			else
+				lost = true;
+		}
+
+		if (index < MAX_SETS) {
+			state->sets[index] = sets[i];
+			state->dynamic_count[index] = lost ? 0 : (BYTE)min(dynamic, MAX_DYNAMIC);
+			if (state->dynamic_count[index])
+				memcpy(state->dynamic[index], dynamic_offsets, state->dynamic_count[index] * sizeof(uint32_t));
+		}
+		dynamic_offsets += dynamic;
+		dynamic_count -= dynamic;
+	}
+
+	if (locked)
+		ReleaseSRWLockShared(&descriptor_lock);
+}
+
 // -----------------------------------------------------------------------------
 // The draws not worth stopping for
 //
@@ -879,7 +1430,7 @@ static bool draw_is_boring(Pipeline *pipeline, bool indexed, uint32_t count, Slo
 {
 	volatile LONG64 *bits = wanted_index_counts;
 	Dx12DrawFilter filter;
-	UINT bit;
+	UINT bit, i;
 
 	// A frame being analysed has the dumps of the command lists do
 	// something, which the filter takes them not to
@@ -891,8 +1442,18 @@ static bool draw_is_boring(Pipeline *pipeline, bool indexed, uint32_t count, Slo
 	if (!Dx12FilterOnlyChecks(&pipeline->filter, &filter))
 		return false;
 
-	// The index buffer is all of the game's the engine is given yet: what
-	// else the lists ask for they find nothing bound for
+	// A section may be for a constant buffer by what it is described as
+	*reason = SLOW_CONSTANTS;
+	for (i = 0; i < filter.cb_count; i++) {
+		const ShaderLayout *shader = filter.cbs[i].stage < DX12_STAGE_COUNT ? pipeline->layouts[filter.cbs[i].stage] : NULL;
+
+		if (shader && filter.cbs[i].slot < shader->cbs.size())
+			return false;
+	}
+
+	// The index buffer and the constant buffers are all of the game's the
+	// engine is given yet: what else the lists ask for they find nothing
+	// bound for
 	if (!filter.ib || !indexed)
 		return true;
 
@@ -925,6 +1486,10 @@ struct Scope {
 	VkIndexType bound_index_type;
 	// Draws of mods that could not be made, see mod_draws
 	UINT mod_draws_failed;
+	// The constant buffers the engine has asked for, a bit for each by
+	// stage, and what it was given
+	UINT cbs_asked[DX12_STAGE_COUNT];
+	ID3D11Buffer *cbs[DX12_STAGE_COUNT][SHIM_CBV_SLOTS];
 };
 
 // A draw of a mod, with the bindings that are not to be the game's
@@ -972,6 +1537,132 @@ ID3D11Buffer* VkScopeIndexBuffer(DXGI_FORMAT *format)
 
 	*format = scope->state.index_type == VK_INDEX_TYPE_UINT16 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
 	return scope->ib->object;
+}
+
+// The buffer the draw has at a binding. If the game has not been seen to set
+// one there, why not.
+static const char* bound_buffer(const SpirvBinding *slot, SetBuffer *bound)
+{
+	const CmdState *game = &scope->state;
+	const SetBinding *binding = NULL;
+	const char *why = NULL;
+
+	if (slot->set >= MAX_SETS || !game->sets[slot->set])
+		return "no descriptor set was bound at the number of its set";
+
+	AcquireSRWLockShared(&descriptor_lock);
+	DescriptorSet *set = find_set(game->sets[slot->set]);
+	if (set && slot->binding < set->layout->bindings.size())
+		binding = &set->layout->bindings[slot->binding];
+
+	if (!set) {
+		why = "its descriptor set was not seen being allocated";
+	} else if (!binding || !binding->buffer || !binding->count) {
+		why = "the layout of its descriptor set has no buffer at the binding";
+	} else {
+		*bound = set->buffers[binding->first];
+		if (!bound->buffer)
+			why = "the binding was not seen being written";
+		else if (binding->dynamic && binding->first_dynamic >= game->dynamic_count[slot->set])
+			why = "the offset its descriptor set was bound with is not known";
+		else if (binding->dynamic)
+			bound->offset += game->dynamic[slot->set][binding->first_dynamic];
+	}
+	ReleaseSRWLockShared(&descriptor_lock);
+	return why;
+}
+
+// For the report: the first few constant buffers there are to show, and what
+// keeps one from being shown
+static void note_constants(int stage, UINT slot, const SpirvBinding *block, const char *why)
+{
+	static std::unordered_set<std::string> noted;
+	char text[256];
+
+	if (!G->vk_dump_hashes || noted.size() >= 48)
+		return;
+	_snprintf_s(text, _TRUNCATE, "Mods: %cs-cb%u is %u bytes at set %u binding %u%s%s", "vpghdc"[stage], slot, block->bytes,
+		block->set, block->binding, why ? ", NOT SHOWN: " : "", why ? why : "");
+	if (noted.insert(text).second)
+		VkDumpNote("%s\n", text);
+}
+
+ID3D11Buffer* VkScopeConstantBuffer(int stage, UINT slot)
+{
+	const ShaderLayout *shader;
+	const SpirvBinding *block;
+	const char *why;
+	SetBuffer bound;
+	UINT bytes;
+
+	if (!scope || stage >= DX12_STAGE_COUNT || slot >= SHIM_CBV_SLOTS)
+		return NULL;
+	if (scope->cbs_asked[stage] & 1u << slot)
+		return scope->cbs[stage][slot];
+	scope->cbs_asked[stage] |= 1u << slot;
+	scope->cbs[stage][slot] = NULL;
+
+	shader = scope->state.pipeline->layouts[stage];
+	if (!shader || slot >= shader->cbs.size() || !shader->cbs[slot].bytes)
+		return NULL;
+	block = &shader->cbs[slot];
+	why = bound_buffer(block, &bound);
+	if (why) {
+		stats.constants_unbound++;
+		note_constants(stage, slot, block, why);
+		return NULL;
+	}
+
+	// As much as the shader reads, of what the game says is there
+	bytes = block->bytes;
+	if (bound.range != VK_WHOLE_SIZE && bound.range < bytes)
+		bytes = (UINT)bound.range;
+	if (!bytes)
+		return NULL;
+
+	scope->cbs[stage][slot] = publish_constants(bound.buffer, bound.offset, bytes);
+	note_constants(stage, slot, block, scope->cbs[stage][slot] ? NULL : "the game does not have the memory of the buffer mapped");
+	return scope->cbs[stage][slot];
+}
+
+static D3D_SRV_DIMENSION view_dimension(const SpirvBinding *view)
+{
+	if (view->kind == SPIRV_SSBO || view->kind == SPIRV_TEXEL_BUFFER)
+		return D3D_SRV_DIMENSION_BUFFER;
+	// The Dim of the image type
+	switch (view->dim) {
+		case 0: return view->arrayed ? D3D_SRV_DIMENSION_TEXTURE1DARRAY : D3D_SRV_DIMENSION_TEXTURE1D;
+		case 1: return view->arrayed ? D3D_SRV_DIMENSION_TEXTURE2DARRAY : D3D_SRV_DIMENSION_TEXTURE2D;
+		case 2: return D3D_SRV_DIMENSION_TEXTURE3D;
+		case 3: return view->arrayed ? D3D_SRV_DIMENSION_TEXTURECUBEARRAY : D3D_SRV_DIMENSION_TEXTURECUBE;
+	}
+	return D3D_SRV_DIMENSION_UNKNOWN;
+}
+
+const ShaderBindings* VkScopeShaderBindings(int stage)
+{
+	ShaderLayout *shader = scope && stage < DX12_STAGE_COUNT ? scope->state.pipeline->layouts[stage] : NULL;
+	ShaderBindings *declared;
+	size_t i;
+
+	if (!shader || shader->declared)
+		return shader ? shader->declared : NULL;
+
+	declared = new ShaderBindings();
+	for (i = 0; i < shader->cbs.size() && i < declared->constant_buffers.size(); i++) {
+		declared->constant_buffers[i].type = ShaderConstantBufferType::IMMEDIATE_INDEXED;
+		// In vectors of four, as a D3D11 shader declares it
+		declared->constant_buffers[i].size = (shader->cbs[i].bytes + 15) / 16;
+	}
+	for (i = 0; i < shader->views.size() && i < declared->resources.size(); i++) {
+		const SpirvBinding *view = &shader->views[i];
+
+		declared->resources[i].type = view->kind == SPIRV_SSBO ? ShaderResourceType::STRUCTURED : ShaderResourceType::TYPED;
+		declared->resources[i].dimension = view_dimension(view);
+		declared->resources[i].stride = view->kind == SPIRV_SSBO ? view->stride : 0;
+	}
+	shader->declared = declared;
+	return declared;
 }
 
 static void mod_draw_failed(const char *why)
@@ -1193,8 +1884,9 @@ static void record_mod_draws()
 static bool mod_draw_possible(const ShimState *mod)
 {
 	const ID3D11ShaderResourceView *ini_params = dx12_shim->hacker_device->mIniResourceView;
+	unsigned long slot;
+	UINT i, cbs;
 	int stage;
-	UINT i;
 
 	for (stage = 0; stage < DX12_STAGE_COUNT; stage++) {
 		const ShimStageState *state = &mod->stages[stage];
@@ -1207,7 +1899,10 @@ static bool mod_draw_possible(const ShimState *mod)
 		}
 		if (stage == DX12_STAGE_PS)
 			continue;
-		if (state->cb_mask) {
+		for (cbs = state->cb_mask; _BitScanForward(&slot, cbs); cbs &= cbs - 1) {
+			// The game's own, set again by the mod
+			if (state->cbs[slot] == scope->cbs[stage][slot] && !state->cb_first[slot] && !state->cb_count[slot])
+				continue;
 			mod_draw_failed("the mod has set a constant buffer for a stage before the pixel shader");
 			return false;
 		}
@@ -1304,6 +1999,7 @@ bool VkModsDraw(VkCommandBuffer cmd, bool indexed, uint32_t count, uint32_t inst
 	opened.bound_ib_offset = state->ib_offset;
 	opened.bound_index_type = state->index_type;
 	opened.mod_draws_failed = 0;
+	memset(opened.cbs_asked, 0, sizeof(opened.cbs_asked));
 	mod_draws.clear();
 	scope = &opened;
 	Dx12OpenForeignScope();
@@ -1409,14 +2105,24 @@ static void report()
 		"of which %u could not be made, %u buffers of mods copied (%llu KB), %Iu held; "
 		"index regions hashed %u, found as they were %u, not mapped %u; per frame the draws took %.2f ms waiting for the lock "
 		"and %.2f ms in the engine, %.2f us a draw; %Iu shaders linked to ShaderRegex, %Iu ShaderOverride hashes, %Iu buffers published\n"
+		"  Constant buffers of the game: shown %u times, read %u times (%llu KB, %.2f ms per frame), not mapped %u, no buffer seen set at the "
+		"binding %u; %Iu held. Descriptor sets: %u allocated, buffers written %u times by vkUpdateDescriptorSets and %u times "
+		"by a template\n"
 		"  The draws were stopped for because of: settings %u, a pipeline not looked at yet, command lists doing more than asking "
-		"or a condition of one %u, an index count a section asks for %u; about %u more were not stopped for\n",
+		"or a condition of one %u, an index count a section asks for %u, a constant buffer a list asks for %u; "
+		"about %u more were not stopped for\n",
 		vk_frame, dx12_frame, stats.draws, stats.skipped, stats.mod_draws, stats.mod_draws_failed, stats.mirrored,
 		stats.mirrored_bytes >> 10, mirrors.size(), stats.regions_hashed, stats.regions_checked,
 		stats.regions_unmapped, stats.wait_ticks * per_frame, stats.engine_ticks * per_frame, stats.engine_ticks * per_draw,
 		linked_shaders, G->mShaderOverrideMap.size(), published.size(),
-		stats.slow[SLOW_SETTINGS], stats.slow[SLOW_LISTS], stats.slow[SLOW_INDEX_COUNT], (unsigned)InterlockedExchange(&fast_draws, 0));
+		stats.constants_shown, stats.constants_read, stats.constants_bytes >> 10, stats.constants_ticks * per_frame, stats.constants_unmapped,
+		stats.constants_unbound, published_constants.size(), sets_allocated, sets_written, sets_written_by_template,
+		stats.slow[SLOW_SETTINGS], stats.slow[SLOW_LISTS], stats.slow[SLOW_INDEX_COUNT], stats.slow[SLOW_CONSTANTS],
+		(unsigned)InterlockedExchange(&fast_draws, 0));
 	stats = {};
+	AcquireSRWLockExclusive(&descriptor_lock);
+	sets_allocated = sets_written = sets_written_by_template = 0;
+	ReleaseSRWLockExclusive(&descriptor_lock);
 }
 
 void VkModsPresent()
@@ -1450,6 +2156,7 @@ void VkModsPresent()
 	}
 
 	forget_dead_buffers();
+	forget_unused_constants(false);
 	if (mods_device)
 		destroy_retired_mirrors(false);
 	refresh_wanted();

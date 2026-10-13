@@ -1703,7 +1703,9 @@ ID3D11Buffer* Dx12ScopeConstantBuffer(Dx12ShaderStage stage, UINT slot)
 	UINT64 offset;
 	UINT bytes;
 
-	if (!scope || scope->compute != (stage == DX12_STAGE_CS))
+	if (!scope)
+		return VkScopeConstantBuffer(stage, slot);
+	if (scope->compute != (stage == DX12_STAGE_CS))
 		return NULL;
 	shader = scope->pipeline->shaders[stage];
 	// The shader is what says how much of what is at the address is the
@@ -4850,6 +4852,23 @@ UINT64 HackerContext::Dx12CurrentShader(wchar_t shader_type)
 	case L'c': return compute ? mCurrentComputeShader : 0;
 	}
 	return 0;
+}
+
+const ShaderBindings* HackerContext::Dx12CurrentShaderBindings(wchar_t shader_type)
+{
+	// Of a D3D12 shader the registers are known, but not what is declared
+	// at them
+	if (scope)
+		return NULL;
+
+	switch (shader_type) {
+	case L'v': return VkScopeShaderBindings(DX12_STAGE_VS);
+	case L'h': return VkScopeShaderBindings(DX12_STAGE_HS);
+	case L'd': return VkScopeShaderBindings(DX12_STAGE_DS);
+	case L'g': return VkScopeShaderBindings(DX12_STAGE_GS);
+	case L'p': return VkScopeShaderBindings(DX12_STAGE_PS);
+	}
+	return NULL;
 }
 
 bool HackerContext::Dx12BeforeDispatch(DispatchContext *context, UINT64 shader_hash)

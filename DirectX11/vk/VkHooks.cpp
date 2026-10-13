@@ -36,6 +36,10 @@
 	X(CmdBindPipeline) \
 	X(CmdBindVertexBuffers) \
 	X(CmdBindIndexBuffer) \
+	X(CreateDescriptorSetLayout) \
+	X(AllocateDescriptorSets) \
+	X(UpdateDescriptorSets) 	X(CreateDescriptorUpdateTemplate) 	X(UpdateDescriptorSetWithTemplate) \
+	X(CmdBindDescriptorSets) \
 	X(CmdDraw) \
 	X(CmdDrawIndexed) \
 	X(CmdDrawIndirect) \
@@ -336,6 +340,59 @@ static void VKAPI_CALL Hooked_vkCmdBindIndexBuffer(VkCommandBuffer cmd, VkBuffer
 	next_CmdBindIndexBuffer(cmd)(cmd, buffer, offset, type);
 }
 
+static VkResult VKAPI_CALL Hooked_vkCreateDescriptorSetLayout(VkDevice device, const VkDescriptorSetLayoutCreateInfo *info,
+		const VkAllocationCallbacks *allocator, VkDescriptorSetLayout *layout)
+{
+	VkResult result = next_CreateDescriptorSetLayout(device)(device, info, allocator, layout);
+
+	if (result == VK_SUCCESS && layout && *layout && vk_mods_active)
+		VkModsSetLayout(*layout, info);
+	return result;
+}
+
+static VkResult VKAPI_CALL Hooked_vkAllocateDescriptorSets(VkDevice device, const VkDescriptorSetAllocateInfo *info, VkDescriptorSet *sets)
+{
+	VkResult result = next_AllocateDescriptorSets(device)(device, info, sets);
+
+	if (result == VK_SUCCESS && vk_mods_active)
+		VkModsSetsAllocated(info, sets);
+	return result;
+}
+
+static void VKAPI_CALL Hooked_vkUpdateDescriptorSets(VkDevice device, uint32_t write_count, const VkWriteDescriptorSet *writes,
+		uint32_t copy_count, const VkCopyDescriptorSet *copies)
+{
+	if (vk_mods_active)
+		VkModsSetsUpdated(write_count, writes, copy_count, copies);
+	next_UpdateDescriptorSets(device)(device, write_count, writes, copy_count, copies);
+}
+
+static VkResult VKAPI_CALL Hooked_vkCreateDescriptorUpdateTemplate(VkDevice device, const VkDescriptorUpdateTemplateCreateInfo *info,
+		const VkAllocationCallbacks *allocator, VkDescriptorUpdateTemplate *update_template)
+{
+	VkResult result = next_CreateDescriptorUpdateTemplate(device)(device, info, allocator, update_template);
+
+	if (result == VK_SUCCESS && update_template && *update_template && vk_mods_active)
+		VkModsUpdateTemplate(*update_template, info);
+	return result;
+}
+
+static void VKAPI_CALL Hooked_vkUpdateDescriptorSetWithTemplate(VkDevice device, VkDescriptorSet set,
+		VkDescriptorUpdateTemplate update_template, const void *data)
+{
+	if (vk_mods_active)
+		VkModsSetUpdatedWithTemplate(set, update_template, data);
+	next_UpdateDescriptorSetWithTemplate(device)(device, set, update_template, data);
+}
+
+static void VKAPI_CALL Hooked_vkCmdBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint bind_point, VkPipelineLayout layout,
+		uint32_t first, uint32_t count, const VkDescriptorSet *sets, uint32_t dynamic_count, const uint32_t *dynamic_offsets)
+{
+	if (vk_mods_active)
+		VkModsBindDescriptorSets(cmd, bind_point, first, count, sets, dynamic_count, dynamic_offsets);
+	next_CmdBindDescriptorSets(cmd)(cmd, bind_point, layout, first, count, sets, dynamic_count, dynamic_offsets);
+}
+
 static void VKAPI_CALL Hooked_vkCmdDraw(VkCommandBuffer cmd, uint32_t vertices, uint32_t instances, uint32_t first_vertex, uint32_t first_instance)
 {
 	PFN_vkCmdDraw next = next_CmdDraw(cmd);
@@ -523,6 +580,10 @@ static PFN_vkVoidFunction VKAPI_CALL Hooked_vkGetDeviceProcAddr(VkDevice device,
 		return (PFN_vkVoidFunction)Hooked_vkBindBufferMemory2;
 	if (!strcmp(name, "vkCmdCopyBuffer2KHR") && dispatch->next.CmdCopyBuffer2)
 		return (PFN_vkVoidFunction)Hooked_vkCmdCopyBuffer2;
+	if (!strcmp(name, "vkCreateDescriptorUpdateTemplateKHR") && dispatch->next.CreateDescriptorUpdateTemplate)
+		return (PFN_vkVoidFunction)Hooked_vkCreateDescriptorUpdateTemplate;
+	if (!strcmp(name, "vkUpdateDescriptorSetWithTemplateKHR") && dispatch->next.UpdateDescriptorSetWithTemplate)
+		return (PFN_vkVoidFunction)Hooked_vkUpdateDescriptorSetWithTemplate;
 
 	return real;
 }

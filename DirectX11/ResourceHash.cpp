@@ -2237,6 +2237,51 @@ uint8_t* ResourceHandleInfo::GetCachedData() {
 	return cached_data.get() + cached_data_offset;
 }
 
+// The deleter of the data of a lazy cache, which is what the views of the
+// data share with it (CustomResource::SetHandleInfo)
+struct LazyDataCache {
+	static const size_t PAGE = 4096;
+
+	std::function<void(uint8_t *dst, size_t offset, size_t size)> read;
+	size_t size;
+	std::vector<bool> pages;
+
+	void operator()(uint8_t *data) const { free(data); }
+};
+
+uint8_t* ResourceHandleInfo::GetCachedData(size_t offset, size_t size)
+{
+	LazyDataCache *lazy = cached_data ? std::get_deleter<LazyDataCache>(cached_data) : nullptr;
+	size_t page, start = cached_data_offset + offset;
+
+	if (lazy && start < lazy->size) {
+		size = min(size, lazy->size - start);
+		for (page = start / LazyDataCache::PAGE; page * LazyDataCache::PAGE < start + size; page++) {
+			if (lazy->pages[page])
+				continue;
+			lazy->pages[page] = true;
+			lazy->read(cached_data.get() + page * LazyDataCache::PAGE, page * LazyDataCache::PAGE,
+				min(LazyDataCache::PAGE, lazy->size - page * LazyDataCache::PAGE));
+		}
+	}
+	return GetCachedData();
+}
+
+void ResourceHandleInfo::SetLazyDataCache(size_t size, std::function<void(uint8_t *dst, size_t offset, size_t size)> read)
+{
+	LazyDataCache lazy;
+	uint8_t *data = static_cast<uint8_t*>(malloc(size));
+
+	if (!data)
+		return;
+
+	InitializeDataCache(size);
+	lazy.read = std::move(read);
+	lazy.size = size;
+	lazy.pages.assign((size + LazyDataCache::PAGE - 1) / LazyDataCache::PAGE, false);
+	cached_data = std::shared_ptr<uint8_t[]>(data, std::move(lazy));
+}
+
 // Clears all cached region hashes and invalidates the CPU-side buffer snapshot.
 // This forces region hashes to be recomputed the next time they are requested.
 void ResourceHandleInfo::ClearDataCache()
@@ -2471,7 +2516,7 @@ uint32_t GetRegionHash(HackerContext* context, ID3D11Buffer* buffer, UINT offset
 	}
 
 	// Make pointer for given offset in L1 cache (raw data).
-	const uint8_t* ptr = handle_info->GetCachedData() + offset;
+	const uint8_t* ptr = handle_info->GetCachedData(offset, size) + offset;
 
 	// Compute CRC32 hash for the region.
 	hash = crc32c_hw(0, ptr, size);
@@ -2699,7 +2744,9 @@ uint32_t GetSpatialHash(HackerContext* context, ID3D11Buffer* buffer, UINT offse
 	}
 
 	// Make pointer for given offset in L1 cache (raw data).
-	const uint8_t* ptr = handle_info->GetCachedData();
+	handle_info->GetCachedData(offset_x * 4, 4);
+	handle_info->GetCachedData(offset_y * 4, 4);
+	const uint8_t* ptr = handle_info->GetCachedData(offset_z * 4, 4);
 
 	const float* data = reinterpret_cast<const float*>(ptr);
 

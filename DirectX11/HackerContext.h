@@ -322,6 +322,9 @@ public:
 	// that is being handled, which has no D3D11 object to look up. 0 if
 	// there is none or this is not D3D12.
 	UINT64 Dx12CurrentShader(wchar_t shader_type);
+	// What that shader declares at its registers, where that is known
+	// without a D3D11 object: for a draw of a Vulkan game. NULL otherwise.
+	const struct ShaderBindings* Dx12CurrentShaderBindings(wchar_t shader_type);
 
 	HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pContext1);
 	~HackerContext();

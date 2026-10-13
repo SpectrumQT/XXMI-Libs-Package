@@ -271,6 +271,7 @@ bool ShimBufferToGpu(ShimResource *resource)
 		return false;
 
 	resource->cpu_only = false;
+	ShimReadShadow(resource);
 	return ShimWriteBuffer(resource, 0, resource->shadow.data(), resource->shadow.size());
 }
 

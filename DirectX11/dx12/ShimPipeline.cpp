@@ -278,10 +278,14 @@ static void write_cbv(const ShimStageState *stage, UINT slot, D3D12_CPU_DESCRIPT
 	ShimResourceDesc buffer_desc;
 	UINT64 va, offset, size;
 
-	if (buffer && (va = Dx12ShimBufferAddress(buffer, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER))) {
+	if (buffer) {
 		ShimGetResourceDesc(buffer, &buffer_desc);
 		offset = (UINT64)stage->cb_first[slot] * 16;
 		size = stage->cb_count[slot] ? (UINT64)stage->cb_count[slot] * 16 : buffer_desc.byte_width;
+		// Before the address: this may have the contents uploaded again
+		ShimReadShadow(ShimResourceOf(buffer), offset, size);
+	}
+	if (buffer && (va = Dx12ShimBufferAddress(buffer, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER))) {
 		if (offset < buffer_desc.byte_width) {
 			size = min(size, buffer_desc.byte_width - offset);
 			desc.BufferLocation = va + offset;

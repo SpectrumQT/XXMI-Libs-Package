@@ -58,6 +58,7 @@
     <ClCompile Include="dx12\ShimObjects.cpp" />
     <ClCompile Include="dx12\ShimPipeline.cpp" />
     <ClCompile Include="vk\Spirv.cpp" />
+    <ClCompile Include="vk\VkDrawPath.cpp" />
     <ClCompile Include="vk\VkDump.cpp" />
     <ClCompile Include="vk\VkHooks.cpp" />
   </ItemGroup>
@@ -124,8 +125,10 @@
     <ClInclude Include="dx12\ShimPipeline.h" />
     <ClInclude Include="vk\Spirv.h" />
     <ClInclude Include="vk\VkCommon.h" />
+    <ClInclude Include="vk\VkDrawPath.h" />
     <ClInclude Include="vk\VkDump.h" />
     <ClInclude Include="vk\VkHooks.h" />
+    <ClInclude Include="vk\VkScope.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="DirectX11.rc" />

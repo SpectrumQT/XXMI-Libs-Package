@@ -16,7 +16,6 @@
 #include "Spirv.h"
 
 bool vk_dump_active;
-volatile UINT vk_frame;
 
 // True while the draws being recorded go to vk_draws.csv
 static volatile bool dump_draws;
@@ -1034,8 +1033,6 @@ void VkDumpPresent()
 {
 	static UINT64 last_report;
 	UINT64 now = GetTickCount64();
-
-	InterlockedIncrement((volatile LONG*)&vk_frame);
 
 	if (dump_draws || sample_requested) {
 		AcquireSRWLockExclusive(&lock);

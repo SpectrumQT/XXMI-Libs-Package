@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "VkCommon.h"
+#include "VkDrawPath.h"
 #include "VkDump.h"
 
 #include "util.h"
@@ -65,6 +66,8 @@ static SRWLOCK dispatch_lock = SRWLOCK_INIT;
 // have no table of
 static VkFuncs exports;
 
+volatile UINT vk_frame;
+
 static PFN_vkCreateDevice fnOrigCreateDevice;
 static PFN_vkGetDeviceProcAddr fnOrigGetDeviceProcAddr;
 
@@ -116,15 +119,21 @@ static VkResult VKAPI_CALL Hooked_vkCreateShaderModule(VkDevice device, const Vk
 {
 	VkResult result = next_CreateShaderModule(device)(device, info, allocator, module);
 
-	if (result == VK_SUCCESS && module && *module)
-		VkDumpShaderModule(*module, info);
+	if (result == VK_SUCCESS && module && *module) {
+		if (vk_dump_active)
+			VkDumpShaderModule(*module, info);
+		if (vk_mods_active)
+			VkModsShaderModule(*module, info);
+	}
 	return result;
 }
 
 static void VKAPI_CALL Hooked_vkDestroyShaderModule(VkDevice device, VkShaderModule module, const VkAllocationCallbacks *allocator)
 {
-	if (module)
+	if (module && vk_dump_active)
 		VkDumpForgetShaderModule(module);
+	if (module && vk_mods_active)
+		VkModsForgetShaderModule(module);
 	next_DestroyShaderModule(device)(device, module, allocator);
 }
 
@@ -136,8 +145,12 @@ static VkResult VKAPI_CALL Hooked_vkCreateGraphicsPipelines(VkDevice device, VkP
 
 	// Also where only some were created
 	for (i = 0; pipelines && i < count; i++) {
-		if (result >= 0 && pipelines[i])
+		if (result < 0 || !pipelines[i])
+			continue;
+		if (vk_dump_active)
 			VkDumpGraphicsPipeline(pipelines[i], &infos[i]);
+		if (vk_mods_active)
+			VkModsGraphicsPipeline(pipelines[i], &infos[i]);
 	}
 	return result;
 }
@@ -149,7 +162,7 @@ static VkResult VKAPI_CALL Hooked_vkCreateComputePipelines(VkDevice device, VkPi
 	uint32_t i;
 
 	for (i = 0; pipelines && i < count; i++) {
-		if (result >= 0 && pipelines[i])
+		if (result >= 0 && pipelines[i] && vk_dump_active)
 			VkDumpComputePipeline(pipelines[i], &infos[i]);
 	}
 	return result;
@@ -157,8 +170,10 @@ static VkResult VKAPI_CALL Hooked_vkCreateComputePipelines(VkDevice device, VkPi
 
 static void VKAPI_CALL Hooked_vkDestroyPipeline(VkDevice device, VkPipeline pipeline, const VkAllocationCallbacks *allocator)
 {
-	if (pipeline)
+	if (pipeline && vk_dump_active)
 		VkDumpForgetPipeline(pipeline);
+	if (pipeline && vk_mods_active)
+		VkModsForgetPipeline(pipeline);
 	next_DestroyPipeline(device)(device, pipeline, allocator);
 }
 
@@ -167,16 +182,30 @@ static VkResult VKAPI_CALL Hooked_vkCreateBuffer(VkDevice device, const VkBuffer
 {
 	VkResult result = next_CreateBuffer(device)(device, info, allocator, buffer);
 
-	if (result == VK_SUCCESS && buffer && *buffer)
-		VkDumpBufferCreated(*buffer, info);
+	if (result == VK_SUCCESS && buffer && *buffer) {
+		if (vk_dump_active)
+			VkDumpBufferCreated(*buffer, info);
+		if (vk_mods_active)
+			VkModsBufferCreated(*buffer, info);
+	}
 	return result;
 }
 
 static void VKAPI_CALL Hooked_vkDestroyBuffer(VkDevice device, VkBuffer buffer, const VkAllocationCallbacks *allocator)
 {
-	if (buffer)
+	if (buffer && vk_dump_active)
 		VkDumpForgetBuffer(buffer);
+	if (buffer && vk_mods_active)
+		VkModsForgetBuffer(buffer);
 	next_DestroyBuffer(device)(device, buffer, allocator);
+}
+
+static void buffer_bound(VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize offset)
+{
+	if (vk_dump_active)
+		VkDumpBufferBound(buffer, memory, offset);
+	if (vk_mods_active)
+		VkModsBufferBound(buffer, memory, offset);
 }
 
 static VkResult VKAPI_CALL Hooked_vkBindBufferMemory(VkDevice device, VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize offset)
@@ -184,7 +213,7 @@ static VkResult VKAPI_CALL Hooked_vkBindBufferMemory(VkDevice device, VkBuffer b
 	VkResult result = next_BindBufferMemory(device)(device, buffer, memory, offset);
 
 	if (result == VK_SUCCESS)
-		VkDumpBufferBound(buffer, memory, offset);
+		buffer_bound(buffer, memory, offset);
 	return result;
 }
 
@@ -194,7 +223,7 @@ static VkResult VKAPI_CALL Hooked_vkBindBufferMemory2(VkDevice device, uint32_t 
 	uint32_t i;
 
 	for (i = 0; result == VK_SUCCESS && i < count; i++)
-		VkDumpBufferBound(infos[i].buffer, infos[i].memory, infos[i].memoryOffset);
+		buffer_bound(infos[i].buffer, infos[i].memory, infos[i].memoryOffset);
 	return result;
 }
 
@@ -203,112 +232,157 @@ static VkResult VKAPI_CALL Hooked_vkMapMemory(VkDevice device, VkDeviceMemory me
 {
 	VkResult result = next_MapMemory(device)(device, memory, offset, size, flags, data);
 
-	if (result == VK_SUCCESS && data && *data)
-		VkDumpMemoryMapped(memory, offset, size, *data);
+	if (result == VK_SUCCESS && data && *data) {
+		if (vk_dump_active)
+			VkDumpMemoryMapped(memory, offset, size, *data);
+		if (vk_mods_active)
+			VkModsMemoryMapped(memory, offset, size, *data);
+	}
 	return result;
+}
+
+static void memory_unmapped(VkDeviceMemory memory)
+{
+	if (vk_dump_active)
+		VkDumpMemoryUnmapped(memory);
+	if (vk_mods_active)
+		VkModsMemoryUnmapped(memory);
 }
 
 static void VKAPI_CALL Hooked_vkUnmapMemory(VkDevice device, VkDeviceMemory memory)
 {
-	VkDumpMemoryUnmapped(memory);
+	memory_unmapped(memory);
 	next_UnmapMemory(device)(device, memory);
 }
 
 static void VKAPI_CALL Hooked_vkFreeMemory(VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks *allocator)
 {
 	if (memory)
-		VkDumpMemoryUnmapped(memory);
+		memory_unmapped(memory);
 	next_FreeMemory(device)(device, memory, allocator);
 }
 
 static VkResult VKAPI_CALL Hooked_vkBeginCommandBuffer(VkCommandBuffer cmd, const VkCommandBufferBeginInfo *info)
 {
-	VkDumpBeginCommands(cmd);
+	if (vk_dump_active)
+		VkDumpBeginCommands(cmd);
+	if (vk_mods_active)
+		VkModsBeginCommands(cmd);
 	return next_BeginCommandBuffer(cmd)(cmd, info);
 }
 
 static void VKAPI_CALL Hooked_vkCmdCopyBuffer(VkCommandBuffer cmd, VkBuffer src, VkBuffer dst, uint32_t count, const VkBufferCopy *regions)
 {
-	VkDumpCopyBuffer(src, dst, count, regions);
+	if (vk_dump_active)
+		VkDumpCopyBuffer(src, dst, count, regions);
 	next_CmdCopyBuffer(cmd)(cmd, src, dst, count, regions);
 }
 
 static void VKAPI_CALL Hooked_vkCmdCopyBuffer2(VkCommandBuffer cmd, const VkCopyBufferInfo2 *info)
 {
-	std::vector<VkBufferCopy> regions(info->regionCount);
 	uint32_t i;
 
-	for (i = 0; i < info->regionCount; i++)
-		regions[i] = { info->pRegions[i].srcOffset, info->pRegions[i].dstOffset, info->pRegions[i].size };
-	VkDumpCopyBuffer(info->srcBuffer, info->dstBuffer, info->regionCount, regions.data());
+	if (vk_dump_active) {
+		std::vector<VkBufferCopy> regions(info->regionCount);
+
+		for (i = 0; i < info->regionCount; i++)
+			regions[i] = { info->pRegions[i].srcOffset, info->pRegions[i].dstOffset, info->pRegions[i].size };
+		VkDumpCopyBuffer(info->srcBuffer, info->dstBuffer, info->regionCount, regions.data());
+	}
 	next_CmdCopyBuffer2(cmd)(cmd, info);
 }
 
 static void VKAPI_CALL Hooked_vkCmdUpdateBuffer(VkCommandBuffer cmd, VkBuffer dst, VkDeviceSize offset, VkDeviceSize bytes, const void *data)
 {
-	VkDumpUpdateBuffer(dst, bytes);
+	if (vk_dump_active)
+		VkDumpUpdateBuffer(dst, bytes);
 	next_CmdUpdateBuffer(cmd)(cmd, dst, offset, bytes, data);
 }
 
 static VkResult VKAPI_CALL Hooked_vkFlushMappedMemoryRanges(VkDevice device, uint32_t count, const VkMappedMemoryRange *ranges)
 {
-	VkDumpFlush(count, ranges);
+	if (vk_dump_active)
+		VkDumpFlush(count, ranges);
 	return next_FlushMappedMemoryRanges(device)(device, count, ranges);
 }
 
 static void VKAPI_CALL Hooked_vkCmdBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint bind_point, VkPipeline pipeline)
 {
-	VkDumpBindPipeline(cmd, bind_point, pipeline);
+	if (vk_dump_active)
+		VkDumpBindPipeline(cmd, bind_point, pipeline);
+	if (vk_mods_active)
+		VkModsBindPipeline(cmd, bind_point, pipeline);
 	next_CmdBindPipeline(cmd)(cmd, bind_point, pipeline);
 }
 
 static void VKAPI_CALL Hooked_vkCmdBindVertexBuffers(VkCommandBuffer cmd, uint32_t first, uint32_t count,
 		const VkBuffer *buffers, const VkDeviceSize *offsets)
 {
-	VkDumpBindVertexBuffers(cmd, first, count, buffers, offsets);
+	if (vk_dump_active)
+		VkDumpBindVertexBuffers(cmd, first, count, buffers, offsets);
 	next_CmdBindVertexBuffers(cmd)(cmd, first, count, buffers, offsets);
 }
 
 static void VKAPI_CALL Hooked_vkCmdBindIndexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkIndexType type)
 {
-	VkDumpBindIndexBuffer(cmd, buffer, offset, type);
+	if (vk_dump_active)
+		VkDumpBindIndexBuffer(cmd, buffer, offset, type);
+	if (vk_mods_active)
+		VkModsBindIndexBuffer(cmd, buffer, offset, type);
 	next_CmdBindIndexBuffer(cmd)(cmd, buffer, offset, type);
 }
 
 static void VKAPI_CALL Hooked_vkCmdDraw(VkCommandBuffer cmd, uint32_t vertices, uint32_t instances, uint32_t first_vertex, uint32_t first_instance)
 {
-	VkDumpDraw(cmd, "draw", vertices, instances, first_vertex, 0);
-	next_CmdDraw(cmd)(cmd, vertices, instances, first_vertex, first_instance);
+	PFN_vkCmdDraw next = next_CmdDraw(cmd);
+
+	if (vk_dump_active)
+		VkDumpDraw(cmd, "draw", vertices, instances, first_vertex, 0);
+	if (vk_mods_active && VkModsDraw(cmd, false, vertices, instances, first_vertex, 0, first_instance, next, NULL))
+		return;
+	next(cmd, vertices, instances, first_vertex, first_instance);
 }
 
 static void VKAPI_CALL Hooked_vkCmdDrawIndexed(VkCommandBuffer cmd, uint32_t indices, uint32_t instances, uint32_t first_index,
 		int32_t vertex_offset, uint32_t first_instance)
 {
-	VkDumpDraw(cmd, "indexed", indices, instances, first_index, vertex_offset);
-	next_CmdDrawIndexed(cmd)(cmd, indices, instances, first_index, vertex_offset, first_instance);
+	PFN_vkCmdDrawIndexed next = next_CmdDrawIndexed(cmd);
+
+	if (vk_dump_active)
+		VkDumpDraw(cmd, "indexed", indices, instances, first_index, vertex_offset);
+	if (vk_mods_active && VkModsDraw(cmd, true, indices, instances, first_index, vertex_offset, first_instance, NULL, next))
+		return;
+	next(cmd, indices, instances, first_index, vertex_offset, first_instance);
 }
 
 static void VKAPI_CALL Hooked_vkCmdDrawIndirect(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, uint32_t draws, uint32_t stride)
 {
-	VkDumpDraw(cmd, "indirect", 0, draws, 0, 0);
+	if (vk_dump_active)
+		VkDumpDraw(cmd, "indirect", 0, draws, 0, 0);
 	next_CmdDrawIndirect(cmd)(cmd, buffer, offset, draws, stride);
 }
 
 static void VKAPI_CALL Hooked_vkCmdDrawIndexedIndirect(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, uint32_t draws, uint32_t stride)
 {
-	VkDumpDraw(cmd, "indexed_indirect", 0, draws, 0, 0);
+	if (vk_dump_active)
+		VkDumpDraw(cmd, "indexed_indirect", 0, draws, 0, 0);
 	next_CmdDrawIndexedIndirect(cmd)(cmd, buffer, offset, draws, stride);
 }
 
 static void VKAPI_CALL Hooked_vkCmdDispatch(VkCommandBuffer cmd, uint32_t x, uint32_t y, uint32_t z)
 {
-	VkDumpDraw(cmd, "dispatch", x, y, z, 0);
+	if (vk_dump_active)
+		VkDumpDraw(cmd, "dispatch", x, y, z, 0);
 	next_CmdDispatch(cmd)(cmd, x, y, z);
 }
 
 static VkResult VKAPI_CALL Hooked_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *info)
 {
-	VkDumpPresent();
+	InterlockedIncrement((volatile LONG*)&vk_frame);
+	if (vk_dump_active)
+		VkDumpPresent();
+	if (vk_mods_active)
+		VkModsPresent();
 	return next_QueuePresentKHR(queue)(queue, info);
 }
 
@@ -376,13 +450,6 @@ static void register_device(VkDevice device)
 		VkDumpNote("*** Too many Vulkan devices, calls of %p are only seen where they go through the exports\n", device);
 }
 
-static bool vk_enabled()
-{
-	InitCommon();
-
-	return G->bIntendedTargetExe && G->vk_dump_hashes;
-}
-
 static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
 		const VkAllocationCallbacks *allocator, VkDevice *device)
 {
@@ -392,12 +459,14 @@ static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_devic
 	if (result != VK_SUCCESS || !device || !*device)
 		return result;
 
-	if (!vk_enabled()) {
-		VkLogInfo("vkCreateDevice = %p, left alone without vk_dump_hashes\n", *device);
+	InitCommon();
+	if (!G->bIntendedTargetExe || (!G->vulkan && !G->vk_dump_hashes)) {
+		VkLogInfo("vkCreateDevice = %p, left alone without vulkan or vk_dump_hashes\n", *device);
 		return result;
 	}
 
-	vk_dump_active = true;
+	vk_dump_active = G->vk_dump_hashes;
+	vk_mods_active = G->vulkan;
 	hook_device_exports();
 	register_device(*device);
 

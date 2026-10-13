@@ -22,6 +22,7 @@
 #include "../input.h"
 #include "../Overlay.h"
 #include "../Override.h"
+#include "../vk/VkScope.h"
 
 // Frame actions are run for one swap chain at a time, the first one that
 // presents. Another only gets its turn when that one is gone.
@@ -183,6 +184,7 @@ static void frame_actions()
 	if (G->gReloadConfigPending) {
 		ReloadConfig(device);
 		Dx12DrawPathConfigReloaded();
+		VkModsConfigReloaded();
 	}
 
 	if (G->gConfigInitialized) {
@@ -192,6 +194,7 @@ static void frame_actions()
 		G->gConfigInitialized = true;
 		ReloadConfig(device);
 		Dx12DrawPathConfigReloaded();
+		VkModsConfigReloaded();
 	}
 
 	if (!G->suppress_overlay)

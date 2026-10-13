@@ -127,6 +127,20 @@ void Dx12ToggleMods();
 // gave it to ShaderFixes, for dxc or a disassembler to take from there
 void Dx12DumpMarkedShader(UINT64 hash, const char *type);
 
+// The engine's half of a scope, for a draw that is not on a D3D12 list: of a
+// Vulkan game (vk/VkDrawPath), which answers what the functions below are
+// asked while it has one open. With the lock of Bridge.h held.
+void Dx12OpenForeignScope();
+void Dx12CloseForeignScope();
+
+// What tells such a draw is not worth stopping for, as far as that is the
+// same for it: whether the command lists of its shaders, by Dx12ShaderStage
+// and 0 for none, can do nothing but ask for the TextureOverride sections of
+// what the filter then lists. Worked out with the lock held, if what the
+// filter has is not of the configuration as it is, and asked without.
+void Dx12WorkOutFilter(Dx12DrawFilter *filter, const UINT64 *shader_hashes);
+bool Dx12FilterOnlyChecks(const Dx12DrawFilter *filter, Dx12DrawFilter *worked_out);
+
 // For the shim context. All but the first are only for while a scope is open,
 // and what they return is not referenced.
 bool Dx12InDrawScope();

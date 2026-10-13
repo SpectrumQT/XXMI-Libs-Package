@@ -24,6 +24,7 @@
 #include "../Hunting.h"
 #include "../Overlay.h"
 #include "../ResourceHash.h"
+#include "../vk/VkScope.h"
 
 volatile bool dx12_draw_path_active;
 volatile UINT dx12_draw_generation = 1;
@@ -1551,13 +1552,18 @@ static void log_once(bool *reported, const char *message)
 	Dx12DumpNote("*** %s\n", message);
 }
 
+// What follows also answers for a draw of a Vulkan game (vk/VkDrawPath),
+// which has no scope here: the engine and the shim context do not know the
+// difference.
 bool Dx12InDrawScope()
 {
-	return !!scope;
+	return scope || VkInDrawScope();
 }
 
 bool Dx12ScopeHasShader(Dx12ShaderStage stage)
 {
+	if (!scope)
+		return VkScopeHasShader(stage);
 	return !!scope->pipeline->shaders[stage];
 }
 
@@ -1599,6 +1605,8 @@ ID3D11Buffer* Dx12ScopeVertexBuffer(UINT slot, UINT *stride)
 	UINT64 start;
 
 	*stride = 0;
+	if (!scope)
+		return NULL;
 	if (scope->skin) {
 		const SkinDispatch *skin = scope->skin;
 
@@ -1647,7 +1655,7 @@ ID3D11Buffer* Dx12ScopeVertexBuffer(UINT slot, UINT *stride)
 // another mesh, which the game's buffer is not bound for.
 ID3D11Buffer* Dx12ScopeStreamOutput()
 {
-	const SkinDispatch *skin = scope->skin;
+	const SkinDispatch *skin = scope ? scope->skin : NULL;
 	Published *entry;
 	UINT64 skinned;
 
@@ -1667,12 +1675,15 @@ ID3D11Buffer* Dx12ScopeStreamOutput()
 
 ID3D11Buffer* Dx12ScopeIndexBuffer(DXGI_FORMAT *format)
 {
-	const D3D12_INDEX_BUFFER_VIEW *view = &scope->list->mState.index_buffer;
+	const D3D12_INDEX_BUFFER_VIEW *view;
 	Published *entry;
 
 	*format = DXGI_FORMAT_UNKNOWN;
+	if (!scope)
+		return VkScopeIndexBuffer(format);
 	if (scope->compute)
 		return NULL;
+	view = &scope->list->mState.index_buffer;
 
 	entry = publish_buffer(view->BufferLocation, view->SizeInBytes, PUBLISHED_INDEX_BUFFER, 0, NULL);
 	if (!entry)
@@ -1718,7 +1729,7 @@ ID3D11Buffer* Dx12ScopeConstantBuffer(Dx12ShaderStage stage, UINT slot)
 
 static Published* publish_register(Dx12ShaderStage stage, D3D12_DESCRIPTOR_RANGE_TYPE type, UINT slot, Dx12DescriptorSlot *view)
 {
-	if (scope->compute != (stage == DX12_STAGE_CS))
+	if (!scope || scope->compute != (stage == DX12_STAGE_CS))
 		return NULL;
 	// A root descriptor has an address for a resource, which says too
 	// little about it to be of use to a mod
@@ -3967,7 +3978,13 @@ static void note_mod_draw(bool indexed, UINT count, UINT start)
 void Dx12ScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT base_vertex, UINT start_instance)
 {
 	const ShimState *mod = dx12_shim->shim_context->mState;
-	ID3D12GraphicsCommandList *list = scope->list->mOrig;
+	ID3D12GraphicsCommandList *list;
+
+	if (!scope) {
+		VkScopeDraw();
+		return;
+	}
+	list = scope->list->mOrig;
 
 	if (scope->skin) {
 		if (indexed)
@@ -4025,8 +4042,6 @@ static void reset_scope_state()
 
 static void open_scope(Dx12DrawScope *opened, Dx12GraphicsCommandList *list, const Dx12PipelineInfo *pipeline, bool compute)
 {
-	ShimContext *context = dx12_shim->shim_context;
-
 	opened->list = list;
 	opened->compute = compute;
 	opened->skin = NULL;
@@ -4044,6 +4059,14 @@ static void open_scope(Dx12DrawScope *opened, Dx12GraphicsCommandList *list, con
 	opened->side_impossible = false;
 	opened->heaps_changed = false;
 
+	Dx12OpenForeignScope();
+	scope = opened;
+}
+
+void Dx12OpenForeignScope()
+{
+	ShimContext *context = dx12_shim->shim_context;
+
 	// What the frame's own command lists have bound is theirs
 	context->mState = &context->mScopeState;
 	if (!scope_state_ready || scope_ini_params != dx12_shim->hacker_device->mIniResourceView
@@ -4052,21 +4075,25 @@ static void open_scope(Dx12DrawScope *opened, Dx12GraphicsCommandList *list, con
 	context->mChanged = false;
 
 	scope_serial++;
-	scope = opened;
 }
 
 static void refresh_guards();
 
-static void close_scope()
+void Dx12CloseForeignScope()
 {
 	ShimContext *context = dx12_shim->shim_context;
 
-	restore_list();
 	if (context->mChanged)
 		reset_scope_state();
 	context->mState = &context->mFrameState;
-	scope = NULL;
 	refresh_guards();
+}
+
+static void close_scope()
+{
+	restore_list();
+	scope = NULL;
+	Dx12CloseForeignScope();
 }
 
 // -----------------------------------------------------------------------------
@@ -4200,11 +4227,10 @@ static bool register_guard(CommandListExpression *expression, const CommandListC
 }
 
 // With the lock held
-// shaders are those the engine is told of, which for a dispatch that skins
-// are not the pipeline's, see Dx12Dispatch
-static void work_out_filter(const Dx12PipelineInfo *pipeline, const Dx12ShaderInfo *const *shaders)
+// The hashes are of the shaders the engine is told of, by stage and 0 for
+// none
+static void work_out_filter(Dx12DrawFilter *filter, const UINT64 *hashes)
 {
-	Dx12DrawFilter *filter = &pipeline->filter;
 	CommandListCheckedSlots slots = {};
 	bool only_checks = true;
 	Dx12ShaderStage stage;
@@ -4214,11 +4240,9 @@ static void work_out_filter(const Dx12PipelineInfo *pipeline, const Dx12ShaderIn
 
 	// The shaders HackerContext::BeforeDraw looks up
 	for (Dx12ShaderStage graphics_stage : graphics_stages) {
-		const Dx12ShaderInfo *shader = shaders[graphics_stage];
-
-		if (!shader && graphics_stage != DX12_STAGE_VS && graphics_stage != DX12_STAGE_PS)
+		if (!hashes[graphics_stage] && graphics_stage != DX12_STAGE_VS && graphics_stage != DX12_STAGE_PS)
 			continue;
-		auto found = lookup_shaderoverride(shader ? shader->hash : 0);
+		auto found = lookup_shaderoverride(hashes[graphics_stage]);
 		if (found == G->mShaderOverrideMap.end())
 			continue;
 		if (found->second.depth_filter != DepthBufferFilter::NONE
@@ -4270,6 +4294,23 @@ static void work_out_filter(const Dx12PipelineInfo *pipeline, const Dx12ShaderIn
 	filter->texture_count = (BYTE)slots.texture_count;
 	filter->override_generation = G->shader_override_generation;
 	InterlockedExchange(&filter->generation, (LONG)config_generation);
+}
+
+// shaders are those the engine is told of, which for a dispatch that skins
+// are not the pipeline's, see Dx12Dispatch
+static void work_out_filter(const Dx12PipelineInfo *pipeline, const Dx12ShaderInfo *const *shaders)
+{
+	UINT64 hashes[DX12_STAGE_COUNT] = {};
+
+	for (Dx12ShaderStage stage : graphics_stages)
+		hashes[stage] = shaders[stage] ? shaders[stage]->hash : 0;
+	work_out_filter(&pipeline->filter, hashes);
+}
+
+void Dx12WorkOutFilter(Dx12DrawFilter *filter, const UINT64 *shader_hashes)
+{
+	if (filter->generation != (LONG)config_generation || filter->override_generation != G->shader_override_generation)
+		work_out_filter(filter, shader_hashes);
 }
 
 // IniParams is bound for every draw the engine looks at, which matters if a
@@ -4562,6 +4603,11 @@ static SlowReason filter_is_boring(const Dx12DrawFilter *filter, Dx12DrawFilter 
 	return SLOW_NOT;
 }
 
+bool Dx12FilterOnlyChecks(const Dx12DrawFilter *filter, Dx12DrawFilter *worked_out)
+{
+	return filter_is_boring(filter, worked_out) == SLOW_NOT;
+}
+
 // Without the lock. SLOW_NOT only if the engine would look at the draw and
 // leave it at that.
 static SlowReason draw_is_boring(Dx12GraphicsCommandList *list, const Dx12PipelineInfo *pipeline)
@@ -4790,16 +4836,18 @@ void HackerContext::Dx12AfterDraw(DrawContext &data)
 
 UINT64 HackerContext::Dx12CurrentShader(wchar_t shader_type)
 {
-	if (!scope)
+	bool compute = scope && scope->compute;
+
+	if (!Dx12InDrawScope())
 		return 0;
 
 	switch (shader_type) {
-	case L'v': return scope->compute && !scope->skin ? 0 : mCurrentVertexShader;
-	case L'h': return scope->compute ? 0 : mCurrentHullShader;
-	case L'd': return scope->compute ? 0 : mCurrentDomainShader;
-	case L'g': return scope->compute ? 0 : mCurrentGeometryShader;
-	case L'p': return scope->compute ? 0 : mCurrentPixelShader;
-	case L'c': return scope->compute ? mCurrentComputeShader : 0;
+	case L'v': return compute && !scope->skin ? 0 : mCurrentVertexShader;
+	case L'h': return compute ? 0 : mCurrentHullShader;
+	case L'd': return compute ? 0 : mCurrentDomainShader;
+	case L'g': return compute ? 0 : mCurrentGeometryShader;
+	case L'p': return compute ? 0 : mCurrentPixelShader;
+	case L'c': return compute ? mCurrentComputeShader : 0;
 	}
 	return 0;
 }

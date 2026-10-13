@@ -532,6 +532,7 @@ struct Globals
 	bool dx12_dump_hashes;
 	bool dx12_debug_layer;
 	bool vk_dump_hashes;
+	bool vulkan;
 	bool track_region_hashes;
 	DataCacheBindFlags cache_resource_data = (DataCacheBindFlags)0;
 	bool track_implicit_index_buffers;
@@ -783,6 +784,7 @@ struct Globals
 		dx12_dump_hashes(false),
 		dx12_debug_layer(false),
 		vk_dump_hashes(false),
+		vulkan(false),
 		track_region_hashes(false),
 		track_implicit_index_buffers(false),
 		any_override_byte_width(false),

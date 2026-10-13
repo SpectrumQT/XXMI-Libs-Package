@@ -6,6 +6,7 @@
 #include "globals.h"
 #include "profiling.h"
 #include "overlay.h"
+#include "vk/VkScope.h"
 
 // DirectXTK headers fail to include their own pre-requisits. We just want
 // GetSurfaceInfo from LoaderHelpers
@@ -2405,6 +2406,12 @@ uint32_t GetRegionHash(HackerContext* context, ID3D11Buffer* buffer, UINT offset
 	if (!context || !buffer || !size) {
 		return 0;
 	}
+
+	// A buffer of a Vulkan game is not there to be read back, and has no
+	// calls that say when it is written to go by for the caches below
+	uint32_t vk_hash;
+	if (custom_resource == nullptr && VkScopeRegionHash(buffer, offset, size, &vk_hash))
+		return vk_hash;
 
 	// Lookup offset in fast L3 cache without any locking involved.
 	RegionHashKeyL3 level_3_cache_key{ (uint64_t)buffer, offset, size };

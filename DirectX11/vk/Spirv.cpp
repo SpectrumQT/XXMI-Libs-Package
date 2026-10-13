@@ -1,5 +1,7 @@
 #include "Spirv.h"
 
+#include <algorithm>
+
 #include <vector>
 
 enum {
@@ -19,8 +21,13 @@ enum {
 	OpTypePointer = 32,
 	OpConstant = 43,
 	OpVariable = 59,
+	OpLoad = 61,
 	OpAccessChain = 65,
 	OpInBoundsAccessChain = 66,
+	OpSampledImage = 86,
+	OpImageSampleImplicitLod = 87,
+	OpImageDrefGather = 97,
+	OpImage = 100,
 	OpDecorate = 71,
 	OpMemberDecorate = 72,
 	OpTypeAccelerationStructureKHR = 5341,
@@ -316,6 +323,9 @@ void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info)
 	std::vector<Id> ids;
 	std::vector<uint32_t> variables;
 	std::vector<const uint32_t*> chains;
+	// The variable an id was loaded from or made of
+	std::vector<uint32_t> origins;
+	std::vector<uint32_t> sampled;
 	size_t pos;
 	char text[32];
 
@@ -326,6 +336,7 @@ void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info)
 	info->version = code[1];
 	info->generator = code[2];
 	ids.resize(code[3]);
+	origins.resize(code[3], NONE);
 	for (Id &id : ids)
 		id.set = id.binding = id.location = id.described = NONE;
 
@@ -404,6 +415,22 @@ void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info)
 				// Type, result id, base, indexes
 				if (count >= 4)
 					chains.push_back(ins);
+				// Fall through
+			case OpLoad:
+			case OpSampledImage:
+			case OpImage:
+				// Type, result id, what it is of
+				if (count >= 4 && ins[2] < ids.size() && ins[3] < ids.size())
+					origins[ins[2]] = ids[ins[3]].op == OpVariable ? ins[3] : origins[ins[3]];
+				break;
+			default:
+				// Type, result id, the image, the coordinate
+				if (op < OpImageSampleImplicitLod || op > OpImageDrefGather || count < 4 || ins[3] >= ids.size())
+					break;
+				first = ids[ins[3]].op == OpVariable ? ins[3] : origins[ins[3]];
+				if (first != NONE && std::find(sampled.begin(), sampled.end(), first) == sampled.end())
+					sampled.push_back(first);
+				first = 0;
 				break;
 			case OpConstant:
 			case OpVariable:
@@ -456,6 +483,10 @@ void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info)
 
 	for (const uint32_t *chain : chains)
 		note_access(ids, &chain[3], (chain[0] >> 16) - 3, info);
+	for (uint32_t variable : sampled) {
+		if (ids[variable].described != NONE)
+			info->sampled.push_back(ids[variable].described);
+	}
 
 	info->valid = true;
 }

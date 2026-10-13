@@ -3727,8 +3727,16 @@ float CommandListOperand::evaluate_shader_bindings(CommandListState *state, cons
 {
 	UINT slot_id = (UINT)shader_target.member_args[0].GetValue(state);
 
+	// Negative one means there is no such: the shader samples fewer textures.
+	if (shader_target.evaluation_mode == ShaderTargetEvaluationMode::DCL_SRV_SAMPLED)
+		return slot_id < bindings.sampled.size() ? (float)bindings.sampled[slot_id] : -1.0f;
+	if (slot_id >= bindings.resources.size())
+		return -1.0;
+
 	switch (shader_target.evaluation_mode)
 	{
+	case ShaderTargetEvaluationMode::DCL_SRV_SET:
+		return (float)bindings.resources[slot_id].set;
 	case ShaderTargetEvaluationMode::DCL_CB_TYPE:
 	{
 		const ShaderConstantBuffer& cb = bindings.constant_buffers[slot_id];
@@ -8658,12 +8666,18 @@ IniParserResult ShaderTarget::ParseTargetMember(
 		{ L"->cb_size",         9, ShaderTargetEvaluationMode::DCL_CB_SIZE, {{
 			MemberArg::Type::Unsigned, // Slot ID
 		}} },
+		{ L"->srv_set",         9, ShaderTargetEvaluationMode::DCL_SRV_SET, {{
+			MemberArg::Type::Unsigned, // Slot ID
+		}} },
 		{ L"->srv_mask",       10, ShaderTargetEvaluationMode::DCL_SRV_MASK },
 		{ L"->srv_type",       10, ShaderTargetEvaluationMode::DCL_SRV_TYPE, {{
 			MemberArg::Type::Unsigned, // Slot ID
 		}} },
 		{ L"->srv_stride",     12, ShaderTargetEvaluationMode::DCL_SRV_STRIDE, {{
 			MemberArg::Type::Unsigned, // Slot ID
+		}} },
+		{ L"->srv_sampled",    13, ShaderTargetEvaluationMode::DCL_SRV_SAMPLED, {{
+			MemberArg::Type::Unsigned, // Place in the order the code samples its textures
 		}} },
 		{ L"->srv_dimension",  15, ShaderTargetEvaluationMode::DCL_SRV_DIMENSION, {{
 			MemberArg::Type::Unsigned, // Slot ID

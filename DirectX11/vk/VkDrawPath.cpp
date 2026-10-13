@@ -101,6 +101,8 @@ const UINT MAX_VBS = 16;
 // mods of the game this was written for expect what they look for.
 struct ShaderLayout {
 	std::vector<SpirvBinding> cbs, views;
+	// Which of the views the code samples, in the order it first does
+	std::vector<uint8_t> sampled;
 	// What the assembly of the shader would declare were it a D3D11 one,
 	// for the patterns of the ShaderRegex sections
 	std::string declarations;
@@ -250,6 +252,7 @@ static ShaderLayout* reflect_shader(const uint32_t *code, size_t bytes)
 {
 	ShaderLayout *layout = new ShaderLayout();
 	SpirvInfo info;
+	size_t i;
 	int stage;
 
 	SpirvReflect(code, bytes / sizeof(uint32_t), &info);
@@ -273,6 +276,13 @@ static ShaderLayout* reflect_shader(const uint32_t *code, size_t bytes)
 	if (G->vk_buffers_first && stage >= 0 && stage != DX12_STAGE_PS && stage != DX12_STAGE_CS) {
 		std::stable_partition(layout->views.begin(), layout->views.end(),
 			[](const SpirvBinding &view) { return view.kind == SPIRV_SSBO; });
+	}
+	for (uint32_t sampled : info.sampled) {
+		for (i = 0; i < layout->views.size() && i < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; i++) {
+			if (layout->views[i].set == info.bindings[sampled].set && layout->views[i].binding == info.bindings[sampled].binding
+			    && layout->views[i].kind == info.bindings[sampled].kind)
+				layout->sampled.push_back((uint8_t)i);
+		}
 	}
 	layout->declared = NULL;
 	declare_as_d3d11(info, layout);
@@ -3658,7 +3668,9 @@ static ID3D11ShaderResourceView* game_texture(const SpirvBinding *slot)
 	AcquireSRWLockExclusive(&image_lock);
 	auto view = game_views.find(bound);
 	auto found = view != game_views.end() ? game_images.find(view->second) : game_images.end();
-	image = found != game_images.end() && found->second.hashed ? &found->second : NULL;
+	// One that could not be hashed is shown all the same: what it is like
+	// tells a mod which of the textures of a shader it is
+	image = found != game_images.end() ? &found->second : NULL;
 	if (image && (!image->object || image->shown_hash != image->hash)) {
 		desc.Width = max(image->width >> image->level, 1u);
 		desc.Height = max(image->height >> image->level, 1u);
@@ -3812,7 +3824,9 @@ const ShaderBindings* VkScopeShaderBindings(int stage)
 		declared->resources[i].type = view->kind == SPIRV_SSBO ? ShaderResourceType::STRUCTURED : ShaderResourceType::TYPED;
 		declared->resources[i].dimension = view_dimension(view);
 		declared->resources[i].stride = view->kind == SPIRV_SSBO ? view->stride : 0;
+		declared->resources[i].set = view->set;
 	}
+	declared->sampled = shader->sampled;
 	shader->declared = declared;
 	return declared;
 }
@@ -4096,20 +4110,6 @@ struct Replaced {
 	VkImageView view;
 };
 
-// What the mod has set for the stages before the pixel shader goes with its
-// mesh: the bones of a skeleton it put together itself, say, which its
-// vertices name by their place in that. Drawn with the game's instead, such a
-// mesh is anywhere, and vertices that are not numbers stay in what the game
-// keeps from frame to frame. A texture that is missing only looks wrong.
-static bool collect_replaced(const ShimState *mod, Replaced *replaced, UINT *count)
-{
-	const ID3D11ShaderResourceView *ini_params = dx12_shim->hacker_device->mIniResourceView;
-	const CmdState *game = &scope->state;
-	UINT64 offset, bytes, stride;
-	unsigned long slot;
-	UINT i, cbs;
-	int stage;
-
 // For the report: what the game has at a view of a pixel shader
 static void describe_game_view(const SpirvBinding *slot, char *text, size_t size)
 {
@@ -4168,6 +4168,20 @@ static void note_mod_texture(UINT i, const ShaderLayout *shader, const ShimView 
 		i >= shader->views.size() ? "nothing reads it" : set ? "set" : "not set");
 }
 
+// What the mod has set for the stages before the pixel shader goes with its
+// mesh: the bones of a skeleton it put together itself, say, which its
+// vertices name by their place in that. Drawn with the game's instead, such a
+// mesh is anywhere, and vertices that are not numbers stay in what the game
+// keeps from frame to frame. A texture that is missing only looks wrong.
+static bool collect_replaced(const ShimState *mod, Replaced *replaced, UINT *count)
+{
+	const ID3D11ShaderResourceView *ini_params = dx12_shim->hacker_device->mIniResourceView;
+	const CmdState *game = &scope->state;
+	UINT64 offset, bytes, stride;
+	unsigned long slot;
+	UINT i, cbs;
+	int stage;
+
 	for (stage = 0; stage < DX12_STAGE_COUNT; stage++) {
 		const ShimStageState *state = &mod->stages[stage];
 		const ShaderLayout *shader = game->pipeline->layouts[stage];
@@ -4218,7 +4232,10 @@ static void note_mod_texture(UINT i, const ShaderLayout *shader, const ShimView 
 				if (G->vk_dump_hashes && i < 64)
 					note_mod_texture(i, shader, view, false);
 				continue;
+			}
 			replaced[*count].view = bring_texture(view, &shader->views[i]);
+			if (G->vk_dump_hashes)
+				note_mod_texture(i, shader, view, replaced[*count].view != VK_NULL_HANDLE);
 			if (!replaced[*count].view)
 				continue;
 			stats.textures_set++;
@@ -4232,10 +4249,7 @@ static void note_mod_texture(UINT i, const ShaderLayout *shader, const ShimView 
 				continue;
 			if (i < SCOPE_SRVS && (scope->srvs_asked[stage] & 1u << i) && state->srvs[i] == scope->srvs[stage][i])
 				continue;
-			}
 			if (!shader || i >= shader->views.size())
-			if (G->vk_dump_hashes)
-				note_mod_texture(i, shader, view, replaced[*count].view != VK_NULL_HANDLE);
 				continue;
 			if (shader->views[i].kind != SPIRV_SSBO) {
 				mod_draw_failed("the mod has set a buffer or texture for a stage before the pixel shader where the shader "

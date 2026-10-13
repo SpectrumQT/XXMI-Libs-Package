@@ -66,6 +66,9 @@ struct SpirvInfo {
 	// The same, in the order the shader declares them
 	std::vector<SpirvBinding> bindings;
 	std::vector<SpirvVarying> in, out;
+	// Which of the bindings the code samples or fetches from, in the order
+	// it first does
+	std::vector<uint32_t> sampled;
 };
 
 void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info);

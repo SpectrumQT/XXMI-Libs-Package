@@ -49,12 +49,18 @@ struct ShaderResource
 
 	// Only meaningful for ShaderResourceType::STRUCTURED.
 	uint32_t stride = 0;
+
+	// The descriptor set a Vulkan shader has it in, -1 otherwise
+	int32_t set = -1;
 };
 
 struct ShaderBindings
 {
 	std::array<ShaderConstantBuffer, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT> constant_buffers{};
 	std::array<ShaderResource, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> resources{};
+	// The registers of the textures the code samples, in the order it first
+	// does. Only known of a Vulkan shader.
+	std::vector<uint8_t> sampled;
 };
 
 struct OriginalShaderInfo;

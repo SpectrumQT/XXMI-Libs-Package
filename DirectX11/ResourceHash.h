@@ -81,8 +81,9 @@ public:
 	// - May trigger rehash if load factor exceeds threshold
 	inline void insert(const K& key, const V& value)
 	{
-		// Maintain load factor <= 0.5
-		if ((count * 2) >= table.size()) {
+		// Maintain load factor <= 0.5, counting the entry that may be added:
+		// a table that fills up has no empty slot for a lookup to stop at
+		if (((count + 1) * 2) > table.size()) {
 			rehash(table.size() * 2);
 		}
 

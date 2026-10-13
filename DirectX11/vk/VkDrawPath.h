@@ -47,8 +47,13 @@
 //     game's device, and the draw gets a descriptor set that is the game's
 //     but for that buffer.
 //
-// Not yet: textures a mod binds, shaders of its own for a draw, the game's
-// vertex buffers and textures, indirect draws, dispatches.
+//   - A texture a mod sets for the pixel shader goes with its draw the same
+//     way: as an image of the game's device, filled once with what the
+//     engine loaded on the D3D12 device.
+//
+// Not yet: shaders of its own for a draw, the game's vertex buffers and
+// textures (so no TextureOverride by the hash of a texture either), indirect
+// draws, dispatches.
 
 // Set once a device has been taken on, for the hooks to tell whether to
 // report here
@@ -75,12 +80,29 @@ struct VkModsApi {
 	PFN_vkAllocateDescriptorSets AllocateDescriptorSets;
 	PFN_vkUpdateDescriptorSets UpdateDescriptorSets;
 	PFN_vkCmdBindDescriptorSets CmdBindDescriptorSets;
+	PFN_vkCreateImage CreateImage;
+	PFN_vkDestroyImage DestroyImage;
+	PFN_vkGetImageMemoryRequirements GetImageMemoryRequirements;
+	PFN_vkBindImageMemory BindImageMemory;
+	PFN_vkCreateImageView CreateImageView;
+	PFN_vkDestroyImageView DestroyImageView;
+	PFN_vkCreateCommandPool CreateCommandPool;
+	PFN_vkDestroyCommandPool DestroyCommandPool;
+	PFN_vkAllocateCommandBuffers AllocateCommandBuffers;
+	PFN_vkFreeCommandBuffers FreeCommandBuffers;
+	PFN_vkBeginCommandBuffer BeginCommandBuffer;
+	PFN_vkEndCommandBuffer EndCommandBuffer;
+	PFN_vkCmdPipelineBarrier CmdPipelineBarrier;
+	PFN_vkCmdCopyBufferToImage CmdCopyBufferToImage;
+	PFN_vkQueueSubmit QueueSubmit;
 	PFN_vkCmdDraw CmdDraw;
 	PFN_vkCmdDrawIndexed CmdDrawIndexed;
 };
 
 void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkModsApi *api);
 void VkModsForgetDevice(VkDevice device);
+// A queue the game got, and the family it is of
+void VkModsQueue(VkDevice device, VkQueue queue, uint32_t family);
 
 void VkModsShaderModule(VkShaderModule module, const VkShaderModuleCreateInfo *info);
 void VkModsForgetShaderModule(VkShaderModule module);
@@ -107,12 +129,13 @@ void VkModsBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint bind_poin
 		uint32_t count, const VkDescriptorSet *sets, uint32_t dynamic_count, const uint32_t *dynamic_offsets);
 
 // Before command buffers are handed to a queue: what their draws read of the
-// mods has to be where they read it by then
-void VkModsBeforeSubmit();
+// mods has to be where they read it by then. The caller is the one using the
+// queue, as the game is by calling.
+void VkModsBeforeSubmit(VkQueue queue);
 
 // True if the draw was dealt with, which includes making it with whichever of
 // the two functions it is for: the caller then has nothing left to do
 bool VkModsDraw(VkCommandBuffer cmd, bool indexed, uint32_t count, uint32_t instances, uint32_t first,
 		int32_t vertex_offset, uint32_t first_instance, PFN_vkCmdDraw draw, PFN_vkCmdDrawIndexed draw_indexed);
 
-void VkModsPresent();
+void VkModsPresent(VkQueue queue);

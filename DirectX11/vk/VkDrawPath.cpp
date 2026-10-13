@@ -59,6 +59,8 @@ static struct {
 	UINT64 brought_bytes, submit_ticks;
 	unsigned variants_made, variants_failed;
 	UINT64 variant_ticks;
+	unsigned textures_made, textures_failed, textures_set;
+	UINT64 textures_bytes;
 	UINT64 wait_ticks, engine_ticks;
 } stats;
 
@@ -1349,6 +1351,7 @@ const VkDeviceSize TRANSIENT_ALIGNMENT = 256;
 
 struct Transient {
 	VkBuffer buffer;
+	MirrorBlock *block;
 	BYTE *data;
 	VkDeviceSize size, used;
 	// The last it had anything given out
@@ -1366,7 +1369,7 @@ static Transient* new_transient(VkDeviceSize size)
 	Mirror placed = {};
 
 	info.size = max(size, TRANSIENT_BYTES);
-	info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+	info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	if (api.CreateBuffer(mods_device, &info, NULL, &transient.buffer) != VK_SUCCESS)
 		return NULL;
@@ -1382,6 +1385,7 @@ static Transient* new_transient(VkDeviceSize size)
 		return NULL;
 	}
 
+	transient.block = placed.block;
 	transient.data = placed.block->data + offset;
 	transient.size = info.size;
 	transient.frame = vk_frame;
@@ -1424,6 +1428,35 @@ static BYTE* transient_bytes(VkDeviceSize bytes, VkDeviceSize reach, VkBuffer *b
 	return found->data + start;
 }
 
+// One made for the contents of a texture is of no use to what a draw reads,
+// and neither is the memory it has to itself
+static void destroy_big_transients()
+{
+	size_t kept = 0, i;
+
+	for (const Transient &transient : transients) {
+		if (transient.size <= TRANSIENT_BYTES || vk_frame - transient.frame <= MIRROR_KEEP_FRAMES) {
+			transients[kept++] = transient;
+			continue;
+		}
+		api.DestroyBuffer(mods_device, transient.buffer, NULL);
+		transient.block->live--;
+	}
+	transients.resize(kept);
+
+	for (i = 0; i < mirror_blocks.size();) {
+		MirrorBlock *block = mirror_blocks[i];
+
+		if (block->live || block->size <= MIRROR_BLOCK_BYTES) {
+			i++;
+			continue;
+		}
+		api.FreeMemory(mods_device, block->memory, NULL);
+		delete block;
+		mirror_blocks.erase(mirror_blocks.begin() + i);
+	}
+}
+
 struct Readback {
 	ID3D12Resource *resource;
 	const BYTE *data;
@@ -1443,18 +1476,18 @@ static std::vector<Transfer> transfers;
 // Read without the lock by the threads handing command buffers to a queue
 static volatile bool transfers_pending;
 
-static bool transfer_from_gpu(ShimResource *resource, UINT64 offset, UINT64 bytes, BYTE *dst)
+// Where a list of the shim can copy to for it to be read here once the list
+// has been executed
+static Readback* readback_space(UINT64 bytes, UINT64 *offset)
 {
 	D3D12_HEAP_PROPERTIES heap = {};
 	D3D12_RESOURCE_DESC desc = {};
 	Readback *found = NULL;
 	Readback created = {};
 
-	if (!resource->resource || offset + bytes > resource->desc.Width)
-		return false;
-
 	for (Readback &readback : readbacks) {
-		if (readback.used + bytes <= readback.size) {
+		*offset = ShimAlign(readback.used, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+		if (*offset + bytes <= readback.size) {
 			found = &readback;
 			break;
 		}
@@ -1470,20 +1503,35 @@ static bool transfer_from_gpu(ShimResource *resource, UINT64 offset, UINT64 byte
 		desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 		if (FAILED(dx12_shim->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
 				D3D12_RESOURCE_STATE_COPY_DEST, NULL, IID_PPV_ARGS(&created.resource))))
-			return false;
+			return NULL;
 		if (FAILED(created.resource->Map(0, NULL, (void**)&created.data))) {
 			created.resource->Release();
-			return false;
+			return NULL;
 		}
 		created.size = desc.Width;
 		readbacks.push_back(created);
 		found = &readbacks.back();
+		*offset = 0;
 	}
 
+	found->used = *offset + bytes;
+	return found;
+}
+
+static bool transfer_from_gpu(ShimResource *resource, UINT64 offset, UINT64 bytes, BYTE *dst)
+{
+	Readback *readback;
+	UINT64 start;
+
+	if (!resource->resource || offset + bytes > resource->desc.Width)
+		return false;
+	readback = readback_space(bytes, &start);
+	if (!readback)
+		return false;
+
 	Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
-	Dx12ShimList()->CopyBufferRegion(found->resource, found->used, resource->resource, offset, bytes);
-	transfers.push_back({ found->data + found->used, dst, (size_t)bytes });
-	found->used += bytes;
+	Dx12ShimList()->CopyBufferRegion(readback->resource, start, resource->resource, offset, bytes);
+	transfers.push_back({ readback->data + start, dst, (size_t)bytes });
 	transfers_pending = true;
 	return true;
 }
@@ -1495,16 +1543,18 @@ static void release_readbacks()
 	readbacks.clear();
 }
 
+static void submit_uploads(VkQueue queue);
+
 // With the lock of dx12/Bridge.h held
-static void finish_transfers()
+static void finish_transfers(VkQueue queue)
 {
 	UINT64 start;
 
-	if (transfers.empty())
+	if (!transfers_pending)
 		return;
 
 	start = ticks();
-	if (dx12_shim) {
+	if (dx12_shim && !transfers.empty()) {
 		Dx12ShimSubmitAndWait();
 		for (const Transfer &transfer : transfers)
 			memcpy(transfer.dst, transfer.src, transfer.bytes);
@@ -1512,19 +1562,20 @@ static void finish_transfers()
 	transfers.clear();
 	for (Readback &readback : readbacks)
 		readback.used = 0;
+	submit_uploads(queue);
 	transfers_pending = false;
 
 	stats.submits_waited++;
 	stats.submit_ticks += ticks() - start;
 }
 
-void VkModsBeforeSubmit()
+void VkModsBeforeSubmit(VkQueue queue)
 {
 	if (!transfers_pending)
 		return;
 
 	Dx12ShimLock();
-	finish_transfers();
+	finish_transfers(queue);
 	Dx12ShimUnlock();
 }
 
@@ -1592,9 +1643,484 @@ static bool bring_buffer(ShimResource *resource, UINT64 offset, UINT64 bytes, UI
 	return true;
 }
 
+// -----------------------------------------------------------------------------
+// The textures of the mods
+//
+// A texture a mod sets for the pixel shader is one of the D3D12 device, where
+// the engine put what it read from a file. The shader of the game samples an
+// image of the game's device, so one is made for each, and filled with what
+// is copied out of the D3D12 resource the way the contents of a buffer are.
+// From there to the image takes commands of our own, which go to the queue
+// the game is about to hand its own to.
+
+static const struct {
+	DXGI_FORMAT dxgi;
+	VkFormat vk;
+} texture_formats[] = {
+	{ DXGI_FORMAT_R8G8B8A8_TYPELESS, VK_FORMAT_R8G8B8A8_UNORM },
+	{ DXGI_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM },
+	{ DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, VK_FORMAT_R8G8B8A8_SRGB },
+	{ DXGI_FORMAT_B8G8R8A8_TYPELESS, VK_FORMAT_B8G8R8A8_UNORM },
+	{ DXGI_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_UNORM },
+	{ DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, VK_FORMAT_B8G8R8A8_SRGB },
+	{ DXGI_FORMAT_R8_UNORM, VK_FORMAT_R8_UNORM },
+	{ DXGI_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8_UNORM },
+	{ DXGI_FORMAT_R16_UNORM, VK_FORMAT_R16_UNORM },
+	{ DXGI_FORMAT_R16_FLOAT, VK_FORMAT_R16_SFLOAT },
+	{ DXGI_FORMAT_R16G16_FLOAT, VK_FORMAT_R16G16_SFLOAT },
+	{ DXGI_FORMAT_R32_FLOAT, VK_FORMAT_R32_SFLOAT },
+	{ DXGI_FORMAT_R10G10B10A2_UNORM, VK_FORMAT_A2B10G10R10_UNORM_PACK32 },
+	{ DXGI_FORMAT_R11G11B10_FLOAT, VK_FORMAT_B10G11R11_UFLOAT_PACK32 },
+	{ DXGI_FORMAT_R16G16B16A16_UNORM, VK_FORMAT_R16G16B16A16_UNORM },
+	{ DXGI_FORMAT_R16G16B16A16_FLOAT, VK_FORMAT_R16G16B16A16_SFLOAT },
+	{ DXGI_FORMAT_R32G32B32A32_FLOAT, VK_FORMAT_R32G32B32A32_SFLOAT },
+	{ DXGI_FORMAT_BC1_TYPELESS, VK_FORMAT_BC1_RGBA_UNORM_BLOCK },
+	{ DXGI_FORMAT_BC1_UNORM, VK_FORMAT_BC1_RGBA_UNORM_BLOCK },
+	{ DXGI_FORMAT_BC1_UNORM_SRGB, VK_FORMAT_BC1_RGBA_SRGB_BLOCK },
+	{ DXGI_FORMAT_BC2_TYPELESS, VK_FORMAT_BC2_UNORM_BLOCK },
+	{ DXGI_FORMAT_BC2_UNORM, VK_FORMAT_BC2_UNORM_BLOCK },
+	{ DXGI_FORMAT_BC2_UNORM_SRGB, VK_FORMAT_BC2_SRGB_BLOCK },
+	{ DXGI_FORMAT_BC3_TYPELESS, VK_FORMAT_BC3_UNORM_BLOCK },
+	{ DXGI_FORMAT_BC3_UNORM, VK_FORMAT_BC3_UNORM_BLOCK },
+	{ DXGI_FORMAT_BC3_UNORM_SRGB, VK_FORMAT_BC3_SRGB_BLOCK },
+	{ DXGI_FORMAT_BC4_TYPELESS, VK_FORMAT_BC4_UNORM_BLOCK },
+	{ DXGI_FORMAT_BC4_UNORM, VK_FORMAT_BC4_UNORM_BLOCK },
+	{ DXGI_FORMAT_BC4_SNORM, VK_FORMAT_BC4_SNORM_BLOCK },
+	{ DXGI_FORMAT_BC5_TYPELESS, VK_FORMAT_BC5_UNORM_BLOCK },
+	{ DXGI_FORMAT_BC5_UNORM, VK_FORMAT_BC5_UNORM_BLOCK },
+	{ DXGI_FORMAT_BC5_SNORM, VK_FORMAT_BC5_SNORM_BLOCK },
+	{ DXGI_FORMAT_BC6H_TYPELESS, VK_FORMAT_BC6H_UFLOAT_BLOCK },
+	{ DXGI_FORMAT_BC6H_UF16, VK_FORMAT_BC6H_UFLOAT_BLOCK },
+	{ DXGI_FORMAT_BC6H_SF16, VK_FORMAT_BC6H_SFLOAT_BLOCK },
+	{ DXGI_FORMAT_BC7_TYPELESS, VK_FORMAT_BC7_UNORM_BLOCK },
+	{ DXGI_FORMAT_BC7_UNORM, VK_FORMAT_BC7_UNORM_BLOCK },
+	{ DXGI_FORMAT_BC7_UNORM_SRGB, VK_FORMAT_BC7_SRGB_BLOCK },
+};
+
+static VkFormat vk_texture_format(DXGI_FORMAT format)
+{
+	for (const auto &known : texture_formats) {
+		if (known.dxgi == format)
+			return known.vk;
+	}
+	return VK_FORMAT_UNDEFINED;
+}
+
+const VkDeviceSize IMAGE_BLOCK_BYTES = 64 << 20;
+
+struct ImageBlock {
+	VkDeviceMemory memory;
+	uint32_t type;
+	VkDeviceSize size, used;
+	// Images in it. Its space is given out again once there are none.
+	UINT live;
+};
+
+struct ModTexture {
+	// None if one could not be made, which is not tried for every draw
+	VkImage image;
+	VkImageView view;
+	VkImageViewType view_type;
+	ImageBlock *block;
+	// ShimResource::version of the contents
+	UINT64 version;
+	// It has had contents before, which is the layout it is in
+	bool filled;
+};
+
+struct RetiredTexture {
+	ModTexture texture;
+	UINT frame;
+};
+
+// The contents of an image, where they are in a buffer of the game's device
+// by the time the transfers are done
+struct Upload {
+	VkImage image;
+	VkBuffer buffer;
+	bool filled;
+	UINT mips, layers;
+	std::vector<VkBufferImageCopy> regions;
+};
+
+struct UploadCommands {
+	VkCommandPool pool;
+	VkCommandBuffer cmd;
+	UINT frame;
+};
+
+static std::vector<ImageBlock*> image_blocks;
+static std::unordered_map<ShimResource*, ModTexture> mod_textures;
+static std::vector<RetiredTexture> retired_textures;
+static std::vector<Upload> uploads;
+static std::vector<UploadCommands> upload_commands;
+static std::unordered_map<VkQueue, uint32_t> queue_families;
+static std::unordered_map<uint32_t, VkCommandPool> upload_pools;
+
+const UINT64 TEXTURE_BYTES_PER_FRAME = 64 << 20;
+static UINT64 texture_frame_bytes;
+static UINT texture_frame;
+
+void VkModsQueue(VkDevice device, VkQueue queue, uint32_t family)
+{
+	Dx12ShimLock();
+	if (device == mods_device)
+		queue_families[queue] = family;
+	Dx12ShimUnlock();
+}
+
+static ImageBlock* place_image(const VkMemoryRequirements *needed, VkDeviceSize *offset)
+{
+	const VkMemoryPropertyFlags wanted[] = { VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0 };
+	VkMemoryAllocateInfo info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+	VkDeviceSize alignment = max(needed->alignment, (VkDeviceSize)1);
+	ImageBlock *block;
+	uint32_t type;
+
+	for (ImageBlock *candidate : image_blocks) {
+		if (!candidate->live)
+			candidate->used = 0;
+		*offset = (candidate->used + alignment - 1) / alignment * alignment;
+		if ((needed->memoryTypeBits & 1u << candidate->type) && *offset + needed->size <= candidate->size) {
+			candidate->used = *offset + needed->size;
+			candidate->live++;
+			return candidate;
+		}
+	}
+
+	info.allocationSize = max(IMAGE_BLOCK_BYTES, needed->size);
+	for (VkMemoryPropertyFlags flags : wanted) {
+		for (type = 0; type < memory_properties.memoryTypeCount; type++) {
+			VkMemoryPropertyFlags has = memory_properties.memoryTypes[type].propertyFlags;
+
+			if (!(needed->memoryTypeBits & 1u << type) || (has & VK_MEMORY_PROPERTY_PROTECTED_BIT) || (has & flags) != flags)
+				continue;
+
+			block = new ImageBlock();
+			info.memoryTypeIndex = type;
+			if (api.AllocateMemory(mods_device, &info, NULL, &block->memory) != VK_SUCCESS) {
+				delete block;
+				continue;
+			}
+			block->type = type;
+			block->size = info.allocationSize;
+			block->used = needed->size;
+			block->live = 1;
+			image_blocks.push_back(block);
+			VkDumpNote("Mods: %llu MB of memory type %u (flags 0x%x) for the textures of the mods, block %Iu\n",
+				block->size >> 20, type, has, image_blocks.size());
+			*offset = 0;
+			return block;
+		}
+	}
+	return NULL;
+}
+
+static void destroy_texture(const ModTexture *texture)
+{
+	if (texture->view)
+		api.DestroyImageView(mods_device, texture->view, NULL);
+	if (texture->image)
+		api.DestroyImage(mods_device, texture->image, NULL);
+	if (texture->block)
+		texture->block->live--;
+}
+
+// A descriptor set made with the view of one is held for as long as a buffer
+// is after its last draw, and the view has to be there for longer than that
+// set: a view made after it may get its handle
+static void destroy_retired_textures(bool all)
+{
+	size_t kept = 0;
+
+	for (const RetiredTexture &retired : retired_textures) {
+		if (!all && vk_frame - retired.frame < MIRROR_KEEP_FRAMES + 4) {
+			retired_textures[kept++] = retired;
+			continue;
+		}
+		destroy_texture(&retired.texture);
+	}
+	retired_textures.resize(kept);
+
+	kept = 0;
+	for (const UploadCommands &commands : upload_commands) {
+		if (!all && vk_frame - commands.frame < MIRROR_KEEP_FRAMES) {
+			upload_commands[kept++] = commands;
+			continue;
+		}
+		api.FreeCommandBuffers(mods_device, commands.pool, 1, &commands.cmd);
+	}
+	upload_commands.resize(kept);
+}
+
+static bool make_image(ModTexture *texture, const D3D12_RESOURCE_DESC *desc, VkFormat format, const SpirvBinding *slot)
+{
+	VkImageCreateInfo info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	VkImageViewCreateInfo view_info = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+	VkMemoryRequirements needed;
+	VkDeviceSize offset;
+
+	// What the shader of the game samples there
+	if (slot->dim == 1) {
+		texture->view_type = slot->arrayed ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+	} else if (slot->dim == 3 && !slot->arrayed && desc->DepthOrArraySize >= 6 && desc->Width == desc->Height) {
+		texture->view_type = VK_IMAGE_VIEW_TYPE_CUBE;
+		info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+	} else {
+		return false;
+	}
+
+	info.imageType = VK_IMAGE_TYPE_2D;
+	info.format = format;
+	info.extent.width = (uint32_t)desc->Width;
+	info.extent.height = desc->Height;
+	info.extent.depth = 1;
+	info.mipLevels = desc->MipLevels;
+	info.arrayLayers = desc->DepthOrArraySize;
+	info.samples = VK_SAMPLE_COUNT_1_BIT;
+	info.tiling = VK_IMAGE_TILING_OPTIMAL;
+	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	if (api.CreateImage(mods_device, &info, NULL, &texture->image) != VK_SUCCESS) {
+		texture->image = VK_NULL_HANDLE;
+		return false;
+	}
+
+	api.GetImageMemoryRequirements(mods_device, texture->image, &needed);
+	texture->block = place_image(&needed, &offset);
+	if (!texture->block || api.BindImageMemory(mods_device, texture->image, texture->block->memory, offset) != VK_SUCCESS)
+		return false;
+
+	view_info.image = texture->image;
+	view_info.viewType = texture->view_type;
+	view_info.format = format;
+	view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	view_info.subresourceRange.levelCount = info.mipLevels;
+	view_info.subresourceRange.layerCount = texture->view_type == VK_IMAGE_VIEW_TYPE_CUBE ? 6
+		: texture->view_type == VK_IMAGE_VIEW_TYPE_2D ? 1 : info.arrayLayers;
+	if (api.CreateImageView(mods_device, &view_info, NULL, &texture->view) != VK_SUCCESS) {
+		texture->view = VK_NULL_HANDLE;
+		return false;
+	}
+
+	stats.textures_made++;
+	return true;
+}
+
+// Has a list of the shim copy what the resource holds to where it can be read,
+// and from there it goes to a buffer of the game's device for the image
+static bool fill_image(ModTexture *texture, ShimResource *resource, const D3D12_RESOURCE_DESC *desc)
+{
+	UINT count = desc->MipLevels * desc->DepthOrArraySize, i, y;
+	std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> layouts(count);
+	std::vector<UINT64> row_sizes(count);
+	std::vector<UINT> rows(count);
+	D3D12_TEXTURE_COPY_LOCATION dst = {}, src = {};
+	UINT64 total = 0, start, bytes = 0;
+	VkDeviceSize staging_offset;
+	Readback *readback;
+	Upload upload = {};
+	BYTE *staging;
+
+	dx12_shim->device->GetCopyableFootprints(desc, 0, count, 0, layouts.data(), rows.data(), row_sizes.data(), &total);
+	if (!total || total == UINT64_MAX)
+		return false;
+	// A row takes no more here than there, and a subresource starts at a
+	// multiple of the size of any block of texels
+	for (i = 0; i < count; i++)
+		bytes = ShimAlign(bytes, 16) + row_sizes[i] * rows[i];
+
+	staging = transient_bytes(bytes, bytes, &upload.buffer, &staging_offset);
+	readback = staging ? readback_space(total, &start) : NULL;
+	if (!readback)
+		return false;
+
+	// After this, so that what the engine has yet to write is written
+	Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+	src.pResource = resource->resource;
+	src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	dst.pResource = readback->resource;
+	dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+
+	bytes = 0;
+	for (i = 0; i < count; i++) {
+		const BYTE *from = readback->data + start + layouts[i].Offset;
+		UINT mip = i % desc->MipLevels;
+		VkBufferImageCopy region = {};
+
+		src.SubresourceIndex = i;
+		dst.PlacedFootprint = layouts[i];
+		dst.PlacedFootprint.Offset += start;
+		Dx12ShimList()->CopyTextureRegion(&dst, 0, 0, 0, &src, NULL);
+
+		bytes = ShimAlign(bytes, 16);
+		if (layouts[i].Footprint.RowPitch == row_sizes[i]) {
+			transfers.push_back({ from, staging + bytes, (size_t)(row_sizes[i] * rows[i]) });
+		} else {
+			for (y = 0; y < rows[i]; y++) {
+				transfers.push_back({ from + (size_t)y * layouts[i].Footprint.RowPitch,
+					staging + bytes + y * row_sizes[i], (size_t)row_sizes[i] });
+			}
+		}
+
+		region.bufferOffset = staging_offset + bytes;
+		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.imageSubresource.mipLevel = mip;
+		region.imageSubresource.baseArrayLayer = i / desc->MipLevels;
+		region.imageSubresource.layerCount = 1;
+		region.imageExtent.width = max((uint32_t)desc->Width >> mip, 1u);
+		region.imageExtent.height = max(desc->Height >> mip, 1u);
+		region.imageExtent.depth = 1;
+		upload.regions.push_back(region);
+		bytes += row_sizes[i] * rows[i];
+	}
+
+	upload.image = texture->image;
+	upload.filled = texture->filled;
+	upload.mips = desc->MipLevels;
+	upload.layers = desc->DepthOrArraySize;
+	uploads.push_back(std::move(upload));
+	transfers_pending = true;
+
+	texture->filled = true;
+	texture->version = resource->version;
+	stats.textures_bytes += bytes;
+	return true;
+}
+
+// The image for what a mod has set where the shader of the game samples a
+// texture, none if there cannot be one
+static VkImageView bring_texture(const ShimView *view, const SpirvBinding *slot)
+{
+	ShimResource *resource = view->resource;
+	D3D12_RESOURCE_DESC desc;
+	ModTexture *texture;
+	VkFormat format;
+	UINT64 copied;
+
+	if (!resource->resource || queue_families.empty())
+		return VK_NULL_HANDLE;
+
+	auto found = mod_textures.find(resource);
+	if (found != mod_textures.end()) {
+		texture = &found->second;
+		if (!texture->view)
+			return VK_NULL_HANDLE;
+		if (texture->filled && texture->version == resource->version && !resource->write_pending)
+			return texture->view;
+	} else {
+		desc = resource->resource->GetDesc();
+		format = vk_texture_format(view->format);
+		if (!format)
+			format = vk_texture_format(desc.Format);
+
+		texture = &mod_textures[resource];
+		resource->mirrored = true;
+		if (resource->dimension != D3D11_RESOURCE_DIMENSION_TEXTURE2D || desc.SampleDesc.Count != 1 || !format
+		    || !make_image(texture, &desc, format, slot)) {
+			destroy_texture(texture);
+			*texture = {};
+			stats.textures_failed++;
+			return VK_NULL_HANDLE;
+		}
+	}
+
+	// The rest of what a mod has just had loaded is there some frames
+	// later, rather than all of it after one frame that takes that long
+	if (texture_frame != vk_frame) {
+		texture_frame = vk_frame;
+		texture_frame_bytes = 0;
+	}
+	copied = stats.textures_bytes;
+	desc = resource->resource->GetDesc();
+	if (texture_frame_bytes >= TEXTURE_BYTES_PER_FRAME || !fill_image(texture, resource, &desc))
+		return texture->filled ? texture->view : VK_NULL_HANDLE;
+	texture_frame_bytes += stats.textures_bytes - copied;
+	return texture->view;
+}
+
+// With the lock of dx12/Bridge.h held, by the one using the queue
+static void submit_uploads(VkQueue queue)
+{
+	VkCommandPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+	VkCommandBufferAllocateInfo cmd_info = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+	VkCommandBufferBeginInfo begin = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+	VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+	VkCommandBuffer cmd;
+	VkCommandPool *pool;
+
+	if (uploads.empty() || !mods_device)
+		return;
+
+	auto family = queue_families.find(queue);
+	if (!dx12_shim || family == queue_families.end()) {
+		// Nothing can be done for them later either: the buffers they
+		// are in are given out again
+		uploads.clear();
+		return;
+	}
+
+	pool = &upload_pools[family->second];
+	pool_info.queueFamilyIndex = family->second;
+	cmd_info.commandBufferCount = 1;
+	cmd_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	if ((!*pool && api.CreateCommandPool(mods_device, &pool_info, NULL, pool) != VK_SUCCESS)
+	    || (cmd_info.commandPool = *pool, api.AllocateCommandBuffers(mods_device, &cmd_info, &cmd) != VK_SUCCESS)) {
+		uploads.clear();
+		return;
+	}
+	upload_commands.push_back({ *pool, cmd, vk_frame });
+
+	if (api.BeginCommandBuffer(cmd, &begin) != VK_SUCCESS) {
+		uploads.clear();
+		return;
+	}
+	for (const Upload &upload : uploads) {
+		VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+
+		barrier.srcAccessMask = upload.filled ? VK_ACCESS_SHADER_READ_BIT : 0;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.oldLayout = upload.filled ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = upload.image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = upload.mips;
+		barrier.subresourceRange.layerCount = upload.layers;
+		api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+			0, NULL, 0, NULL, 1, &barrier);
+
+		api.CmdCopyBufferToImage(cmd, upload.buffer, upload.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			(uint32_t)upload.regions.size(), upload.regions.data());
+
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+			0, NULL, 0, NULL, 1, &barrier);
+	}
+	uploads.clear();
+	if (api.EndCommandBuffer(cmd) != VK_SUCCESS)
+		return;
+
+	submit.commandBufferCount = 1;
+	submit.pCommandBuffers = &cmd;
+	api.QueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
+}
+
 void VkScopeForgetResource(ShimResource *resource)
 {
 	auto found = mirrors.find(resource);
+	auto texture = mod_textures.find(resource);
+
+	if (texture != mod_textures.end()) {
+		retired_textures.push_back({ texture->second, vk_frame });
+		mod_textures.erase(texture);
+	}
 	auto first = brought.lower_bound(std::make_tuple(resource, (UINT64)0, (UINT64)0));
 	auto last = first;
 
@@ -1649,7 +2175,23 @@ void VkModsForgetDevice(VkDevice device)
 		destroy_variants(true);
 		// What is still to be copied would be copied to memory that goes
 		transfers.clear();
+		uploads.clear();
 		transfers_pending = false;
+		for (auto &texture : mod_textures) {
+			texture.first->mirrored = false;
+			destroy_texture(&texture.second);
+		}
+		mod_textures.clear();
+		destroy_retired_textures(true);
+		for (auto &pool : upload_pools)
+			api.DestroyCommandPool(mods_device, pool.second, NULL);
+		upload_pools.clear();
+		queue_families.clear();
+		for (ImageBlock *block : image_blocks) {
+			api.FreeMemory(mods_device, block->memory, NULL);
+			delete block;
+		}
+		image_blocks.clear();
 		brought.clear();
 		for (Transient &transient : transients)
 			api.DestroyBuffer(mods_device, transient.buffer, NULL);
@@ -2091,8 +2633,8 @@ struct GameSet {
 	UINT64 generation;
 };
 
-// Binding, buffer, offset and range
-typedef std::tuple<UINT, VkBuffer, VkDeviceSize, VkDeviceSize> SetReplacement;
+// Binding, and either buffer, offset and range or the view of an image
+typedef std::tuple<UINT, VkBuffer, VkDeviceSize, VkDeviceSize, VkImageView> SetReplacement;
 // The set of the game, how often that had been written, and what is other
 // than in it
 typedef std::tuple<VkDescriptorSet, UINT64, std::vector<SetReplacement>> ModSetKey;
@@ -2166,6 +2708,7 @@ static VkDescriptorSet mod_set(const GameSet *game, const std::vector<SetReplace
 	const std::vector<SetBinding> &bindings = game->layout->bindings;
 	ModSetKey key(game->set, game->generation, replacements);
 	std::vector<VkDescriptorBufferInfo> buffers;
+	std::vector<VkDescriptorImageInfo> images;
 	std::vector<VkWriteDescriptorSet> writes;
 	std::vector<VkCopyDescriptorSet> copies;
 	VkDescriptorSet set;
@@ -2183,6 +2726,7 @@ static VkDescriptorSet mod_set(const GameSet *game, const std::vector<SetReplace
 
 	// Pointed at by the writes
 	buffers.reserve(replacements.size());
+	images.reserve(replacements.size());
 	for (binding = 0; binding < bindings.size(); binding++) {
 		const SetReplacement *replaced = NULL;
 
@@ -2196,12 +2740,17 @@ static VkDescriptorSet mod_set(const GameSet *game, const std::vector<SetReplace
 		if (replaced) {
 			VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
 
-			buffers.push_back({ std::get<1>(*replaced), std::get<2>(*replaced), std::get<3>(*replaced) });
 			write.dstSet = set;
 			write.dstBinding = binding;
 			write.descriptorCount = 1;
 			write.descriptorType = bindings[binding].type;
-			write.pBufferInfo = &buffers.back();
+			if (std::get<4>(*replaced)) {
+				images.push_back({ VK_NULL_HANDLE, std::get<4>(*replaced), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL });
+				write.pImageInfo = &images.back();
+			} else {
+				buffers.push_back({ std::get<1>(*replaced), std::get<2>(*replaced), std::get<3>(*replaced) });
+				write.pBufferInfo = &buffers.back();
+			}
 			writes.push_back(write);
 		} else if (!bindings[binding].fixed) {
 			VkCopyDescriptorSet copy = { VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET };
@@ -3122,12 +3671,14 @@ static bool mod_draw_possible(const ShimState *mod)
 	return true;
 }
 
-const UINT MAX_REPLACED = 16;
+const UINT MAX_REPLACED = 32;
 
-// A buffer of a mod where a shader of the game reads one
+// A buffer of a mod where a shader of the game reads one, or a texture of a
+// mod where it samples one
 struct Replaced {
 	const SpirvBinding *slot;
 	ModBuffer buffer;
+	VkImageView view;
 };
 
 // What the mod has set for the stages before the pixel shader goes with its
@@ -3184,6 +3735,21 @@ static bool collect_replaced(const ShimState *mod, Replaced *replaced, UINT *cou
 			replaced[(*count)++].slot = &shader->cbs[slot];
 		}
 
+		for (i = 0; stage == DX12_STAGE_PS && shader && i < shader->views.size() && i < SHIM_SRV_SLOTS; i++) {
+			ShimView *view;
+
+			if (!(state->srv_mask[i / 32] & 1u << (i % 32)) || state->srvs[i] == ini_params)
+				continue;
+			view = ShimViewOf(state->srvs[i]);
+			if (shader->views[i].kind != SPIRV_TEXTURE || !view || *count == MAX_REPLACED)
+				continue;
+			replaced[*count].view = bring_texture(view, &shader->views[i]);
+			if (!replaced[*count].view)
+				continue;
+			stats.textures_set++;
+			replaced[(*count)++].slot = &shader->views[i];
+		}
+
 		for (i = 0; stage != DX12_STAGE_PS && i < SHIM_SRV_SLOTS; i++) {
 			ShimView *view;
 
@@ -3228,7 +3794,7 @@ static bool collect_replaced(const ShimState *mod, Replaced *replaced, UINT *cou
 static bool replace_buffers(const ShimState *mod, ModDraw *draw)
 {
 	const CmdState *game = &scope->state;
-	Replaced replaced[MAX_REPLACED];
+	Replaced replaced[MAX_REPLACED] = {};
 	std::vector<SetReplacement> descriptors;
 	const char *why = NULL;
 	UINT i, count = 0, set;
@@ -3268,12 +3834,18 @@ static bool replace_buffers(const ShimState *mod, ModDraw *draw)
 			if (replaced[i].slot->set != set)
 				continue;
 			binding = number < found->layout->bindings.size() ? &found->layout->bindings[number] : NULL;
+			if (replaced[i].view) {
+				// Without it the draw only looks wrong
+				if (binding && binding->type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE && binding->count == 1)
+					descriptors.emplace_back(number, VkBuffer(), (VkDeviceSize)0, (VkDeviceSize)0, replaced[i].view);
+				continue;
+			}
 			if (!binding || !binding->buffer || binding->count != 1) {
 				why = "the layout of the descriptor set has no buffer by itself at the binding of one the mod has set";
 				break;
 			}
 			if (!binding->dynamic) {
-				descriptors.emplace_back(number, buffer->buffer, buffer->offset, buffer->range);
+				descriptors.emplace_back(number, buffer->buffer, buffer->offset, buffer->range, VkImageView());
 				continue;
 			}
 
@@ -3290,7 +3862,7 @@ static bool replace_buffers(const ShimState *mod, ModDraw *draw)
 				draw->dynamic[set][binding->first_dynamic] = (uint32_t)(buffer->offset - bound->offset);
 			} else if (buffer->offset <= UINT32_MAX) {
 				draw->dynamic[set][binding->first_dynamic] = (uint32_t)buffer->offset;
-				descriptors.emplace_back(number, buffer->buffer, (VkDeviceSize)0, buffer->range);
+				descriptors.emplace_back(number, buffer->buffer, (VkDeviceSize)0, buffer->range, VkImageView());
 			} else {
 				why = "a buffer the mod has set is too far into the buffer it is in for an offset";
 			}
@@ -3530,6 +4102,10 @@ static void report()
 		"kept to be made again, %u could not be, the first structure not known: %d\n",
 		stats.variants_made, stats.variants_failed, stats.variant_ticks * per_frame, recipes_kept, recipes_failed,
 		(int)recipe_unknown_structure);
+	VkDumpNote("  Textures of mods for the pixel shaders of the game: set %u times, %u images made (%llu KB copied), %u could not be; "
+		"%Iu held in %Iu blocks of memory\n",
+		stats.textures_set, stats.textures_made, stats.textures_bytes >> 10, stats.textures_failed, mod_textures.size(),
+		image_blocks.size());
 	VkDumpNote("  The draws were stopped for because of: settings %u, a pipeline not looked at yet, command lists doing more than asking "
 		"or a condition of one %u, an index count a section asks for %u, a constant buffer a list asks for %u; "
 		"about %u more were not stopped for\n",
@@ -3541,7 +4117,7 @@ static void report()
 	ReleaseSRWLockExclusive(&descriptor_lock);
 }
 
-void VkModsPresent()
+void VkModsPresent(VkQueue queue)
 {
 	static bool no_engine_reported, engine_reported, device_removed_reported;
 	HRESULT removed;
@@ -3572,7 +4148,7 @@ void VkModsPresent()
 	}
 
 	// Whatever was recorded with them has been handed to a queue by now
-	finish_transfers();
+	finish_transfers(queue);
 	brought.clear();
 	if (!(vk_frame & 255))
 		release_readbacks();
@@ -3581,6 +4157,8 @@ void VkModsPresent()
 	forget_unused_constants(false);
 	if (mods_device) {
 		destroy_retired_mirrors(false);
+		destroy_retired_textures(false);
+		destroy_big_transients();
 		release_unused_mod_sets();
 		destroy_variants(false);
 	}

@@ -16,6 +16,8 @@
 // command buffer first, which is what the continuation is found by.
 #define VK_DEVICE_FUNCS(X) \
 	X(DestroyDevice) \
+	X(GetDeviceQueue) \
+	X(GetDeviceQueue2) \
 	X(CreateShaderModule) \
 	X(DestroyShaderModule) \
 	X(CreateGraphicsPipelines) \
@@ -125,6 +127,20 @@ static void VKAPI_CALL Hooked_vkDestroyDevice(VkDevice device, const VkAllocatio
 	}
 
 	next(device, allocator);
+}
+
+static void VKAPI_CALL Hooked_vkGetDeviceQueue(VkDevice device, uint32_t family, uint32_t index, VkQueue *queue)
+{
+	next_GetDeviceQueue(device)(device, family, index, queue);
+	if (vk_mods_active && queue && *queue)
+		VkModsQueue(device, *queue, family);
+}
+
+static void VKAPI_CALL Hooked_vkGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2 *info, VkQueue *queue)
+{
+	next_GetDeviceQueue2(device)(device, info, queue);
+	if (vk_mods_active && info && queue && *queue)
+		VkModsQueue(device, *queue, info->queueFamilyIndex);
 }
 
 static VkResult VKAPI_CALL Hooked_vkCreateShaderModule(VkDevice device, const VkShaderModuleCreateInfo *info,
@@ -470,14 +486,14 @@ static void VKAPI_CALL Hooked_vkCmdDispatch(VkCommandBuffer cmd, uint32_t x, uin
 static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence)
 {
 	if (vk_mods_active)
-		VkModsBeforeSubmit();
+		VkModsBeforeSubmit(queue);
 	return next_QueueSubmit(queue)(queue, count, submits, fence);
 }
 
 static VkResult VKAPI_CALL Hooked_vkQueueSubmit2(VkQueue queue, uint32_t count, const VkSubmitInfo2 *submits, VkFence fence)
 {
 	if (vk_mods_active)
-		VkModsBeforeSubmit();
+		VkModsBeforeSubmit(queue);
 	return next_QueueSubmit2(queue)(queue, count, submits, fence);
 }
 
@@ -487,7 +503,7 @@ static VkResult VKAPI_CALL Hooked_vkQueuePresentKHR(VkQueue queue, const VkPrese
 	if (vk_dump_active)
 		VkDumpPresent();
 	if (vk_mods_active)
-		VkModsPresent();
+		VkModsPresent(queue);
 	return next_QueuePresentKHR(queue)(queue, info);
 }
 
@@ -576,6 +592,21 @@ static void register_device(VkDevice device, VkPhysicalDevice physical_device)
 		api.AllocateDescriptorSets = next.AllocateDescriptorSets;
 		api.UpdateDescriptorSets = next.UpdateDescriptorSets;
 		api.CmdBindDescriptorSets = next.CmdBindDescriptorSets;
+		api.CreateImage = (PFN_vkCreateImage)get(device, "vkCreateImage");
+		api.DestroyImage = (PFN_vkDestroyImage)get(device, "vkDestroyImage");
+		api.GetImageMemoryRequirements = (PFN_vkGetImageMemoryRequirements)get(device, "vkGetImageMemoryRequirements");
+		api.BindImageMemory = (PFN_vkBindImageMemory)get(device, "vkBindImageMemory");
+		api.CreateImageView = (PFN_vkCreateImageView)get(device, "vkCreateImageView");
+		api.DestroyImageView = (PFN_vkDestroyImageView)get(device, "vkDestroyImageView");
+		api.CreateCommandPool = (PFN_vkCreateCommandPool)get(device, "vkCreateCommandPool");
+		api.DestroyCommandPool = (PFN_vkDestroyCommandPool)get(device, "vkDestroyCommandPool");
+		api.AllocateCommandBuffers = (PFN_vkAllocateCommandBuffers)get(device, "vkAllocateCommandBuffers");
+		api.FreeCommandBuffers = (PFN_vkFreeCommandBuffers)get(device, "vkFreeCommandBuffers");
+		api.BeginCommandBuffer = next.BeginCommandBuffer;
+		api.EndCommandBuffer = (PFN_vkEndCommandBuffer)get(device, "vkEndCommandBuffer");
+		api.CmdPipelineBarrier = (PFN_vkCmdPipelineBarrier)get(device, "vkCmdPipelineBarrier");
+		api.CmdCopyBufferToImage = (PFN_vkCmdCopyBufferToImage)get(device, "vkCmdCopyBufferToImage");
+		api.QueueSubmit = next.QueueSubmit;
 		api.CmdDraw = next.CmdDraw;
 		api.CmdDrawIndexed = next.CmdDrawIndexed;
 		VkModsDevice(device, physical_device, &api);

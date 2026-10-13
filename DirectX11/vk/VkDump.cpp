@@ -79,7 +79,7 @@ static const char *const csv_headers[CSV_COUNT] = {
 		"ib,ib_offset,index_type,ib_range,ib_bytes,ib_hash,"
 		"vb0,vb0_offset,vb0_stride,vb0_range,vb0_bytes,vb0_hash,vb0_hash_srv,"
 		"ib_buffer_bytes,ib_usage,ib_mapped,vb0_buffer_bytes,vb0_usage,vb0_mapped\n",
-	"frame,buffer,offset,bytes,first_index,index_count,region_hash\n",
+	"frame,buffer,offset,bytes,first_index,index_count,region_hash,previous_hash\n",
 	"",
 };
 
@@ -217,11 +217,14 @@ struct IndexRegion {
 };
 struct ProbedRegion {
 	uint32_t first, count;
-	bool done;
+	// What the region hashed to the last time, as the game may write it
+	// again without anything telling
+	uint32_t hash;
+	bool hashed;
 };
 static std::map<IndexRegion, ProbedRegion> probe_regions;
 static std::unordered_set<uint32_t> region_hashes;
-static unsigned probed, probe_unmapped;
+static unsigned probed, probe_unmapped, probe_changed;
 const VkDeviceSize PROBE_MAX_BYTES = 64 << 20;
 
 static bool dump_path(const wchar_t *name, wchar_t *path)
@@ -911,15 +914,10 @@ static void probe_index_buffers()
 		VkDeviceSize start;
 		uint32_t hash;
 
-		if (probe->done)
-			continue;
-		probe->done = true;
-		probed++;
-
 		auto info = buffers.find(region->buffer);
 		if (info == buffers.end() || !info->second.memory || region->bytes > PROBE_MAX_BYTES
 		    || region->offset + region->bytes > info->second.size) {
-			probe_unmapped++;
+			probe_unmapped += !probe->hashed;
 			continue;
 		}
 		auto mapping = mappings.find(info->second.memory);
@@ -927,17 +925,27 @@ static void probe_index_buffers()
 		if (mapping == mappings.end() || !mapping->second.data || start < mapping->second.offset
 		    || (mapping->second.size != VK_WHOLE_SIZE
 			&& start + region->bytes > mapping->second.offset + mapping->second.size)) {
-			probe_unmapped++;
+			probe_unmapped += !probe->hashed;
 			continue;
 		}
 
 		hash = Dx12Crc32cWriteCombined(0, mapping->second.data + (start - mapping->second.offset), (size_t)region->bytes);
+		if (probe->hashed && probe->hash == hash)
+			continue;
 		region_hashes.insert(hash);
 
+		// A line for every hash a region has had
 		if (file) {
-			fprintf(file, "%u,%p,%llu,%llu,%u,%u,%08x\n", vk_frame, region->buffer, region->offset, region->bytes,
-				probe->first, probe->count, hash);
+			fprintf(file, "%u,%p,%llu,%llu,%u,%u,%08x,%08x\n", vk_frame, region->buffer, region->offset, region->bytes,
+				probe->first, probe->count, hash, probe->hashed ? probe->hash : 0);
 		}
+
+		if (probe->hashed)
+			probe_changed++;
+		else
+			probed++;
+		probe->hash = hash;
+		probe->hashed = true;
 	}
 
 	ReleaseSRWLockShared(&buffer_lock);
@@ -1002,8 +1010,8 @@ static void hash_report()
 			count_in_ini(buffer_hashes[i], G->mTextureOverrideMap), buffer_bind_names[i]);
 	}
 
-	REPORT("  Index regions of draws read from mapped memory: %u hashed, %u not mapped. %Iu distinct hashes, %Iu of them a TextureOverride hash\n",
-		probed - probe_unmapped, probe_unmapped, region_hashes.size(),
+	REPORT("  Index regions of draws read from mapped memory: %u hashed, %u not mapped, %u times one had changed since. %Iu distinct hashes, %Iu of them a TextureOverride hash\n",
+		probed, probe_unmapped, probe_changed, region_hashes.size(),
 		count_in_ini(region_hashes, G->mTextureOverrideMap));
 
 	if (sample_finished) {

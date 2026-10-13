@@ -142,6 +142,9 @@ struct ShimResource {
 	// The shadow of a constant buffer of a Vulkan game is yet to be read
 	// from where the game has the contents, see ShimReadShadow
 	bool shadow_pending;
+	// And the resource is yet to be given what the shadow then holds, see
+	// ShimUploadShadow
+	bool upload_pending;
 	// The same for use by the game's lists, where the upload has to
 	// outlive our submissions. Referenced.
 	ID3D12Resource *game_upload;

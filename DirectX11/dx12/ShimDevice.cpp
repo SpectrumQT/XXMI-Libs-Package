@@ -275,6 +275,16 @@ bool ShimBufferToGpu(ShimResource *resource)
 	return ShimWriteBuffer(resource, 0, resource->shadow.data(), resource->shadow.size());
 }
 
+void ShimUploadShadow(ShimResource *resource)
+{
+	if (!resource->upload_pending)
+		return;
+
+	resource->upload_pending = false;
+	ShimReadShadow(resource);
+	ShimWriteBuffer(resource, 0, resource->shadow.data(), min((UINT64)resource->shadow.size(), resource->desc.Width));
+}
+
 HRESULT STDMETHODCALLTYPE ShimDevice::CreateBuffer(const D3D11_BUFFER_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData, ID3D11Buffer **ppBuffer)
 {
 	const UINT address_binds = D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER;

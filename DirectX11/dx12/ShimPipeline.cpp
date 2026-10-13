@@ -3,6 +3,7 @@
 #include <map>
 #include <unordered_map>
 
+#include "ShimDevice.h"
 #include "util.h"
 
 // The shaders of mods are D3D11 shaders: every stage has its own registers,
@@ -306,6 +307,7 @@ static void write_srv(const ShimShader *shader, ID3D11ShaderResourceView *srv, U
 		return;
 	}
 
+	ShimUploadShadow(view->resource);
 	Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 	dx12_shim->device->CopyDescriptorsSimple(1, handle, view->handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 }

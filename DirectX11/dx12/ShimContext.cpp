@@ -1020,6 +1020,7 @@ static void copy_buffer(ID3D11Resource *dst11, UINT64 dst_offset, ID3D11Resource
 		return;
 	size = min(size, min(src_desc.byte_width - src_offset, dst_desc.byte_width - dst_offset));
 
+	ShimUploadShadow(src);
 	src_in_shadow = src->cpu_only && !src->readback_pending;
 	ShimReadShadow(src, src_offset, size);
 	if (src->cpu_only && !src_in_shadow) {

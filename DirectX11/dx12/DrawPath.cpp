@@ -1747,6 +1747,9 @@ ID3D11ShaderResourceView* Dx12ScopeShaderResource(Dx12ShaderStage stage, UINT sl
 	Published *entry;
 	ShimShaderResourceView *srv;
 
+	if (!scope)
+		return VkScopeShaderResource(stage, slot);
+
 	// A table reaches as far as the root signature says, which goes for
 	// every shader it is used with. Past what this one declares the game
 	// need not have written anything, and what is there is left from
@@ -3479,10 +3482,16 @@ void HackerContext::Dx12PublishInputLayout()
 	std::vector<D3D11_INPUT_ELEMENT_DESC> elements;
 	ID3D11InputLayout *layout = NULL;
 
-	if (!scope || scope->compute || scope->skin || scope->game_layout)
+	if (!scope) {
+		if (!VkInDrawScope() || VkScopeGameLayout() || !VkScopeInputElements(&elements))
+			return;
+	} else if (scope->compute || scope->skin || scope->game_layout) {
 		return;
+	}
 
-	for (const Dx12InputElement &input : scope->pipeline->input_layout) {
+	for (size_t i = 0; scope && i < scope->pipeline->input_layout.size(); i++) {
+		const Dx12InputElement &input = scope->pipeline->input_layout[i];
+
 		elements.push_back({ input.semantic.c_str(), input.index, input.format, input.slot, input.offset,
 			input.per_instance ? D3D11_INPUT_PER_INSTANCE_DATA : D3D11_INPUT_PER_VERTEX_DATA, input.step_rate });
 	}
@@ -3494,7 +3503,10 @@ void HackerContext::Dx12PublishInputLayout()
 	}
 
 	IASetInputLayout(layout);
-	scope->game_layout = static_cast<HackerInputLayout*>(layout)->GetOrigInputLayout();
+	if (scope)
+		scope->game_layout = static_cast<HackerInputLayout*>(layout)->GetOrigInputLayout();
+	else
+		VkScopeSetGameLayout(static_cast<HackerInputLayout*>(layout)->GetOrigInputLayout());
 	layout->Release();
 }
 

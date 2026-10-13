@@ -21,6 +21,8 @@
 	X(CreateGraphicsPipelines) \
 	X(CreateComputePipelines) \
 	X(DestroyPipeline) \
+	X(DestroyPipelineLayout) \
+	X(DestroyRenderPass) \
 	X(CreateBuffer) \
 	X(DestroyBuffer) \
 	X(BindBufferMemory) \
@@ -37,9 +39,14 @@
 	X(CmdBindVertexBuffers) \
 	X(CmdBindIndexBuffer) \
 	X(CreateDescriptorSetLayout) \
+	X(DestroyDescriptorSetLayout) \
 	X(AllocateDescriptorSets) \
-	X(UpdateDescriptorSets) 	X(CreateDescriptorUpdateTemplate) 	X(UpdateDescriptorSetWithTemplate) \
+	X(UpdateDescriptorSets) \
+	X(CreateDescriptorUpdateTemplate) \
+	X(UpdateDescriptorSetWithTemplate) \
 	X(CmdBindDescriptorSets) \
+	X(QueueSubmit) \
+	X(QueueSubmit2) \
 	X(CmdDraw) \
 	X(CmdDrawIndexed) \
 	X(CmdDrawIndirect) \
@@ -136,6 +143,10 @@ static VkResult VKAPI_CALL Hooked_vkCreateShaderModule(VkDevice device, const Vk
 
 static void VKAPI_CALL Hooked_vkDestroyShaderModule(VkDevice device, VkShaderModule module, const VkAllocationCallbacks *allocator)
 {
+	// Kept, like the two below: a pipeline of the game may be made again
+	// for the vertices of a mod, of what it was created from
+	if (vk_mods_active)
+		return;
 	if (module && vk_dump_active)
 		VkDumpForgetShaderModule(module);
 	if (module && vk_mods_active)
@@ -181,6 +192,18 @@ static void VKAPI_CALL Hooked_vkDestroyPipeline(VkDevice device, VkPipeline pipe
 	if (pipeline && vk_mods_active)
 		VkModsForgetPipeline(pipeline);
 	next_DestroyPipeline(device)(device, pipeline, allocator);
+}
+
+static void VKAPI_CALL Hooked_vkDestroyPipelineLayout(VkDevice device, VkPipelineLayout layout, const VkAllocationCallbacks *allocator)
+{
+	if (!vk_mods_active)
+		next_DestroyPipelineLayout(device)(device, layout, allocator);
+}
+
+static void VKAPI_CALL Hooked_vkDestroyRenderPass(VkDevice device, VkRenderPass pass, const VkAllocationCallbacks *allocator)
+{
+	if (!vk_mods_active)
+		next_DestroyRenderPass(device)(device, pass, allocator);
 }
 
 static VkResult VKAPI_CALL Hooked_vkCreateBuffer(VkDevice device, const VkBufferCreateInfo *info,
@@ -350,6 +373,13 @@ static VkResult VKAPI_CALL Hooked_vkCreateDescriptorSetLayout(VkDevice device, c
 	return result;
 }
 
+static void VKAPI_CALL Hooked_vkDestroyDescriptorSetLayout(VkDevice device, VkDescriptorSetLayout layout, const VkAllocationCallbacks *allocator)
+{
+	if (layout && vk_mods_active)
+		VkModsForgetSetLayout(layout);
+	next_DestroyDescriptorSetLayout(device)(device, layout, allocator);
+}
+
 static VkResult VKAPI_CALL Hooked_vkAllocateDescriptorSets(VkDevice device, const VkDescriptorSetAllocateInfo *info, VkDescriptorSet *sets)
 {
 	VkResult result = next_AllocateDescriptorSets(device)(device, info, sets);
@@ -389,7 +419,7 @@ static void VKAPI_CALL Hooked_vkCmdBindDescriptorSets(VkCommandBuffer cmd, VkPip
 		uint32_t first, uint32_t count, const VkDescriptorSet *sets, uint32_t dynamic_count, const uint32_t *dynamic_offsets)
 {
 	if (vk_mods_active)
-		VkModsBindDescriptorSets(cmd, bind_point, first, count, sets, dynamic_count, dynamic_offsets);
+		VkModsBindDescriptorSets(cmd, bind_point, layout, first, count, sets, dynamic_count, dynamic_offsets);
 	next_CmdBindDescriptorSets(cmd)(cmd, bind_point, layout, first, count, sets, dynamic_count, dynamic_offsets);
 }
 
@@ -435,6 +465,20 @@ static void VKAPI_CALL Hooked_vkCmdDispatch(VkCommandBuffer cmd, uint32_t x, uin
 	if (vk_dump_active)
 		VkDumpDraw(cmd, "dispatch", x, y, z, 0);
 	next_CmdDispatch(cmd)(cmd, x, y, z);
+}
+
+static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence)
+{
+	if (vk_mods_active)
+		VkModsBeforeSubmit();
+	return next_QueueSubmit(queue)(queue, count, submits, fence);
+}
+
+static VkResult VKAPI_CALL Hooked_vkQueueSubmit2(VkQueue queue, uint32_t count, const VkSubmitInfo2 *submits, VkFence fence)
+{
+	if (vk_mods_active)
+		VkModsBeforeSubmit();
+	return next_QueueSubmit2(queue)(queue, count, submits, fence);
 }
 
 static VkResult VKAPI_CALL Hooked_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *info)
@@ -522,8 +566,16 @@ static void register_device(VkDevice device, VkPhysicalDevice physical_device)
 		api.BindBufferMemory = next.BindBufferMemory;
 		api.MapMemory = next.MapMemory;
 		api.FreeMemory = next.FreeMemory;
+		api.CreateGraphicsPipelines = next.CreateGraphicsPipelines;
+		api.DestroyPipeline = next.DestroyPipeline;
+		api.CmdBindPipeline = next.CmdBindPipeline;
 		api.CmdBindVertexBuffers = next.CmdBindVertexBuffers;
 		api.CmdBindIndexBuffer = next.CmdBindIndexBuffer;
+		api.CreateDescriptorPool = (PFN_vkCreateDescriptorPool)get(device, "vkCreateDescriptorPool");
+		api.DestroyDescriptorPool = (PFN_vkDestroyDescriptorPool)get(device, "vkDestroyDescriptorPool");
+		api.AllocateDescriptorSets = next.AllocateDescriptorSets;
+		api.UpdateDescriptorSets = next.UpdateDescriptorSets;
+		api.CmdBindDescriptorSets = next.CmdBindDescriptorSets;
 		api.CmdDraw = next.CmdDraw;
 		api.CmdDrawIndexed = next.CmdDrawIndexed;
 		VkModsDevice(device, physical_device, &api);
@@ -584,6 +636,8 @@ static PFN_vkVoidFunction VKAPI_CALL Hooked_vkGetDeviceProcAddr(VkDevice device,
 		return (PFN_vkVoidFunction)Hooked_vkCreateDescriptorUpdateTemplate;
 	if (!strcmp(name, "vkUpdateDescriptorSetWithTemplateKHR") && dispatch->next.UpdateDescriptorSetWithTemplate)
 		return (PFN_vkVoidFunction)Hooked_vkUpdateDescriptorSetWithTemplate;
+	if (!strcmp(name, "vkQueueSubmit2KHR") && dispatch->next.QueueSubmit2)
+		return (PFN_vkVoidFunction)Hooked_vkQueueSubmit2;
 
 	return real;
 }

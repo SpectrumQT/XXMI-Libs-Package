@@ -1,6 +1,6 @@
 #include "VkDrawPath.h"
 
-#include <smmintrin.h>
+#include <immintrin.h>
 
 #include <map>
 #include <memory>
@@ -52,6 +52,13 @@ static struct {
 	UINT64 mirrored_bytes;
 	unsigned constants_shown, constants_read, constants_unmapped, constants_unbound;
 	UINT64 constants_bytes, constants_ticks;
+	unsigned views_shown, views_missing;
+	// Buffers of mods brought over for a shader of the game to read, of
+	// which from the GPU, and what that took
+	unsigned brought, brought_from_gpu, sets_made, submits_waited;
+	UINT64 brought_bytes, submit_ticks;
+	unsigned variants_made, variants_failed;
+	UINT64 variant_ticks;
 	UINT64 wait_ticks, engine_ticks;
 } stats;
 
@@ -95,7 +102,27 @@ struct ShaderLayout {
 	ShaderBindings *declared;
 };
 
+// What a pipeline was created from, with everything it points at
+struct PipelineRecipe {
+	std::vector<std::unique_ptr<BYTE[]>> memory;
+	VkGraphicsPipelineCreateInfo info;
+};
+
+// A pipeline made of that for a mod: by the input layout the mod has set, 0
+// for the game's, and the strides of its vertex buffers. No pipeline if none
+// could be made.
+struct PipelineVariant {
+	UINT64 layout;
+	UINT strides[MAX_VBS];
+	VkPipeline pipeline;
+};
+
 struct Pipeline {
+	VkPipeline handle;
+	// NULL if it could not be kept. This and the variants with
+	// registry_lock held.
+	std::shared_ptr<PipelineRecipe> recipe;
+	std::vector<PipelineVariant> variants;
 	// By Dx12ShaderStage, 0 where it has none
 	UINT64 shaders[DX12_STAGE_COUNT];
 	ShaderLayout *layouts[DX12_STAGE_COUNT];
@@ -125,6 +152,12 @@ static std::unordered_map<VkPipeline, Pipeline*> pipelines;
 // A command buffer may be left pointing at the pipeline it had bound when
 // that is destroyed, so these are never freed, only used again
 static std::vector<Pipeline*> spare_pipelines;
+// The variants of pipelines the game has destroyed, until the next frame
+static std::vector<VkPipeline> dead_variants;
+// For the report: pipelines kept to be made again, those that could not be,
+// and the first structure met that is not known here
+static unsigned recipes_kept, recipes_failed;
+static volatile LONG recipe_unknown_structure;
 // Every shader a pipeline was created with, in the order they turned up, and
 // the stages each was seen for
 static std::vector<SeenShader> seen_shaders;
@@ -205,6 +238,202 @@ static const void* find_in_chain(const void *chain, VkStructureType type)
 	return next;
 }
 
+template <typename T> static T* keep(PipelineRecipe *recipe, const T *from, size_t count = 1)
+{
+	BYTE *copy;
+
+	if (!from || !count)
+		return NULL;
+	copy = new BYTE[count * sizeof(T)];
+	memcpy(copy, from, count * sizeof(T));
+	recipe->memory.emplace_back(copy);
+	return (T*)copy;
+}
+
+// The structures a chain may have that are kept as they are
+static const struct {
+	VkStructureType type;
+	size_t size;
+} flat_structures[] = {
+	{ VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR, sizeof(VkPipelineCreateFlags2CreateInfoKHR) },
+	{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT, sizeof(VkPipelineRasterizationDepthClipStateCreateInfoEXT) },
+	{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT, sizeof(VkPipelineRasterizationLineStateCreateInfoEXT) },
+	{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT, sizeof(VkPipelineRasterizationProvokingVertexStateCreateInfoEXT) },
+	{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_CONSERVATIVE_STATE_CREATE_INFO_EXT, sizeof(VkPipelineRasterizationConservativeStateCreateInfoEXT) },
+	{ VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_DOMAIN_ORIGIN_STATE_CREATE_INFO, sizeof(VkPipelineTessellationDomainOriginStateCreateInfo) },
+	{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_ADVANCED_STATE_CREATE_INFO_EXT, sizeof(VkPipelineColorBlendAdvancedStateCreateInfoEXT) },
+	{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO, sizeof(VkPipelineShaderStageRequiredSubgroupSizeCreateInfo) },
+	{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT, sizeof(VkPipelineViewportDepthClipControlCreateInfoEXT) },
+};
+
+// False for a chain with something in it that is not known here
+static bool keep_chain(PipelineRecipe *recipe, const void **chain)
+{
+	const VkBaseInStructure *next = (const VkBaseInStructure*)*chain;
+	VkBaseInStructure *copy, *last = NULL;
+	const void *first = NULL;
+
+	for (; next; next = next->pNext) {
+		copy = NULL;
+		// Written to by the device
+		if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO)
+			continue;
+		if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO) {
+			VkPipelineRenderingCreateInfo *rendering = keep(recipe, (const VkPipelineRenderingCreateInfo*)next);
+
+			rendering->pColorAttachmentFormats = keep(recipe, rendering->pColorAttachmentFormats, rendering->colorAttachmentCount);
+			copy = (VkBaseInStructure*)rendering;
+		}
+		for (const auto &flat : flat_structures) {
+			if (next->sType == flat.type)
+				copy = (VkBaseInStructure*)keep(recipe, (const BYTE*)next, flat.size);
+		}
+		if (!copy) {
+			InterlockedCompareExchange(&recipe_unknown_structure, next->sType, 0);
+			return false;
+		}
+
+		copy->pNext = NULL;
+		if (last)
+			last->pNext = copy;
+		else
+			first = copy;
+		last = copy;
+	}
+
+	*chain = first;
+	return true;
+}
+
+static bool keep_recipe_parts(PipelineRecipe *recipe, const VkGraphicsPipelineCreateInfo *from)
+{
+	VkGraphicsPipelineCreateInfo *info = &recipe->info;
+	bool dynamic_viewports = false, dynamic_scissors = false;
+	VkPipelineShaderStageCreateInfo *stages;
+	uint32_t i;
+
+	*info = *from;
+	// Made by itself, and not to be had only if it is there already
+	info->flags &= ~(VK_PIPELINE_CREATE_DERIVATIVE_BIT | VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT
+		| VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT);
+	info->basePipelineHandle = VK_NULL_HANDLE;
+	info->basePipelineIndex = -1;
+	if (!keep_chain(recipe, &info->pNext))
+		return false;
+	if (!from->pStages || !from->stageCount || !from->pVertexInputState || !from->pInputAssemblyState || !from->pRasterizationState)
+		return false;
+
+	stages = keep(recipe, from->pStages, from->stageCount);
+	info->pStages = stages;
+	for (i = 0; i < from->stageCount; i++) {
+		if (!stages[i].module || !stages[i].pName || !keep_chain(recipe, &stages[i].pNext))
+			return false;
+		stages[i].pName = keep(recipe, stages[i].pName, strlen(stages[i].pName) + 1);
+		if (stages[i].pSpecializationInfo) {
+			VkSpecializationInfo *constants = keep(recipe, stages[i].pSpecializationInfo);
+
+			constants->pMapEntries = keep(recipe, constants->pMapEntries, constants->mapEntryCount);
+			constants->pData = keep(recipe, (const BYTE*)constants->pData, constants->dataSize);
+			stages[i].pSpecializationInfo = constants;
+		}
+	}
+
+	VkPipelineVertexInputStateCreateInfo *input = keep(recipe, from->pVertexInputState);
+	info->pVertexInputState = input;
+	if (input->pNext)
+		return false;
+	input->pVertexBindingDescriptions = keep(recipe, input->pVertexBindingDescriptions, input->vertexBindingDescriptionCount);
+	input->pVertexAttributeDescriptions = keep(recipe, input->pVertexAttributeDescriptions, input->vertexAttributeDescriptionCount);
+
+	VkPipelineInputAssemblyStateCreateInfo *assembly = keep(recipe, from->pInputAssemblyState);
+	info->pInputAssemblyState = assembly;
+	if (assembly->pNext)
+		return false;
+
+	if (from->pTessellationState) {
+		VkPipelineTessellationStateCreateInfo *tessellation = keep(recipe, from->pTessellationState);
+
+		info->pTessellationState = tessellation;
+		if (!keep_chain(recipe, &tessellation->pNext))
+			return false;
+	}
+
+	VkPipelineRasterizationStateCreateInfo *raster = keep(recipe, from->pRasterizationState);
+	info->pRasterizationState = raster;
+	if (!keep_chain(recipe, &raster->pNext))
+		return false;
+
+	if (from->pDynamicState) {
+		VkPipelineDynamicStateCreateInfo *dynamic = keep(recipe, from->pDynamicState);
+
+		info->pDynamicState = dynamic;
+		if (dynamic->pNext)
+			return false;
+		dynamic->pDynamicStates = keep(recipe, dynamic->pDynamicStates, dynamic->dynamicStateCount);
+		for (i = 0; i < dynamic->dynamicStateCount; i++) {
+			switch (dynamic->pDynamicStates[i]) {
+				case VK_DYNAMIC_STATE_VIEWPORT:
+				case VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT:
+					dynamic_viewports = true;
+					break;
+				case VK_DYNAMIC_STATE_SCISSOR:
+				case VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT:
+					dynamic_scissors = true;
+					break;
+				// The vertex input is not the pipeline's then
+				case VK_DYNAMIC_STATE_VERTEX_INPUT_EXT:
+				case VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE:
+					return false;
+			}
+		}
+	}
+
+	if (from->pViewportState) {
+		VkPipelineViewportStateCreateInfo *viewport = keep(recipe, from->pViewportState);
+
+		info->pViewportState = viewport;
+		if (!keep_chain(recipe, &viewport->pNext))
+			return false;
+		// Not looked at where they are set while the pipeline is bound
+		viewport->pViewports = dynamic_viewports ? NULL : keep(recipe, viewport->pViewports, viewport->viewportCount);
+		viewport->pScissors = dynamic_scissors ? NULL : keep(recipe, viewport->pScissors, viewport->scissorCount);
+	}
+	if (from->pMultisampleState) {
+		VkPipelineMultisampleStateCreateInfo *multisample = keep(recipe, from->pMultisampleState);
+
+		info->pMultisampleState = multisample;
+		if (multisample->pNext)
+			return false;
+		multisample->pSampleMask = keep(recipe, multisample->pSampleMask, ((size_t)multisample->rasterizationSamples + 31) / 32);
+	}
+	if (from->pDepthStencilState) {
+		VkPipelineDepthStencilStateCreateInfo *depth = keep(recipe, from->pDepthStencilState);
+
+		info->pDepthStencilState = depth;
+		if (depth->pNext)
+			return false;
+	}
+	if (from->pColorBlendState) {
+		VkPipelineColorBlendStateCreateInfo *blend = keep(recipe, from->pColorBlendState);
+
+		info->pColorBlendState = blend;
+		if (!keep_chain(recipe, &blend->pNext))
+			return false;
+		blend->pAttachments = keep(recipe, blend->pAttachments, blend->attachmentCount);
+	}
+	return true;
+}
+
+// A game need not give a valid pointer for a state its pipeline does not use
+static bool keep_recipe(PipelineRecipe *recipe, const VkGraphicsPipelineCreateInfo *from)
+{
+	__try {
+		return keep_recipe_parts(recipe, from);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
 void VkModsGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateInfo *info)
 {
 	const VkGraphicsPipelineLibraryCreateInfoEXT *library = (const VkGraphicsPipelineLibraryCreateInfoEXT*)
@@ -215,11 +444,22 @@ void VkModsGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 	const VkPipelineVertexInputStateCreateInfo *input = library ? NULL : info->pVertexInputState;
 	UINT64 shaders[DX12_STAGE_COUNT] = {};
 	ShaderLayout *layouts[DX12_STAGE_COUNT] = {};
+	std::shared_ptr<PipelineRecipe> recipe;
 	Pipeline *entry;
 	uint32_t i;
 	int stage;
 
+	if (!library) {
+		recipe = std::make_shared<PipelineRecipe>();
+		if (!keep_recipe(recipe.get(), info))
+			recipe.reset();
+	}
+
 	AcquireSRWLockExclusive(&registry_lock);
+	if (recipe)
+		recipes_kept++;
+	else
+		recipes_failed++;
 
 	for (i = 0; has_shaders && info->pStages && i < info->stageCount; i++) {
 		const VkPipelineShaderStageCreateInfo *created = &info->pStages[i];
@@ -261,6 +501,8 @@ void VkModsGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 		entry = spare_pipelines.back();
 		spare_pipelines.pop_back();
 	}
+	entry->handle = pipeline;
+	entry->recipe = recipe;
 	memcpy(entry->shaders, shaders, sizeof(shaders));
 	memcpy(entry->layouts, layouts, sizeof(layouts));
 	entry->vbs = 0;
@@ -297,6 +539,12 @@ void VkModsForgetPipeline(VkPipeline pipeline)
 	AcquireSRWLockExclusive(&registry_lock);
 	auto found = pipelines.find(pipeline);
 	if (found != pipelines.end()) {
+		for (const PipelineVariant &variant : found->second->variants) {
+			if (variant.pipeline)
+				dead_variants.push_back(variant.pipeline);
+		}
+		found->second->variants.clear();
+		found->second->recipe.reset();
 		spare_pipelines.push_back(found->second);
 		pipelines.erase(found);
 	}
@@ -577,7 +825,8 @@ static PublishedBuffer* publish_buffer(VkBuffer buffer, UINT bind_flags)
 // The constant buffers of the game
 //
 // A uniform block a draw reads is some bytes of a buffer the game writes
-// through mapped memory, other ones for every draw. The engine is given them
+// through mapped memory, other ones for every draw. A storage buffer is the
+// same with a stride, and is shown as a structured buffer with a view. The engine is given them
 // as a constant buffer of the shim that has those bytes for its contents, like
 // one a mod would have filled itself: a mod can read values from it, take the
 // hash of a part or bind it elsewhere, also to a shader of its own that runs
@@ -596,13 +845,16 @@ const UINT CONSTANTS_KEEP_FRAMES = 4;
 
 struct PublishedConstants {
 	ShimBuffer *object;
+	// Of a storage buffer
+	ID3D11ShaderResourceView *srv;
 	UINT used_frame;
 	bool shown;
 };
 
-typedef std::tuple<VkBuffer, VkDeviceSize, UINT> ConstantsKey;
+typedef std::tuple<VkBuffer, VkDeviceSize, UINT, UINT> ConstantsKey;
 
-// By buffer, offset and size, with the lock of dx12/Bridge.h held
+// By buffer, offset, size and the stride of a storage buffer, with the lock
+// of dx12/Bridge.h held
 static std::map<ConstantsKey, PublishedConstants> published_constants;
 
 // Where the shadow of one is read from, and the pages of it that have been
@@ -622,14 +874,17 @@ static void forget_constants(std::map<ConstantsKey, PublishedConstants>::iterato
 
 	// A mod may keep it
 	object->r.shadow_pending = false;
+	object->r.upload_pending = false;
 	constants_sources.erase(&object->r);
+	if ((*entry)->second.srv)
+		(*entry)->second.srv->Release();
 	object->Release();
 	*entry = published_constants.erase(*entry);
 }
 
 static void forget_dead_constants(VkBuffer buffer)
 {
-	auto i = published_constants.lower_bound(std::make_tuple(buffer, (VkDeviceSize)0, 0u));
+	auto i = published_constants.lower_bound(std::make_tuple(buffer, (VkDeviceSize)0, 0u, 0u));
 
 	while (i != published_constants.end() && std::get<0>(i->first) == buffer)
 		forget_constants(&i);
@@ -647,16 +902,100 @@ static void forget_unused_constants(bool all)
 	}
 }
 
+// From where a part of copy_mapped is worth a thread of its own, and how many
+// there are
+const size_t COPY_THREAD_BYTES = 1 << 20;
+const size_t COPY_THREADS = 4;
+
+// src is aligned to 32 bytes, and bytes a multiple of 32
+static void copy_mapped_wide(BYTE *dst, const BYTE *src, size_t bytes)
+{
+	for (; bytes; dst += 32, src += 32, bytes -= 32)
+		_mm256_storeu_si256((__m256i*)dst, _mm256_stream_load_si256((const __m256i*)src));
+	_mm256_zeroupper();
+}
+
+// The threads that take the parts of a large copy. They are kept: starting
+// one in a game takes about as long as the copy it is for. Whoever copies has
+// the lock of dx12/Bridge.h, so there is one copy at a time.
+static struct CopyWorker {
+	HANDLE thread, start, done;
+	BYTE *dst;
+	const BYTE *src;
+	size_t bytes;
+} copy_workers[COPY_THREADS - 1];
+
+static DWORD WINAPI copy_worker(void *argument)
+{
+	CopyWorker *worker = (CopyWorker*)argument;
+
+	for (;;) {
+		WaitForSingleObject(worker->start, INFINITE);
+		copy_mapped_wide(worker->dst, worker->src, worker->bytes);
+		SetEvent(worker->done);
+	}
+}
+
+static bool start_copy_workers()
+{
+	static bool tried;
+
+	if (tried)
+		return !!copy_workers[COPY_THREADS - 2].thread;
+	tried = true;
+
+	for (CopyWorker &worker : copy_workers) {
+		worker.start = CreateEvent(NULL, FALSE, FALSE, NULL);
+		worker.done = CreateEvent(NULL, FALSE, FALSE, NULL);
+		worker.thread = worker.start && worker.done ? CreateThread(NULL, 0, copy_worker, &worker, 0, NULL) : NULL;
+		// Those started stay idle
+		if (!worker.thread)
+			return false;
+	}
+	return true;
+}
+
 // The memory a device lets be mapped is write combined as a rule, which takes
-// hundreds of times as long to read the ordinary way as it does like this
+// hundreds of times as long to read the ordinary way as it does like this.
+// Memory of the GPU itself is slower still, and what is read of that is the
+// largest there is to read: several megabytes of bones every frame. Wider
+// loads and more threads each make up for a part of it.
 static void copy_mapped(BYTE *dst, const BYTE *src, size_t bytes)
 {
-	size_t head = min(bytes, (16 - ((size_t)src & 15)) & 15);
+	static const bool wide = !!IsProcessorFeaturePresent(PF_AVX2_INSTRUCTIONS_AVAILABLE);
+	size_t head = min(bytes, (32 - ((size_t)src & 31)) & 31);
+	size_t body, part, i;
+
+	if (!wide) {
+		head = min(bytes, (16 - ((size_t)src & 15)) & 15);
+		memcpy(dst, src, head);
+		for (dst += head, src += head, bytes -= head; bytes >= 16; dst += 16, src += 16, bytes -= 16)
+			_mm_storeu_si128((__m128i*)dst, _mm_stream_load_si128((__m128i*)src));
+		memcpy(dst, src, bytes);
+		return;
+	}
 
 	memcpy(dst, src, head);
-	for (dst += head, src += head, bytes -= head; bytes >= 16; dst += 16, src += 16, bytes -= 16)
-		_mm_storeu_si128((__m128i*)dst, _mm_stream_load_si128((__m128i*)src));
-	memcpy(dst, src, bytes);
+	dst += head;
+	src += head;
+	bytes -= head;
+	body = bytes & ~(size_t)31;
+
+	if (body >= COPY_THREAD_BYTES * 2 && start_copy_workers()) {
+		part = (body / COPY_THREADS) & ~(size_t)31;
+		for (i = 0; i < COPY_THREADS - 1; i++) {
+			copy_workers[i].dst = dst + i * part;
+			copy_workers[i].src = src + i * part;
+			copy_workers[i].bytes = part;
+			SetEvent(copy_workers[i].start);
+		}
+		copy_mapped_wide(dst + i * part, src + i * part, body - i * part);
+		for (CopyWorker &worker : copy_workers)
+			WaitForSingleObject(worker.done, INFINITE);
+	} else {
+		copy_mapped_wide(dst, src, body);
+	}
+	memcpy(dst + body, src + body, bytes - body);
 }
 
 // What the game has there now, zeroes if it no longer has it mapped. With the
@@ -700,11 +1039,14 @@ void VkScopeFillShadow(ShimResource *resource, UINT64 offset, UINT64 size)
 	for (page = (UINT)(offset / SHADOW_PAGE); (UINT64)page * SHADOW_PAGE < offset + size; page++) {
 		if (source->pages[page])
 			continue;
-		source->pages[page] = true;
-		source->pages_left--;
+		// With those after it in one go: a large read is a faster one
 		start = page * SHADOW_PAGE;
+		for (; (UINT64)page * SHADOW_PAGE < offset + size && !source->pages[page]; page++) {
+			source->pages[page] = true;
+			source->pages_left--;
+		}
 		read_constants(resource->shadow.data() + start, std::get<0>(source->key), std::get<1>(source->key) + start,
-			min(SHADOW_PAGE, bytes - start));
+			min(page * SHADOW_PAGE, bytes) - start);
 		read = true;
 	}
 	if (read)
@@ -713,10 +1055,12 @@ void VkScopeFillShadow(ShimResource *resource, UINT64 offset, UINT64 size)
 		resource->shadow_pending = false;
 }
 
-static ShimBuffer* publish_constants(VkBuffer buffer, VkDeviceSize offset, UINT bytes)
+static PublishedConstants* publish_constants(VkBuffer buffer, VkDeviceSize offset, UINT bytes, UINT stride)
 {
-	ConstantsKey key = std::make_tuple(buffer, offset, bytes);
+	ConstantsKey key = std::make_tuple(buffer, offset, bytes, stride);
 	auto found = published_constants.find(key);
+	D3D11_SHADER_RESOURCE_VIEW_DESC view_desc = {};
+	ID3D11ShaderResourceView *srv = NULL;
 	D3D11_BUFFER_DESC desc = {};
 	ID3D11Buffer *created = NULL;
 	ShimBuffer *object;
@@ -724,7 +1068,7 @@ static ShimBuffer* publish_constants(VkBuffer buffer, VkDeviceSize offset, UINT 
 
 	if (found != published_constants.end() && found->second.shown && found->second.used_frame == vk_frame) {
 		stats.constants_shown++;
-		return found->second.object;
+		return &found->second;
 	}
 
 	AcquireSRWLockShared(&memory_lock);
@@ -741,12 +1085,27 @@ static ShimBuffer* publish_constants(VkBuffer buffer, VkDeviceSize offset, UINT 
 		desc.Usage = D3D11_USAGE_DYNAMIC;
 		desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 		desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		if (stride) {
+			// With a resource: what reads it is a shader of a mod
+			desc.ByteWidth = bytes;
+			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+			desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+			desc.StructureByteStride = stride;
+		}
 		if (FAILED(dx12_shim->shim_device->CreateBuffer(&desc, NULL, &created)))
 			return NULL;
 		object = static_cast<ShimBuffer*>(created);
+		if (stride) {
+			view_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+			view_desc.Buffer.NumElements = bytes / stride;
+			if (FAILED(dx12_shim->shim_device->CreateShaderResourceView(object, &view_desc, &srv))) {
+				object->Release();
+				return NULL;
+			}
+		}
 		// What a D3D11 game's buffer of the size would have for its hash
 		register_buffer(object, crc32c_hw(0, &desc, sizeof(desc)));
-		found = published_constants.emplace(key, PublishedConstants{ object, 0, false }).first;
+		found = published_constants.emplace(key, PublishedConstants{ object, srv, 0, false }).first;
 		constants_sources[&object->r].key = key;
 	}
 	object = found->second.object;
@@ -759,7 +1118,12 @@ static ShimBuffer* publish_constants(VkBuffer buffer, VkDeviceSize offset, UINT 
 	source->pages.assign((bytes + SHADOW_PAGE - 1) / SHADOW_PAGE, false);
 	source->pages_left = (UINT)source->pages.size();
 	object->r.shadow_pending = true;
+	object->r.upload_pending = !object->r.cpu_only;
 	object->r.version++;
+	// A storage buffer is large, and nothing has asked for values of one
+	if (stride)
+		return &found->second;
+
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 	ResourceHandleInfo *handle = GetResourceHandleInfo(object);
 	if (handle) {
@@ -768,7 +1132,7 @@ static ShimBuffer* publish_constants(VkBuffer buffer, VkDeviceSize offset, UINT 
 		});
 	}
 	LeaveCriticalSection(&G->mCriticalSection);
-	return object;
+	return &found->second;
 }
 
 // -----------------------------------------------------------------------------
@@ -938,7 +1302,6 @@ static Mirror* mirror_of(ShimBuffer *buffer)
 		// The command buffers recorded so far draw what it held then
 		retire_mirror(&found->second);
 		mirrors.erase(found);
-		resource->mirrored = false;
 	}
 
 	info.size = min((size_t)buffer->mDesc.ByteWidth, resource->shadow.size());
@@ -967,15 +1330,287 @@ static Mirror* mirror_of(ShimBuffer *buffer)
 	return &(mirrors[resource] = mirror);
 }
 
+// -----------------------------------------------------------------------------
+// What a mod has a shader of the game read
+//
+// Constants a mod set for the vertex shader, or a buffer with the bones of a
+// skeleton it put together, in place of a buffer of the game. Those are other
+// contents for every draw, and as a rule ones the GPU wrote: with a shader of
+// the mod, which runs on the D3D12 device. So each gets a place of its own in
+// a buffer of the game's device, given out again some frames later, and what
+// is not known here is copied out of the D3D12 resource where the list of the
+// shim has got to. That copy is there once the list has been executed, which
+// the game's handing its command buffers to a queue waits for
+// (VkModsBeforeSubmit).
+
+const VkDeviceSize TRANSIENT_BYTES = 4 << 20;
+// More than a device asks a view of a buffer to be aligned to
+const VkDeviceSize TRANSIENT_ALIGNMENT = 256;
+
+struct Transient {
+	VkBuffer buffer;
+	BYTE *data;
+	VkDeviceSize size, used;
+	// The last it had anything given out
+	UINT frame;
+};
+
+static std::vector<Transient> transients;
+
+static Transient* new_transient(VkDeviceSize size)
+{
+	VkBufferCreateInfo info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	VkMemoryRequirements needed;
+	Transient transient = {};
+	VkDeviceSize offset;
+	Mirror placed = {};
+
+	info.size = max(size, TRANSIENT_BYTES);
+	info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	if (api.CreateBuffer(mods_device, &info, NULL, &transient.buffer) != VK_SUCCESS)
+		return NULL;
+
+	api.GetBufferMemoryRequirements(mods_device, transient.buffer, &needed);
+	if (!place_mirror(&placed, &needed, &offset)) {
+		api.DestroyBuffer(mods_device, transient.buffer, NULL);
+		return NULL;
+	}
+	if (api.BindBufferMemory(mods_device, transient.buffer, placed.block->memory, offset) != VK_SUCCESS) {
+		placed.block->live--;
+		api.DestroyBuffer(mods_device, transient.buffer, NULL);
+		return NULL;
+	}
+
+	transient.data = placed.block->data + offset;
+	transient.size = info.size;
+	transient.frame = vk_frame;
+	transients.push_back(transient);
+	return &transients.back();
+}
+
+// Memory of a buffer for what the draws recorded this frame read. reach is
+// how far from its start a shader may be told it can read, which is then
+// within the buffer.
+static BYTE* transient_bytes(VkDeviceSize bytes, VkDeviceSize reach, VkBuffer *buffer, VkDeviceSize *offset)
+{
+	Transient *found = NULL;
+	VkDeviceSize start = 0;
+	UINT frame = vk_frame;
+
+	for (Transient &transient : transients) {
+		if (transient.frame != frame) {
+			if (frame - transient.frame <= MIRROR_KEEP_FRAMES)
+				continue;
+			transient.frame = frame;
+			transient.used = 0;
+		}
+		start = (transient.used + TRANSIENT_ALIGNMENT - 1) & ~(TRANSIENT_ALIGNMENT - 1);
+		if (start + reach <= transient.size) {
+			found = &transient;
+			break;
+		}
+	}
+	if (!found) {
+		found = new_transient(reach);
+		start = 0;
+	}
+	if (!found)
+		return NULL;
+
+	found->used = start + bytes;
+	*buffer = found->buffer;
+	*offset = start;
+	return found->data + start;
+}
+
+struct Readback {
+	ID3D12Resource *resource;
+	const BYTE *data;
+	UINT64 size, used;
+};
+
+struct Transfer {
+	const BYTE *src;
+	BYTE *dst;
+	size_t bytes;
+};
+
+const UINT64 READBACK_BYTES = 1 << 20;
+
+static std::vector<Readback> readbacks;
+static std::vector<Transfer> transfers;
+// Read without the lock by the threads handing command buffers to a queue
+static volatile bool transfers_pending;
+
+static bool transfer_from_gpu(ShimResource *resource, UINT64 offset, UINT64 bytes, BYTE *dst)
+{
+	D3D12_HEAP_PROPERTIES heap = {};
+	D3D12_RESOURCE_DESC desc = {};
+	Readback *found = NULL;
+	Readback created = {};
+
+	if (!resource->resource || offset + bytes > resource->desc.Width)
+		return false;
+
+	for (Readback &readback : readbacks) {
+		if (readback.used + bytes <= readback.size) {
+			found = &readback;
+			break;
+		}
+	}
+	if (!found) {
+		heap.Type = D3D12_HEAP_TYPE_READBACK;
+		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		desc.Width = max(bytes, READBACK_BYTES);
+		desc.Height = 1;
+		desc.DepthOrArraySize = 1;
+		desc.MipLevels = 1;
+		desc.SampleDesc.Count = 1;
+		desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		if (FAILED(dx12_shim->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+				D3D12_RESOURCE_STATE_COPY_DEST, NULL, IID_PPV_ARGS(&created.resource))))
+			return false;
+		if (FAILED(created.resource->Map(0, NULL, (void**)&created.data))) {
+			created.resource->Release();
+			return false;
+		}
+		created.size = desc.Width;
+		readbacks.push_back(created);
+		found = &readbacks.back();
+	}
+
+	Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+	Dx12ShimList()->CopyBufferRegion(found->resource, found->used, resource->resource, offset, bytes);
+	transfers.push_back({ found->data + found->used, dst, (size_t)bytes });
+	found->used += bytes;
+	transfers_pending = true;
+	return true;
+}
+
+static void release_readbacks()
+{
+	for (Readback &readback : readbacks)
+		readback.resource->Release();
+	readbacks.clear();
+}
+
+// With the lock of dx12/Bridge.h held
+static void finish_transfers()
+{
+	UINT64 start;
+
+	if (transfers.empty())
+		return;
+
+	start = ticks();
+	if (dx12_shim) {
+		Dx12ShimSubmitAndWait();
+		for (const Transfer &transfer : transfers)
+			memcpy(transfer.dst, transfer.src, transfer.bytes);
+	}
+	transfers.clear();
+	for (Readback &readback : readbacks)
+		readback.used = 0;
+	transfers_pending = false;
+
+	stats.submits_waited++;
+	stats.submit_ticks += ticks() - start;
+}
+
+void VkModsBeforeSubmit()
+{
+	if (!transfers_pending)
+		return;
+
+	Dx12ShimLock();
+	finish_transfers();
+	Dx12ShimUnlock();
+}
+
+// Where a shader of the game is to read from, and how far
+struct ModBuffer {
+	VkBuffer buffer;
+	VkDeviceSize offset, range;
+};
+
+struct Brought {
+	// ShimResource::version of the contents
+	UINT64 version;
+	ModBuffer buffer;
+};
+
+// Those of this frame, by resource, offset and size: a mesh is drawn in parts
+// with the same of everything, and a skeleton is put together once for all
+// the meshes it moves
+static std::map<std::tuple<ShimResource*, UINT64, UINT64>, Brought> brought;
+
+static bool bring_buffer(ShimResource *resource, UINT64 offset, UINT64 bytes, UINT64 reach, ModBuffer *buffer)
+{
+	auto key = std::make_tuple(resource, offset, bytes);
+	const BYTE *data;
+	BYTE *dst;
+
+	// The game's own, or a part of it: that is where it is already
+	auto source = constants_sources.find(resource);
+	if (source != constants_sources.end()) {
+		const ConstantsKey &game = source->second.key;
+
+		if (offset >= std::get<2>(game))
+			return false;
+		buffer->buffer = std::get<0>(game);
+		buffer->offset = std::get<1>(game) + offset;
+		buffer->range = min(bytes, std::get<2>(game) - offset);
+		return true;
+	}
+
+	auto found = brought.find(key);
+	if (found != brought.end() && found->second.version == resource->version) {
+		*buffer = found->second.buffer;
+		return true;
+	}
+
+	reach = max(reach, bytes);
+	dst = transient_bytes(bytes, reach, &buffer->buffer, &buffer->offset);
+	if (!dst)
+		return false;
+	buffer->range = reach;
+
+	data = buffer_contents(resource);
+	if (data && offset + bytes <= resource->shadow.size()) {
+		memcpy(dst, data + offset, (size_t)bytes);
+	} else {
+		if (!transfer_from_gpu(resource, offset, bytes, dst))
+			return false;
+		stats.brought_from_gpu++;
+	}
+	stats.brought++;
+	stats.brought_bytes += bytes;
+
+	resource->mirrored = true;
+	brought[key] = { resource->version, *buffer };
+	return true;
+}
+
 void VkScopeForgetResource(ShimResource *resource)
 {
 	auto found = mirrors.find(resource);
+	auto first = brought.lower_bound(std::make_tuple(resource, (UINT64)0, (UINT64)0));
+	auto last = first;
+
+	// Its address may be that of another before the frame is over
+	while (last != brought.end() && std::get<0>(last->first) == resource)
+		++last;
+	brought.erase(first, last);
 
 	if (found == mirrors.end())
 		return;
 	retire_mirror(&found->second);
 	mirrors.erase(found);
 }
+
+static void destroy_mod_sets();
+static void destroy_variants(bool all);
 
 void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkModsApi *functions)
 {
@@ -1010,6 +1645,15 @@ void VkModsForgetDevice(VkDevice device)
 		}
 		mirrors.clear();
 		destroy_retired_mirrors(true);
+		destroy_mod_sets();
+		destroy_variants(true);
+		// What is still to be copied would be copied to memory that goes
+		transfers.clear();
+		transfers_pending = false;
+		brought.clear();
+		for (Transient &transient : transients)
+			api.DestroyBuffer(mods_device, transient.buffer, NULL);
+		transients.clear();
 		for (MirrorBlock *block : mirror_blocks) {
 			api.FreeMemory(mods_device, block->memory, NULL);
 			delete block;
@@ -1033,6 +1677,10 @@ const UINT MAX_BINDINGS = 256;
 
 struct SetBinding {
 	bool buffer, dynamic;
+	// Not what a set can be given from another: a sampler the layout has
+	// for good
+	bool fixed;
+	VkDescriptorType type;
 	UINT count;
 	// Of its first descriptor among those of the set that are buffers, and
 	// among those that are bound with an offset
@@ -1043,6 +1691,9 @@ struct DescriptorLayout {
 	// By binding number
 	std::vector<SetBinding> bindings;
 	UINT buffers, dynamic;
+	// What a pool needs for a set of it. None if a set like one of the
+	// game's cannot be made here.
+	std::vector<VkDescriptorPoolSize> pool_sizes;
 };
 
 struct SetBuffer {
@@ -1052,7 +1703,10 @@ struct SetBuffer {
 
 struct DescriptorSet {
 	std::shared_ptr<const DescriptorLayout> layout;
+	VkDescriptorSetLayout layout_handle;
 	std::vector<SetBuffer> buffers;
+	// Counts the times it was allocated or written
+	UINT64 generation;
 };
 
 static SRWLOCK descriptor_lock = SRWLOCK_INIT;
@@ -1074,7 +1728,11 @@ static bool is_buffer_descriptor(VkDescriptorType type)
 void VkModsSetLayout(VkDescriptorSetLayout handle, const VkDescriptorSetLayoutCreateInfo *info)
 {
 	std::shared_ptr<DescriptorLayout> layout = std::make_shared<DescriptorLayout>();
-	uint32_t i;
+	const VkDescriptorSetLayoutBindingFlagsCreateInfo *flags = (const VkDescriptorSetLayoutBindingFlagsCreateInfo*)
+		find_in_chain(info->pNext, VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
+	// Sets of the kinds that take a pool or an allocation of their kind
+	bool plain = !info->flags;
+	uint32_t i, counts[VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT + 1] = {};
 
 	layout->buffers = 0;
 	layout->dynamic = 0;
@@ -1082,15 +1740,28 @@ void VkModsSetLayout(VkDescriptorSetLayout handle, const VkDescriptorSetLayoutCr
 		const VkDescriptorSetLayoutBinding *described = &info->pBindings[i];
 		SetBinding *binding;
 
-		if (described->binding >= MAX_BINDINGS)
+		if (flags && i < flags->bindingCount && (flags->pBindingFlags[i]
+				& (VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT)))
+			plain = false;
+		if (described->binding >= MAX_BINDINGS || described->descriptorType > VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
+			plain = false;
 			continue;
+		}
+		counts[described->descriptorType] += described->descriptorCount;
+
 		if (layout->bindings.size() <= described->binding)
 			layout->bindings.resize(described->binding + 1);
 		binding = &layout->bindings[described->binding];
 		binding->buffer = is_buffer_descriptor(described->descriptorType);
 		binding->dynamic = described->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
 			|| described->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+		binding->fixed = described->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER && described->pImmutableSamplers;
+		binding->type = described->descriptorType;
 		binding->count = described->descriptorCount;
+	}
+	for (i = 0; plain && i < ARRAYSIZE(counts); i++) {
+		if (counts[i])
+			layout->pool_sizes.push_back({ (VkDescriptorType)i, counts[i] });
 	}
 	// The offsets a set is bound with are in the order of its bindings
 	for (SetBinding &binding : layout->bindings) {
@@ -1109,6 +1780,13 @@ void VkModsSetLayout(VkDescriptorSetLayout handle, const VkDescriptorSetLayoutCr
 	ReleaseSRWLockExclusive(&descriptor_lock);
 }
 
+void VkModsForgetSetLayout(VkDescriptorSetLayout handle)
+{
+	AcquireSRWLockExclusive(&descriptor_lock);
+	set_layouts.erase(handle);
+	ReleaseSRWLockExclusive(&descriptor_lock);
+}
+
 void VkModsSetsAllocated(const VkDescriptorSetAllocateInfo *info, const VkDescriptorSet *sets)
 {
 	uint32_t i;
@@ -1122,6 +1800,8 @@ void VkModsSetsAllocated(const VkDescriptorSetAllocateInfo *info, const VkDescri
 		if (!*slot)
 			*slot = new DescriptorSet();
 		(*slot)->layout = layout != set_layouts.end() ? layout->second : NULL;
+		(*slot)->layout_handle = info->pSetLayouts[i];
+		(*slot)->generation++;
 		(*slot)->buffers.assign((*slot)->layout ? (*slot)->layout->buffers : 0, SetBuffer{});
 	}
 	ReleaseSRWLockExclusive(&descriptor_lock);
@@ -1162,16 +1842,17 @@ void VkModsSetsUpdated(uint32_t write_count, const VkWriteDescriptorSet *writes,
 
 	for (i = 0; i < write_count && !any; i++)
 		any = is_buffer_descriptor(writes[i].descriptorType) && writes[i].pBufferInfo;
-	if (!any)
-		return;
 
 	AcquireSRWLockExclusive(&descriptor_lock);
-	sets_written++;
+	sets_written += any;
 
 	for (i = 0; i < write_count; i++) {
 		const VkWriteDescriptorSet *write = &writes[i];
 
-		if (!is_buffer_descriptor(write->descriptorType) || !write->pBufferInfo || !(set = find_set(write->dstSet)))
+		if (!(set = find_set(write->dstSet)))
+			continue;
+		set->generation++;
+		if (!is_buffer_descriptor(write->descriptorType) || !write->pBufferInfo)
 			continue;
 		binding = write->dstBinding;
 		element = write->dstArrayElement;
@@ -1184,7 +1865,10 @@ void VkModsSetsUpdated(uint32_t write_count, const VkWriteDescriptorSet *writes,
 	for (i = 0; i < copy_count; i++) {
 		const VkCopyDescriptorSet *copy = &copies[i];
 
-		if (!(set = find_set(copy->dstSet)) || !(src = find_set(copy->srcSet)))
+		if (!(set = find_set(copy->dstSet)))
+			continue;
+		set->generation++;
+		if (!(src = find_set(copy->srcSet)))
 			continue;
 		binding = copy->dstBinding;
 		element = copy->dstArrayElement;
@@ -1230,7 +1914,10 @@ void VkModsSetUpdatedWithTemplate(VkDescriptorSet handle, VkDescriptorUpdateTemp
 
 	AcquireSRWLockExclusive(&descriptor_lock);
 	auto found = update_templates.find(update_template);
-	if (found != update_templates.end() && !found->second->empty() && (set = find_set(handle))) {
+	set = find_set(handle);
+	if (set)
+		set->generation++;
+	if (found != update_templates.end() && !found->second->empty() && set) {
 		sets_written_by_template++;
 		for (const VkDescriptorUpdateTemplateEntry &entry : *found->second) {
 			binding = entry.dstBinding;
@@ -1259,6 +1946,9 @@ struct CmdState {
 	// By set number, and the offsets each was bound with for its dynamic
 	// buffers
 	VkDescriptorSet sets[MAX_SETS];
+	// What each was bound with for the layout of the pipeline, which
+	// binding another in its place takes
+	VkPipelineLayout layouts[MAX_SETS];
 	BYTE dynamic_count[MAX_SETS];
 	uint32_t dynamic[MAX_SETS][MAX_DYNAMIC];
 };
@@ -1338,8 +2028,8 @@ void VkModsBindIndexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize of
 	state->index_type = type;
 }
 
-void VkModsBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint bind_point, uint32_t first, uint32_t count,
-		const VkDescriptorSet *sets, uint32_t dynamic_count, const uint32_t *dynamic_offsets)
+void VkModsBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint bind_point, VkPipelineLayout layout, uint32_t first,
+		uint32_t count, const VkDescriptorSet *sets, uint32_t dynamic_count, const uint32_t *dynamic_offsets)
 {
 	bool locked = false, lost = false;
 	uint32_t i, index, dynamic;
@@ -1370,6 +2060,7 @@ void VkModsBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint bind_poin
 
 		if (index < MAX_SETS) {
 			state->sets[index] = sets[i];
+			state->layouts[index] = layout;
 			state->dynamic_count[index] = lost ? 0 : (BYTE)min(dynamic, MAX_DYNAMIC);
 			if (state->dynamic_count[index])
 				memcpy(state->dynamic[index], dynamic_offsets, state->dynamic_count[index] * sizeof(uint32_t));
@@ -1380,6 +2071,350 @@ void VkModsBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint bind_poin
 
 	if (locked)
 		ReleaseSRWLockShared(&descriptor_lock);
+}
+
+// -----------------------------------------------------------------------------
+// Descriptor sets for the draws of mods
+//
+// A draw reads a buffer of a mod through a set that is the game's but for
+// the binding of that buffer: one of the game's layout, with the rest copied
+// from the game's as that is when the draw is recorded. All of this with the
+// lock of dx12/Bridge.h held.
+
+const UINT SETS_PER_POOL = 16;
+
+// What a set of the game is, for one like it to be made
+struct GameSet {
+	VkDescriptorSet set;
+	std::shared_ptr<const DescriptorLayout> layout;
+	VkDescriptorSetLayout layout_handle;
+	UINT64 generation;
+};
+
+// Binding, buffer, offset and range
+typedef std::tuple<UINT, VkBuffer, VkDeviceSize, VkDeviceSize> SetReplacement;
+// The set of the game, how often that had been written, and what is other
+// than in it
+typedef std::tuple<VkDescriptorSet, UINT64, std::vector<SetReplacement>> ModSetKey;
+
+struct ModSet {
+	VkDescriptorSet set;
+	std::shared_ptr<const DescriptorLayout> layout;
+	UINT used_frame;
+};
+
+// The sets not in use, of a layout that is kept from going so that its
+// address stays its own
+struct SpareSets {
+	std::shared_ptr<const DescriptorLayout> layout;
+	std::vector<VkDescriptorSet> sets;
+};
+
+static std::map<ModSetKey, ModSet> mod_sets;
+static std::unordered_map<const DescriptorLayout*, SpareSets> spare_sets;
+static std::vector<VkDescriptorPool> set_pools;
+
+static VkDescriptorSet spare_set(const GameSet *game)
+{
+	VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+	VkDescriptorSetAllocateInfo info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+	std::vector<VkDescriptorPoolSize> sizes = game->layout->pool_sizes;
+	SpareSets *spare = &spare_sets[game->layout.get()];
+	VkDescriptorSetLayout layouts[SETS_PER_POOL];
+	VkDescriptorSet sets[SETS_PER_POOL];
+	VkDescriptorPool pool;
+	VkDescriptorSet set;
+	bool alive;
+	UINT i;
+
+	spare->layout = game->layout;
+	if (spare->sets.empty()) {
+		// More can only be made while the game still has the layout
+		AcquireSRWLockShared(&descriptor_lock);
+		auto found = set_layouts.find(game->layout_handle);
+		alive = found != set_layouts.end() && found->second == game->layout;
+		ReleaseSRWLockShared(&descriptor_lock);
+		if (!alive || sizes.empty())
+			return VK_NULL_HANDLE;
+
+		for (VkDescriptorPoolSize &size : sizes)
+			size.descriptorCount *= SETS_PER_POOL;
+		pool_info.maxSets = SETS_PER_POOL;
+		pool_info.poolSizeCount = (uint32_t)sizes.size();
+		pool_info.pPoolSizes = sizes.data();
+		if (api.CreateDescriptorPool(mods_device, &pool_info, NULL, &pool) != VK_SUCCESS)
+			return VK_NULL_HANDLE;
+		set_pools.push_back(pool);
+
+		for (i = 0; i < SETS_PER_POOL; i++)
+			layouts[i] = game->layout_handle;
+		info.descriptorPool = pool;
+		info.descriptorSetCount = SETS_PER_POOL;
+		info.pSetLayouts = layouts;
+		if (api.AllocateDescriptorSets(mods_device, &info, sets) != VK_SUCCESS)
+			return VK_NULL_HANDLE;
+		spare->sets.assign(sets, sets + SETS_PER_POOL);
+	}
+
+	set = spare->sets.back();
+	spare->sets.pop_back();
+	return set;
+}
+
+static VkDescriptorSet mod_set(const GameSet *game, const std::vector<SetReplacement> &replacements)
+{
+	const std::vector<SetBinding> &bindings = game->layout->bindings;
+	ModSetKey key(game->set, game->generation, replacements);
+	std::vector<VkDescriptorBufferInfo> buffers;
+	std::vector<VkWriteDescriptorSet> writes;
+	std::vector<VkCopyDescriptorSet> copies;
+	VkDescriptorSet set;
+	UINT binding;
+
+	auto found = mod_sets.find(key);
+	if (found != mod_sets.end()) {
+		found->second.used_frame = vk_frame;
+		return found->second.set;
+	}
+
+	set = spare_set(game);
+	if (!set)
+		return VK_NULL_HANDLE;
+
+	// Pointed at by the writes
+	buffers.reserve(replacements.size());
+	for (binding = 0; binding < bindings.size(); binding++) {
+		const SetReplacement *replaced = NULL;
+
+		if (!bindings[binding].count)
+			continue;
+		for (const SetReplacement &replacement : replacements) {
+			if (std::get<0>(replacement) == binding)
+				replaced = &replacement;
+		}
+
+		if (replaced) {
+			VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+
+			buffers.push_back({ std::get<1>(*replaced), std::get<2>(*replaced), std::get<3>(*replaced) });
+			write.dstSet = set;
+			write.dstBinding = binding;
+			write.descriptorCount = 1;
+			write.descriptorType = bindings[binding].type;
+			write.pBufferInfo = &buffers.back();
+			writes.push_back(write);
+		} else if (!bindings[binding].fixed) {
+			VkCopyDescriptorSet copy = { VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET };
+
+			copy.srcSet = game->set;
+			copy.srcBinding = binding;
+			copy.dstSet = set;
+			copy.dstBinding = binding;
+			copy.descriptorCount = bindings[binding].count;
+			copies.push_back(copy);
+		}
+	}
+	api.UpdateDescriptorSets(mods_device, (uint32_t)writes.size(), writes.data(), (uint32_t)copies.size(), copies.data());
+
+	mod_sets[key] = { set, game->layout, vk_frame };
+	stats.sets_made++;
+	return set;
+}
+
+// Those the command buffers that were recorded with them are taken to be
+// done with, like the buffers of the mods
+static void release_unused_mod_sets()
+{
+	UINT frame = vk_frame;
+
+	for (auto i = mod_sets.begin(); i != mod_sets.end();) {
+		if (frame - i->second.used_frame <= MIRROR_KEEP_FRAMES) {
+			++i;
+			continue;
+		}
+		spare_sets[i->second.layout.get()].sets.push_back(i->second.set);
+		i = mod_sets.erase(i);
+	}
+}
+
+static void destroy_mod_sets()
+{
+	for (VkDescriptorPool pool : set_pools)
+		api.DestroyDescriptorPool(mods_device, pool, NULL);
+	set_pools.clear();
+	spare_sets.clear();
+	mod_sets.clear();
+}
+
+// -----------------------------------------------------------------------------
+// Pipelines for the draws of mods
+//
+// The vertex input is part of a pipeline. A mod whose vertex buffers have
+// other strides than the game's, or elements of another format (a skeleton
+// with more bones than the indices of the game's vertices can name), draws
+// with a pipeline made of what the game's was created from, with that for
+// its vertex input. With the lock of dx12/Bridge.h held.
+
+static const struct {
+	VkFormat vk;
+	DXGI_FORMAT dxgi;
+} vertex_formats[] = {
+	{ VK_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM },
+	{ VK_FORMAT_R8_UINT, DXGI_FORMAT_R8_UINT },
+	{ VK_FORMAT_R8G8_UNORM, DXGI_FORMAT_R8G8_UNORM },
+	{ VK_FORMAT_R8G8_UINT, DXGI_FORMAT_R8G8_UINT },
+	{ VK_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM },
+	{ VK_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM },
+	{ VK_FORMAT_R8G8B8A8_UINT, DXGI_FORMAT_R8G8B8A8_UINT },
+	{ VK_FORMAT_R8G8B8A8_SINT, DXGI_FORMAT_R8G8B8A8_SINT },
+	{ VK_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM },
+	{ VK_FORMAT_A2B10G10R10_UNORM_PACK32, DXGI_FORMAT_R10G10B10A2_UNORM },
+	{ VK_FORMAT_R16_UNORM, DXGI_FORMAT_R16_UNORM },
+	{ VK_FORMAT_R16_UINT, DXGI_FORMAT_R16_UINT },
+	{ VK_FORMAT_R16_SFLOAT, DXGI_FORMAT_R16_FLOAT },
+	{ VK_FORMAT_R16G16_UNORM, DXGI_FORMAT_R16G16_UNORM },
+	{ VK_FORMAT_R16G16_SNORM, DXGI_FORMAT_R16G16_SNORM },
+	{ VK_FORMAT_R16G16_UINT, DXGI_FORMAT_R16G16_UINT },
+	{ VK_FORMAT_R16G16_SINT, DXGI_FORMAT_R16G16_SINT },
+	{ VK_FORMAT_R16G16_SFLOAT, DXGI_FORMAT_R16G16_FLOAT },
+	{ VK_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R16G16B16A16_UNORM },
+	{ VK_FORMAT_R16G16B16A16_SNORM, DXGI_FORMAT_R16G16B16A16_SNORM },
+	{ VK_FORMAT_R16G16B16A16_UINT, DXGI_FORMAT_R16G16B16A16_UINT },
+	{ VK_FORMAT_R16G16B16A16_SINT, DXGI_FORMAT_R16G16B16A16_SINT },
+	{ VK_FORMAT_R16G16B16A16_SFLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT },
+	{ VK_FORMAT_R32_UINT, DXGI_FORMAT_R32_UINT },
+	{ VK_FORMAT_R32_SINT, DXGI_FORMAT_R32_SINT },
+	{ VK_FORMAT_R32_SFLOAT, DXGI_FORMAT_R32_FLOAT },
+	{ VK_FORMAT_R32G32_UINT, DXGI_FORMAT_R32G32_UINT },
+	{ VK_FORMAT_R32G32_SINT, DXGI_FORMAT_R32G32_SINT },
+	{ VK_FORMAT_R32G32_SFLOAT, DXGI_FORMAT_R32G32_FLOAT },
+	{ VK_FORMAT_R32G32B32_UINT, DXGI_FORMAT_R32G32B32_UINT },
+	{ VK_FORMAT_R32G32B32_SINT, DXGI_FORMAT_R32G32B32_SINT },
+	{ VK_FORMAT_R32G32B32_SFLOAT, DXGI_FORMAT_R32G32B32_FLOAT },
+	{ VK_FORMAT_R32G32B32A32_UINT, DXGI_FORMAT_R32G32B32A32_UINT },
+	{ VK_FORMAT_R32G32B32A32_SINT, DXGI_FORMAT_R32G32B32A32_SINT },
+	{ VK_FORMAT_R32G32B32A32_SFLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT },
+};
+
+static DXGI_FORMAT dxgi_format(VkFormat format)
+{
+	for (const auto &known : vertex_formats) {
+		if (known.vk == format)
+			return known.dxgi;
+	}
+	return DXGI_FORMAT_UNKNOWN;
+}
+
+static VkFormat vk_format(DXGI_FORMAT format)
+{
+	for (const auto &known : vertex_formats) {
+		if (known.dxgi == format)
+			return known.vk;
+	}
+	return VK_FORMAT_UNDEFINED;
+}
+
+static VkPipeline make_variant(const PipelineRecipe *recipe, const ShimInputLayout *layout, const UINT *strides)
+{
+	VkGraphicsPipelineCreateInfo info = recipe->info;
+	VkPipelineVertexInputStateCreateInfo input = *info.pVertexInputState;
+	std::vector<VkVertexInputBindingDescription> bindings(input.pVertexBindingDescriptions,
+		input.pVertexBindingDescriptions + input.vertexBindingDescriptionCount);
+	std::vector<VkVertexInputAttributeDescription> attributes(input.pVertexAttributeDescriptions,
+		input.pVertexAttributeDescriptions + input.vertexAttributeDescriptionCount);
+	VkPipeline variant = VK_NULL_HANDLE;
+	size_t i;
+
+	for (VkVertexInputBindingDescription &binding : bindings) {
+		if (binding.binding < MAX_VBS)
+			binding.stride = strides[binding.binding];
+	}
+
+	// Its elements are the attributes in their order, see
+	// VkScopeInputElements
+	if (layout && layout->mElements.size() != attributes.size())
+		return VK_NULL_HANDLE;
+	for (i = 0; layout && i < attributes.size(); i++) {
+		const D3D12_INPUT_ELEMENT_DESC *element = &layout->mElements[i];
+
+		if (element->Format != dxgi_format(attributes[i].format)) {
+			attributes[i].format = vk_format(element->Format);
+			if (!attributes[i].format)
+				return VK_NULL_HANDLE;
+		}
+		if (element->AlignedByteOffset != D3D12_APPEND_ALIGNED_ELEMENT)
+			attributes[i].offset = element->AlignedByteOffset;
+	}
+
+	input.pVertexBindingDescriptions = bindings.data();
+	input.pVertexAttributeDescriptions = attributes.data();
+	info.pVertexInputState = &input;
+	if (api.CreateGraphicsPipelines(mods_device, VK_NULL_HANDLE, 1, &info, NULL, &variant) != VK_SUCCESS)
+		return VK_NULL_HANDLE;
+	return variant;
+}
+
+static VkPipeline pipeline_variant(Pipeline *pipeline, const ShimInputLayout *layout, const UINT *strides)
+{
+	UINT64 layout_id = layout ? layout->mId : 0;
+	std::shared_ptr<PipelineRecipe> recipe;
+	PipelineVariant made = {};
+	bool found = false;
+	UINT64 start;
+
+	AcquireSRWLockShared(&registry_lock);
+	for (const PipelineVariant &variant : pipeline->variants) {
+		if (variant.layout == layout_id && !memcmp(variant.strides, strides, sizeof(variant.strides))) {
+			made = variant;
+			found = true;
+			break;
+		}
+	}
+	recipe = pipeline->recipe;
+	ReleaseSRWLockShared(&registry_lock);
+	if (found || !recipe)
+		return made.pipeline;
+
+	start = ticks();
+	made.layout = layout_id;
+	memcpy(made.strides, strides, sizeof(made.strides));
+	made.pipeline = make_variant(recipe.get(), layout, strides);
+	stats.variants_made++;
+	stats.variants_failed += !made.pipeline;
+	stats.variant_ticks += ticks() - start;
+
+	AcquireSRWLockExclusive(&registry_lock);
+	if (pipeline->recipe == recipe) {
+		// Also one that could not be made, which is not tried again
+		pipeline->variants.push_back(made);
+	} else if (made.pipeline) {
+		// The game has destroyed its pipeline since
+		dead_variants.push_back(made.pipeline);
+		made.pipeline = VK_NULL_HANDLE;
+	}
+	ReleaseSRWLockExclusive(&registry_lock);
+	return made.pipeline;
+}
+
+static void destroy_variants(bool all)
+{
+	std::vector<VkPipeline> dead;
+
+	AcquireSRWLockExclusive(&registry_lock);
+	dead.swap(dead_variants);
+	for (auto &entry : pipelines) {
+		if (!all)
+			break;
+		for (const PipelineVariant &variant : entry.second->variants) {
+			if (variant.pipeline)
+				dead.push_back(variant.pipeline);
+		}
+		entry.second->variants.clear();
+	}
+	ReleaseSRWLockExclusive(&registry_lock);
+
+	for (VkPipeline pipeline : dead)
+		api.DestroyPipeline(mods_device, pipeline, NULL);
 }
 
 // -----------------------------------------------------------------------------
@@ -1469,6 +2504,8 @@ static bool draw_is_boring(Pipeline *pipeline, bool indexed, uint32_t count, Slo
 // -----------------------------------------------------------------------------
 // The engine, for a draw of the game
 
+const UINT SCOPE_SRVS = 32;
+
 struct Scope {
 	VkCommandBuffer cmd;
 	CmdState state;
@@ -1484,12 +2521,25 @@ struct Scope {
 	VkBuffer bound_ib;
 	VkDeviceSize bound_ib_offset;
 	VkIndexType bound_index_type;
+	UINT sets_changed;
+	VkDescriptorSet sets[MAX_SETS];
+	uint32_t dynamic[MAX_SETS][MAX_DYNAMIC];
+	VkPipeline bound_pipeline;
+	// The input layout the engine was given for the pipeline's, see
+	// VkScopeInputElements
+	ID3D11InputLayout *game_layout;
 	// Draws of mods that could not be made, see mod_draws
 	UINT mod_draws_failed;
 	// The constant buffers the engine has asked for, a bit for each by
 	// stage, and what it was given
 	UINT cbs_asked[DX12_STAGE_COUNT];
 	ID3D11Buffer *cbs[DX12_STAGE_COUNT][SHIM_CBV_SLOTS];
+	// The same of the buffers at the first t registers
+	UINT srvs_asked[DX12_STAGE_COUNT];
+	ID3D11ShaderResourceView *srvs[DX12_STAGE_COUNT][SCOPE_SRVS];
+	// One of those could not be shown. What a mod makes of nothing is not
+	// worth drawing.
+	bool srv_missing;
 };
 
 // A draw of a mod, with the bindings that are not to be the game's
@@ -1504,6 +2554,13 @@ struct ModDraw {
 	bool indexed;
 	UINT count, instances, start, start_instance;
 	INT base_vertex;
+	// Descriptor sets, and the offsets each is bound with: as many as the
+	// game's in its place
+	UINT sets_set;
+	VkDescriptorSet sets[MAX_SETS];
+	uint32_t dynamic[MAX_SETS][MAX_DYNAMIC];
+	// Not the game's if set
+	VkPipeline pipeline;
 };
 
 // Those of the scope. A mod draws a mesh in parts, and what stands in for a
@@ -1537,6 +2594,61 @@ ID3D11Buffer* VkScopeIndexBuffer(DXGI_FORMAT *format)
 
 	*format = scope->state.index_type == VK_INDEX_TYPE_UINT16 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
 	return scope->ib->object;
+}
+
+bool VkScopeInputElements(std::vector<D3D11_INPUT_ELEMENT_DESC> *elements)
+{
+	const VkPipelineVertexInputStateCreateInfo *input;
+	std::shared_ptr<PipelineRecipe> recipe;
+	UINT indices = 0;
+	uint32_t i, j;
+
+	if (!scope)
+		return false;
+
+	AcquireSRWLockShared(&registry_lock);
+	recipe = scope->state.pipeline->recipe;
+	ReleaseSRWLockShared(&registry_lock);
+	if (!recipe)
+		return false;
+
+	input = recipe->info.pVertexInputState;
+	for (i = 0; i < input->vertexAttributeDescriptionCount; i++) {
+		const VkVertexInputAttributeDescription *attribute = &input->pVertexAttributeDescriptions[i];
+		D3D11_INPUT_ELEMENT_DESC element = {};
+
+		if (attribute->format == VK_FORMAT_R8G8B8A8_UINT || attribute->format == VK_FORMAT_R16G16B16A16_UINT
+		    || attribute->format == VK_FORMAT_R32G32B32A32_UINT) {
+			element.SemanticName = "BLENDINDICES";
+			element.SemanticIndex = indices++;
+		} else {
+			element.SemanticName = "ATTRIBUTE";
+			element.SemanticIndex = attribute->location;
+		}
+		element.Format = dxgi_format(attribute->format);
+		element.InputSlot = attribute->binding;
+		element.AlignedByteOffset = attribute->offset;
+		for (j = 0; j < input->vertexBindingDescriptionCount; j++) {
+			if (input->pVertexBindingDescriptions[j].binding == attribute->binding
+			    && input->pVertexBindingDescriptions[j].inputRate == VK_VERTEX_INPUT_RATE_INSTANCE) {
+				element.InputSlotClass = D3D11_INPUT_PER_INSTANCE_DATA;
+				element.InstanceDataStepRate = 1;
+			}
+		}
+		elements->push_back(element);
+	}
+	return !elements->empty();
+}
+
+void VkScopeSetGameLayout(ID3D11InputLayout *layout)
+{
+	if (scope)
+		scope->game_layout = layout;
+}
+
+ID3D11InputLayout* VkScopeGameLayout()
+{
+	return scope ? scope->game_layout : NULL;
 }
 
 // The buffer the draw has at a binding. If the game has not been seen to set
@@ -1591,6 +2703,7 @@ ID3D11Buffer* VkScopeConstantBuffer(int stage, UINT slot)
 {
 	const ShaderLayout *shader;
 	const SpirvBinding *block;
+	PublishedConstants *published;
 	const char *why;
 	SetBuffer bound;
 	UINT bytes;
@@ -1620,9 +2733,84 @@ ID3D11Buffer* VkScopeConstantBuffer(int stage, UINT slot)
 	if (!bytes)
 		return NULL;
 
-	scope->cbs[stage][slot] = publish_constants(bound.buffer, bound.offset, bytes);
-	note_constants(stage, slot, block, scope->cbs[stage][slot] ? NULL : "the game does not have the memory of the buffer mapped");
+	published = publish_constants(bound.buffer, bound.offset, bytes, 0);
+	scope->cbs[stage][slot] = published ? published->object : NULL;
+	note_constants(stage, slot, block, published ? NULL : "the game does not have the memory of the buffer mapped");
 	return scope->cbs[stage][slot];
+}
+
+// A storage buffer larger than this is not shown: all of it is read every
+// frame a shader of a mod is given it
+const VkDeviceSize VIEW_MAX_BYTES = 64 << 20;
+
+// For the report, like note_constants
+static void note_view(int stage, UINT slot, const SpirvBinding *view, VkDeviceSize bytes, VkDeviceSize buffer_bytes, const char *why)
+{
+	static std::unordered_set<std::string> noted;
+	char text[320];
+
+	if (!G->vk_dump_hashes || noted.size() >= 48)
+		return;
+	_snprintf_s(text, _TRUNCATE, "Mods: %cs-t%u is a buffer with a stride of %u, %llu bytes at set %u binding %u, of a buffer of %llu bytes%s%s",
+		"vpghdc"[stage], slot, view->stride, bytes, view->set, view->binding, buffer_bytes, why ? ", NOT SHOWN: " : "", why ? why : "");
+	if (noted.insert(text).second)
+		VkDumpNote("%s\n", text);
+}
+
+ID3D11ShaderResourceView* VkScopeShaderResource(int stage, UINT slot)
+{
+	PublishedConstants *published = NULL;
+	const ShaderLayout *shader;
+	const SpirvBinding *view;
+	VkDeviceSize bytes = 0, buffer_bytes = 0;
+	const char *why;
+	SetBuffer bound;
+
+	// A storage buffer of the stages before the pixel shader, which is
+	// where one is what moves a mesh
+	if (!scope || stage == DX12_STAGE_PS || stage >= DX12_STAGE_CS || slot >= SCOPE_SRVS)
+		return NULL;
+	if (scope->srvs_asked[stage] & 1u << slot)
+		return scope->srvs[stage][slot];
+	scope->srvs_asked[stage] |= 1u << slot;
+	scope->srvs[stage][slot] = NULL;
+
+	shader = scope->state.pipeline->layouts[stage];
+	if (!shader || slot >= shader->views.size())
+		return NULL;
+	view = &shader->views[slot];
+	if (view->kind != SPIRV_SSBO || !view->stride)
+		return NULL;
+
+	why = bound_buffer(view, &bound);
+	if (!why) {
+		AcquireSRWLockShared(&memory_lock);
+		auto info = buffers.find(bound.buffer);
+		if (info != buffers.end())
+			buffer_bytes = info->second.size;
+		ReleaseSRWLockShared(&memory_lock);
+
+		bytes = bound.range;
+		if (bytes == VK_WHOLE_SIZE)
+			bytes = buffer_bytes > bound.offset ? buffer_bytes - bound.offset : 0;
+		bytes -= bytes % view->stride;
+		if (!bytes)
+			why = "the size of the buffer is not known";
+		else if (bytes > VIEW_MAX_BYTES)
+			why = "it is larger than what is read for a mod";
+		else if (!(published = publish_constants(bound.buffer, bound.offset, (UINT)bytes, view->stride)))
+			why = "the game does not have the memory of the buffer mapped";
+	}
+	note_view(stage, slot, view, bytes, buffer_bytes, why);
+
+	if (!published) {
+		stats.views_missing++;
+		scope->srv_missing = true;
+		return NULL;
+	}
+	stats.views_shown++;
+	scope->srvs[stage][slot] = published->srv;
+	return published->srv;
 }
 
 static D3D_SRV_DIMENSION view_dimension(const SpirvBinding *view)
@@ -1697,12 +2885,34 @@ static void bind_ib(VkBuffer buffer, VkDeviceSize offset, VkIndexType type)
 	scope->ib_changed = true;
 }
 
+static void bind_pipeline(VkPipeline pipeline)
+{
+	if (scope->bound_pipeline == pipeline)
+		return;
+	api.CmdBindPipeline(scope->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+	scope->bound_pipeline = pipeline;
+}
+
+static void bind_set(UINT slot, VkDescriptorSet set, const uint32_t *dynamic)
+{
+	const CmdState *game = &scope->state;
+	size_t dynamic_bytes = game->dynamic_count[slot] * sizeof(uint32_t);
+
+	if (scope->sets[slot] == set && !memcmp(scope->dynamic[slot], dynamic, dynamic_bytes))
+		return;
+	api.CmdBindDescriptorSets(scope->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, game->layouts[slot], slot, 1, &set,
+		game->dynamic_count[slot], dynamic);
+	scope->sets[slot] = set;
+	memcpy(scope->dynamic[slot], dynamic, dynamic_bytes);
+	scope->sets_changed |= 1u << slot;
+}
+
 // The game's bindings, where the draws of mods left others
 static void restore_bindings()
 {
 	const CmdState *game = &scope->state;
 	unsigned long slot;
-	UINT vbs;
+	UINT vbs, sets;
 
 	for (vbs = scope->vbs_changed; _BitScanForward(&slot, vbs); vbs &= vbs - 1) {
 		if (game->vbs[slot])
@@ -1710,6 +2920,9 @@ static void restore_bindings()
 	}
 	if (scope->ib_changed && game->ib)
 		bind_ib(game->ib, game->ib_offset, game->index_type);
+	for (sets = scope->sets_changed; _BitScanForward(&slot, sets); sets &= sets - 1)
+		bind_set(slot, game->sets[slot], game->dynamic[slot]);
+	bind_pipeline(game->pipeline->handle);
 }
 
 // For the report: what the first few draws of mods with other vertex bindings
@@ -1747,11 +2960,17 @@ static bool bind_for_mod(const ShimState *mod, ModDraw *draw)
 {
 	const CmdState *game = &scope->state;
 	const Pipeline *pipeline = game->pipeline;
+	const ShimInputLayout *layout = NULL;
 	Mirror *replaced[MAX_VBS] = {};
 	UINT64 vertices = UINT64_MAX;
+	UINT strides[MAX_VBS];
 	VkDeviceSize size;
 	Mirror *mirror;
 	UINT slot;
+
+	memcpy(strides, pipeline->vb_strides, sizeof(strides));
+	if (mod->input_layout && scope->game_layout && mod->input_layout != scope->game_layout)
+		layout = static_cast<const ShimInputLayout*>(mod->input_layout);
 
 	if (!mods_device || *(void**)scope->cmd != mods_device_key) {
 		mod_draw_failed("the command buffer is of another device than the one the buffers of the mods are on");
@@ -1770,10 +2989,7 @@ static bool bind_for_mod(const ShimState *mod, ModDraw *draw)
 		// Nothing reads it
 		if (!(pipeline->vbs & 1u << slot))
 			continue;
-		if (pipeline->vb_strides[slot] != mod->vb_strides[slot]) {
-			mod_draw_failed("a vertex buffer has another stride than the game's pipeline reads its binding with");
-			return false;
-		}
+		strides[slot] = mod->vb_strides[slot];
 		if (mod->vb_offsets[slot] >= vb->mDesc.ByteWidth || !(replaced[slot] = mirror_of(vb))) {
 			mod_draw_failed("the contents of a vertex buffer are not known to the CPU, or no Vulkan buffer could be made of them");
 			return false;
@@ -1800,6 +3016,7 @@ static bool bind_for_mod(const ShimState *mod, ModDraw *draw)
 			draw->vbs_set |= 1u << slot;
 			draw->vbs[slot] = replaced[other]->buffer;
 			draw->vb_offsets[slot] = mod->vb_offsets[other];
+			strides[slot] = strides[other];
 			continue;
 		}
 		if (vertices == UINT64_MAX || !pipeline->vb_strides[slot] || (pipeline->vbs_per_instance & 1u << slot))
@@ -1820,6 +3037,14 @@ static bool bind_for_mod(const ShimState *mod, ModDraw *draw)
 		draw->vbs_set |= 1u << slot;
 		draw->vbs[slot] = replaced[slot]->buffer;
 		draw->vb_offsets[slot] = mod->vb_offsets[slot];
+	}
+	if (layout || memcmp(strides, pipeline->vb_strides, sizeof(strides))) {
+		draw->pipeline = pipeline_variant(game->pipeline, layout, strides);
+		if (!draw->pipeline) {
+			mod_draw_failed("the vertex buffers have other strides or another layout than the game's pipeline reads, "
+				"and no pipeline could be made of the game's that reads them");
+			return false;
+		}
 	}
 	if (G->vk_dump_hashes)
 		note_mod_bindings(draw, replaced);
@@ -1856,6 +3081,7 @@ static void record_mod_draws()
 	UINT slot;
 
 	for (const ModDraw &draw : mod_draws) {
+		bind_pipeline(draw.pipeline ? draw.pipeline : game->pipeline->handle);
 		for (slot = 0; slot < MAX_VBS; slot++) {
 			if (draw.vbs_set & 1u << slot)
 				bind_vb(slot, draw.vbs[slot], draw.vb_offsets[slot]);
@@ -1866,54 +3092,222 @@ static void record_mod_draws()
 			bind_ib(draw.ib, draw.ib_offset, draw.index_type);
 		else if (draw.indexed)
 			bind_ib(game->ib, game->ib_offset, game->index_type);
+		for (slot = 0; slot < MAX_SETS; slot++) {
+			if (draw.sets_set & 1u << slot)
+				bind_set(slot, draw.sets[slot], draw.dynamic[slot]);
+			else if (scope->sets_changed & 1u << slot)
+				bind_set(slot, game->sets[slot], game->dynamic[slot]);
+		}
 
 		if (draw.indexed)
 			api.CmdDrawIndexed(scope->cmd, draw.count, draw.instances, draw.start, draw.base_vertex, draw.start_instance);
 		else
 			api.CmdDraw(scope->cmd, draw.count, draw.instances, draw.start, draw.start_instance);
 	}
-	if (scope->vbs_changed || scope->ib_changed)
-		restore_bindings();
+	restore_bindings();
 }
 
-// What a mod sets for the stages before the pixel shader goes with its mesh:
-// the bones of a skeleton it put together itself, say, which its vertices
-// name by their place in that. Drawn with the game's instead, such a mesh is
-// anywhere, and vertices that are not numbers stay in what the game keeps
-// from frame to frame. A texture that is missing only looks wrong.
+// The shaders are the game's: a mod with one of its own for the draw needs a
+// pipeline with it, which there is none of
 static bool mod_draw_possible(const ShimState *mod)
 {
+	int stage;
+
+	for (stage = 0; stage < DX12_STAGE_COUNT; stage++) {
+		if (stage != DX12_STAGE_CS && (mod->stages[stage].shader || mod->stages[stage].shader_unbound)) {
+			mod_draw_failed("the mod draws with a shader of its own");
+			return false;
+		}
+	}
+	return true;
+}
+
+const UINT MAX_REPLACED = 16;
+
+// A buffer of a mod where a shader of the game reads one
+struct Replaced {
+	const SpirvBinding *slot;
+	ModBuffer buffer;
+};
+
+// What the mod has set for the stages before the pixel shader goes with its
+// mesh: the bones of a skeleton it put together itself, say, which its
+// vertices name by their place in that. Drawn with the game's instead, such a
+// mesh is anywhere, and vertices that are not numbers stay in what the game
+// keeps from frame to frame. A texture that is missing only looks wrong.
+static bool collect_replaced(const ShimState *mod, Replaced *replaced, UINT *count)
+{
 	const ID3D11ShaderResourceView *ini_params = dx12_shim->hacker_device->mIniResourceView;
+	const CmdState *game = &scope->state;
+	UINT64 offset, bytes, stride;
 	unsigned long slot;
 	UINT i, cbs;
 	int stage;
 
 	for (stage = 0; stage < DX12_STAGE_COUNT; stage++) {
 		const ShimStageState *state = &mod->stages[stage];
+		const ShaderLayout *shader = game->pipeline->layouts[stage];
 
 		if (stage == DX12_STAGE_CS)
 			continue;
-		if (state->shader || state->shader_unbound) {
-			mod_draw_failed("the mod draws with a shader of its own");
-			return false;
-		}
-		if (stage == DX12_STAGE_PS)
-			continue;
+
 		for (cbs = state->cb_mask; _BitScanForward(&slot, cbs); cbs &= cbs - 1) {
+			ShimBuffer *buffer = static_cast<ShimBuffer*>(state->cbs[slot]);
+			bool taken = false;
+
 			// The game's own, set again by the mod
-			if (state->cbs[slot] == scope->cbs[stage][slot] && !state->cb_first[slot] && !state->cb_count[slot])
+			if ((scope->cbs_asked[stage] & 1u << slot) && state->cbs[slot] == scope->cbs[stage][slot]
+			    && !state->cb_first[slot] && !state->cb_count[slot])
 				continue;
-			mod_draw_failed("the mod has set a constant buffer for a stage before the pixel shader");
-			return false;
-		}
-		for (i = 0; i < SHIM_SRV_SLOTS; i++) {
-			if (state->srvs[i] && state->srvs[i] != ini_params) {
-				mod_draw_failed("the mod has set a buffer or texture for a stage before the pixel shader");
+			// Nothing reads it
+			if (!shader || slot >= shader->cbs.size() || !shader->cbs[slot].bytes)
+				continue;
+			// What an earlier stage reads there as well is that stage's
+			for (i = 0; i < *count; i++)
+				taken |= replaced[i].slot->set == shader->cbs[slot].set && replaced[i].slot->binding == shader->cbs[slot].binding;
+			if (taken)
+				continue;
+
+			offset = (UINT64)state->cb_first[slot] * 16;
+			bytes = state->cb_count[slot] ? (UINT64)state->cb_count[slot] * 16 : buffer->mDesc.ByteWidth;
+			if (offset < buffer->mDesc.ByteWidth)
+				bytes = min(bytes, min(buffer->mDesc.ByteWidth - offset, (UINT64)shader->cbs[slot].bytes));
+			if (*count == MAX_REPLACED || offset >= buffer->mDesc.ByteWidth
+			    || !bring_buffer(&buffer->r, offset, bytes, shader->cbs[slot].bytes, &replaced[*count].buffer)) {
+				// Like a texture that is missing
+				if (stage == DX12_STAGE_PS)
+					continue;
+				mod_draw_failed("a constant buffer the mod has set for a stage before the pixel shader could not be "
+					"brought to the device of the game");
 				return false;
 			}
+			replaced[(*count)++].slot = &shader->cbs[slot];
+		}
+
+		for (i = 0; stage != DX12_STAGE_PS && i < SHIM_SRV_SLOTS; i++) {
+			ShimView *view;
+
+			if (!(state->srv_mask[i / 32] & 1u << (i % 32)) || state->srvs[i] == ini_params)
+				continue;
+			if (i < SCOPE_SRVS && (scope->srvs_asked[stage] & 1u << i) && state->srvs[i] == scope->srvs[stage][i])
+				continue;
+			if (!shader || i >= shader->views.size())
+				continue;
+			if (shader->views[i].kind != SPIRV_SSBO) {
+				mod_draw_failed("the mod has set a buffer or texture for a stage before the pixel shader where the shader "
+					"of the game reads a texture");
+				return false;
+			}
+
+			view = ShimViewOf(state->srvs[i]);
+			if (!view || view->resource->dimension != D3D11_RESOURCE_DIMENSION_BUFFER) {
+				mod_draw_failed("the mod has set a texture for a stage before the pixel shader where the shader of the "
+					"game reads a buffer");
+				return false;
+			}
+			// A view without one is of a buffer of values of a format:
+			// all of it then, if that is what the view is of
+			stride = view->desc12.srv.Buffer.StructureByteStride;
+			offset = view->desc12.srv.Buffer.FirstElement * stride;
+			bytes = view->desc12.srv.Buffer.NumElements * stride;
+			if (!stride && !view->desc12.srv.Buffer.FirstElement)
+				bytes = view->resource->desc.Width;
+			if (*count == MAX_REPLACED || !bytes || !bring_buffer(view->resource, offset, bytes, bytes, &replaced[*count].buffer)) {
+				mod_draw_failed("a buffer the mod has set for a stage before the pixel shader could not be brought to the "
+					"device of the game");
+				return false;
+			}
+			replaced[(*count)++].slot = &shader->views[i];
 		}
 	}
 	return true;
+}
+
+// The descriptor sets the draw of a mod is made with, where they are not the
+// game's as the game has them bound
+static bool replace_buffers(const ShimState *mod, ModDraw *draw)
+{
+	const CmdState *game = &scope->state;
+	Replaced replaced[MAX_REPLACED];
+	std::vector<SetReplacement> descriptors;
+	const char *why = NULL;
+	UINT i, count = 0, set;
+	GameSet tracked;
+
+	if (!collect_replaced(mod, replaced, &count))
+		return false;
+
+	for (set = 0; set < MAX_SETS && count && !why; set++) {
+		for (i = 0; i < count && replaced[i].slot->set != set; i++);
+		if (i == count)
+			continue;
+		if (!game->sets[set] || !game->layouts[set]) {
+			why = "no descriptor set was bound at the number of the set of a buffer the mod has set";
+			break;
+		}
+
+		descriptors.clear();
+		memcpy(draw->dynamic[set], game->dynamic[set], sizeof(draw->dynamic[set]));
+
+		AcquireSRWLockShared(&descriptor_lock);
+		const DescriptorSet *found = find_set(game->sets[set]);
+		if (!found) {
+			why = "the descriptor set of a buffer the mod has set was not seen being allocated";
+		} else if (found->layout->dynamic != game->dynamic_count[set]) {
+			why = "the offsets the descriptor set of a buffer the mod has set was bound with are not known";
+		} else {
+			tracked = { game->sets[set], found->layout, found->layout_handle, found->generation };
+		}
+		for (i = 0; i < count && !why; i++) {
+			const ModBuffer *buffer = &replaced[i].buffer;
+			UINT number = replaced[i].slot->binding;
+			const SetBinding *binding;
+			const SetBuffer *bound;
+			VkDeviceSize size = 0;
+
+			if (replaced[i].slot->set != set)
+				continue;
+			binding = number < found->layout->bindings.size() ? &found->layout->bindings[number] : NULL;
+			if (!binding || !binding->buffer || binding->count != 1) {
+				why = "the layout of the descriptor set has no buffer by itself at the binding of one the mod has set";
+				break;
+			}
+			if (!binding->dynamic) {
+				descriptors.emplace_back(number, buffer->buffer, buffer->offset, buffer->range);
+				continue;
+			}
+
+			// A part of what the game has there is only another offset
+			bound = &found->buffers[binding->first];
+			if (bound->buffer == buffer->buffer && bound->range != VK_WHOLE_SIZE && buffer->offset >= bound->offset) {
+				AcquireSRWLockShared(&memory_lock);
+				auto info = buffers.find(bound->buffer);
+				if (info != buffers.end())
+					size = info->second.size;
+				ReleaseSRWLockShared(&memory_lock);
+			}
+			if (size && buffer->offset + bound->range <= size && buffer->offset - bound->offset <= UINT32_MAX) {
+				draw->dynamic[set][binding->first_dynamic] = (uint32_t)(buffer->offset - bound->offset);
+			} else if (buffer->offset <= UINT32_MAX) {
+				draw->dynamic[set][binding->first_dynamic] = (uint32_t)buffer->offset;
+				descriptors.emplace_back(number, buffer->buffer, (VkDeviceSize)0, buffer->range);
+			} else {
+				why = "a buffer the mod has set is too far into the buffer it is in for an offset";
+			}
+		}
+		ReleaseSRWLockShared(&descriptor_lock);
+		if (why)
+			break;
+
+		draw->sets[set] = descriptors.empty() ? game->sets[set] : mod_set(&tracked, descriptors);
+		if (!draw->sets[set])
+			why = "no descriptor set like the game's could be made for a buffer the mod has set";
+		draw->sets_set |= 1u << set;
+	}
+
+	if (why)
+		mod_draw_failed(why);
+	return !why;
 }
 
 void VkScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT base_vertex, UINT start_instance)
@@ -1930,6 +3324,10 @@ void VkScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT base_
 	// The game's is drawn anyway
 	if (scope->mod_draws_failed)
 		return;
+	if (scope->srv_missing) {
+		mod_draw_failed("a buffer of the game the mod asked for could not be shown");
+		return;
+	}
 
 	draw.indexed = indexed;
 	draw.count = count;
@@ -1937,7 +3335,7 @@ void VkScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT base_
 	draw.start = start;
 	draw.base_vertex = base_vertex;
 	draw.start_instance = start_instance;
-	if (mod_draw_possible(mod) && bind_for_mod(mod, &draw))
+	if (mod_draw_possible(mod) && bind_for_mod(mod, &draw) && replace_buffers(mod, &draw))
 		mod_draws.push_back(draw);
 }
 
@@ -1998,8 +3396,15 @@ bool VkModsDraw(VkCommandBuffer cmd, bool indexed, uint32_t count, uint32_t inst
 	opened.bound_ib = state->ib;
 	opened.bound_ib_offset = state->ib_offset;
 	opened.bound_index_type = state->index_type;
+	opened.sets_changed = 0;
+	opened.bound_pipeline = state->pipeline->handle;
+	opened.game_layout = NULL;
+	memcpy(opened.sets, state->sets, sizeof(opened.sets));
+	memcpy(opened.dynamic, state->dynamic, sizeof(opened.dynamic));
 	opened.mod_draws_failed = 0;
 	memset(opened.cbs_asked, 0, sizeof(opened.cbs_asked));
+	memset(opened.srvs_asked, 0, sizeof(opened.srvs_asked));
+	opened.srv_missing = false;
 	mod_draws.clear();
 	scope = &opened;
 	Dx12OpenForeignScope();
@@ -2101,22 +3506,33 @@ static void report()
 	per_frame = 1000.0 / frequency.QuadPart / 300;
 	per_draw = stats.draws ? 1000000.0 / frequency.QuadPart / stats.draws : 0;
 
+	// A note is cut off past a thousand characters
 	VkDumpNote("Mods, frame %u (D3D12 frame %u), since the last of these lines: the engine saw %u draws and skipped %u, mods drew %u times "
 		"of which %u could not be made, %u buffers of mods copied (%llu KB), %Iu held; "
 		"index regions hashed %u, found as they were %u, not mapped %u; per frame the draws took %.2f ms waiting for the lock "
-		"and %.2f ms in the engine, %.2f us a draw; %Iu shaders linked to ShaderRegex, %Iu ShaderOverride hashes, %Iu buffers published\n"
-		"  Constant buffers of the game: shown %u times, read %u times (%llu KB, %.2f ms per frame), not mapped %u, no buffer seen set at the "
-		"binding %u; %Iu held. Descriptor sets: %u allocated, buffers written %u times by vkUpdateDescriptorSets and %u times "
-		"by a template\n"
-		"  The draws were stopped for because of: settings %u, a pipeline not looked at yet, command lists doing more than asking "
-		"or a condition of one %u, an index count a section asks for %u, a constant buffer a list asks for %u; "
-		"about %u more were not stopped for\n",
+		"and %.2f ms in the engine, %.2f us a draw; %Iu shaders linked to ShaderRegex, %Iu ShaderOverride hashes, %Iu buffers published\n",
 		vk_frame, dx12_frame, stats.draws, stats.skipped, stats.mod_draws, stats.mod_draws_failed, stats.mirrored,
 		stats.mirrored_bytes >> 10, mirrors.size(), stats.regions_hashed, stats.regions_checked,
 		stats.regions_unmapped, stats.wait_ticks * per_frame, stats.engine_ticks * per_frame, stats.engine_ticks * per_draw,
-		linked_shaders, G->mShaderOverrideMap.size(), published.size(),
+		linked_shaders, G->mShaderOverrideMap.size(), published.size());
+	VkDumpNote("  Constant buffers of the game: shown %u times, read %u times (%llu KB, %.2f ms per frame), not mapped %u, no buffer seen set at the "
+		"binding %u; %Iu held. Descriptor sets: %u allocated, buffers written %u times by vkUpdateDescriptorSets and %u times "
+		"by a template\n",
 		stats.constants_shown, stats.constants_read, stats.constants_bytes >> 10, stats.constants_ticks * per_frame, stats.constants_unmapped,
-		stats.constants_unbound, published_constants.size(), sets_allocated, sets_written, sets_written_by_template,
+		stats.constants_unbound, published_constants.size(), sets_allocated, sets_written, sets_written_by_template);
+	VkDumpNote("  Storage buffers of the game: shown %u times, not shown %u. Buffers of mods for the shaders of the game: %u brought over "
+		"(%llu KB), %u of them from the GPU, which %u submissions of the game waited %.2f ms per frame for; %u descriptor sets made, "
+		"%Iu held, %Iu MB of buffers for them\n",
+		stats.views_shown, stats.views_missing, stats.brought, stats.brought_bytes >> 10, stats.brought_from_gpu,
+		stats.submits_waited, stats.submit_ticks * per_frame, stats.sets_made, mod_sets.size(),
+		(size_t)(transients.size() * TRANSIENT_BYTES >> 20));
+	VkDumpNote("  Pipelines made again for the vertex buffers of mods: %u, %u of them not, %.2f ms per frame; %u pipelines of the game "
+		"kept to be made again, %u could not be, the first structure not known: %d\n",
+		stats.variants_made, stats.variants_failed, stats.variant_ticks * per_frame, recipes_kept, recipes_failed,
+		(int)recipe_unknown_structure);
+	VkDumpNote("  The draws were stopped for because of: settings %u, a pipeline not looked at yet, command lists doing more than asking "
+		"or a condition of one %u, an index count a section asks for %u, a constant buffer a list asks for %u; "
+		"about %u more were not stopped for\n",
 		stats.slow[SLOW_SETTINGS], stats.slow[SLOW_LISTS], stats.slow[SLOW_INDEX_COUNT], stats.slow[SLOW_CONSTANTS],
 		(unsigned)InterlockedExchange(&fast_draws, 0));
 	stats = {};
@@ -2155,10 +3571,19 @@ void VkModsPresent()
 			"Nothing new is shown from here on.\n", vk_frame, removed);
 	}
 
+	// Whatever was recorded with them has been handed to a queue by now
+	finish_transfers();
+	brought.clear();
+	if (!(vk_frame & 255))
+		release_readbacks();
+
 	forget_dead_buffers();
 	forget_unused_constants(false);
-	if (mods_device)
+	if (mods_device) {
 		destroy_retired_mirrors(false);
+		release_unused_mod_sets();
+		destroy_variants(false);
+	}
 	refresh_wanted();
 	// The configuration as it was read when the DLL was loaded
 	if (!wanted_index_counts)

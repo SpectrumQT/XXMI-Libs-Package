@@ -21,6 +21,9 @@ bool ShimWriteBuffer(ShimResource *resource, UINT64 offset, const void *data, UI
 // Gives a buffer that only had its contents in CPU memory a resource with
 // those contents, for the GPU to write to
 bool ShimBufferToGpu(ShimResource *resource);
+// Before a list of ours reads the resource of a buffer: one marked as
+// upload_pending is written what its shadow holds
+void ShimUploadShadow(ShimResource *resource);
 bool ShimWriteSubresource(ShimResource *resource, UINT subresource, const void *data, UINT row_pitch, UINT slice_pitch);
 // Copies the shadow of a texture with write_pending to it. Dx12ShimTransition
 // does, which whatever uses a resource goes through first.

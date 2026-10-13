@@ -581,6 +581,10 @@ HRESULT STDMETHODCALLTYPE ShimDevice::CreateShaderResourceView(ID3D11Resource *p
 			desc12.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
 		else if (desc.Format == DXGI_FORMAT_UNKNOWN)
 			desc12.Buffer.StructureByteStride = resource.stride;
+		// D3D11 refuses such a view. D3D12 removes the device for it, which
+		// may be one that is not ours to lose.
+		if (desc.Format == DXGI_FORMAT_UNKNOWN && !desc12.Buffer.StructureByteStride)
+			return E_INVALIDARG;
 		break;
 	case D3D11_SRV_DIMENSION_TEXTURE1D:
 		desc12.Texture1D.MostDetailedMip = desc.Texture1D.MostDetailedMip;
@@ -696,6 +700,9 @@ HRESULT STDMETHODCALLTYPE ShimDevice::CreateUnorderedAccessView(ID3D11Resource *
 			desc12.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
 		else if (desc.Format == DXGI_FORMAT_UNKNOWN)
 			desc12.Buffer.StructureByteStride = resource.stride;
+		// As for a shader resource view
+		if (desc.Format == DXGI_FORMAT_UNKNOWN && !desc12.Buffer.StructureByteStride)
+			return E_INVALIDARG;
 		// D3D12 keeps the hidden counter of these in a resource the
 		// application provides, which the shim does not do
 		if (desc.Buffer.Flags & (D3D11_BUFFER_UAV_FLAG_APPEND | D3D11_BUFFER_UAV_FLAG_COUNTER))

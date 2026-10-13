@@ -4110,6 +4110,64 @@ static bool collect_replaced(const ShimState *mod, Replaced *replaced, UINT *cou
 	UINT i, cbs;
 	int stage;
 
+// For the report: what the game has at a view of a pixel shader
+static void describe_game_view(const SpirvBinding *slot, char *text, size_t size)
+{
+	const CmdState *game = &scope->state;
+	VkImageView bound = VK_NULL_HANDLE;
+
+	if (slot->kind != SPIRV_TEXTURE) {
+		_snprintf_s(text, size, _TRUNCATE, "buffer");
+		return;
+	}
+	_snprintf_s(text, size, _TRUNCATE, "s%ub%u dim %u ?", slot->set, slot->binding, slot->dim);
+	if (slot->set >= MAX_SETS || !game->sets[slot->set])
+		return;
+	AcquireSRWLockShared(&descriptor_lock);
+	DescriptorSet *set = find_set(game->sets[slot->set]);
+	if (set && slot->binding < set->layout->bindings.size() && set->layout->bindings[slot->binding].image
+	    && set->layout->bindings[slot->binding].count)
+		bound = set->images[set->layout->bindings[slot->binding].first_image];
+	ReleaseSRWLockShared(&descriptor_lock);
+	if (!bound)
+		return;
+	AcquireSRWLockShared(&image_lock);
+	auto image_view = game_views.find(bound);
+	auto found = image_view != game_views.end() ? game_images.find(image_view->second) : game_images.end();
+	if (found != game_images.end()) {
+		_snprintf_s(text, size, _TRUNCATE, "s%ub%u %d/%u/%08x", slot->set, slot->binding,
+			found->second.format ? found->second.format->dxgi : 0, found->second.width,
+			found->second.hashed ? found->second.hash : 0);
+	}
+	ReleaseSRWLockShared(&image_lock);
+}
+
+// For the report: what a mod set a texture in place of, the first time for
+// each register of each pixel shader of the game and each kind of texture
+static void note_mod_texture(UINT i, const ShaderLayout *shader, const ShimView *view, bool set)
+{
+	static std::unordered_set<UINT64> noted, listed;
+	const CmdState *game = &scope->state;
+	UINT64 hash = game->pipeline->shaders[DX12_STAGE_PS];
+	UINT64 width = view ? view->resource->desc.Width : 0;
+	int format = view ? view->resource->desc.Format : 0;
+	char there[96], all[900] = "";
+	UINT v;
+
+	if (noted.size() >= 600 || !noted.insert(((hash * 131 + i) * 131 + width) * 131 + format).second)
+		return;
+
+	if (listed.size() < 80 && listed.insert(hash).second) {
+		for (v = 0; v < shader->views.size(); v++) {
+			describe_game_view(&shader->views[v], there, sizeof(there));
+			_snprintf_s(all + strlen(all), sizeof(all) - strlen(all), _TRUNCATE, " t%u:%s", v, there);
+		}
+		VkDumpNote("Mods: views of %016llx (vs %016llx):%s\n", hash, game->pipeline->shaders[DX12_STAGE_VS], all);
+	}
+	VkDumpNote("Mods: ps-t%u of %016llx: the mod's is %d/%llu, %s\n", i, hash, format, width,
+		i >= shader->views.size() ? "nothing reads it" : set ? "set" : "not set");
+}
+
 	for (stage = 0; stage < DX12_STAGE_COUNT; stage++) {
 		const ShimStageState *state = &mod->stages[stage];
 		const ShaderLayout *shader = game->pipeline->layouts[stage];
@@ -4150,13 +4208,15 @@ static bool collect_replaced(const ShimState *mod, Replaced *replaced, UINT *cou
 			replaced[(*count)++].slot = &shader->cbs[slot];
 		}
 
-		for (i = 0; stage == DX12_STAGE_PS && shader && i < shader->views.size() && i < SHIM_SRV_SLOTS; i++) {
+		for (i = 0; stage == DX12_STAGE_PS && shader && i < SHIM_SRV_SLOTS; i++) {
 			ShimView *view;
 
 			if (!(state->srv_mask[i / 32] & 1u << (i % 32)) || state->srvs[i] == ini_params)
 				continue;
 			view = ShimViewOf(state->srvs[i]);
-			if (shader->views[i].kind != SPIRV_TEXTURE || !view || *count == MAX_REPLACED)
+			if (i >= shader->views.size() || shader->views[i].kind != SPIRV_TEXTURE || !view || *count == MAX_REPLACED) {
+				if (G->vk_dump_hashes && i < 64)
+					note_mod_texture(i, shader, view, false);
 				continue;
 			replaced[*count].view = bring_texture(view, &shader->views[i]);
 			if (!replaced[*count].view)
@@ -4172,7 +4232,10 @@ static bool collect_replaced(const ShimState *mod, Replaced *replaced, UINT *cou
 				continue;
 			if (i < SCOPE_SRVS && (scope->srvs_asked[stage] & 1u << i) && state->srvs[i] == scope->srvs[stage][i])
 				continue;
+			}
 			if (!shader || i >= shader->views.size())
+			if (G->vk_dump_hashes)
+				note_mod_texture(i, shader, view, replaced[*count].view != VK_NULL_HANDLE);
 				continue;
 			if (shader->views[i].kind != SPIRV_SSBO) {
 				mod_draw_failed("the mod has set a buffer or texture for a stage before the pixel shader where the shader "

@@ -2,6 +2,7 @@
 
 #include <immintrin.h>
 
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <string>
@@ -60,6 +61,7 @@ static struct {
 	unsigned variants_made, variants_failed;
 	UINT64 variant_ticks;
 	unsigned textures_made, textures_failed, textures_set;
+	unsigned apart_draws, textures_shown;
 	UINT64 textures_bytes;
 	UINT64 wait_ticks, engine_ticks;
 } stats;
@@ -99,6 +101,9 @@ const UINT MAX_VBS = 16;
 // mods of the game this was written for expect what they look for.
 struct ShaderLayout {
 	std::vector<SpirvBinding> cbs, views;
+	// What the assembly of the shader would declare were it a D3D11 one,
+	// for the patterns of the ShaderRegex sections
+	std::string declarations;
 	// The same as the engine has it of a D3D11 shader, once it asked. With
 	// the lock of dx12/Bridge.h held.
 	ShaderBindings *declared;
@@ -173,6 +178,73 @@ static unsigned seen_override_generation;
 static volatile bool want_all;
 // How many of seen_shaders the ShaderRegex sections have been linked to
 static size_t linked_shaders;
+// and how many of them a section took for what they declare
+static size_t matched_shaders;
+
+// A mod tells the shaders of a game apart by what their assembly declares:
+// how far a constant buffer is read and whether with an index, the registers
+// and kinds of the views, the last output. A SPIR-V shader translated from
+// the same source says as much, so it is written out the way the D3D11
+// disassembler would. The position is taken for the first output of a vertex
+// shader and the first input of a pixel shader, the locations for the
+// registers that follow.
+static void declare_as_d3d11(const SpirvInfo &info, ShaderLayout *layout)
+{
+	static const char *const masks[] = { "x", "xy", "xyz", "xyzw" };
+	std::string *text = &layout->declarations;
+	int stage = stage_of((VkShaderStageFlagBits)info.stage);
+	std::vector<SpirvVarying> in = info.in, out = info.out;
+	UINT samplers = 0, i;
+	char line[128];
+
+	if (stage < 0)
+		return;
+	auto by_location = [](const SpirvVarying &a, const SpirvVarying &b) { return a.location < b.location; };
+	std::sort(in.begin(), in.end(), by_location);
+	std::sort(out.begin(), out.end(), by_location);
+
+	_snprintf_s(line, _TRUNCATE, "%s_5_0\ndcl_globalFlags refactoringAllowed\n", dx12_stage_names[stage]);
+	*text = line;
+	for (i = 0; i < layout->cbs.size(); i++) {
+		if (!layout->cbs[i].used)
+			continue;
+		_snprintf_s(line, _TRUNCATE, "dcl_constantbuffer CB%u[%u], %s\n", i, (layout->cbs[i].used + 15) / 16,
+			layout->cbs[i].dynamic ? "dynamicIndexed" : "immediateIndexed");
+		*text += line;
+	}
+	for (const SpirvBinding &binding : info.bindings) {
+		if (binding.kind != SPIRV_SAMPLER && binding.kind != SPIRV_TEXTURE_SAMPLER)
+			continue;
+		_snprintf_s(line, _TRUNCATE, "dcl_sampler s%u, mode_default\n", samplers++);
+		*text += line;
+	}
+	for (i = 0; i < layout->views.size(); i++) {
+		const SpirvBinding &view = layout->views[i];
+
+		if (view.kind == SPIRV_SSBO)
+			_snprintf_s(line, _TRUNCATE, "dcl_resource_structured t%u, %u\n", i, view.stride);
+		else
+			_snprintf_s(line, _TRUNCATE, "dcl_resource_%s (float,float,float,float) t%u\n",
+				view.kind == SPIRV_TEXEL_BUFFER ? "buffer" : view.dim == 3 ? "texturecube"
+				: view.dim == 2 ? "texture3d" : view.arrayed ? "texture2darray" : "texture2d", i);
+		*text += line;
+	}
+	if (stage == DX12_STAGE_PS)
+		*text += "dcl_input_ps_siv linear noperspective v0.xyzw, position\n";
+	for (const SpirvVarying &varying : in) {
+		_snprintf_s(line, _TRUNCATE, "dcl_input%s v%u.%s\n", stage == DX12_STAGE_PS ? "_ps linear" : "",
+			varying.location + (stage == DX12_STAGE_PS), masks[varying.components - 1]);
+		*text += line;
+	}
+	if (stage == DX12_STAGE_VS)
+		*text += "dcl_output_siv o0.xyzw, position\n";
+	for (const SpirvVarying &varying : out) {
+		_snprintf_s(line, _TRUNCATE, "dcl_output o%u.%s\n", varying.location + (stage == DX12_STAGE_VS),
+			masks[varying.components - 1]);
+		*text += line;
+	}
+	*text += "dcl_temps 1\n";
+}
 
 static ShaderLayout* reflect_shader(const uint32_t *code, size_t bytes)
 {
@@ -197,6 +269,7 @@ static ShaderLayout* reflect_shader(const uint32_t *code, size_t bytes)
 		}
 	}
 	layout->declared = NULL;
+	declare_as_d3d11(info, layout);
 	return layout;
 }
 
@@ -2227,12 +2300,15 @@ struct SetBinding {
 	// Of its first descriptor among those of the set that are buffers, and
 	// among those that are bound with an offset
 	UINT first, first_dynamic;
+	// A texture a shader samples, and its first among those of the set
+	bool image;
+	UINT first_image;
 };
 
 struct DescriptorLayout {
 	// By binding number
 	std::vector<SetBinding> bindings;
-	UINT buffers, dynamic;
+	UINT buffers, dynamic, images;
 	// What a pool needs for a set of it. None if a set like one of the
 	// game's cannot be made here.
 	std::vector<VkDescriptorPoolSize> pool_sizes;
@@ -2247,6 +2323,7 @@ struct DescriptorSet {
 	std::shared_ptr<const DescriptorLayout> layout;
 	VkDescriptorSetLayout layout_handle;
 	std::vector<SetBuffer> buffers;
+	std::vector<VkImageView> images;
 	// Counts the times it was allocated or written
 	UINT64 generation;
 };
@@ -2267,6 +2344,11 @@ static bool is_buffer_descriptor(VkDescriptorType type)
 		|| type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER || type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 }
 
+static bool is_image_descriptor(VkDescriptorType type)
+{
+	return type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+}
+
 void VkModsSetLayout(VkDescriptorSetLayout handle, const VkDescriptorSetLayoutCreateInfo *info)
 {
 	std::shared_ptr<DescriptorLayout> layout = std::make_shared<DescriptorLayout>();
@@ -2278,6 +2360,7 @@ void VkModsSetLayout(VkDescriptorSetLayout handle, const VkDescriptorSetLayoutCr
 
 	layout->buffers = 0;
 	layout->dynamic = 0;
+	layout->images = 0;
 	for (i = 0; info->pBindings && i < info->bindingCount; i++) {
 		const VkDescriptorSetLayoutBinding *described = &info->pBindings[i];
 		SetBinding *binding;
@@ -2295,6 +2378,7 @@ void VkModsSetLayout(VkDescriptorSetLayout handle, const VkDescriptorSetLayoutCr
 			layout->bindings.resize(described->binding + 1);
 		binding = &layout->bindings[described->binding];
 		binding->buffer = is_buffer_descriptor(described->descriptorType);
+		binding->image = is_image_descriptor(described->descriptorType);
 		binding->dynamic = described->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
 			|| described->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 		binding->fixed = described->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER && described->pImmutableSamplers;
@@ -2307,6 +2391,10 @@ void VkModsSetLayout(VkDescriptorSetLayout handle, const VkDescriptorSetLayoutCr
 	}
 	// The offsets a set is bound with are in the order of its bindings
 	for (SetBinding &binding : layout->bindings) {
+		if (binding.image) {
+			binding.first_image = layout->images;
+			layout->images += binding.count;
+		}
 		if (!binding.buffer)
 			continue;
 		binding.first = layout->buffers;
@@ -2345,14 +2433,16 @@ void VkModsSetsAllocated(const VkDescriptorSetAllocateInfo *info, const VkDescri
 		(*slot)->layout_handle = info->pSetLayouts[i];
 		(*slot)->generation++;
 		(*slot)->buffers.assign((*slot)->layout ? (*slot)->layout->buffers : 0, SetBuffer{});
+		(*slot)->images.assign((*slot)->layout ? (*slot)->layout->images : 0, VK_NULL_HANDLE);
 	}
 	ReleaseSRWLockExclusive(&descriptor_lock);
 }
 
 // The descriptor a write or a copy has got to, which goes on into the bindings
 // after the one it started at. With descriptor_lock held. False past the last
-// of the set; buffer is NULL for one that is no buffer.
-static bool next_descriptor(DescriptorSet *set, uint32_t *binding, uint32_t *element, SetBuffer **buffer)
+// of the set; buffer is NULL for one that is no buffer, image for one that is
+// no texture.
+static bool next_descriptor(DescriptorSet *set, uint32_t *binding, uint32_t *element, SetBuffer **buffer, VkImageView **image)
 {
 	const std::vector<SetBinding> &bindings = set->layout->bindings;
 
@@ -2364,6 +2454,7 @@ static bool next_descriptor(DescriptorSet *set, uint32_t *binding, uint32_t *ele
 		return false;
 
 	*buffer = bindings[*binding].buffer ? &set->buffers[bindings[*binding].first + *element] : NULL;
+	*image = bindings[*binding].image ? &set->images[bindings[*binding].first_image + *element] : NULL;
 	++*element;
 	return true;
 }
@@ -2379,6 +2470,7 @@ void VkModsSetsUpdated(uint32_t write_count, const VkWriteDescriptorSet *writes,
 {
 	uint32_t i, j, binding, element, src_binding, src_element;
 	SetBuffer *buffer, *src_buffer;
+	VkImageView *image, *src_image;
 	DescriptorSet *set, *src;
 	bool any = copy_count != 0;
 
@@ -2390,17 +2482,21 @@ void VkModsSetsUpdated(uint32_t write_count, const VkWriteDescriptorSet *writes,
 
 	for (i = 0; i < write_count; i++) {
 		const VkWriteDescriptorSet *write = &writes[i];
+		bool buffers = is_buffer_descriptor(write->descriptorType) && write->pBufferInfo;
+		bool images = is_image_descriptor(write->descriptorType) && write->pImageInfo;
 
 		if (!(set = find_set(write->dstSet)))
 			continue;
 		set->generation++;
-		if (!is_buffer_descriptor(write->descriptorType) || !write->pBufferInfo)
+		if (!buffers && !images)
 			continue;
 		binding = write->dstBinding;
 		element = write->dstArrayElement;
-		for (j = 0; j < write->descriptorCount && next_descriptor(set, &binding, &element, &buffer); j++) {
-			if (buffer)
+		for (j = 0; j < write->descriptorCount && next_descriptor(set, &binding, &element, &buffer, &image); j++) {
+			if (buffer && buffers)
 				*buffer = { write->pBufferInfo[j].buffer, write->pBufferInfo[j].offset, write->pBufferInfo[j].range };
+			if (image && images)
+				*image = write->pImageInfo[j].imageView;
 		}
 	}
 
@@ -2416,17 +2512,20 @@ void VkModsSetsUpdated(uint32_t write_count, const VkWriteDescriptorSet *writes,
 		element = copy->dstArrayElement;
 		src_binding = copy->srcBinding;
 		src_element = copy->srcArrayElement;
-		for (j = 0; j < copy->descriptorCount && next_descriptor(set, &binding, &element, &buffer)
-				&& next_descriptor(src, &src_binding, &src_element, &src_buffer); j++) {
+		for (j = 0; j < copy->descriptorCount && next_descriptor(set, &binding, &element, &buffer, &image)
+				&& next_descriptor(src, &src_binding, &src_element, &src_buffer, &src_image); j++) {
 			if (buffer && src_buffer)
 				*buffer = *src_buffer;
+			if (image && src_image)
+				*image = *src_image;
 		}
 	}
 
 	ReleaseSRWLockExclusive(&descriptor_lock);
 }
 
-// Of a template for updating a set, the entries that are for buffers
+// Of a template for updating a set, the entries that are for buffers or for
+// textures
 static std::unordered_map<VkDescriptorUpdateTemplate, std::shared_ptr<const std::vector<VkDescriptorUpdateTemplateEntry>>> update_templates;
 
 void VkModsUpdateTemplate(VkDescriptorUpdateTemplate handle, const VkDescriptorUpdateTemplateCreateInfo *info)
@@ -2436,7 +2535,8 @@ void VkModsUpdateTemplate(VkDescriptorUpdateTemplate handle, const VkDescriptorU
 
 	// One for push descriptors is of no set
 	for (i = 0; info->templateType == VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET && i < info->descriptorUpdateEntryCount; i++) {
-		if (is_buffer_descriptor(info->pDescriptorUpdateEntries[i].descriptorType))
+		if (is_buffer_descriptor(info->pDescriptorUpdateEntries[i].descriptorType)
+		    || is_image_descriptor(info->pDescriptorUpdateEntries[i].descriptorType))
 			entries->push_back(info->pDescriptorUpdateEntries[i]);
 	}
 
@@ -2449,6 +2549,7 @@ void VkModsSetUpdatedWithTemplate(VkDescriptorSet handle, VkDescriptorUpdateTemp
 {
 	uint32_t j, binding, element;
 	DescriptorSet *set;
+	VkImageView *image;
 	SetBuffer *buffer;
 
 	if (!data)
@@ -2462,17 +2563,224 @@ void VkModsSetUpdatedWithTemplate(VkDescriptorSet handle, VkDescriptorUpdateTemp
 	if (found != update_templates.end() && !found->second->empty() && set) {
 		sets_written_by_template++;
 		for (const VkDescriptorUpdateTemplateEntry &entry : *found->second) {
+			bool buffers = is_buffer_descriptor(entry.descriptorType);
+
 			binding = entry.dstBinding;
 			element = entry.dstArrayElement;
-			for (j = 0; j < entry.descriptorCount && next_descriptor(set, &binding, &element, &buffer); j++) {
-				const VkDescriptorBufferInfo *info = (const VkDescriptorBufferInfo*)((const BYTE*)data + entry.offset + j * entry.stride);
+			for (j = 0; j < entry.descriptorCount && next_descriptor(set, &binding, &element, &buffer, &image); j++) {
+				const BYTE *at = (const BYTE*)data + entry.offset + j * entry.stride;
 
-				if (buffer)
+				if (buffer && buffers) {
+					const VkDescriptorBufferInfo *info = (const VkDescriptorBufferInfo*)at;
+
 					*buffer = { info->buffer, info->offset, info->range };
+				} else if (image && !buffers) {
+					*image = ((const VkDescriptorImageInfo*)at)->imageView;
+				}
 			}
 		}
 	}
 	ReleaseSRWLockExclusive(&descriptor_lock);
+}
+
+// -----------------------------------------------------------------------------
+// The textures of the game
+//
+// A mod names a texture of the game by the hash 3DMigoto has of the D3D11
+// one: of its description and of the start of its first mip level, as it was
+// when the game created it. The game fills its Vulkan image with the same
+// bytes, out of a buffer it has mapped, so the hash can be had from those.
+//
+// A texture whose larger levels are not loaded yet is a smaller texture under
+// D3D11, which the game replaces when they are. Here it is the one image all
+// along: its hash is that of the largest level filled so far, with the
+// description of a texture that starts there.
+
+struct GameFormat {
+	VkFormat vk;
+	DXGI_FORMAT dxgi;
+	// Of a block of 4x4 texels, or of a texel where there are no blocks
+	UINT block_bytes, texel_bytes;
+};
+
+static const GameFormat game_formats[] = {
+	{ VK_FORMAT_BC1_RGB_UNORM_BLOCK, DXGI_FORMAT_BC1_UNORM, 8 }, { VK_FORMAT_BC1_RGB_SRGB_BLOCK, DXGI_FORMAT_BC1_UNORM_SRGB, 8 },
+	{ VK_FORMAT_BC1_RGBA_UNORM_BLOCK, DXGI_FORMAT_BC1_UNORM, 8 }, { VK_FORMAT_BC1_RGBA_SRGB_BLOCK, DXGI_FORMAT_BC1_UNORM_SRGB, 8 },
+	{ VK_FORMAT_BC2_UNORM_BLOCK, DXGI_FORMAT_BC2_UNORM, 16 }, { VK_FORMAT_BC2_SRGB_BLOCK, DXGI_FORMAT_BC2_UNORM_SRGB, 16 },
+	{ VK_FORMAT_BC3_UNORM_BLOCK, DXGI_FORMAT_BC3_UNORM, 16 }, { VK_FORMAT_BC3_SRGB_BLOCK, DXGI_FORMAT_BC3_UNORM_SRGB, 16 },
+	{ VK_FORMAT_BC4_UNORM_BLOCK, DXGI_FORMAT_BC4_UNORM, 8 }, { VK_FORMAT_BC4_SNORM_BLOCK, DXGI_FORMAT_BC4_SNORM, 8 },
+	{ VK_FORMAT_BC5_UNORM_BLOCK, DXGI_FORMAT_BC5_UNORM, 16 }, { VK_FORMAT_BC5_SNORM_BLOCK, DXGI_FORMAT_BC5_SNORM, 16 },
+	{ VK_FORMAT_BC6H_UFLOAT_BLOCK, DXGI_FORMAT_BC6H_UF16, 16 }, { VK_FORMAT_BC6H_SFLOAT_BLOCK, DXGI_FORMAT_BC6H_SF16, 16 },
+	{ VK_FORMAT_BC7_UNORM_BLOCK, DXGI_FORMAT_BC7_UNORM, 16 }, { VK_FORMAT_BC7_SRGB_BLOCK, DXGI_FORMAT_BC7_UNORM_SRGB, 16 },
+	{ VK_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM, 0, 1 }, { VK_FORMAT_R8G8_UNORM, DXGI_FORMAT_R8G8_UNORM, 0, 2 },
+	{ VK_FORMAT_R16_UNORM, DXGI_FORMAT_R16_UNORM, 0, 2 }, { VK_FORMAT_R16_SFLOAT, DXGI_FORMAT_R16_FLOAT, 0, 2 },
+	{ VK_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 4 }, { VK_FORMAT_R8G8B8A8_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 0, 4 },
+	{ VK_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, 0, 4 }, { VK_FORMAT_B8G8R8A8_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, 0, 4 },
+	{ VK_FORMAT_R16G16B16A16_SFLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 8 },
+};
+
+struct GameImage {
+	const GameFormat *format;
+	uint32_t width, height, mips, layers;
+	bool cube;
+	// The level the hash is of
+	uint32_t level;
+	bool hashed;
+	uint32_t hash, data_hash;
+	// What the engine is shown for it, once it asked, and the hash that
+	// has. With the lock of dx12/Bridge.h held.
+	ShimTexture2D *object;
+	ShimShaderResourceView *srv;
+	uint32_t shown_hash;
+};
+
+static SRWLOCK image_lock = SRWLOCK_INIT;
+static std::unordered_map<VkImage, GameImage> game_images;
+static std::unordered_map<VkImageView, VkImage> game_views;
+// What the engine was shown of images that are gone. Let go of with the lock
+// of dx12/Bridge.h held.
+static std::vector<IUnknown*> retired_images;
+static volatile LONG images_hashed, images_not_mapped;
+
+void VkModsImageCreated(VkImage image, const VkImageCreateInfo *info)
+{
+	GameImage created = {};
+
+	if (info->imageType != VK_IMAGE_TYPE_2D || info->samples != VK_SAMPLE_COUNT_1_BIT
+	    || !(info->usage & VK_IMAGE_USAGE_SAMPLED_BIT) || !(info->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+		return;
+	for (const GameFormat &format : game_formats) {
+		if (format.vk == info->format)
+			created.format = &format;
+	}
+	if (!created.format)
+		return;
+	created.width = info->extent.width;
+	created.height = info->extent.height;
+	created.mips = info->mipLevels;
+	created.layers = info->arrayLayers;
+	created.cube = !!(info->flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) && info->arrayLayers == 6;
+
+	AcquireSRWLockExclusive(&image_lock);
+	game_images[image] = created;
+	ReleaseSRWLockExclusive(&image_lock);
+}
+
+void VkModsForgetImage(VkImage image)
+{
+	AcquireSRWLockExclusive(&image_lock);
+	auto found = game_images.find(image);
+	if (found != game_images.end()) {
+		if (found->second.srv)
+			retired_images.push_back(found->second.srv);
+		if (found->second.object)
+			retired_images.push_back(found->second.object);
+		game_images.erase(found);
+	}
+	ReleaseSRWLockExclusive(&image_lock);
+}
+
+void VkModsImageView(VkImageView view, const VkImageViewCreateInfo *info)
+{
+	AcquireSRWLockExclusive(&image_lock);
+	if (game_images.count(info->image))
+		game_views[view] = info->image;
+	ReleaseSRWLockExclusive(&image_lock);
+}
+
+void VkModsForgetImageView(VkImageView view)
+{
+	AcquireSRWLockExclusive(&image_lock);
+	game_views.erase(view);
+	ReleaseSRWLockExclusive(&image_lock);
+}
+
+// With the lock of dx12/Bridge.h held
+static void release_retired_images()
+{
+	std::vector<IUnknown*> gone;
+
+	AcquireSRWLockExclusive(&image_lock);
+	gone.swap(retired_images);
+	ReleaseSRWLockExclusive(&image_lock);
+	for (IUnknown *object : gone)
+		object->Release();
+}
+
+void VkModsCopyBufferToImage(VkBuffer src, VkImage dst, uint32_t count, const VkBufferImageCopy *regions)
+{
+	const VkBufferImageCopy *top = NULL;
+	D3D11_TEXTURE2D_DESC desc = {};
+	VkDeviceSize start, bytes, level_bytes;
+	uint32_t data_hash, level, r;
+	bool known = false;
+	GameImage image;
+
+	for (r = 0; r < count; r++) {
+		if (regions[r].imageSubresource.baseArrayLayer || regions[r].imageOffset.x || regions[r].imageOffset.y
+		    || regions[r].imageOffset.z || regions[r].bufferRowLength || regions[r].bufferImageHeight)
+			continue;
+		if (!top || regions[r].imageSubresource.mipLevel < top->imageSubresource.mipLevel)
+			top = &regions[r];
+	}
+	if (!top)
+		return;
+	level = top->imageSubresource.mipLevel;
+
+	AcquireSRWLockShared(&image_lock);
+	auto found = game_images.find(dst);
+	if (found != game_images.end() && level < found->second.mips && (!found->second.hashed || level < found->second.level)) {
+		image = found->second;
+		known = true;
+	}
+	ReleaseSRWLockShared(&image_lock);
+	if (!known)
+		return;
+
+	desc.Width = max(image.width >> level, 1u);
+	desc.Height = max(image.height >> level, 1u);
+	desc.MipLevels = image.mips - level;
+	desc.ArraySize = image.layers;
+	desc.Format = image.format->dxgi;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+	desc.MiscFlags = image.cube ? D3D11_RESOURCE_MISC_TEXTURECUBE : 0;
+
+	// As CalcTexture2DDataHash has it without texture_hash: as many bytes
+	// as the level has texels, or the level if that is less
+	level_bytes = image.format->block_bytes
+		? (VkDeviceSize)((desc.Width + 3) / 4) * ((desc.Height + 3) / 4) * image.format->block_bytes
+		: (VkDeviceSize)desc.Width * desc.Height * image.format->texel_bytes;
+	bytes = min((VkDeviceSize)desc.Width * desc.Height * desc.ArraySize, level_bytes);
+
+	AcquireSRWLockShared(&memory_lock);
+	auto from = buffers.find(src);
+	auto mapping = from != buffers.end() ? mappings.find(from->second.memory) : mappings.end();
+	known = mapping != mappings.end() && mapping->second.data && top->bufferOffset + bytes <= from->second.size;
+	if (known) {
+		start = from->second.memory_offset + top->bufferOffset;
+		known = start >= mapping->second.offset
+			&& (mapping->second.size == VK_WHOLE_SIZE || start + bytes <= mapping->second.offset + mapping->second.size);
+	}
+	if (known)
+		data_hash = Dx12Crc32cWriteCombined(0, mapping->second.data + (start - mapping->second.offset), (size_t)bytes);
+	ReleaseSRWLockShared(&memory_lock);
+	if (!known) {
+		InterlockedIncrement(&images_not_mapped);
+		return;
+	}
+
+	AcquireSRWLockExclusive(&image_lock);
+	found = game_images.find(dst);
+	if (found != game_images.end() && (!found->second.hashed || level < found->second.level)) {
+		found->second.level = level;
+		found->second.hashed = true;
+		found->second.data_hash = data_hash;
+		found->second.hash = CalcTexture2DDescHash(data_hash, &desc);
+		InterlockedIncrement(&images_hashed);
+	}
+	ReleaseSRWLockExclusive(&image_lock);
 }
 
 // -----------------------------------------------------------------------------
@@ -3306,6 +3614,87 @@ static void note_view(int stage, UINT slot, const SpirvBinding *view, VkDeviceSi
 		VkDumpNote("%s\n", text);
 }
 
+// With the lock of dx12/Bridge.h held: the texture of the game a shader samples
+// at one of its bindings, as an object the engine finds the hash of. There is
+// nothing behind it, a mod cannot read the texture or bind it elsewhere.
+static ID3D11ShaderResourceView* game_texture(const SpirvBinding *slot)
+{
+	const CmdState *game = &scope->state;
+	ID3D11ShaderResourceView *shown = NULL;
+	VkImageView bound = VK_NULL_HANDLE;
+	D3D11_TEXTURE2D_DESC desc = {};
+	GameImage *image;
+
+	if (slot->set >= MAX_SETS || !game->sets[slot->set])
+		return NULL;
+	AcquireSRWLockShared(&descriptor_lock);
+	DescriptorSet *set = find_set(game->sets[slot->set]);
+	if (set && slot->binding < set->layout->bindings.size() && set->layout->bindings[slot->binding].image
+	    && set->layout->bindings[slot->binding].count)
+		bound = set->images[set->layout->bindings[slot->binding].first_image];
+	ReleaseSRWLockShared(&descriptor_lock);
+	if (!bound)
+		return NULL;
+
+	AcquireSRWLockExclusive(&image_lock);
+	auto view = game_views.find(bound);
+	auto found = view != game_views.end() ? game_images.find(view->second) : game_images.end();
+	image = found != game_images.end() && found->second.hashed ? &found->second : NULL;
+	if (image && (!image->object || image->shown_hash != image->hash)) {
+		desc.Width = max(image->width >> image->level, 1u);
+		desc.Height = max(image->height >> image->level, 1u);
+		desc.MipLevels = image->mips - image->level;
+		desc.ArraySize = image->layers;
+		desc.Format = image->format->dxgi;
+		desc.SampleDesc.Count = 1;
+		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		desc.MiscFlags = image->cube ? D3D11_RESOURCE_MISC_TEXTURECUBE : 0;
+
+		if (!image->object) {
+			image->object = new ShimTexture2D();
+			image->object->r.dimension = D3D11_RESOURCE_DIMENSION_TEXTURE2D;
+			image->object->r.foreign = true;
+			// Has the engine's record of the object removed along with it
+			new ResourceReleaseTracker(image->object);
+
+			image->srv = new ShimShaderResourceView();
+			image->srv->v.heap_type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+			image->srv->v.resource11 = image->object;
+			image->srv->v.resource11->AddRef();
+			image->srv->v.resource = &image->object->r;
+			image->srv->v.format = desc.Format;
+			image->srv->mDesc = {};
+			image->srv->mDesc.Format = desc.Format;
+			image->srv->mDesc.ViewDimension = image->cube ? D3D11_SRV_DIMENSION_TEXTURECUBE
+				: image->layers > 1 ? D3D11_SRV_DIMENSION_TEXTURE2DARRAY : D3D11_SRV_DIMENSION_TEXTURE2D;
+		}
+		image->object->mDesc = desc;
+		image->object->r.desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		image->object->r.desc.Width = desc.Width;
+		image->object->r.desc.Height = desc.Height;
+		image->object->r.desc.DepthOrArraySize = (UINT16)desc.ArraySize;
+		image->object->r.desc.MipLevels = (UINT16)desc.MipLevels;
+		image->object->r.desc.Format = desc.Format;
+		image->object->r.desc.SampleDesc.Count = 1;
+
+		EnterCriticalSectionPretty(&G->mResourcesLock);
+		ResourceHandleInfo *handle = &G->mResources[image->object];
+		handle->type = D3D11_RESOURCE_DIMENSION_TEXTURE2D;
+		handle->hash = image->hash;
+		handle->orig_hash = image->hash;
+		handle->data_hash = image->data_hash;
+		handle->texture_override_candidates_valid = false;
+		handle->desc2D = desc;
+		LeaveCriticalSection(&G->mResourcesLock);
+		ForgetTextureOverrideMiss(image->object);
+		image->shown_hash = image->hash;
+	}
+	if (image)
+		shown = image->srv;
+	ReleaseSRWLockExclusive(&image_lock);
+	return shown;
+}
+
 ID3D11ShaderResourceView* VkScopeShaderResource(int stage, UINT slot)
 {
 	PublishedConstants *published = NULL;
@@ -3315,9 +3704,7 @@ ID3D11ShaderResourceView* VkScopeShaderResource(int stage, UINT slot)
 	const char *why;
 	SetBuffer bound;
 
-	// A storage buffer of the stages before the pixel shader, which is
-	// where one is what moves a mesh
-	if (!scope || stage == DX12_STAGE_PS || stage >= DX12_STAGE_CS || slot >= SCOPE_SRVS)
+	if (!scope || stage >= DX12_STAGE_CS || slot >= SCOPE_SRVS)
 		return NULL;
 	if (scope->srvs_asked[stage] & 1u << slot)
 		return scope->srvs[stage][slot];
@@ -3328,6 +3715,15 @@ ID3D11ShaderResourceView* VkScopeShaderResource(int stage, UINT slot)
 	if (!shader || slot >= shader->views.size())
 		return NULL;
 	view = &shader->views[slot];
+	// Of the pixel shader, the textures by their hashes. Of the stages
+	// before it, a storage buffer, which is where one is what moves a mesh.
+	if (stage == DX12_STAGE_PS) {
+		if (view->kind == SPIRV_TEXTURE || view->kind == SPIRV_TEXTURE_SAMPLER) {
+			scope->srvs[stage][slot] = game_texture(view);
+			stats.textures_shown += !!scope->srvs[stage][slot];
+		}
+		return scope->srvs[stage][slot];
+	}
 	if (view->kind != SPIRV_SSBO || !view->stride)
 		return NULL;
 
@@ -3888,6 +4284,16 @@ void VkScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT base_
 	ModDraw draw = {};
 
 	stats.mod_draws++;
+	// Nothing of this is the game's: what it writes to a buffer of the
+	// mod's, which is all it can reach, is made on the D3D12 device as a
+	// dispatch of the mod's is
+	if (mod->stages[DX12_STAGE_VS].shader && mod->stages[DX12_STAGE_PS].shader) {
+		if (dx12_shim->shim_context->DrawApart(indexed, count, instances, start, base_vertex, start_instance))
+			stats.apart_draws++;
+		else
+			mod_draw_failed("the mod draws with shaders of its own, which need a target of the game or could not be put together");
+		return;
+	}
 	// D3D11 reads every index as 0 without an index buffer, which draws
 	// nothing
 	if (indexed && (mod->ib_unbound || (!mod->ib && !scope->state.ib)))
@@ -4033,10 +4439,21 @@ static void link_shader_regex()
 		// Nothing of what a section matches a D3D12 shader by is known,
 		// which leaves the sections that take every shader of a stage
 		Dx12ShaderInfo info = {};
+		ShaderLayout *layout = NULL;
 
 		info.hash = shader.hash;
 		info.stage = (Dx12ShaderStage)shader.stage;
 		link_shader_regex_groups_dx12(&info);
+
+		// and those with patterns that what the shader declares is enough for
+		AcquireSRWLockShared(&registry_lock);
+		auto known = shader_layouts.find(shader.hash);
+		if (known != shader_layouts.end())
+			layout = known->second;
+		ReleaseSRWLockShared(&registry_lock);
+		if (layout && !layout->declarations.empty()
+		    && link_shader_regex_groups_declared(dx12_stage_names[shader.stage], shader.hash, &layout->declarations))
+			matched_shaders++;
 	}
 }
 
@@ -4064,7 +4481,7 @@ void VkModsConfigReloaded()
 		return;
 
 	// The sections the shaders were linked to are gone
-	linked_shaders = 0;
+	linked_shaders = matched_shaders = 0;
 	refresh_wanted();
 	collect_index_counts();
 }
@@ -4082,11 +4499,11 @@ static void report()
 	VkDumpNote("Mods, frame %u (D3D12 frame %u), since the last of these lines: the engine saw %u draws and skipped %u, mods drew %u times "
 		"of which %u could not be made, %u buffers of mods copied (%llu KB), %Iu held; "
 		"index regions hashed %u, found as they were %u, not mapped %u; per frame the draws took %.2f ms waiting for the lock "
-		"and %.2f ms in the engine, %.2f us a draw; %Iu shaders linked to ShaderRegex, %Iu ShaderOverride hashes, %Iu buffers published\n",
+		"and %.2f ms in the engine, %.2f us a draw; %Iu shaders linked to ShaderRegex (%Iu by what they declare), %Iu ShaderOverride hashes, %Iu buffers published\n",
 		vk_frame, dx12_frame, stats.draws, stats.skipped, stats.mod_draws, stats.mod_draws_failed, stats.mirrored,
 		stats.mirrored_bytes >> 10, mirrors.size(), stats.regions_hashed, stats.regions_checked,
 		stats.regions_unmapped, stats.wait_ticks * per_frame, stats.engine_ticks * per_frame, stats.engine_ticks * per_draw,
-		linked_shaders, G->mShaderOverrideMap.size(), published.size());
+		linked_shaders, matched_shaders, G->mShaderOverrideMap.size(), published.size());
 	VkDumpNote("  Constant buffers of the game: shown %u times, read %u times (%llu KB, %.2f ms per frame), not mapped %u, no buffer seen set at the "
 		"binding %u; %Iu held. Descriptor sets: %u allocated, buffers written %u times by vkUpdateDescriptorSets and %u times "
 		"by a template\n",
@@ -4103,9 +4520,10 @@ static void report()
 		stats.variants_made, stats.variants_failed, stats.variant_ticks * per_frame, recipes_kept, recipes_failed,
 		(int)recipe_unknown_structure);
 	VkDumpNote("  Textures of mods for the pixel shaders of the game: set %u times, %u images made (%llu KB copied), %u could not be; "
-		"%Iu held in %Iu blocks of memory\n",
+		"%Iu held in %Iu blocks of memory; draws of mods with shaders of their own: %u; textures of the game shown by their hashes "
+		"%u times, %d hashed, %d filled from memory that is not mapped\n",
 		stats.textures_set, stats.textures_made, stats.textures_bytes >> 10, stats.textures_failed, mod_textures.size(),
-		image_blocks.size());
+		image_blocks.size(), stats.apart_draws, stats.textures_shown, (int)images_hashed, (int)images_not_mapped);
 	VkDumpNote("  The draws were stopped for because of: settings %u, a pipeline not looked at yet, command lists doing more than asking "
 		"or a condition of one %u, an index count a section asks for %u, a constant buffer a list asks for %u; "
 		"about %u more were not stopped for\n",
@@ -4135,6 +4553,8 @@ void VkModsPresent(VkQueue queue)
 		}
 		return;
 	}
+
+	release_retired_images();
 
 	if (!engine_reported) {
 		engine_reported = true;

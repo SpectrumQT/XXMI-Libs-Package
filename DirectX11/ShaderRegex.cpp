@@ -495,6 +495,41 @@ bool link_shader_regex_groups_dx12(const Dx12ShaderInfo *shader)
 	return linked;
 }
 
+bool link_shader_regex_groups_declared(const char *shader_type, UINT64 hash, std::string *declarations)
+{
+	size_t length = strlen(shader_type);
+	bool linked = false;
+
+	for (auto &entry : shader_regex_groups) {
+		ShaderRegexGroup *group = &entry.second;
+		bool match = true;
+
+		if (group->patterns.empty() || group->dx12_match || !group->declarations.empty())
+			continue;
+		if (group->command_list.noop() && group->post_command_list.noop() && group->filter_index == FLT_MAX)
+			continue;
+		if (std::none_of(group->shader_models.begin(), group->shader_models.end(), [&](const std::string &model) {
+			return !model.compare(0, length, shader_type) && model[length] == '_'; }))
+			continue;
+
+		for (auto &pattern : group->patterns) {
+			// One that rewrites the shader is after its instructions
+			if (pattern.second.do_replace || !pattern.second.matches(declarations)) {
+				match = false;
+				break;
+			}
+		}
+		if (!match)
+			continue;
+
+		LogInfo("ShaderRegex: %s %016I64x matches [%S] by its declarations\n", shader_type, hash, group->ini_section.c_str());
+		group->link_command_lists_and_filter_index(hash);
+		linked = true;
+	}
+
+	return linked;
+}
+
 bool unlink_shader_regex_command_lists_and_filter_index(UINT64 shader_hash)
 {
 	ShaderOverride *shader_override = NULL;

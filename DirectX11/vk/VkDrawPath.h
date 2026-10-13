@@ -51,9 +51,21 @@
 //     way: as an image of the game's device, filled once with what the
 //     engine loaded on the D3D12 device.
 //
-// Not yet: shaders of its own for a draw, the game's vertex buffers and
-// textures (so no TextureOverride by the hash of a texture either), indirect
-// draws, dispatches.
+//   - A draw of a mod with a vertex and a pixel shader of its own is recorded
+//     on the D3D12 device. It has none of the targets of the game there, so
+//     all it is good for is writing a buffer of the mod through a UAV.
+//
+//   - The ShaderRegex sections that tell shaders apart by their declarations
+//     are matched against those of the SPIR-V shader, written out as the
+//     D3D11 disassembler would.
+//
+//   - A texture of the game is shown to the engine by the hash its D3D11
+//     texture would have, worked out from what the game fills the image
+//     with, so a TextureOverride section finds it. Its contents are not: a
+//     mod cannot read it or bind it elsewhere.
+//
+// Not yet: shaders of its own for a draw to the targets of the game, the
+// game's vertex buffers, indirect draws, dispatches.
 
 // Set once a device has been taken on, for the hooks to tell whether to
 // report here
@@ -102,6 +114,11 @@ struct VkModsApi {
 void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkModsApi *api);
 void VkModsForgetDevice(VkDevice device);
 // A queue the game got, and the family it is of
+void VkModsImageCreated(VkImage image, const VkImageCreateInfo *info);
+void VkModsForgetImage(VkImage image);
+void VkModsImageView(VkImageView view, const VkImageViewCreateInfo *info);
+void VkModsForgetImageView(VkImageView view);
+void VkModsCopyBufferToImage(VkBuffer src, VkImage dst, uint32_t count, const VkBufferImageCopy *regions);
 void VkModsQueue(VkDevice device, VkQueue queue, uint32_t family);
 
 void VkModsShaderModule(VkShaderModule module, const VkShaderModuleCreateInfo *info);

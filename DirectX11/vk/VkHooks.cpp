@@ -36,6 +36,11 @@
 	X(FlushMappedMemoryRanges) \
 	X(CmdCopyBuffer) \
 	X(CmdCopyBuffer2) \
+	X(CreateImage) \
+	X(DestroyImage) \
+	X(CreateImageView) \
+	X(DestroyImageView) \
+	X(CmdCopyBufferToImage) \
 	X(CmdUpdateBuffer) \
 	X(CmdBindPipeline) \
 	X(CmdBindVertexBuffers) \
@@ -314,6 +319,48 @@ static VkResult VKAPI_CALL Hooked_vkBeginCommandBuffer(VkCommandBuffer cmd, cons
 	if (vk_mods_active)
 		VkModsBeginCommands(cmd);
 	return next_BeginCommandBuffer(cmd)(cmd, info);
+}
+
+static VkResult VKAPI_CALL Hooked_vkCreateImage(VkDevice device, const VkImageCreateInfo *info,
+		const VkAllocationCallbacks *allocator, VkImage *image)
+{
+	VkResult result = next_CreateImage(device)(device, info, allocator, image);
+
+	if (result == VK_SUCCESS && image && *image && vk_mods_active)
+		VkModsImageCreated(*image, info);
+	return result;
+}
+
+static VkResult VKAPI_CALL Hooked_vkCreateImageView(VkDevice device, const VkImageViewCreateInfo *info,
+		const VkAllocationCallbacks *allocator, VkImageView *view)
+{
+	VkResult result = next_CreateImageView(device)(device, info, allocator, view);
+
+	if (result == VK_SUCCESS && view && *view && vk_mods_active)
+		VkModsImageView(*view, info);
+	return result;
+}
+
+static void VKAPI_CALL Hooked_vkDestroyImageView(VkDevice device, VkImageView view, const VkAllocationCallbacks *allocator)
+{
+	if (view && vk_mods_active)
+		VkModsForgetImageView(view);
+	next_DestroyImageView(device)(device, view, allocator);
+}
+
+static void VKAPI_CALL Hooked_vkDestroyImage(VkDevice device, VkImage image, const VkAllocationCallbacks *allocator)
+{
+	if (image && vk_mods_active)
+		VkModsForgetImage(image);
+	next_DestroyImage(device)(device, image, allocator);
+}
+
+static void VKAPI_CALL Hooked_vkCmdCopyBufferToImage(VkCommandBuffer cmd, VkBuffer src, VkImage dst, VkImageLayout layout,
+		uint32_t count, const VkBufferImageCopy *regions)
+{
+	if (vk_mods_active)
+		VkModsCopyBufferToImage(src, dst, count, regions);
+	next_CmdCopyBufferToImage(cmd)(cmd, src, dst, layout, count, regions);
 }
 
 static void VKAPI_CALL Hooked_vkCmdCopyBuffer(VkCommandBuffer cmd, VkBuffer src, VkBuffer dst, uint32_t count, const VkBufferCopy *regions)

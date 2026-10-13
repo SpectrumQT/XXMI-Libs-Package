@@ -680,6 +680,48 @@ void STDMETHODCALLTYPE ShimContext::DrawIndexedInstanced(UINT IndexCountPerInsta
 	}
 }
 
+bool ShimContext::DrawApart(bool indexed, UINT count, UINT instances, UINT start, INT base_vertex, UINT start_instance)
+{
+	static const Dx12ShaderStage stages[] = { DX12_STAGE_VS, DX12_STAGE_PS };
+	static const D3D11_VIEWPORT viewport = { 0, 0, 4096, 4096, 0, 1 };
+	UINT cbs[ARRAYSIZE(stages)] = {}, i, slot;
+	bool viewport_lent = !mState->viewport_count, prepared;
+
+	// As for a dispatch: the shaders find the constant buffers of the game
+	// wherever the mod bound none
+	for (i = 0; i < ARRAYSIZE(stages); i++) {
+		ShimStageState *stage = &mState->stages[stages[i]];
+		const ShimShader *shader = ShimShaderOf(stage->shader);
+
+		for (slot = 0; shader && slot < SHIM_CBV_SLOTS; slot++) {
+			if ((shader->cbv_used & (1u << slot)) && !stage->cbs[slot]
+			    && (stage->cbs[slot] = Dx12ScopeConstantBuffer(stages[i], slot)))
+				cbs[i] |= 1u << slot;
+		}
+	}
+	if (viewport_lent) {
+		mState->viewports[0] = viewport;
+		mState->viewport_count = 1;
+	}
+	prepared = Dx12ShimPrepareDraw(mState, indexed);
+	if (viewport_lent)
+		mState->viewport_count = 0;
+	for (i = 0; i < ARRAYSIZE(stages); i++) {
+		for (slot = 0; slot < SHIM_CBV_SLOTS; slot++) {
+			if (cbs[i] & (1u << slot))
+				mState->stages[stages[i]].cbs[slot] = NULL;
+		}
+	}
+	if (!prepared)
+		return false;
+
+	if (indexed)
+		Dx12ShimList()->DrawIndexedInstanced(count, instances, start, base_vertex, start_instance);
+	else
+		Dx12ShimList()->DrawInstanced(count, instances, start, start_instance);
+	return true;
+}
+
 void STDMETHODCALLTYPE ShimContext::Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ)
 {
 	// A compute shader of a mod runs on our list like any other, and so

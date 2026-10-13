@@ -19,6 +19,11 @@ public:
 	// a draw left mScopeState as it found it
 	bool mChanged;
 
+	// A draw of a mod in the draw of a game that is not D3D12's, with a
+	// vertex and a pixel shader of its own: recorded on our list, where
+	// none of the targets of the game are. False if it could not be.
+	bool DrawApart(bool indexed, UINT count, UINT instances, UINT start, INT base_vertex, UINT start_instance);
+
 	ShimContext();
 
 	// What ClearState leaves, without releasing what was bound

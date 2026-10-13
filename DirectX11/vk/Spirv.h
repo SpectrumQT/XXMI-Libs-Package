@@ -33,6 +33,18 @@ struct SpirvBinding {
 	// Of an image: the Dim of its type, and whether it is an array
 	uint32_t dim;
 	bool arrayed;
+	// Of a ubo: how many bytes from its start the shader reads up to, and
+	// whether it indexes an array in it with something that is no constant.
+	// What the assembly of a D3D11 shader says of a constant buffer.
+	uint32_t used;
+	bool dynamic;
+};
+
+// An input or an output of the stage that has a location
+struct SpirvVarying {
+	uint32_t location;
+	// 1 to 4
+	uint32_t components;
 };
 
 struct SpirvInfo {
@@ -53,6 +65,7 @@ struct SpirvInfo {
 	std::string resources;
 	// The same, in the order the shader declares them
 	std::vector<SpirvBinding> bindings;
+	std::vector<SpirvVarying> in, out;
 };
 
 void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info);

@@ -656,8 +656,12 @@ bool Dx12ShimPrepareDraw(const ShimState *state, bool indexed)
 		key.samples = dsv->resource->desc.SampleDesc;
 	}
 	if (!key.rtv_count && !dsv) {
-		log_once(&no_target, "A mod draws without a render target of its own, which needs the draw of the game it belongs to. Dropped.");
-		return false;
+		// A pixel shader may write to a UAV alone
+		if (!uav_used) {
+			log_once(&no_target, "A mod draws without a render target of its own, which needs the draw of the game it belongs to. Dropped.");
+			return false;
+		}
+		key.samples.Count = 1;
 	}
 
 	copy_blend(&key.blend, state->blend ? &static_cast<ShimBlendState*>(state->blend)->mDesc : NULL);

@@ -68,6 +68,10 @@ bool unlink_shader_regex_command_lists_and_filter_index(UINT64 shader_hash);
 // what the shader has to declare, which it does. True if there was one.
 struct Dx12ShaderInfo;
 bool link_shader_regex_groups_dx12(const Dx12ShaderInfo *shader);
+// For a shader there is only a list of declarations of, written the way the
+// D3D11 disassembler would: links the groups of its type ("vs", "ps", ...)
+// whose patterns all match that and replace nothing.
+bool link_shader_regex_groups_declared(const char *shader_type, UINT64 hash, std::string *declarations);
 
 // Works out and applies the ShaderRegex outcome for one shader registered in
 // G->mReloadedShaders: links the command lists of the matched groups to its

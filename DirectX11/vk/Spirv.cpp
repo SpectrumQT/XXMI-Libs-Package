@@ -19,6 +19,8 @@ enum {
 	OpTypePointer = 32,
 	OpConstant = 43,
 	OpVariable = 59,
+	OpAccessChain = 65,
+	OpInBoundsAccessChain = 66,
 	OpDecorate = 71,
 	OpMemberDecorate = 72,
 	OpTypeAccelerationStructureKHR = 5341,
@@ -39,6 +41,7 @@ enum {
 	StorageUniformConstant = 0,
 	StorageInput = 1,
 	StorageUniform = 2,
+	StorageOutput = 3,
 	StoragePushConstant = 9,
 	StorageStorageBuffer = 12,
 };
@@ -61,6 +64,8 @@ struct Id {
 	bool buffer_block, non_writable;
 	// By member, for a struct
 	std::vector<uint32_t> offsets, matrix_strides;
+	// For a variable: which of SpirvInfo::bindings it is
+	uint32_t described;
 };
 
 static std::string literal_string(const uint32_t *words, uint32_t count)
@@ -122,7 +127,7 @@ static uint32_t type_bytes(const std::vector<Id> &ids, uint32_t type, uint32_t m
 	return 0;
 }
 
-static void describe_resource(const std::vector<Id> &ids, const Id *variable, uint32_t storage, SpirvInfo *info)
+static void describe_resource(const std::vector<Id> &ids, Id *variable, uint32_t storage, SpirvInfo *info)
 {
 	static const char *const kinds[] = { "ubo", "ssbo", "tex", "samp", "texsamp", "img", "tbuf", "itbuf", "as" };
 	const Id *pointer, *type = NULL, *image = NULL;
@@ -214,6 +219,7 @@ static void describe_resource(const std::vector<Id> &ids, const Id *variable, ui
 
 	binding.set = variable->set;
 	binding.binding = variable->binding;
+	variable->described = (uint32_t)info->bindings.size();
 	info->bindings.push_back(binding);
 
 	_snprintf_s(text, _TRUNCATE, "s%ub%u:%s", variable->set, variable->binding, kinds[binding.kind]);
@@ -227,6 +233,79 @@ static void describe_resource(const std::vector<Id> &ids, const Id *variable, ui
 	info->resources += " ";
 }
 
+// Base, then the indexes: how far into its ubo an access chain reaches
+static void note_access(const std::vector<Id> &ids, const uint32_t *chain, uint32_t count, SpirvInfo *info)
+{
+	const Id *variable, *type, *index;
+	uint32_t type_id, matrix_stride = 0, offset = 0, end, i;
+	SpirvBinding *binding;
+
+	if (!count || chain[0] >= ids.size())
+		return;
+	variable = &ids[chain[0]];
+	if (variable->op != OpVariable || variable->described == NONE)
+		return;
+	binding = &info->bindings[variable->described];
+	if (binding->kind != SPIRV_UBO || variable->operands[0] >= ids.size())
+		return;
+	type = &ids[variable->operands[0]];
+	if (type->op != OpTypePointer || type->count < 2)
+		return;
+	type_id = type->operands[1];
+
+	for (i = 1; i < count; i++) {
+		if (type_id >= ids.size() || chain[i] >= ids.size())
+			return;
+		type = &ids[type_id];
+		index = &ids[chain[i]];
+
+		if (type->op == OpTypeStruct) {
+			if (index->op != OpConstant || index->value >= type->count
+			    || index->value >= type->offsets.size() || type->offsets[index->value] == NONE)
+				return;
+			offset += type->offsets[index->value];
+			matrix_stride = index->value < type->matrix_strides.size() ? type->matrix_strides[index->value] : 0;
+			type_id = type->operands[index->value];
+		} else if (type->op == OpTypeArray && type->count >= 1) {
+			// The whole array counts where the index is not known
+			if (index->op != OpConstant) {
+				binding->dynamic = true;
+				break;
+			}
+			offset += index->value * (type->array_stride ? type->array_stride
+				: type_bytes(ids, type->operands[0], matrix_stride, 0));
+			type_id = type->operands[0];
+		} else {
+			// A column or a component of what is counted as a whole
+			break;
+		}
+	}
+
+	end = offset + type_bytes(ids, type_id, matrix_stride, 0);
+	if (end > binding->used)
+		binding->used = end;
+}
+
+static void describe_varying(const std::vector<Id> &ids, const Id *variable, std::vector<SpirvVarying> *list)
+{
+	SpirvVarying varying = { variable->location, 4 };
+	const Id *type;
+
+	if (variable->operands[0] >= ids.size())
+		return;
+	type = &ids[variable->operands[0]];
+	if (type->op != OpTypePointer || type->count < 2 || type->operands[1] >= ids.size())
+		return;
+	type = &ids[type->operands[1]];
+	if (type->op == OpTypeVector && type->count >= 2)
+		varying.components = type->operands[1];
+	else if (type->op == OpTypeInt || type->op == OpTypeFloat || type->op == OpTypeBool)
+		varying.components = 1;
+	if (varying.components < 1 || varying.components > 4)
+		varying.components = 4;
+	list->push_back(varying);
+}
+
 void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info)
 {
 	static const uint32_t stages[] = {
@@ -236,6 +315,7 @@ void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info)
 	};
 	std::vector<Id> ids;
 	std::vector<uint32_t> variables;
+	std::vector<const uint32_t*> chains;
 	size_t pos;
 	char text[32];
 
@@ -247,7 +327,7 @@ void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info)
 	info->generator = code[2];
 	ids.resize(code[3]);
 	for (Id &id : ids)
-		id.set = id.binding = id.location = NONE;
+		id.set = id.binding = id.location = id.described = NONE;
 
 	for (pos = 5; pos < words;) {
 		const uint32_t *ins = &code[pos];
@@ -319,6 +399,12 @@ void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info)
 				result = count >= 2 ? ins[1] : NONE;
 				first = 2;
 				break;
+			case OpAccessChain:
+			case OpInBoundsAccessChain:
+				// Type, result id, base, indexes
+				if (count >= 4)
+					chains.push_back(ins);
+				break;
 			case OpConstant:
 			case OpVariable:
 				// Type, result id, then the operands. The type is kept
@@ -343,7 +429,7 @@ void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info)
 	}
 
 	for (uint32_t variable : variables) {
-		const Id *id = &ids[variable];
+		Id *id = &ids[variable];
 		// Type, result id, storage class
 		uint32_t storage = id->count >= 3 ? id->operands[2] : NONE;
 
@@ -353,6 +439,11 @@ void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info)
 					break;
 				_snprintf_s(text, _TRUNCATE, "%u:", id->location);
 				info->inputs += text + id->name + " ";
+				describe_varying(ids, id, &info->in);
+				break;
+			case StorageOutput:
+				if (id->location != NONE)
+					describe_varying(ids, id, &info->out);
 				break;
 			case StorageUniformConstant:
 			case StorageUniform:
@@ -362,6 +453,9 @@ void SpirvReflect(const uint32_t *code, size_t words, SpirvInfo *info)
 				break;
 		}
 	}
+
+	for (const uint32_t *chain : chains)
+		note_access(ids, &chain[3], (chain[0] >> 16) - 3, info);
 
 	info->valid = true;
 }

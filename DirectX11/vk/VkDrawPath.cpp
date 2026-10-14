@@ -3138,6 +3138,7 @@ static std::unordered_map<VkDescriptorSet, DescriptorSet*> descriptor_sets;
 // For the report, with descriptor_lock held: sets allocated, and updates of
 // buffers by vkUpdateDescriptorSets and by a template
 static unsigned sets_allocated, sets_written, sets_written_by_template;
+static volatile LONG set_layouts_kept;
 
 static bool is_buffer_descriptor(VkDescriptorType type)
 {
@@ -3211,11 +3212,9 @@ void VkModsSetLayout(VkDescriptorSetLayout handle, const VkDescriptorSetLayoutCr
 	ReleaseSRWLockExclusive(&descriptor_lock);
 }
 
-void VkModsForgetSetLayout(VkDescriptorSetLayout handle)
+void VkModsSetLayoutKept()
 {
-	AcquireSRWLockExclusive(&descriptor_lock);
-	set_layouts.erase(handle);
-	ReleaseSRWLockExclusive(&descriptor_lock);
+	InterlockedIncrement(&set_layouts_kept);
 }
 
 void VkModsSetsAllocated(const VkDescriptorSetAllocateInfo *info, const VkDescriptorSet *sets)
@@ -5625,9 +5624,10 @@ static void report()
 		linked_shaders, matched_shaders, G->mShaderOverrideMap.size(), published.size());
 	VkDumpNote("  Constant buffers of the game: shown %u times, read %u times (%llu KB, %.2f ms per frame), not mapped %u, no buffer seen set at the "
 		"binding %u; %Iu held. Descriptor sets: %u allocated, buffers written %u times by vkUpdateDescriptorSets and %u times "
-		"by a template\n",
+		"by a template; %u layouts of sets the game destroyed kept since the start\n",
 		stats.constants_shown, stats.constants_read, stats.constants_bytes >> 10, stats.constants_ticks * per_frame, stats.constants_unmapped,
-		stats.constants_unbound, published_constants.size(), sets_allocated, sets_written, sets_written_by_template);
+		stats.constants_unbound, published_constants.size(), sets_allocated, sets_written, sets_written_by_template,
+		(unsigned)set_layouts_kept);
 	for (const Transient &transient : transients)
 		held += transient.size;
 	for (const SharedBuffer &shared : shared_buffers)

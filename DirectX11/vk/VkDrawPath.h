@@ -144,7 +144,8 @@ void VkModsBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint bind_point, VkP
 void VkModsBindVertexBuffers(VkCommandBuffer cmd, uint32_t first, uint32_t count, const VkBuffer *buffers, const VkDeviceSize *offsets);
 void VkModsBindIndexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkIndexType type);
 void VkModsSetLayout(VkDescriptorSetLayout layout, const VkDescriptorSetLayoutCreateInfo *info);
-void VkModsForgetSetLayout(VkDescriptorSetLayout layout);
+// The game destroyed a layout, which is kept: see Hooked_vkDestroyDescriptorSetLayout
+void VkModsSetLayoutKept();
 void VkModsSetsAllocated(const VkDescriptorSetAllocateInfo *info, const VkDescriptorSet *sets);
 void VkModsSetsUpdated(uint32_t write_count, const VkWriteDescriptorSet *writes, uint32_t copy_count, const VkCopyDescriptorSet *copies);
 void VkModsUpdateTemplate(VkDescriptorUpdateTemplate update_template, const VkDescriptorUpdateTemplateCreateInfo *info);

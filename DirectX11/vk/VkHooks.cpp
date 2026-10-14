@@ -443,11 +443,17 @@ static VkResult VKAPI_CALL Hooked_vkCreateDescriptorSetLayout(VkDevice device, c
 	return result;
 }
 
+// Kept while mods draw: a set the game still draws with may have been made of
+// it, and a set of ours like it is then written, which Vulkan only allows
+// while the layout lives. Its handle is not given out again either.
 static void VKAPI_CALL Hooked_vkDestroyDescriptorSetLayout(VkDevice device, VkDescriptorSetLayout layout, const VkAllocationCallbacks *allocator)
 {
-	if (layout && vk_mods_active)
-		VkModsForgetSetLayout(layout);
-	next_DestroyDescriptorSetLayout(device)(device, layout, allocator);
+	if (!vk_mods_active) {
+		next_DestroyDescriptorSetLayout(device)(device, layout, allocator);
+		return;
+	}
+	if (layout)
+		VkModsSetLayoutKept();
 }
 
 static VkResult VKAPI_CALL Hooked_vkAllocateDescriptorSets(VkDevice device, const VkDescriptorSetAllocateInfo *info, VkDescriptorSet *sets)

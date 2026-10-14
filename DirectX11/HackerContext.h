@@ -150,8 +150,20 @@ private:
 	HackerInputLayout* mOverrideInputLayout;
 
 	// Used for deny_cpu_read, track_texture_updates and constant buffer matching
-	typedef std::unordered_map<ID3D11Resource*, MappedResourceInfo> MappedResources;
-	MappedResources mMappedResources;
+	// What this context has mapped and tracks, which is rarely more than
+	// one resource at a time and comes and goes with every constant buffer
+	// a game writes: side by side arrays searched in order, which unlike a
+	// map allocate nothing once they have grown:
+	std::vector<ID3D11Resource*> mMappedResources;
+	std::vector<MappedResourceInfo> mMappedResourceInfos;
+
+	// The memory a small mapping was diverted to, kept for the next one of
+	// the same size: one block a size, for sizes that are multiples of 16
+	// (as those of constant buffers are):
+	static const size_t DIVERT_REUSE_MAX = 4096;
+	void *mDivertSpares[DIVERT_REUSE_MAX / 16 + 1];
+	void* AllocDiverted(size_t size);
+	void FreeDiverted(void *data, size_t size);
 
 	unsigned draw_number;
 	unsigned dispatch_number;

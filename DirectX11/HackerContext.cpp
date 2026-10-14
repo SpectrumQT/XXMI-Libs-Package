@@ -95,6 +95,7 @@ HackerContext::HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pCon
 	mDeferredShaderGeneration = G->deferred_shader_generation;
 	memset(mShaderOverrideCache, 0, sizeof(mShaderOverrideCache));
 	memset(mShaderHandleCache, 0, sizeof(mShaderHandleCache));
+	memset(mDivertSpares, 0, sizeof(mDivertSpares));
 	mCheckTextureOverrideResultCount = 0;
 	mCheckTextureOverrideResultsDraw = NULL;
 	memset(mShaderResourceViewCache, 0, sizeof(mShaderResourceViewCache));
@@ -120,6 +121,27 @@ HackerContext::~HackerContext()
 		if (entry.view)
 			entry.view->Release();
 	}
+
+	for (void *spare : mDivertSpares)
+		free(spare);
+}
+
+void* HackerContext::AllocDiverted(size_t size)
+{
+	if (size <= DIVERT_REUSE_MAX && !(size % 16) && mDivertSpares[size / 16]) {
+		void *data = mDivertSpares[size / 16];
+		mDivertSpares[size / 16] = NULL;
+		return data;
+	}
+	return malloc(size);
+}
+
+void HackerContext::FreeDiverted(void *data, size_t size)
+{
+	if (data && size <= DIVERT_REUSE_MAX && !(size % 16) && !mDivertSpares[size / 16])
+		mDivertSpares[size / 16] = data;
+	else
+		free(data);
 }
 
 // Save the corresponding HackerDevice, as we need to use it periodically to get
@@ -1503,7 +1525,14 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 	if (!track && !divert)
 		goto out_profile;
 
-	map_info = &mMappedResources[pResource];
+	{
+		size_t at = std::find(mMappedResources.begin(), mMappedResources.end(), pResource) - mMappedResources.begin();
+		if (at == mMappedResources.size()) {
+			mMappedResources.push_back(pResource);
+			mMappedResourceInfos.emplace_back();
+		}
+		map_info = &mMappedResourceInfos[at];
+	}
 	map_info->mapped_writable = write;
 	memcpy(&map_info->map, pMappedResource, sizeof(D3D11_MAPPED_SUBRESOURCE));
 
@@ -1539,7 +1568,7 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 			goto out_profile;
 	}
 
-	replace = malloc(map_info->size);
+	replace = AllocDiverted(map_info->size);
 	if (!replace) {
 		LogInfo("TrackAndDivertMap out of memory\n");
 		goto out_profile;
@@ -1557,7 +1586,7 @@ out_profile:
 		Profiling::end(&profiling_state, &Profiling::map_overhead);
 }
 
-void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, void* data, size_t size, bool* deallocate_diverted_memory)
+void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, void* data, size_t size, bool* deallocate_diverted_memory, bool refresh)
 {
 	if (!data || !size)
 		return;
@@ -1572,6 +1601,13 @@ void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, void* data, size_
 	}
 
 	//LogInfo("UpdateResourceDataCacheFromMap size=%d, pResource=%p\n", size, pResource);
+	// A buffer written over and over, as a constant buffer is for every
+	// draw, has its cache written over as well rather than handed a new
+	// block for the old one each time. The caller keeps data then:
+	if (refresh && info->RefreshDataCache(data, size)) {
+		LeaveCriticalSection(&G->mCriticalSection);
+		return;
+	}
 	info->SetDataCache(data, size);
 
 	if (deallocate_diverted_memory)
@@ -1584,7 +1620,7 @@ void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, void* data, size_
 
 void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresource)
 {
-	MappedResources::iterator i;
+	size_t i;
 	MappedResourceInfo *map_info = NULL;
 	Profiling::State profiling_state;
 
@@ -1594,15 +1630,16 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 	if (mMappedResources.empty())
 		goto out_profile;
 
-	i = mMappedResources.find(pResource);
-	if (i == mMappedResources.end())
+	i = std::find(mMappedResources.begin(), mMappedResources.end(), pResource) - mMappedResources.begin();
+	if (i == mMappedResources.size())
 		goto out_profile;
-	map_info = &i->second;
+	map_info = &mMappedResourceInfos[i];
 
 	bool deallocate_diverted_memory = true;
 
 	if ((map_info->bind_flags & (D3D11_BIND_FLAG)G->cache_resource_data) != 0)
-		UpdateResourceDataCacheFromMap(pResource, map_info->map.pData, map_info->size, &deallocate_diverted_memory);
+		UpdateResourceDataCacheFromMap(pResource, map_info->map.pData, map_info->size, &deallocate_diverted_memory,
+				map_info->orig_pData && map_info->size <= DIVERT_REUSE_MAX);
 
 	if (G->track_texture_updates == 1 && Subresource == 0 && map_info->mapped_writable)
 		UpdateResourceHashFromCPU(pResource, map_info->map.pData, map_info->map.RowPitch, map_info->map.DepthPitch);
@@ -1613,11 +1650,14 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 			memcpy(map_info->orig_pData, map_info->map.pData, map_info->size);
 
 		if (deallocate_diverted_memory) {
-			free(map_info->map.pData);
+			FreeDiverted(map_info->map.pData, map_info->size);
 		}
 	}
 
-	mMappedResources.erase(i);
+	mMappedResources[i] = mMappedResources.back();
+	mMappedResources.pop_back();
+	mMappedResourceInfos[i] = mMappedResourceInfos.back();
+	mMappedResourceInfos.pop_back();
 
 out_profile:
 	if (Profiling::mode == Profiling::Mode::SUMMARY)

@@ -2309,6 +2309,7 @@ void ResourceHandleInfo::InitializeDataCache(size_t size, size_t offset)
 	cached_data.reset();
 	cached_data_offset = offset;
 	cached_data_size = size;
+	cached_data_block_size = 0;
 
 	// Initialize region hashes cache.
 	if (!region_hashes_cache)
@@ -2326,9 +2327,22 @@ void ResourceHandleInfo::SetDataCache(void* src, size_t size)
 
 	// Adopt memory pointer as shared_ptr, no re-allocation involved.
 	cached_data = std::shared_ptr<uint8_t[]>(static_cast<uint8_t*>(src), free);
+	cached_data_block_size = size;
 
 	//cached_data_hash = crc32c_hw(0, GetCachedData(), size);
 	//LogInfo("SetDataCache size=%d, data_hash=%08lx\n", size, cached_data_hash);
+}
+
+bool ResourceHandleInfo::RefreshDataCache(const void* src, size_t size)
+{
+	if (!src || !size || cached_data_block_size != size || !cached_data || cached_data.use_count() != 1)
+		return false;
+
+	memcpy(cached_data.get(), src, size);
+	// The rest of InitializeDataCache(), offset and size being what it
+	// would set already:
+	region_hashes_cache->Initialize(size);
+	return true;
 }
 
 void ResourceHandleInfo::SetDataCacheRegion(const void* src, size_t region_size, UINT offset)
@@ -2426,6 +2440,7 @@ void ResourceHandleInfo::ClearDataCache()
 	cached_data.reset();
 	cached_data_offset = 0;
 	cached_data_size = 0;
+	cached_data_block_size = 0;
 
 	// Drop all cached hashes and CPU snapshot.
 	if (region_hashes_cache)

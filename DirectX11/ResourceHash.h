@@ -431,6 +431,9 @@ struct ResourceHandleInfo
 	std::shared_ptr<uint8_t[]> cached_data;
 	size_t cached_data_offset = 0;
 	size_t cached_data_size = 0;
+	// Not 0 only while cached_data is a block of this many bytes that
+	// SetDataCache() adopted, which RefreshDataCache() may then write over:
+	size_t cached_data_block_size = 0;
 	//uint32_t cached_data_hash = 0;
 
 	std::unique_ptr<RegionHashesCache> region_hashes_cache;
@@ -450,6 +453,10 @@ struct ResourceHandleInfo
 
 	void InitializeDataCache(size_t size, size_t offset = 0);
 	void SetDataCache(void* src, size_t size);
+	// What SetDataCache() of a copy of src would leave, without a block
+	// changing hands. False, with nothing done, unless the cache has a
+	// block of this size that nothing else shares:
+	bool RefreshDataCache(const void* src, size_t size);
 	void SetDataCacheRegion(const void* src, size_t size, UINT offset);
 	// Clears cached region hashes and invalidates cached buffer data.
 	// Should be called when the underlying resource contents change.

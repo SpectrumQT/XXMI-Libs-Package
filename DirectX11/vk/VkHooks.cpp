@@ -884,6 +884,17 @@ static VkResult VKAPI_CALL Hooked_vkCreateInstance(const VkInstanceCreateInfo *i
 	return result;
 }
 
+static bool writable(const void *at, size_t bytes)
+{
+	const DWORD writes = PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY;
+	MEMORY_BASIC_INFORMATION memory;
+
+	if (!VirtualQuery(at, &memory, sizeof(memory)) || memory.State != MEM_COMMIT
+	    || !(memory.Protect & writes) || (memory.Protect & PAGE_GUARD))
+		return false;
+	return (const BYTE*)at + bytes <= (const BYTE*)memory.BaseAddress + memory.RegionSize;
+}
+
 // What makes a device with the game's create info: with what lets
 // VkModsDeviceLost say where the GPU was, as far as the driver has that, if
 // diagnose is set, and failing that as given
@@ -976,24 +987,73 @@ static VkResult create_diagnosed(VkPhysicalDevice physical_device, const VkDevic
 	return fnOrigCreateDevice(physical_device, info, allocator, device);
 }
 
-// The device as the game asks for it, and with vulkan and vk_dump_hashes also
-// with what lets VkModsDeviceLost say where the GPU was
+// The device as the game asks for it, and with vulkan with robustBufferAccess.
+// D3D11 reads a buffer past its end as zeros, and mods are made for that: a
+// bone index past the skeleton a mod put together, constants read further
+// than a mod's buffer holds. Vulkan leaves such a read to whatever memory is
+// there, and where there is none the device is lost; robustBufferAccess keeps
+// it within the buffer. A driver that will not make it so makes it as asked.
 static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
-		const VkAllocationCallbacks *allocator, VkDevice *device, bool *fault, bool *checkpoints, bool *bindings)
+		const VkAllocationCallbacks *allocator, VkDevice *device, bool *robust, bool *fault, bool *checkpoints, bool *bindings)
 {
-	return create_diagnosed(physical_device, info, allocator, device,
-		info && G->bIntendedTargetExe && G->vulkan && G->vk_dump_hashes, fault, checkpoints, bindings);
+	PFN_vkGetPhysicalDeviceFeatures get_features = (PFN_vkGetPhysicalDeviceFeatures)NktHookLibHelpers::GetProcedureAddress(
+		NktHookLibHelpers::GetModuleBaseAddress(L"vulkan-1.dll"), "vkGetPhysicalDeviceFeatures");
+	VkPhysicalDeviceFeatures supported = {}, enabled = {};
+	VkPhysicalDeviceFeatures2 *chained = NULL;
+	VkDeviceCreateInfo robust_info;
+	VkBaseOutStructure *next;
+	bool diagnose;
+	VkResult result;
+
+	*robust = *fault = *checkpoints = *bindings = false;
+	if (!info || !G->bIntendedTargetExe || !G->vulkan)
+		return fnOrigCreateDevice(physical_device, info, allocator, device);
+	diagnose = G->vk_dump_hashes;
+
+	if (get_features)
+		get_features(physical_device, &supported);
+	robust_info = *info;
+	if (info->pEnabledFeatures) {
+		enabled = *info->pEnabledFeatures;
+	} else {
+		for (next = (VkBaseOutStructure*)info->pNext; next && !chained; next = next->pNext) {
+			if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2)
+				chained = (VkPhysicalDeviceFeatures2*)next;
+		}
+		if (chained)
+			enabled = chained->features;
+	}
+	if (enabled.robustBufferAccess || !supported.robustBufferAccess
+	    || (chained && !writable(&chained->features.robustBufferAccess, sizeof(VkBool32))))
+		return create_diagnosed(physical_device, info, allocator, device, diagnose, fault, checkpoints, bindings);
+
+	// The game's own features are only changed for as long as the call takes
+	if (chained) {
+		chained->features.robustBufferAccess = VK_TRUE;
+	} else {
+		enabled.robustBufferAccess = VK_TRUE;
+		robust_info.pEnabledFeatures = &enabled;
+	}
+	result = create_diagnosed(physical_device, &robust_info, allocator, device, diagnose, fault, checkpoints, bindings);
+	if (chained)
+		chained->features.robustBufferAccess = VK_FALSE;
+	if (result == VK_SUCCESS) {
+		*robust = true;
+		return result;
+	}
+	VkLogInfo("vkCreateDevice failed with %d with robustBufferAccess, made as the game asked\n", result);
+	return create_diagnosed(physical_device, info, allocator, device, diagnose, fault, checkpoints, bindings);
 }
 
 static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
 		const VkAllocationCallbacks *allocator, VkDevice *device)
 {
-	bool external_memory = false, external_semaphore = false, budget = false, fault, checkpoints, bindings;
+	bool external_memory = false, external_semaphore = false, budget = false, robust, fault, checkpoints, bindings;
 	VkResult result;
 	uint32_t i;
 
 	InitCommon();
-	result = create_device(physical_device, info, allocator, device, &fault, &checkpoints, &bindings);
+	result = create_device(physical_device, info, allocator, device, &robust, &fault, &checkpoints, &bindings);
 	if (result != VK_SUCCESS || !device || !*device)
 		return result;
 
@@ -1017,6 +1077,8 @@ static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_devic
 	VkDumpNote("vkCreateDevice = %p, %u extensions\n", *device, info ? info->enabledExtensionCount : 0);
 	for (i = 0; info && i < info->enabledExtensionCount; i++)
 		VkDumpNote("  %s\n", info->ppEnabledExtensionNames[i]);
+	if (robust)
+		VkDumpNote("  with robustBufferAccess, which the game had not asked for: no read of a buffer goes past its end, as in D3D11\n");
 	if (fault || checkpoints || bindings) {
 		VkDumpNote("  and for telling where the GPU was if the device is lost:%s%s%s\n",
 			fault ? " " VK_EXT_DEVICE_FAULT_EXTENSION_NAME : "",

@@ -158,6 +158,11 @@ void FrameAnalysisContext::FrameAnalysisLog(char *fmt, ...)
 {
 	va_list ap;
 
+	// Called for every call the game makes. With neither log wanting the
+	// line and no log file left to close there is nothing in it to do:
+	if (gLogVerbosity < LogVerbosity::DEBUG && !G->analyse_frame && !frame_analysis_log)
+		return;
+
 	va_start(ap, fmt);
 	vFrameAnalysisLog(fmt, ap);
 	va_end(ap);

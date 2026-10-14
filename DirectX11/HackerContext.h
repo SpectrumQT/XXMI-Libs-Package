@@ -111,6 +111,11 @@ struct CheckTextureOverrideResult {
 	static const unsigned MAX_MATCHES = 4;
 
 	const CheckTextureOverrideCommand *command;
+	// The slot the command names, which is all that forgetting a result
+	// by slot asks of it:
+	ResourceCopyTargetType type;
+	wchar_t shader_type;
+	unsigned slot;
 	unsigned count;
 	TextureOverride *matches[MAX_MATCHES];
 };
@@ -223,6 +228,9 @@ private:
 	static const unsigned MAX_CHECK_TEXTURE_OVERRIDE_RESULTS = 32;
 	CheckTextureOverrideResult mCheckTextureOverrideResults[MAX_CHECK_TEXTURE_OVERRIDE_RESULTS];
 	unsigned mCheckTextureOverrideResultCount;
+	// Where the search for a result starts: a command list asks for them
+	// in the order it noted them, so that is the one after the last found:
+	mutable unsigned mCheckTextureOverrideResultHint;
 	const DrawCallInfo *mCheckTextureOverrideResultsDraw;
 
 	// Views that command lists created to bind a resource by reference to a
@@ -385,6 +393,9 @@ public:
 
 		CheckTextureOverrideResult &result = mCheckTextureOverrideResults[mCheckTextureOverrideResultCount++];
 		result.command = command;
+		result.type = command->target.type;
+		result.shader_type = command->target.shader_type;
+		result.slot = command->target.slot;
 		result.count = (unsigned)matches.size();
 		for (unsigned i = 0; i < result.count; i++)
 			result.matches[i] = matches[i];
@@ -396,9 +407,16 @@ public:
 	{
 		if (!call_info || call_info != mCheckTextureOverrideResultsDraw)
 			return NULL;
+		unsigned hint = mCheckTextureOverrideResultHint;
+		if (hint < mCheckTextureOverrideResultCount && mCheckTextureOverrideResults[hint].command == command) {
+			mCheckTextureOverrideResultHint = hint + 1;
+			return &mCheckTextureOverrideResults[hint];
+		}
 		for (unsigned i = 0; i < mCheckTextureOverrideResultCount; i++) {
-			if (mCheckTextureOverrideResults[i].command == command)
+			if (mCheckTextureOverrideResults[i].command == command) {
+				mCheckTextureOverrideResultHint = i + 1;
 				return &mCheckTextureOverrideResults[i];
+			}
 		}
 		return NULL;
 	}
@@ -408,7 +426,7 @@ public:
 	void ForgetCheckTextureOverrideResults(ResourceCopyTargetType type, wchar_t shader_type, unsigned first_slot, unsigned slot_count)
 	{
 		for (unsigned i = 0; i < mCheckTextureOverrideResultCount; ) {
-			const ResourceCopyTarget &target = mCheckTextureOverrideResults[i].command->target;
+			const CheckTextureOverrideResult &target = mCheckTextureOverrideResults[i];
 			bool bound = target.type == type;
 
 			// There is only the one ib, and vb slots belong to no stage:

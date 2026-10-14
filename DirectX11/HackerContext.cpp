@@ -97,6 +97,7 @@ HackerContext::HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pCon
 	memset(mShaderHandleCache, 0, sizeof(mShaderHandleCache));
 	memset(mDivertSpares, 0, sizeof(mDivertSpares));
 	mCheckTextureOverrideResultCount = 0;
+	mCheckTextureOverrideResultHint = 0;
 	mCheckTextureOverrideResultsDraw = NULL;
 	memset(mShaderResourceViewCache, 0, sizeof(mShaderResourceViewCache));
 	mShaderResourceViewCacheCount = 0;

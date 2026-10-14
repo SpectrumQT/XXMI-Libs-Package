@@ -5117,7 +5117,7 @@ static bool bind_for_mod(const ShimState *mod, ModDraw *draw)
 	const Pipeline *pipeline = game->pipeline;
 	const ShimInputLayout *layout = NULL;
 	Mirror *replaced[MAX_VBS] = {};
-	UINT64 vertices = UINT64_MAX;
+	UINT64 vertices = UINT64_MAX, indices;
 	UINT strides[MAX_VBS];
 	VkDeviceSize size;
 	Mirror *mirror;
@@ -5229,10 +5229,19 @@ static bool bind_for_mod(const ShimState *mod, ModDraw *draw)
 	draw->ib_bytes = mirror->size - mod->ib_offset;
 	draw->index_type = mod->ib_format == DXGI_FORMAT_R16_UINT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
 	// D3D11 reads an index past the end as 0, Vulkan leaves it to the GPU to
-	// read what is there, if anything
-	if (((UINT64)draw->start + draw->count) * (mod->ib_format == DXGI_FORMAT_R16_UINT ? 2 : 4) > draw->ib_bytes) {
-		mod_draw_failed("the draw reads indices past the end of the index buffer");
-		return false;
+	// read what is there, if anything. In a triangle list those zeros only
+	// make triangles without area, so drawing the indices there are is what
+	// D3D11 shows. Mods exported with a larger count than their buffer holds
+	// rely on that.
+	indices = draw->ib_bytes / (mod->ib_format == DXGI_FORMAT_R16_UINT ? 2 : 4);
+	if ((UINT64)draw->start + draw->count > indices) {
+		static bool noted;
+
+		draw->count = draw->start < indices ? (UINT)(indices - draw->start) : 0;
+		if (G->vk_dump_hashes && !noted) {
+			noted = true;
+			VkDumpNote("Mods: a draw of a mod reads indices past the end of its index buffer; it is drawn as far as there are indices\n");
+		}
 	}
 	return true;
 }

@@ -161,9 +161,11 @@ static void frame_actions()
 {
 	HackerDevice *device = dx12_shim->hacker_device;
 	uint64_t ticks = GetSystemTicks();
+	bool frames_by_submission = VkModsCountFrames();
 	bool new_event;
 
-	G->gFrameTime = (ticks - G->gSystemTickCount) / 1'000'000.0f;
+	if (!frames_by_submission)
+		G->gFrameTime = (ticks - G->gSystemTickCount) / 1'000'000.0f;
 	G->gTime = (ticks - G->ticks_at_launch) / 1'000'000.0f;
 	G->gSystemTickCount = ticks;
 	G->gFPSCounter.Update(ticks);
@@ -201,7 +203,7 @@ static void frame_actions()
 		Dx12DrawOverlay();
 	G->suppress_overlay = false;
 
-	if (!VkModsCountFrames())
+	if (!frames_by_submission)
 		G->frame_no++;
 	dx12_shim->hacker_context->ResetCallCounters();
 

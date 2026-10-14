@@ -3705,6 +3705,7 @@ static bool frames_by_submission;
 static bool frame_presented;
 static UINT presents_without_frame;
 static DWORD submit_thread;
+static uint64_t frame_ticks;
 // More than frame generation makes of one frame of the game
 const UINT PRESENTS_WITHOUT_FRAME_MAX = 16;
 
@@ -3713,7 +3714,14 @@ void VkModsFrameSubmitted()
 	Dx12ShimLock();
 	if (dx12_shim) {
 		if (frame_presented) {
+			uint64_t now = GetSystemTicks();
+
 			frame_presented = false;
+			// frame_time goes with FRAME_NUMBER: a spatial pool lets an
+			// object move further between its frames the longer they take
+			if (frames_by_submission)
+				G->gFrameTime = (now - frame_ticks) / 1'000'000.0f;
+			frame_ticks = now;
 			G->frame_no++;
 			mods_frame++;
 			stats.frames_counted++;

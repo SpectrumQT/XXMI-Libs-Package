@@ -57,6 +57,9 @@ void VkScopeFillShadow(ShimResource *resource, UINT64 offset, UINT64 size);
 // a list of the shim, and is given what the game has there by now. False if
 // the contents are not from here.
 bool VkScopeUploadShadow(ShimResource *resource);
+// Before the shadow of a resource is written: what the above has threads of
+// its own fill in is waited for
+void VkScopeFinishRefresh(const ShimResource *resource);
 
 // After the configuration was read again
 void VkModsConfigReloaded();

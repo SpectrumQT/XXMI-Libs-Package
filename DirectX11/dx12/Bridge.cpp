@@ -50,6 +50,13 @@ static bool list_open;
 // Read without the lock by Dx12ShimFlush
 static volatile bool list_used;
 
+// See Dx12ShimEarlyList
+static ID3D12GraphicsCommandList *early_list;
+static std::vector<Allocator> early_allocators;
+static size_t current_early_allocator;
+static bool early_open;
+static void (*before_submit)();
+
 static ID3D12Fence *fence;
 static UINT64 fence_signalled;
 static HANDLE fence_event;
@@ -962,22 +969,18 @@ bool Dx12ShimFenceReached(UINT64 value)
 	return fence->GetCompletedValue() >= value;
 }
 
-ID3D12GraphicsCommandList* Dx12ShimList()
+// An allocator of the pool the GPU is done with, reset
+static size_t free_allocator(std::vector<Allocator> *pool)
 {
-	UINT64 completed;
+	UINT64 completed = fence->GetCompletedValue();
 	Allocator allocator;
 	size_t i;
 
-	list_used = true;
-	if (list_open)
-		return shim_list;
-
-	completed = fence->GetCompletedValue();
-	for (i = 0; i < allocators.size(); i++) {
-		if (allocators[i].fence <= completed)
+	for (i = 0; i < pool->size(); i++) {
+		if ((*pool)[i].fence <= completed)
 			break;
 	}
-	if (i == allocators.size()) {
+	if (i == pool->size()) {
 		allocator.fence = 0;
 		// Recording to the allocator of an executing list is not an
 		// option, so there is nothing to fall back to
@@ -985,21 +988,57 @@ ID3D12GraphicsCommandList* Dx12ShimList()
 			Dx12LogInfo("*** Failed to create a command allocator\n");
 			DoubleBeepExit();
 		}
-		allocators.push_back(allocator);
+		pool->push_back(allocator);
 	}
+	(*pool)[i].allocator->Reset();
+	return i;
+}
 
-	current_allocator = i;
-	allocators[i].allocator->Reset();
-	shim_list->Reset(allocators[i].allocator, NULL);
+ID3D12GraphicsCommandList* Dx12ShimList()
+{
+	list_used = true;
+	if (list_open)
+		return shim_list;
+
+	current_allocator = free_allocator(&allocators);
+	shim_list->Reset(allocators[current_allocator].allocator, NULL);
 	list_open = true;
 	bound_view_heap = NULL;
 	bound_sampler_heap = NULL;
 	return shim_list;
 }
 
+ID3D12GraphicsCommandList* Dx12ShimEarlyList()
+{
+	if (early_open)
+		return early_list;
+
+	// Which is what submits it
+	Dx12ShimList();
+	current_early_allocator = free_allocator(&early_allocators);
+	if (early_list) {
+		early_list->Reset(early_allocators[current_early_allocator].allocator, NULL);
+	} else if (FAILED(shim.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+			early_allocators[current_early_allocator].allocator, NULL, IID_PPV_ARGS(&early_list)))) {
+		early_list = NULL;
+		return NULL;
+	}
+	early_open = true;
+	return early_list;
+}
+
+void Dx12ShimBeforeSubmit(void (*callback)())
+{
+	before_submit = callback;
+}
+
 void Dx12ShimSubmit()
 {
-	ID3D12CommandList *lists[1];
+	ID3D12CommandList *lists[2];
+	UINT count = 0;
+
+	if (before_submit)
+		before_submit();
 
 	if (!list_used) {
 		// Nothing recorded since the last submission can be using
@@ -1019,12 +1058,19 @@ void Dx12ShimSubmit()
 		Dx12ShimTransition(touched[i], D3D12_RESOURCE_STATE_COMMON);
 	touched.clear();
 
+	if (early_open) {
+		early_list->Close();
+		lists[count++] = early_list;
+	}
 	shim_list->Close();
-	lists[0] = shim_list;
-	shim.queue->ExecuteCommandLists(1, lists);
+	lists[count++] = shim_list;
+	shim.queue->ExecuteCommandLists(count, lists);
 	shim.queue->Signal(fence, ++fence_signalled);
 	Dx12QueueSignalled(shim.queue, fence, fence_signalled);
 	allocators[current_allocator].fence = fence_signalled;
+	if (early_open)
+		early_allocators[current_early_allocator].fence = fence_signalled;
+	early_open = false;
 	list_open = false;
 	list_used = false;
 	dx12_shim_epoch++;

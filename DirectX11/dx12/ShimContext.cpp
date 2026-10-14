@@ -991,6 +991,7 @@ void STDMETHODCALLTYPE ShimContext::UpdateSubresource(ID3D11Resource *pDstResour
 		return;
 	size = min(size, desc.byte_width - offset);
 
+	VkScopeFinishRefresh(resource);
 	shadow_whole = !resource->shadow.empty() && resource->shadow_version == resource->version;
 	if (!resource->shadow.empty())
 		memcpy(resource->shadow.data() + offset, pSrcData, size);
@@ -1077,6 +1078,7 @@ static void copy_buffer(ID3D11Resource *dst11, UINT64 dst_offset, ID3D11Resource
 
 	if (dst->cpu_only) {
 		if (src_in_shadow) {
+			VkScopeFinishRefresh(dst);
 			memcpy(dst->shadow.data() + dst_offset, src->shadow.data() + src_offset, (size_t)size);
 			dst->version++;
 		} else if (src->resource && create_readback(dst)) {

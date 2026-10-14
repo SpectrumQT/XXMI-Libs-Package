@@ -77,6 +77,10 @@ static struct {
 	// What was looked at of the storage buffers of the game for a shader of
 	// a mod, and what of it the D3D12 device had to be given
 	UINT64 compared_bytes, uploaded_bytes, upload_ticks;
+	// Of those, the times threads of their own read them, and how long the
+	// submissions waited for them, see refresh_later
+	unsigned refreshed_apart;
+	UINT64 refresh_wait_ticks;
 	unsigned variants_made, variants_failed;
 	UINT64 variant_ticks;
 	unsigned textures_made, textures_failed, textures_set;
@@ -763,8 +767,10 @@ struct PublishedBuffer {
 // With the lock of dx12/Bridge.h held
 static std::unordered_map<VkBuffer, PublishedBuffer> published;
 // The buffers destroyed since anything was published, which may be on
-// whatever thread. With memory_lock held.
+// whatever thread. With dead_lock held, which is not memory_lock: that is held
+// for as long as the bones take to read.
 static std::vector<VkBuffer> dead_buffers;
+static SRWLOCK dead_lock = SRWLOCK_INIT;
 static volatile bool any_published;
 
 void VkModsBufferCreated(VkBuffer buffer, const VkBufferCreateInfo *info)
@@ -791,10 +797,15 @@ void VkModsBufferBound(VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize offs
 
 void VkModsForgetBuffer(VkBuffer buffer)
 {
+	// Before it leaves buffers, so that one made with the handle after is never
+	// taken for it
+	if (any_published) {
+		AcquireSRWLockExclusive(&dead_lock);
+		dead_buffers.push_back(buffer);
+		ReleaseSRWLockExclusive(&dead_lock);
+	}
 	AcquireSRWLockExclusive(&memory_lock);
 	buffers.erase(buffer);
-	if (any_published)
-		dead_buffers.push_back(buffer);
 	ReleaseSRWLockExclusive(&memory_lock);
 }
 
@@ -826,9 +837,9 @@ static void forget_dead_buffers()
 	if (!any_published)
 		return;
 
-	AcquireSRWLockExclusive(&memory_lock);
+	AcquireSRWLockExclusive(&dead_lock);
 	dead.swap(dead_buffers);
-	ReleaseSRWLockExclusive(&memory_lock);
+	ReleaseSRWLockExclusive(&dead_lock);
 
 	for (VkBuffer buffer : dead) {
 		forget_dead_constants(buffer);
@@ -1082,10 +1093,13 @@ struct ConstantsSource {
 
 static std::unordered_map<ShimResource*, ConstantsSource> constants_sources;
 
+static void finish_refresh_of(const ShimResource *resource);
+
 static void forget_constants(std::map<ConstantsKey, PublishedConstants>::iterator *entry)
 {
 	ShimBuffer *object = (*entry)->second.object;
 
+	finish_refresh_of(&object->r);
 	// A mod may keep it
 	object->r.shadow_pending = false;
 	object->r.upload_pending = false;
@@ -1153,23 +1167,30 @@ static DWORD WINAPI copy_worker(void *argument)
 	}
 }
 
-static bool start_copy_workers()
+static bool start_workers(CopyWorker *workers, size_t count)
 {
-	static bool tried;
+	size_t i;
 
-	if (tried)
-		return !!copy_workers[COPY_THREADS - 2].thread;
-	tried = true;
-
-	for (CopyWorker &worker : copy_workers) {
-		worker.start = CreateEvent(NULL, FALSE, FALSE, NULL);
-		worker.done = CreateEvent(NULL, FALSE, FALSE, NULL);
-		worker.thread = worker.start && worker.done ? CreateThread(NULL, 0, copy_worker, &worker, 0, NULL) : NULL;
+	for (i = 0; i < count; i++) {
+		workers[i].start = CreateEvent(NULL, FALSE, FALSE, NULL);
+		workers[i].done = CreateEvent(NULL, FALSE, FALSE, NULL);
+		workers[i].thread = workers[i].start && workers[i].done ? CreateThread(NULL, 0, copy_worker, &workers[i], 0, NULL) : NULL;
 		// Those started stay idle
-		if (!worker.thread)
+		if (!workers[i].thread)
 			return false;
 	}
 	return true;
+}
+
+static bool start_copy_workers()
+{
+	static bool tried, started;
+
+	if (!tried) {
+		tried = true;
+		started = start_workers(copy_workers, ARRAYSIZE(copy_workers));
+	}
+	return started;
 }
 
 // Has the job done for all from 0 to count, by as many threads as there are,
@@ -1265,11 +1286,12 @@ static void read_constants(BYTE *dst, VkBuffer buffer, VkDeviceSize offset, size
 
 void VkScopeFillShadow(ShimResource *resource, UINT64 offset, UINT64 size)
 {
-	auto found = constants_sources.find(resource);
 	ConstantsSource *source;
 	UINT bytes, page, start;
 	bool read = false;
 
+	finish_refresh_of(resource);
+	auto found = constants_sources.find(resource);
 	if (found == constants_sources.end()) {
 		resource->shadow_pending = false;
 		return;
@@ -1342,6 +1364,171 @@ static void refresh_job(void *context, size_t from, size_t to)
 	}
 }
 
+// Reading them took the thread recording the game's draws milliseconds a
+// frame. The resource only needs them by the time the submission is executed:
+// so threads of their own read the pages while the game goes on, and the
+// pages that changed are given to the resource by a list executed ahead of the
+// submission (Dx12ShimEarlyList). That is only the same as giving them to it
+// where it was asked for if nothing recorded before in the submission used the
+// resource. Until the threads are done the shadow is theirs: everything that
+// reads or writes it has finish_refresh() called first.
+static struct Refreshing {
+	ShimResource *resource;
+	// What it had, and the state it starts the submission in
+	ID3D12Resource *target;
+	D3D12_RESOURCE_STATES state;
+	ConstantsKey key;
+	UINT bytes, pages;
+	// The pages that had been read this frame before, which are not read again
+	std::vector<bool> read;
+	BYTE *stale;
+} refreshing;
+static CopyWorker refresh_workers[COPY_THREADS];
+
+// The pages read with memory_lock held at a time: the game's threads that
+// create buffers or map memory wait for it
+const size_t REFRESH_LOCKED_PAGES = 16;
+
+static void refresh_part(void *context, size_t from, size_t to)
+{
+	Refresh refresh = { refreshing.resource->shadow.data(), NULL, refreshing.bytes, &refreshing.read, refreshing.stale };
+	size_t page, end;
+
+	for (; from < to; from = end) {
+		end = min(to, from + REFRESH_LOCKED_PAGES);
+		AcquireSRWLockShared(&memory_lock);
+		refresh.data = mapped_bytes(std::get<0>(refreshing.key), std::get<1>(refreshing.key), refreshing.bytes);
+		if (refresh.data) {
+			refresh_job(&refresh, from, end);
+		} else {
+			for (page = from; page < end; page++) {
+				if (refreshing.read[page])
+					continue;
+				memset(refresh.shadow + page * SHADOW_PAGE, 0, min((size_t)SHADOW_PAGE, (size_t)refreshing.bytes - page * SHADOW_PAGE));
+				refreshing.stale[page] = 1;
+			}
+		}
+		ReleaseSRWLockShared(&memory_lock);
+	}
+}
+
+static void finish_refresh();
+
+static bool refresh_later(ShimResource *resource, ConstantsSource *source, UINT bytes, UINT pages)
+{
+	static bool tried, started;
+	size_t part, i;
+
+	if (refreshing.resource || !resource->resource || resource->touched_epoch == dx12_shim_epoch
+	    || bytes < COPY_THREAD_BYTES * 2 || pages < ARRAYSIZE(refresh_workers))
+		return false;
+	if (!tried) {
+		tried = true;
+		started = start_workers(refresh_workers, ARRAYSIZE(refresh_workers));
+		Dx12ShimBeforeSubmit(finish_refresh);
+	}
+	if (!started || !Dx12ShimEarlyList())
+		return false;
+
+	refreshing.resource = resource;
+	refreshing.target = resource->resource;
+	refreshing.target->AddRef();
+	refreshing.state = resource->state;
+	refreshing.key = source->key;
+	refreshing.bytes = bytes;
+	refreshing.pages = pages;
+	refreshing.read = source->pages;
+	refreshing.stale = source->stale.data();
+
+	part = pages / ARRAYSIZE(refresh_workers);
+	for (i = 0; i < ARRAYSIZE(refresh_workers); i++) {
+		refresh_workers[i].job = refresh_part;
+		refresh_workers[i].context = NULL;
+		refresh_workers[i].from = i * part;
+		refresh_workers[i].to = i + 1 == ARRAYSIZE(refresh_workers) ? pages : (i + 1) * part;
+		SetEvent(refresh_workers[i].start);
+	}
+	// Has whoever reads it come by finish_refresh, see ShimReadShadow
+	resource->shadow_pending = true;
+	return true;
+}
+
+static void finish_refresh()
+{
+	ShimResource *resource = refreshing.resource;
+	ConstantsSource *source;
+	D3D12_RESOURCE_BARRIER barrier = {};
+	ID3D12GraphicsCommandList *list;
+	ID3D12Resource *upload_buffer;
+	UINT64 upload_offset, start_ticks;
+	UINT page, first, last, start, size;
+	bool copied = false;
+	BYTE *upload;
+
+	if (!resource)
+		return;
+	start_ticks = G->vk_dump_hashes ? ticks() : 0;
+	for (CopyWorker &worker : refresh_workers)
+		WaitForSingleObject(worker.done, INFINITE);
+	refreshing.resource = NULL;
+	resource->shadow_pending = false;
+	if (start_ticks)
+		stats.refresh_wait_ticks += ticks() - start_ticks;
+
+	list = Dx12ShimEarlyList();
+	source = &constants_sources[resource];
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barrier.Transition.pResource = refreshing.target;
+	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	barrier.Transition.StateBefore = refreshing.state;
+	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+
+	for (page = 0; list && page < refreshing.pages;) {
+		if (!source->stale[page]) {
+			page++;
+			continue;
+		}
+		first = last = page;
+		for (; page < refreshing.pages && page - first < UPLOAD_RUN_PAGES && page - last <= UPLOAD_GAP_PAGES; page++) {
+			if (source->stale[page])
+				last = page;
+		}
+		page = last + 1;
+		start = first * SHADOW_PAGE;
+		size = min(page * SHADOW_PAGE, refreshing.bytes) - start;
+		// The rest is left for the next time it is asked for
+		upload = Dx12ShimUpload(size, 16, &upload_buffer, &upload_offset, NULL);
+		if (!upload)
+			break;
+		memcpy(upload, resource->shadow.data() + start, size);
+		if (!copied && barrier.Transition.StateBefore != barrier.Transition.StateAfter)
+			list->ResourceBarrier(1, &barrier);
+		copied = true;
+		list->CopyBufferRegion(refreshing.target, start, upload_buffer, upload_offset, size);
+		memset(&source->stale[first], 0, page - first);
+		stats.uploaded_bytes += size;
+	}
+	if (copied && barrier.Transition.StateBefore != barrier.Transition.StateAfter) {
+		std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+		list->ResourceBarrier(1, &barrier);
+	}
+	Dx12ShimDeferRelease(refreshing.target);
+	refreshing.target->Release();
+	refreshing.target = NULL;
+}
+
+// For what may use the shadow of the resource
+static void finish_refresh_of(const ShimResource *resource)
+{
+	if (resource == refreshing.resource)
+		finish_refresh();
+}
+
+void VkScopeFinishRefresh(const ShimResource *resource)
+{
+	finish_refresh_of(resource);
+}
+
 bool VkScopeUploadShadow(ShimResource *resource)
 {
 	auto found = constants_sources.find(resource);
@@ -1352,6 +1539,9 @@ bool VkScopeUploadShadow(ShimResource *resource)
 
 	if (found == constants_sources.end())
 		return false;
+	// What it will be given is the same
+	if (resource == refreshing.resource)
+		return true;
 	source = &found->second;
 	bytes = (UINT)min((UINT64)std::get<2>(source->key), min((UINT64)resource->shadow.size(), resource->desc.Width));
 	pages = (bytes + SHADOW_PAGE - 1) / SHADOW_PAGE;
@@ -1360,6 +1550,16 @@ bool VkScopeUploadShadow(ShimResource *resource)
 	// All of it the first time
 	if (source->stale.empty())
 		source->stale.assign(source->pages.size(), 1);
+
+	if (source->pages_left && refresh_later(resource, source, bytes, pages)) {
+		stats.refreshed_apart++;
+		stats.constants_read++;
+		stats.constants_bytes += (UINT64)source->pages_left * SHADOW_PAGE;
+		stats.compared_bytes += (UINT64)source->pages_left * SHADOW_PAGE;
+		source->pages.assign(source->pages.size(), true);
+		source->pages_left = 0;
+		return true;
+	}
 
 	if (source->pages_left) {
 		AcquireSRWLockShared(&memory_lock);
@@ -1474,6 +1674,7 @@ static PublishedConstants* publish_constants(VkBuffer buffer, VkDeviceSize offse
 	stats.constants_shown++;
 
 	// Other contents than the frame before, as far as anyone knows
+	finish_refresh_of(&object->r);
 	ConstantsSource *source = &constants_sources[&object->r];
 	source->pages.assign((bytes + SHADOW_PAGE - 1) / SHADOW_PAGE, false);
 	source->pages_left = (UINT)source->pages.size();
@@ -1643,6 +1844,7 @@ static void destroy_retired_mirrors(bool all)
 // NULL if what the buffer holds is not known here
 static const BYTE* buffer_contents(const ShimResource *resource)
 {
+	finish_refresh_of(resource);
 	if (resource->shadow.empty() || resource->readback_pending)
 		return NULL;
 	if (!resource->cpu_only && resource->shadow_version != resource->version)
@@ -5361,10 +5563,11 @@ static void report()
 	for (const SharedBuffer &shared : shared_buffers)
 		held_shared += shared.size;
 	VkDumpNote("  Storage buffers of the game: shown %u times, not shown %u; %llu KB looked at for the shaders of mods, of which %llu KB "
-		"had changed and went to the D3D12 device, %.2f ms per frame. Buffers of mods for the shaders of the game: %u brought over "
+		"had changed and went to the D3D12 device, %.2f ms per frame (read %u times by threads of their own, waited for %.2f ms per frame). Buffers of mods for the shaders of the game: %u brought over "
 		"(%llu KB), %u of them from the GPU (%u without leaving it, %llu KB), which %u submissions of the game waited %.2f ms per "
 		"frame for and %u had the GPU wait for; %u descriptor sets made, %Iu held, %llu MB of buffers for them and %llu MB shared with the D3D12 device\n",
 		stats.views_shown, stats.views_missing, stats.compared_bytes >> 10, stats.uploaded_bytes >> 10, stats.upload_ticks * per_frame,
+		stats.refreshed_apart, stats.refresh_wait_ticks * per_frame,
 		stats.brought, stats.brought_bytes >> 10, stats.brought_from_gpu, stats.shared, stats.shared_bytes >> 10,
 		stats.submits_waited, stats.submit_ticks * per_frame, stats.submits_chained, stats.sets_made, mod_sets.size(),
 		held >> 20, held_shared >> 20);

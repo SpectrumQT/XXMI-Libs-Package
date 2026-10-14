@@ -110,6 +110,14 @@ void Dx12LogDebugMessages();
 
 // The command list to record to. Stays valid until the next submission.
 ID3D12GraphicsCommandList* Dx12ShimList();
+// One executed before it in the same submission, for what is only known by
+// then and is to be in place for all of it. Its transitions are not tracked:
+// a resource the submission has not transitioned yet starts it in the state
+// ShimResource::state has, and it is to be left in that. NULL if it could not
+// be made.
+ID3D12GraphicsCommandList* Dx12ShimEarlyList();
+// Has Dx12ShimSubmit call the function first, with the lock held
+void Dx12ShimBeforeSubmit(void (*callback)());
 // Has the queue execute what was recorded, if anything
 void Dx12ShimSubmit();
 // The same, and does not return before the GPU is done with it

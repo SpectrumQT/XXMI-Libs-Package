@@ -1773,21 +1773,82 @@ static void note_memory(const char *when)
 	}
 }
 
+// The space of a block of memory, given out and taken back in any order: the
+// first free range it fits in, and what is taken back joins those next to it
+struct BlockSpace {
+	// By offset, none of them touching another
+	std::map<VkDeviceSize, VkDeviceSize> free;
+	VkDeviceSize taken;
+
+	void init(VkDeviceSize size)
+	{
+		free.clear();
+		free[0] = size;
+		taken = 0;
+	}
+
+	bool take(VkDeviceSize bytes, VkDeviceSize alignment, VkDeviceSize *offset)
+	{
+		for (auto range = free.begin(); range != free.end(); ++range) {
+			VkDeviceSize first = range->first, end = range->first + range->second;
+			VkDeviceSize start = (first + alignment - 1) / alignment * alignment;
+
+			if (start + bytes > end)
+				continue;
+			free.erase(range);
+			if (start > first)
+				free[first] = start - first;
+			if (start + bytes < end)
+				free[start + bytes] = end - start - bytes;
+			taken += bytes;
+			*offset = start;
+			return true;
+		}
+		return false;
+	}
+
+	void give_back(VkDeviceSize offset, VkDeviceSize bytes)
+	{
+		auto next = free.lower_bound(offset);
+
+		taken -= bytes;
+		if (next != free.end() && offset + bytes == next->first) {
+			bytes += next->second;
+			next = free.erase(next);
+		}
+		if (next != free.begin()) {
+			auto previous = std::prev(next);
+
+			if (previous->first + previous->second == offset) {
+				previous->second += bytes;
+				return;
+			}
+		}
+		free.emplace_hint(next, offset, bytes);
+	}
+};
+
 // A device only allows so many allocations, and rounds each up
 const VkDeviceSize MIRROR_BLOCK_BYTES = 32 << 20;
+// Frames a block of memory with nothing in it is kept for. One made for more
+// than a block holds goes as soon as it is empty.
+const UINT BLOCK_KEEP_FRAMES = 600;
 
 struct MirrorBlock {
 	VkDeviceMemory memory;
 	BYTE *data;
 	uint32_t type;
-	VkDeviceSize size, used;
-	// Buffers in it. Its space is given out again once there are none.
-	UINT live;
+	VkDeviceSize size;
+	BlockSpace space;
+	// When it was last left empty
+	UINT emptied;
 };
 
 struct Mirror {
 	VkBuffer buffer;
 	MirrorBlock *block;
+	// The part of the block the buffer has
+	VkDeviceSize block_offset, block_bytes;
 	// Where in the buffer the contents start
 	VkDeviceSize offset;
 	VkDeviceSize size;
@@ -1797,11 +1858,14 @@ struct Mirror {
 	// which is only the place of these contents for the frame
 	bool shared;
 	UINT frame;
+	// The last a draw had it
+	UINT used;
 };
 
 struct RetiredMirror {
 	VkBuffer buffer;
 	MirrorBlock *block;
+	VkDeviceSize block_offset, block_bytes;
 	UINT frame;
 };
 
@@ -1857,6 +1921,7 @@ static MirrorBlock* new_mirror_block(const VkMemoryRequirements *needed)
 			block->data = (BYTE*)data;
 			block->type = type;
 			block->size = info.allocationSize;
+			block->space.init(block->size);
 			mirror_blocks.push_back(block);
 			VkDumpNote("Mods: %llu MB of memory type %u (flags 0x%x) for the buffers of the mods, block %Iu\n",
 				block->size >> 20, type, memory_properties.memoryTypes[type].propertyFlags, mirror_blocks.size());
@@ -1872,31 +1937,34 @@ static bool place_mirror(Mirror *mirror, const VkMemoryRequirements *needed, VkD
 	MirrorBlock *block = NULL;
 
 	for (MirrorBlock *candidate : mirror_blocks) {
-		if (!candidate->live)
-			candidate->used = 0;
-		*offset = (candidate->used + alignment - 1) / alignment * alignment;
-		if ((needed->memoryTypeBits & 1u << candidate->type) && *offset + needed->size <= candidate->size) {
+		if ((needed->memoryTypeBits & 1u << candidate->type) && candidate->space.take(needed->size, alignment, offset)) {
 			block = candidate;
 			break;
 		}
 	}
 	if (!block) {
 		block = new_mirror_block(needed);
-		*offset = 0;
+		if (!block || !block->space.take(needed->size, alignment, offset))
+			return false;
 	}
-	if (!block)
-		return false;
 
-	block->used = *offset + needed->size;
-	block->live++;
 	mirror->block = block;
+	mirror->block_offset = *offset;
+	mirror->block_bytes = needed->size;
 	return true;
+}
+
+static void unplace(MirrorBlock *block, VkDeviceSize offset, VkDeviceSize bytes)
+{
+	block->space.give_back(offset, bytes);
+	if (!block->space.taken)
+		block->emptied = mods_frame;
 }
 
 static void retire_mirror(const Mirror *mirror)
 {
 	if (!mirror->shared)
-		retired_mirrors.push_back({ mirror->buffer, mirror->block, mods_frame });
+		retired_mirrors.push_back({ mirror->buffer, mirror->block, mirror->block_offset, mirror->block_bytes, mods_frame });
 }
 
 static void destroy_retired_mirrors(bool all)
@@ -1909,7 +1977,7 @@ static void destroy_retired_mirrors(bool all)
 			continue;
 		}
 		api.DestroyBuffer(mods_device, retired.buffer, NULL);
-		retired.block->live--;
+		unplace(retired.block, retired.block_offset, retired.block_bytes);
 	}
 	retired_mirrors.resize(kept);
 }
@@ -1944,8 +2012,10 @@ static Mirror* mirror_of(ShimBuffer *buffer)
 
 	auto found = mirrors.find(resource);
 	if (found != mirrors.end()) {
-		if (found->second.version == resource->version && (!found->second.shared || found->second.frame == mods_frame))
+		if (found->second.version == resource->version && (!found->second.shared || found->second.frame == mods_frame)) {
+			found->second.used = mods_frame;
 			return &found->second;
+		}
 		// The command buffers recorded so far draw what it held then
 		retire_mirror(&found->second);
 		mirrors.erase(found);
@@ -1957,6 +2027,7 @@ static Mirror* mirror_of(ShimBuffer *buffer)
 		mirror.version = resource->version;
 		mirror.shared = true;
 		mirror.frame = mods_frame;
+		mirror.used = mods_frame;
 		resource->mirrored = true;
 		stats.mirrored++;
 		stats.mirrored_from_gpu++;
@@ -1975,7 +2046,7 @@ static Mirror* mirror_of(ShimBuffer *buffer)
 		return NULL;
 	}
 	if (api.BindBufferMemory(mods_device, mirror.buffer, mirror.block->memory, offset) != VK_SUCCESS) {
-		mirror.block->live--;
+		unplace(mirror.block, mirror.block_offset, mirror.block_bytes);
 		api.DestroyBuffer(mods_device, mirror.buffer, NULL);
 		return NULL;
 	}
@@ -1984,12 +2055,13 @@ static Mirror* mirror_of(ShimBuffer *buffer)
 		memcpy(mirror.block->data + offset, data, (size_t)info.size);
 	} else {
 		if (!transfer_from_gpu(resource, 0, info.size, mirror.block->data + offset)) {
-			mirror.block->live--;
+			unplace(mirror.block, mirror.block_offset, mirror.block_bytes);
 			api.DestroyBuffer(mods_device, mirror.buffer, NULL);
 			return NULL;
 		}
 		stats.mirrored_from_gpu++;
 	}
+	mirror.used = mods_frame;
 	mirror.size = info.size;
 	mirror.version = resource->version;
 	resource->mirrored = true;
@@ -2018,6 +2090,7 @@ const VkDeviceSize TRANSIENT_ALIGNMENT = 256;
 struct Transient {
 	VkBuffer buffer;
 	MirrorBlock *block;
+	VkDeviceSize block_offset, block_bytes;
 	BYTE *data;
 	VkDeviceSize size, used;
 	// The last it had anything given out
@@ -2046,12 +2119,14 @@ static Transient* new_transient(VkDeviceSize size)
 		return NULL;
 	}
 	if (api.BindBufferMemory(mods_device, transient.buffer, placed.block->memory, offset) != VK_SUCCESS) {
-		placed.block->live--;
+		unplace(placed.block, placed.block_offset, placed.block_bytes);
 		api.DestroyBuffer(mods_device, transient.buffer, NULL);
 		return NULL;
 	}
 
 	transient.block = placed.block;
+	transient.block_offset = placed.block_offset;
+	transient.block_bytes = placed.block_bytes;
 	transient.data = placed.block->data + offset;
 	transient.size = info.size;
 	transient.frame = mods_frame;
@@ -2096,33 +2171,53 @@ static BYTE* transient_bytes(VkDeviceSize bytes, VkDeviceSize reach, VkBuffer *b
 	return found->data + start;
 }
 
-// One made for the contents of a texture is of no use to what a draw reads,
-// and neither is the memory it has to itself
-static void destroy_big_transients()
+// One made for the contents of a texture is of no use to what a draw reads
+// once the GPU is done with it, and one of the usual size goes once there
+// have been that many frames without anything given out of it
+static void destroy_idle_transients()
 {
-	size_t kept = 0, i;
+	size_t kept = 0;
 
 	for (const Transient &transient : transients) {
-		if (transient.size <= TRANSIENT_BYTES || !reusable(transient.frame)) {
+		if (transient.size <= TRANSIENT_BYTES ? mods_frame - transient.frame <= BLOCK_KEEP_FRAMES : !reusable(transient.frame)) {
 			transients[kept++] = transient;
 			continue;
 		}
 		api.DestroyBuffer(mods_device, transient.buffer, NULL);
-		transient.block->live--;
+		unplace(transient.block, transient.block_offset, transient.block_bytes);
 	}
 	transients.resize(kept);
+}
 
-	for (i = 0; i < mirror_blocks.size();) {
-		MirrorBlock *block = mirror_blocks[i];
+// A mesh of a mod that has not been drawn for this many frames goes, and is
+// copied again if it is drawn again
+const UINT MIRROR_IDLE_FRAMES = 1800;
 
-		if (block->live || block->size <= MIRROR_BLOCK_BYTES) {
-			i++;
+static void forget_idle_mirrors()
+{
+	for (auto i = mirrors.begin(); i != mirrors.end();) {
+		if (mods_frame - i->second.used <= MIRROR_IDLE_FRAMES) {
+			++i;
+			continue;
+		}
+		retire_mirror(&i->second);
+		i = mirrors.erase(i);
+	}
+}
+
+static void free_empty_mirror_blocks()
+{
+	size_t kept = 0;
+
+	for (MirrorBlock *block : mirror_blocks) {
+		if (block->space.taken || (block->size <= MIRROR_BLOCK_BYTES && mods_frame - block->emptied <= BLOCK_KEEP_FRAMES)) {
+			mirror_blocks[kept++] = block;
 			continue;
 		}
 		api.FreeMemory(mods_device, block->memory, NULL);
 		delete block;
-		mirror_blocks.erase(mirror_blocks.begin() + i);
 	}
+	mirror_blocks.resize(kept);
 }
 
 struct Readback {
@@ -2703,9 +2798,10 @@ const VkDeviceSize IMAGE_BLOCK_BYTES = 64 << 20;
 struct ImageBlock {
 	VkDeviceMemory memory;
 	uint32_t type;
-	VkDeviceSize size, used;
-	// Images in it. Its space is given out again once there are none.
-	UINT live;
+	VkDeviceSize size;
+	BlockSpace space;
+	// When it was last left empty
+	UINT emptied;
 };
 
 struct ModTexture {
@@ -2714,6 +2810,7 @@ struct ModTexture {
 	VkImageView view;
 	VkImageViewType view_type;
 	ImageBlock *block;
+	VkDeviceSize block_offset, block_bytes;
 	// ShimResource::version of the contents
 	UINT64 version;
 	// It has had contents before, which is the layout it is in
@@ -2770,14 +2867,8 @@ static ImageBlock* place_image(const VkMemoryRequirements *needed, VkDeviceSize 
 	uint32_t type;
 
 	for (ImageBlock *candidate : image_blocks) {
-		if (!candidate->live)
-			candidate->used = 0;
-		*offset = (candidate->used + alignment - 1) / alignment * alignment;
-		if ((needed->memoryTypeBits & 1u << candidate->type) && *offset + needed->size <= candidate->size) {
-			candidate->used = *offset + needed->size;
-			candidate->live++;
+		if ((needed->memoryTypeBits & 1u << candidate->type) && candidate->space.take(needed->size, alignment, offset))
 			return candidate;
-		}
 	}
 
 	info.allocationSize = max(IMAGE_BLOCK_BYTES, needed->size);
@@ -2796,12 +2887,11 @@ static ImageBlock* place_image(const VkMemoryRequirements *needed, VkDeviceSize 
 			}
 			block->type = type;
 			block->size = info.allocationSize;
-			block->used = needed->size;
-			block->live = 1;
+			block->space.init(block->size);
+			block->space.take(needed->size, 1, offset);
 			image_blocks.push_back(block);
 			VkDumpNote("Mods: %llu MB of memory type %u (flags 0x%x) for the textures of the mods, block %Iu\n",
 				block->size >> 20, type, has, image_blocks.size());
-			*offset = 0;
 			return block;
 		}
 	}
@@ -2814,8 +2904,26 @@ static void destroy_texture(const ModTexture *texture)
 		api.DestroyImageView(mods_device, texture->view, NULL);
 	if (texture->image)
 		api.DestroyImage(mods_device, texture->image, NULL);
-	if (texture->block)
-		texture->block->live--;
+	if (texture->block) {
+		texture->block->space.give_back(texture->block_offset, texture->block_bytes);
+		if (!texture->block->space.taken)
+			texture->block->emptied = mods_frame;
+	}
+}
+
+static void free_empty_image_blocks()
+{
+	size_t kept = 0;
+
+	for (ImageBlock *block : image_blocks) {
+		if (block->space.taken || (block->size <= IMAGE_BLOCK_BYTES && mods_frame - block->emptied <= BLOCK_KEEP_FRAMES)) {
+			image_blocks[kept++] = block;
+			continue;
+		}
+		api.FreeMemory(mods_device, block->memory, NULL);
+		delete block;
+	}
+	image_blocks.resize(kept);
 }
 
 // A descriptor set made with the view of one is held for as long as a buffer
@@ -2881,7 +2989,11 @@ static bool make_image(ModTexture *texture, const D3D12_RESOURCE_DESC *desc, VkF
 
 	api.GetImageMemoryRequirements(mods_device, texture->image, &needed);
 	texture->block = place_image(&needed, &offset);
-	if (!texture->block || api.BindImageMemory(mods_device, texture->image, texture->block->memory, offset) != VK_SUCCESS)
+	if (!texture->block)
+		return false;
+	texture->block_offset = offset;
+	texture->block_bytes = needed.size;
+	if (api.BindImageMemory(mods_device, texture->image, texture->block->memory, offset) != VK_SUCCESS)
 		return false;
 
 	view_info.image = texture->image;
@@ -6101,6 +6213,21 @@ static void report()
 		"%u times, %d hashed, %d filled from memory that is not mapped\n",
 		stats.textures_set, stats.textures_made, stats.textures_bytes >> 10, stats.textures_failed, mod_textures.size(),
 		image_blocks.size(), stats.apart_draws, stats.textures_shown, (int)images_hashed, (int)images_not_mapped);
+	VkDeviceSize buffer_bytes = 0, buffer_taken = 0, image_bytes = 0, image_taken = 0, transient_bytes = 0;
+	for (const MirrorBlock *block : mirror_blocks) {
+		buffer_bytes += block->size;
+		buffer_taken += block->space.taken;
+	}
+	for (const ImageBlock *block : image_blocks) {
+		image_bytes += block->size;
+		image_taken += block->space.taken;
+	}
+	for (const Transient &transient : transients)
+		transient_bytes += transient.size;
+	VkDumpNote("  Memory of ours: %llu MB for buffers in %Iu blocks (%llu MB of it in use, %llu MB by %Iu transient buffers, "
+		"%Iu meshes copied), %llu MB for textures in %Iu blocks (%llu MB in use)\n",
+		buffer_bytes >> 20, mirror_blocks.size(), buffer_taken >> 20, transient_bytes >> 20, transients.size(), mirrors.size(),
+		image_bytes >> 20, image_blocks.size(), image_taken >> 20);
 	VkDumpNote("  The draws were stopped for because of: settings %u, a pipeline not looked at yet, command lists doing more than asking "
 		"or a condition of one %u, an index count a section asks for %u, a constant buffer a list asks for %u; "
 		"about %u more were not stopped for, %u of them with such an index count and indices no section is for\n",
@@ -6142,7 +6269,11 @@ static void frame_over()
 		destroy_retired_mirrors(false);
 		destroy_shared_buffers(false);
 		destroy_retired_textures(false);
-		destroy_big_transients();
+		destroy_idle_transients();
+		if (!(mods_frame & 63))
+			forget_idle_mirrors();
+		free_empty_mirror_blocks();
+		free_empty_image_blocks();
 		release_unused_mod_sets();
 		destroy_variants(false);
 	}

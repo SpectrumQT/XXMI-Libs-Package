@@ -76,6 +76,9 @@ static struct {
 	// Of those from the GPU, what never left it, see shared_buffers
 	unsigned shared;
 	UINT64 shared_bytes;
+	// Of those, how often there was no memory for another shared buffer, and
+	// how often one was given out again early then
+	unsigned shared_over_budget, shared_tight;
 	// What was looked at of the storage buffers of the game for a shader of
 	// a mod, and what of it the D3D12 device had to be given
 	UINT64 compared_bytes, uploaded_bytes, upload_ticks;
@@ -1731,6 +1734,23 @@ static bool memory_budget(VkPhysicalDeviceMemoryProperties2 *properties, VkPhysi
 	return true;
 }
 
+// Whether the process would use more of the memory of the GPU than it is
+// given with that many more bytes of it
+static bool over_budget(VkDeviceSize more)
+{
+	VkPhysicalDeviceMemoryBudgetPropertiesEXT budget;
+	VkPhysicalDeviceMemoryProperties2 properties;
+
+	if (!memory_budget(&properties, &budget))
+		return false;
+	for (uint32_t heap = 0; heap < properties.memoryProperties.memoryHeapCount; heap++) {
+		if ((properties.memoryProperties.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+		    && budget.heapUsage[heap] + more > budget.heapBudget[heap])
+			return true;
+	}
+	return false;
+}
+
 // With vk_dump_hashes: how much of the memory of the GPU the process uses, of
 // what it is given, as VK_EXT_memory_budget tells it
 static void note_memory(const char *when)
@@ -2183,6 +2203,14 @@ static void release_readbacks()
 const VkDeviceSize SHARED_BYTES = 16 << 20;
 // Frames one is kept for without anything given out
 const UINT SHARED_KEEP_FRAMES = 600;
+// A buffer the D3D12 device makes while the process uses more of the memory of
+// the GPU than it is given is one the game's device faults on reading, which
+// loses the device: the picture stops. Instead of one more then, one is given
+// out again after this many frames rather than MIRROR_KEEP_FRAMES, which the
+// game should have drawn by; failing that, the bytes go by the CPU.
+const UINT SHARED_TIGHT_FRAMES = 3;
+// Room left for what the game allocates meanwhile
+const VkDeviceSize SHARED_BUDGET_MARGIN = 64 << 20;
 
 struct SharedBuffer {
 	ID3D12Resource *resource;
@@ -2289,6 +2317,9 @@ static SharedBuffer* new_shared_buffer(VkDeviceSize size)
 	return &shared_buffers.back();
 }
 
+// The frame there was found to be no memory for another shared buffer in
+static UINT over_budget_frame = UINT_MAX;
+
 // As transient_bytes gives out memory, of a buffer a list of the shim writes
 static SharedBuffer* shared_bytes(VkDeviceSize bytes, VkDeviceSize reach, VkDeviceSize *offset)
 {
@@ -2311,6 +2342,21 @@ static SharedBuffer* shared_bytes(VkDeviceSize bytes, VkDeviceSize reach, VkDevi
 			found = &shared;
 			break;
 		}
+	}
+	// Not asked again in a frame it was found in: it is a call to the kernel
+	if (!found && (over_budget_frame == frame || over_budget(max(reach, SHARED_BYTES) + SHARED_BUDGET_MARGIN))) {
+		over_budget_frame = frame;
+		stats.shared_over_budget++;
+		for (SharedBuffer &shared : shared_buffers) {
+			if (shared.frame != frame && frame - shared.frame > SHARED_TIGHT_FRAMES && reach <= shared.size) {
+				shared.frame = frame;
+				shared.used = bytes;
+				*offset = 0;
+				stats.shared_tight++;
+				return &shared;
+			}
+		}
+		return NULL;
 	}
 	if (!found) {
 		found = new_shared_buffer(reach);
@@ -5795,12 +5841,13 @@ static void report()
 	VkDumpNote("  Storage buffers of the game: shown %u times, not shown %u; %llu KB looked at for the shaders of mods, of which %llu KB "
 		"had changed and went to the D3D12 device, %.2f ms per frame (read %u times by threads of their own, waited for %.2f ms per frame). Buffers of mods for the shaders of the game: %u brought over "
 		"(%llu KB), %u of them from the GPU (%u without leaving it, %llu KB), which %u submissions of the game waited %.2f ms per "
-		"frame for and %u had the GPU wait for; %u descriptor sets made, %Iu held, %llu MB of buffers for them and %llu MB shared with the D3D12 device\n",
+		"frame for and %u had the GPU wait for; %u descriptor sets made, %Iu held, %llu MB of buffers for them and %llu MB shared with the D3D12 device "
+		"(%u times out of the memory budget for more, given out again early %u of them)\n",
 		stats.views_shown, stats.views_missing, stats.compared_bytes >> 10, stats.uploaded_bytes >> 10, stats.upload_ticks * per_frame,
 		stats.refreshed_apart, stats.refresh_wait_ticks * per_frame,
 		stats.brought, stats.brought_bytes >> 10, stats.brought_from_gpu, stats.shared, stats.shared_bytes >> 10,
 		stats.submits_waited, stats.submit_ticks * per_frame, stats.submits_chained, stats.sets_made, mod_sets.size(),
-		held >> 20, held_shared >> 20);
+		held >> 20, held_shared >> 20, stats.shared_over_budget, stats.shared_tight);
 	VkDumpNote("  Of the time in the engine, per frame: %.2f ms telling it what the game has bound, %.2f ms bringing what the mods "
 		"draw with to the game's device, %.2f ms recording their draws; %u draws had no mod skip or draw anything\n",
 		stats.part_ticks[TIMED_ANSWERS] * per_frame, stats.part_ticks[TIMED_MOD_DRAWS] * per_frame,

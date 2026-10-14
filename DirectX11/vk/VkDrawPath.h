@@ -185,8 +185,7 @@ void VkModsPresent(VkQueue queue);
 void VkModsDiagnostics(VkDevice device, PFN_vkGetDeviceFaultInfoEXT fault_info, PFN_vkCmdSetCheckpointNV set_checkpoint,
 		PFN_vkGetQueueCheckpointDataNV checkpoint_data);
 void VkModsCommandsBegun(VkCommandBuffer cmd);
-// The game enabled VK_EXT_memory_budget, by which the report tells how much
-// of the memory of the GPU the process uses
+// The game enabled VK_EXT_memory_budget, which shared buffers are kept within
 void VkModsMemoryBudget(VkDevice device);
 // With VK_EXT_device_address_binding_report, which the instance is given
 // VK_EXT_debug_utils for: GPU addresses bound to an object or let go of, for

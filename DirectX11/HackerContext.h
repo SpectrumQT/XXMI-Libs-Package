@@ -182,6 +182,21 @@ private:
 	} mShaderOverrideCache[1 << SHADER_OVERRIDE_CACHE_BITS];
 	struct ShaderOverride* LookupShaderOverride(UINT64 hash);
 
+	// What mShaders and mReloadedShaders have for a shader the game binds,
+	// which it does about as often as it draws. Entries are only valid
+	// while G->shader_handle_generation matches, and reload_info points
+	// into mReloadedShaders, so what it says of the shader is read as it
+	// is now:
+	static const unsigned SHADER_HANDLE_CACHE_BITS = 11;
+	struct ShaderHandleCacheEntry {
+		ID3D11DeviceChild *shader;
+		UINT64 hash;
+		struct OriginalShaderInfo *reload_info;
+		unsigned generation;
+		bool hash_found;
+	} mShaderHandleCache[1 << SHADER_HANDLE_CACHE_BITS];
+	const ShaderHandleCacheEntry* LookupShaderHandle(ID3D11DeviceChild *shader);
+
 	// What the checktextureoverride commands that ran so far during the
 	// draw call in progress matched (for most of them: nothing), so that
 	// running the same commands again (typically from the post command

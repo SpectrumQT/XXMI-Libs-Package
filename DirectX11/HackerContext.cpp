@@ -94,6 +94,7 @@ HackerContext::HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pCon
 	mComputeShaderDeferredPending = false;
 	mDeferredShaderGeneration = G->deferred_shader_generation;
 	memset(mShaderOverrideCache, 0, sizeof(mShaderOverrideCache));
+	memset(mShaderHandleCache, 0, sizeof(mShaderHandleCache));
 	mCheckTextureOverrideResultCount = 0;
 	mCheckTextureOverrideResultsDraw = NULL;
 	memset(mShaderResourceViewCache, 0, sizeof(mShaderResourceViewCache));
@@ -656,6 +657,35 @@ ShaderOverride* HackerContext::LookupShaderOverride(UINT64 hash)
 	entry->generation = generation;
 	entry->shader_override = (i != G->mShaderOverrideMap.end()) ? &i->second : NULL;
 	return entry->shader_override;
+}
+
+const HackerContext::ShaderHandleCacheEntry* HackerContext::LookupShaderHandle(ID3D11DeviceChild *shader)
+{
+	ShaderHandleCacheEntry *entry = &mShaderHandleCache[
+		((uint64_t)(uintptr_t)shader * 0x9E3779B97F4A7C15ull) >> (64 - SHADER_HANDLE_CACHE_BITS)];
+	// Read before the lookups, as LookupShaderOverride() does:
+	unsigned generation = G->shader_handle_generation;
+
+	if (entry->shader == shader && entry->generation == generation) {
+		if (Profiling::mode == Profiling::Mode::SUMMARY) {
+			Profiling::shader_hash_lookup_overhead.count++;
+			if (entry->hash_found)
+				Profiling::shader_hash_lookup_overhead.hits++;
+			Profiling::shader_reload_lookup_overhead.count++;
+			if (entry->reload_info)
+				Profiling::shader_reload_lookup_overhead.hits++;
+		}
+		return entry;
+	}
+
+	ShaderMap::iterator i = lookup_shader_hash(shader);
+	ShaderReloadMap::iterator j = lookup_reloaded_shader(shader);
+	entry->shader = shader;
+	entry->generation = generation;
+	entry->hash_found = i != G->mShaders.end();
+	entry->hash = entry->hash_found ? i->second : 0;
+	entry->reload_info = (j != G->mReloadedShaders.end()) ? &j->second : NULL;
+	return entry;
 }
 
 void HackerContext::DeferredShaderReplacementBeforeDraw()
@@ -2464,6 +2494,8 @@ STDMETHODIMP_(void) HackerContext::SetShader(THIS_
 	*deferredPending = false;
 
 	if (pShader) {
+		OriginalShaderInfo *reload_info = NULL;
+
 		// Store as current shader. Need to do this even while
 		// not hunting for ShaderOverride section in BeforeDraw
 		// We also set the current shader hash, but as an optimization,
@@ -2472,14 +2504,16 @@ STDMETHODIMP_(void) HackerContext::SetShader(THIS_
 		//
 		// grumble grumble this optimisation caught me out *TWICE* grumble grumble -DSS
 		if (!G->mShaderOverrideMap.empty() || !shader_regex_groups.empty() || (G->hunting == HUNTING_MODE_ENABLED)) {
-			ShaderMap::iterator i = lookup_shader_hash(pShader);
-			if (i != G->mShaders.end()) {
-				*currentShaderHash = i->second;
+			// Both this lookup and the one in mReloadedShaders below:
+			const ShaderHandleCacheEntry *entry = LookupShaderHandle(pShader);
+			reload_info = entry->reload_info;
+			if (entry->hash_found) {
+				*currentShaderHash = entry->hash;
 				LogDebug("  shader found: handle = %p, hash = %016I64x\n", *currentShaderHandle, *currentShaderHash);
 
 				if ((G->hunting == HUNTING_MODE_ENABLED) && visitedShaders) {
 					EnterCriticalSectionPretty(&G->mCriticalSection);
-					visitedShaders->insert(i->second);
+					visitedShaders->insert(entry->hash);
 					LeaveCriticalSection(&G->mCriticalSection);
 				}
 			}
@@ -2490,21 +2524,24 @@ STDMETHODIMP_(void) HackerContext::SetShader(THIS_
 			// reference this at least make sure we don't use the
 			// *wrong* hash
 			*currentShaderHash = 0;
+
+			ShaderReloadMap::iterator it = lookup_reloaded_shader(pShader);
+			if (it != G->mReloadedShaders.end())
+				reload_info = &it->second;
 		}
 
 		// If the shader has been live reloaded from ShaderFixes, use the new one
 		// No longer conditional on G->hunting now that hunting may be soft enabled via key binding
-		ShaderReloadMap::iterator it = lookup_reloaded_shader(pShader);
 
 		// Only a shader that DeferredShaderReplacement() would actually
 		// analyse is worth its locked lookup before the next draw:
-		if (it != G->mReloadedShaders.end()) {
-			*deferredPending = it->second.deferred_replacement_candidate
-				&& !it->second.deferred_replacement_processed;
+		if (reload_info) {
+			*deferredPending = reload_info->deferred_replacement_candidate
+				&& !reload_info->deferred_replacement_processed;
 		}
 
-		if (it != G->mReloadedShaders.end() && it->second.replacement != NULL) {
-			LogDebug("  shader replaced by: %p\n", it->second.replacement);
+		if (reload_info && reload_info->replacement != NULL) {
+			LogDebug("  shader replaced by: %p\n", reload_info->replacement);
 
 			// It might make sense to Release() the original shader, to recover memory on GPU
 			//   -Bo3b
@@ -2515,7 +2552,7 @@ STDMETHODIMP_(void) HackerContext::SetShader(THIS_
 			// If we did want to do better here we could return a wrapper object when the game
 			// creates the original shader, and manage original/replaced/reverted/etc from there.
 			//   -DSS
-			repl_shader = (ID3D11Shader*)it->second.replacement;
+			repl_shader = (ID3D11Shader*)reload_info->replacement;
 		}
 
 		if (G->hunting == HUNTING_MODE_ENABLED) {

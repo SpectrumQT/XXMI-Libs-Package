@@ -646,6 +646,9 @@ struct Globals
 	// to invalidate the lookups each context caches for its draw calls
 	// (HackerContext::LookupShaderOverride):
 	unsigned shader_override_generation;
+	// Bumped whenever an entry is added to or taken out of mShaders or
+	// mReloadedShaders, see HackerContext::LookupShaderHandle():
+	unsigned shader_handle_generation;
 
 	std::set<UINT64> mVisitedComputeShaders;
 	UINT64 mSelectedComputeShader;
@@ -760,6 +763,7 @@ struct Globals
 		mPinkingShader(0),
 		deferred_shader_generation(0),
 		shader_override_generation(1), // 0 marks unused cache entries
+		shader_handle_generation(1), // likewise
 
 		hunting(HUNTING_MODE_DISABLED),
 		overlay_buffer_hash_lifetime(-1),

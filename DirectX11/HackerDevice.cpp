@@ -535,6 +535,7 @@ static void RegisterForReload(ID3D11DeviceChild* ppShader, UINT64 hash, wstring 
 	G->mReloadedShaders[ppShader].infoText = text;
 	G->mReloadedShaders[ppShader].deferred_replacement_candidate = deferred_replacement_candidate;
 	G->mReloadedShaders[ppShader].deferred_replacement_processed = false;
+	G->shader_handle_generation++;
 }
 
 
@@ -1482,6 +1483,7 @@ void CleanupShaderMaps(ID3D11DeviceChild *handle)
 		if (i != G->mShaders.end()) {
 			LogInfo("Shader handle %p reused, previous hash was: %016llx\n", handle, i->second);
 			G->mShaders.erase(i);
+			G->shader_handle_generation++;
 		}
 	}
 
@@ -1496,6 +1498,7 @@ void CleanupShaderMaps(ID3D11DeviceChild *handle)
 			if (i->second.linkage)
 				i->second.linkage->Release();
 			G->mReloadedShaders.erase(i);
+			G->shader_handle_generation++;
 		}
 	}
 
@@ -2730,6 +2733,7 @@ STDMETHODIMP HackerDevice::CreateShader(THIS_
 	if (hr == S_OK) {
 		EnterCriticalSectionPretty(&G->mCriticalSection);
 			G->mShaders[*ppShader] = hash;
+			G->shader_handle_generation++;
 			LogDebugW(L"    %ls: handle = %p, hash = %016I64x\n", shaderType, *ppShader, hash);
 		LeaveCriticalSection(&G->mCriticalSection);
 	}

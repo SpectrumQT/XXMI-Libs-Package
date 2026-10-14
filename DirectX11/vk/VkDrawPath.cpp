@@ -3441,6 +3441,21 @@ static std::unordered_map<VkImageView, VkImage> game_views;
 // of dx12/Bridge.h held.
 static std::vector<IUnknown*> retired_images;
 static volatile LONG images_hashed, images_not_mapped;
+// Odd while game_images or game_views is being changed, and one more each
+// time after, see shown_textures:
+static volatile LONG image_epoch;
+
+// With image_lock held exclusively, around a change of what game_texture()
+// would find:
+static void images_changing()
+{
+	InterlockedIncrement(&image_epoch);
+}
+
+static void images_changed()
+{
+	InterlockedIncrement(&image_epoch);
+}
 
 void VkModsImageCreated(VkImage image, const VkImageCreateInfo *info)
 {
@@ -3462,7 +3477,9 @@ void VkModsImageCreated(VkImage image, const VkImageCreateInfo *info)
 	created.cube = !!(info->flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) && info->arrayLayers == 6;
 
 	AcquireSRWLockExclusive(&image_lock);
+	images_changing();
 	game_images[image] = created;
+	images_changed();
 	ReleaseSRWLockExclusive(&image_lock);
 }
 
@@ -3471,11 +3488,13 @@ void VkModsForgetImage(VkImage image)
 	AcquireSRWLockExclusive(&image_lock);
 	auto found = game_images.find(image);
 	if (found != game_images.end()) {
+		images_changing();
 		if (found->second.srv)
 			retired_images.push_back(found->second.srv);
 		if (found->second.object)
 			retired_images.push_back(found->second.object);
 		game_images.erase(found);
+		images_changed();
 	}
 	ReleaseSRWLockExclusive(&image_lock);
 }
@@ -3483,15 +3502,20 @@ void VkModsForgetImage(VkImage image)
 void VkModsImageView(VkImageView view, const VkImageViewCreateInfo *info)
 {
 	AcquireSRWLockExclusive(&image_lock);
-	if (game_images.count(info->image))
+	if (game_images.count(info->image)) {
+		images_changing();
 		game_views[view] = info->image;
+		images_changed();
+	}
 	ReleaseSRWLockExclusive(&image_lock);
 }
 
 void VkModsForgetImageView(VkImageView view)
 {
 	AcquireSRWLockExclusive(&image_lock);
+	images_changing();
 	game_views.erase(view);
+	images_changed();
 	ReleaseSRWLockExclusive(&image_lock);
 }
 
@@ -3574,10 +3598,12 @@ void VkModsCopyBufferToImage(VkBuffer src, VkImage dst, uint32_t count, const Vk
 	AcquireSRWLockExclusive(&image_lock);
 	found = game_images.find(dst);
 	if (found != game_images.end() && (!found->second.hashed || level < found->second.level)) {
+		images_changing();
 		found->second.level = level;
 		found->second.hashed = true;
 		found->second.data_hash = data_hash;
 		found->second.hash = CalcTexture2DDescHash(data_hash, &desc);
+		images_changed();
 		InterlockedIncrement(&images_hashed);
 	}
 	ReleaseSRWLockExclusive(&image_lock);
@@ -4580,6 +4606,18 @@ static void note_view(int stage, UINT slot, const SpirvBinding *view, VkDeviceSi
 		VkDumpNote("%s\n", text);
 }
 
+// What game_texture() answered for an image view, asked about for every
+// texture of every draw a mod checks. An entry holds while image_epoch is
+// what it was when the entry was made: nothing in game_images or game_views
+// has changed since, so the answer would be the same. With the lock of
+// dx12/Bridge.h held.
+struct ShownTexture {
+	VkImageView view;
+	LONG epoch;
+	ShimShaderResourceView *srv;
+};
+static ShownTexture shown_textures[1024];
+
 // With the lock of dx12/Bridge.h held: the texture of the game a shader samples
 // at one of its bindings, as an object the engine finds the hash of. There is
 // nothing behind it, a mod cannot read the texture or bind it elsewhere.
@@ -4601,6 +4639,11 @@ static ID3D11ShaderResourceView* game_texture(const SpirvBinding *slot)
 	ReleaseSRWLockShared(&descriptor_lock);
 	if (!bound)
 		return NULL;
+
+	ShownTexture *remembered = &shown_textures[((UINT64)(uintptr_t)bound * 0x9e3779b97f4a7c15ull) >> 54];
+	LONG epoch = image_epoch;
+	if (!(epoch & 1) && remembered->view == bound && remembered->epoch == epoch)
+		return remembered->srv;
 
 	AcquireSRWLockExclusive(&image_lock);
 	auto view = game_views.find(bound);
@@ -4659,6 +4702,10 @@ static ID3D11ShaderResourceView* game_texture(const SpirvBinding *slot)
 	}
 	if (image)
 		shown = image->srv;
+	// Even, as nothing changes them while the lock is held here
+	remembered->view = bound;
+	remembered->epoch = image_epoch;
+	remembered->srv = image ? image->srv : NULL;
 	ReleaseSRWLockExclusive(&image_lock);
 	return shown;
 }

@@ -1850,6 +1850,138 @@ void ForgetTextureOverrideMiss(ID3D11Resource *resource)
 		slot->compare_exchange_strong(resource, nullptr);
 }
 
+// A view is of the same resource for as long as it exists, yet asking it which
+// is a call into DirectX and a reference to give back, for every texture slot
+// checktextureoverride looks at, every draw call. This direct mapped table
+// remembers the resource of views seen with one that matches nothing, so that
+// texture_override_miss_cache can answer for the view without either call.
+//
+// An entry is only right while its view exists: every view entered has a
+// ViewReleaseTracker that takes the entry out when DirectX destroys the view,
+// before the address can be given to another. Whoever looks a view up or
+// enters one must hold a reference to it. A resource outlives its views, so
+// the resource of an entry is never a stale address either, and whether it
+// still matches nothing is asked of texture_override_miss_cache every time.
+struct ViewResourceSlot {
+	// Odd while the slot is being written
+	std::atomic<uint32_t> sequence;
+	std::atomic<ID3D11View*> view;
+	std::atomic<ID3D11Resource*> resource;
+};
+#define VIEW_RESOURCE_CACHE_BITS 14
+static ViewResourceSlot view_resource_cache[1 << VIEW_RESOURCE_CACHE_BITS];
+
+static inline ViewResourceSlot* view_resource_slot(ID3D11View *view)
+{
+	uint64_t slot = (uint64_t)(uintptr_t)view * 0x9E3779B97F4A7C15ull;
+	return &view_resource_cache[slot >> (64 - VIEW_RESOURCE_CACHE_BITS)];
+}
+
+// {6E1B0C5D-3F0A-4B0E-9B5C-0A6D0C1E7F42}
+DEFINE_GUID(ViewReleaseTrackerGuid,
+0x6e1b0c5d, 0x3f0a, 0x4b0e, 0x9b, 0x5c, 0xa, 0x6d, 0xc, 0x1e, 0x7f, 0x42);
+
+class ViewReleaseTracker : public IUnknown
+{
+	std::atomic_ulong ref;
+	ID3D11View *view;
+
+public:
+	ViewReleaseTracker(ID3D11View *view) : ref(1), view(view) {}
+
+	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, _COM_Outptr_ void **ppvObject)
+	{
+		if (ppvObject && IsEqualIID(riid, IID_IUnknown)) {
+			AddRef();
+			*ppvObject = this;
+			return S_OK;
+		}
+
+		return E_NOINTERFACE;
+	}
+
+	ULONG STDMETHODCALLTYPE AddRef(void)
+	{
+		return ++ref;
+	}
+
+	ULONG STDMETHODCALLTYPE Release(void)
+	{
+		ULONG ret = --ref;
+		if (ret == 0) {
+			// DirectX calls this with a lock of its own held: nothing
+			// in here may call into DirectX or wait on a lock that is
+			// held across such a call
+			ViewResourceSlot *slot = view_resource_slot(view);
+			if (slot->view.load() == view) {
+				uint32_t sequence;
+				do {
+					sequence = slot->sequence.load() & ~1u;
+				} while (!slot->sequence.compare_exchange_weak(sequence, sequence + 1));
+				if (slot->view.load() == view) {
+					slot->view.store(nullptr);
+					slot->resource.store(nullptr);
+				}
+				slot->sequence.store(sequence + 2);
+			}
+			delete this;
+		}
+		return ret;
+	}
+};
+
+bool TextureOverrideViewKnownMiss(ID3D11View *view)
+{
+	if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
+		return true;
+
+	ViewResourceSlot *slot = view_resource_slot(view);
+	uint32_t sequence = slot->sequence.load();
+	if (sequence & 1)
+		return false;
+	ID3D11View *slot_view = slot->view.load();
+	ID3D11Resource *resource = slot->resource.load();
+	if (slot_view != view || slot->sequence.load() != sequence)
+		return false;
+
+	if (texture_override_miss_slot(resource)->load(std::memory_order_relaxed) != resource)
+		return false;
+
+	// As find_texture_overrides_for_resource() counts the lookup it ends
+	// in its miss cache:
+	if (Profiling::mode == Profiling::Mode::SUMMARY)
+		Profiling::texture_override_candidates_lookup_overhead.count++;
+	return true;
+}
+
+void NoteTextureOverrideViewResource(ID3D11View *view, ID3D11Resource *resource)
+{
+	// Only worth an entry if the resource is known to match nothing, which
+	// is all TextureOverrideViewKnownMiss() can answer:
+	if (texture_override_miss_slot(resource)->load(std::memory_order_relaxed) != resource)
+		return;
+
+	ViewResourceSlot *slot = view_resource_slot(view);
+	if (slot->view.load() == view)
+		return;
+
+	// Replaces the tracker the view has if it was entered before and lost
+	// its slot to another since. That one going may take an entry of the
+	// view out, hence before entering it:
+	ViewReleaseTracker *tracker = new ViewReleaseTracker(view);
+	HRESULT hr = view->SetPrivateDataInterface(ViewReleaseTrackerGuid, tracker);
+	tracker->Release();
+	if (FAILED(hr))
+		return;
+
+	uint32_t sequence = slot->sequence.load();
+	if ((sequence & 1) || !slot->sequence.compare_exchange_strong(sequence, sequence + 1))
+		return;
+	slot->view.store(view);
+	slot->resource.store(resource);
+	slot->sequence.store(sequence + 2);
+}
+
 void InvalidateTextureOverrideCandidates()
 {
 	EnterCriticalSectionPretty(&G->mResourcesLock);

@@ -948,6 +948,11 @@ void InvalidateTextureOverrideCandidates();
 // could start matching a TextureOverride (handle info registered at its
 // address, hash changed), see texture_override_miss_cache.
 void ForgetTextureOverrideMiss(ID3D11Resource* resource);
+// Whether the resource of the view is known to match no TextureOverride, as
+// far as can be told without asking the view for it. The caller holds a
+// reference to the view, for both:
+bool TextureOverrideViewKnownMiss(ID3D11View* view);
+void NoteTextureOverrideViewResource(ID3D11View* view, ID3D11Resource* resource);
 // Whether no TextureOverride section can match the resource, whatever the draw
 // call it is looked up for:
 bool TextureOverrideCandidatesEmpty(ID3D11Resource *resource);

@@ -1410,6 +1410,8 @@ bool ParseCommandListGeneralCommands(const wchar_t *section,
 
 static std::string slot_log_name(const ResourceCopyTarget &target, unsigned slot);
 static CustomResource* pool_element(CustomResourcePool *pool, int pool_first, unsigned index, bool is_assignment);
+static bool is_batchable_check(const CheckTextureOverrideCommand *command);
+static void GetShaderResourcesBatch(ID3D11DeviceContext1 *context, wchar_t shader_type, UINT first, UINT count, ID3D11ShaderResourceView **views);
 
 // Whether the target names a fixed slot of the pipeline, so that it resolves
 // to the same resource for as long as the bindings are left alone. Custom
@@ -1478,7 +1480,26 @@ void CheckTextureOverrideCommand::run(CommandListState *state)
 	if (!memoise || !RecallMatches(state, &matches)) {
 		COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
 
-		target.FindTextureOverrides(state, NULL, &matches);
+		if (memoise && target.type == ResourceCopyTargetType::SHADER_RESOURCE && is_batchable_check(this)) {
+			// As FindTextureOverrides() for a texture slot, less
+			// asking the view for a resource known to match nothing:
+			ID3D11ShaderResourceView *view = NULL;
+			ID3D11Resource *resource = NULL;
+
+			GetShaderResourcesBatch(state->mOrigContext1, target.shader_type, target.slot, 1, &view);
+			if (view) {
+				if (!TextureOverrideViewKnownMiss(view))
+					view->GetResource(&resource);
+				if (resource) {
+					target.FindTextureOverridesForResource(state, resource, 0, 0, DXGI_FORMAT_UNKNOWN, &matches);
+					NoteTextureOverrideViewResource(view, resource);
+					resource->Release();
+				}
+				view->Release();
+			}
+		} else {
+			target.FindTextureOverrides(state, NULL, &matches);
+		}
 
 		// Before running the matches, see RecallMatches():
 		if (memoise)
@@ -13702,7 +13723,9 @@ void CheckTextureOverrideBatch::run(CommandListState *state)
 		// What GetResource() would have returned for the slot:
 		switch (fetch.type) {
 			case ResourceCopyTargetType::SHADER_RESOURCE:
-				if (views[b])
+				// Most views are of a resource that matches
+				// nothing, which is known without asking them:
+				if (views[b] && !TextureOverrideViewKnownMiss(views[b]))
 					views[b]->GetResource(&resource);
 				break;
 			case ResourceCopyTargetType::VERTEX_BUFFER:
@@ -13719,8 +13742,10 @@ void CheckTextureOverrideBatch::run(CommandListState *state)
 
 		if (resource) {
 			command->target.FindTextureOverridesForResource(state, resource, stride, offset, format, &matches);
-			if (fetch.type == ResourceCopyTargetType::SHADER_RESOURCE)
+			if (fetch.type == ResourceCopyTargetType::SHADER_RESOURCE) {
+				NoteTextureOverrideViewResource(views[b], resource);
 				resource->Release();
+			}
 		}
 
 		// Before running the matches, see RecallMatches():

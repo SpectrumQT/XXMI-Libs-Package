@@ -3855,7 +3855,9 @@ struct SpareSets {
 	std::vector<VkDescriptorSet> sets;
 };
 
-static std::map<ModSetKey, ModSet> mod_sets;
+// Looked up by a tuple that refers to the replacements, so that finding a
+// set made before copies none of them; the order is ModSetKey's own:
+static std::map<ModSetKey, ModSet, std::less<>> mod_sets;
 static std::unordered_map<const DescriptorLayout*, SpareSets> spare_sets;
 static std::vector<VkDescriptorPool> set_pools;
 
@@ -3909,7 +3911,6 @@ static VkDescriptorSet spare_set(const GameSet *game)
 static VkDescriptorSet mod_set(const GameSet *game, const std::vector<SetReplacement> &replacements)
 {
 	const std::vector<SetBinding> &bindings = game->layout->bindings;
-	ModSetKey key(game->set, game->generation, replacements);
 	std::vector<VkDescriptorBufferInfo> buffers;
 	std::vector<VkDescriptorImageInfo> images;
 	std::vector<VkWriteDescriptorSet> writes;
@@ -3917,7 +3918,7 @@ static VkDescriptorSet mod_set(const GameSet *game, const std::vector<SetReplace
 	VkDescriptorSet set;
 	UINT binding;
 
-	auto found = mod_sets.find(key);
+	auto found = mod_sets.find(std::forward_as_tuple(game->set, game->generation, replacements));
 	if (found != mod_sets.end()) {
 		found->second.used_frame = mods_frame;
 		return found->second.set;
@@ -3968,7 +3969,7 @@ static VkDescriptorSet mod_set(const GameSet *game, const std::vector<SetReplace
 	}
 	api.UpdateDescriptorSets(mods_device, (uint32_t)writes.size(), writes.data(), (uint32_t)copies.size(), copies.data());
 
-	mod_sets[key] = { set, game->layout, mods_frame };
+	mod_sets[ModSetKey(game->set, game->generation, replacements)] = { set, game->layout, mods_frame };
 	stats.sets_made++;
 	return set;
 }
@@ -5280,7 +5281,8 @@ static bool replace_buffers(const ShimState *mod, ModDraw *draw)
 {
 	const CmdState *game = &scope->state;
 	Replaced replaced[MAX_REPLACED] = {};
-	std::vector<SetReplacement> descriptors;
+	// Kept from draw to draw for what it has grown to, as scope is
+	static std::vector<SetReplacement> descriptors;
 	const char *why = NULL;
 	UINT i, count = 0, set;
 	GameSet tracked;
@@ -5288,6 +5290,7 @@ static bool replace_buffers(const ShimState *mod, ModDraw *draw)
 	if (!collect_replaced(mod, replaced, &count))
 		return false;
 
+	descriptors.clear();
 	for (set = 0; set < MAX_SETS && count && !why; set++) {
 		for (i = 0; i < count && replaced[i].slot->set != set; i++);
 		if (i == count)

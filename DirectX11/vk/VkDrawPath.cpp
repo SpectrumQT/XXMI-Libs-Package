@@ -100,6 +100,10 @@ static struct {
 	// shown and the frames counted by them, and such submissions of another
 	// thread that were not
 	unsigned presents, presents_apart, frame_submits, frames_counted, frames_unpresented, overlay_submits;
+	// How many frames back the GPU was done with what mods were given, summed
+	// over the frames, and submissions the fence of VkModsSubmitted could not
+	// follow
+	unsigned frames_behind, frames_over, fences_failed;
 } stats;
 
 // Submissions without such draws while something was yet to be brought for
@@ -1801,14 +1805,26 @@ struct RetiredMirror {
 	UINT frame;
 };
 
-// Nothing tells when the command buffers drawing from a buffer have been
-// executed. The game is taken to have submitted what it recorded this many
-// frames later.
+// Frames before this one gave out nothing for mods that a command buffer of
+// the game may still read, as far as the fences of VkModsSubmitted tell
+static UINT done_frame;
+
+// What was given out for the draws of a frame is given out again once the GPU
+// is done with them, and anyway this many frames later: a command buffer the
+// game recorded and never handed to a queue holds done_frame back, as does
+// one handed to a queue again before it was done.
 const UINT MIRROR_KEEP_FRAMES = 8;
+
+static bool reusable(UINT frame)
+{
+	return (int)(done_frame - frame) > 0 || mods_frame - frame > MIRROR_KEEP_FRAMES;
+}
 
 static std::vector<MirrorBlock*> mirror_blocks;
 static std::unordered_map<ShimResource*, Mirror> mirrors;
 static std::vector<RetiredMirror> retired_mirrors;
+
+static bool update_done_frame();
 
 static MirrorBlock* new_mirror_block(const VkMemoryRequirements *needed)
 {
@@ -1888,7 +1904,7 @@ static void destroy_retired_mirrors(bool all)
 	size_t kept = 0;
 
 	for (const RetiredMirror &retired : retired_mirrors) {
-		if (!all && mods_frame - retired.frame < MIRROR_KEEP_FRAMES) {
+		if (!all && !reusable(retired.frame)) {
 			retired_mirrors[kept++] = retired;
 			continue;
 		}
@@ -2054,7 +2070,7 @@ static BYTE* transient_bytes(VkDeviceSize bytes, VkDeviceSize reach, VkBuffer *b
 
 	for (Transient &transient : transients) {
 		if (transient.frame != frame) {
-			if (frame - transient.frame <= MIRROR_KEEP_FRAMES)
+			if (!reusable(transient.frame))
 				continue;
 			transient.frame = frame;
 			transient.used = 0;
@@ -2065,6 +2081,8 @@ static BYTE* transient_bytes(VkDeviceSize bytes, VkDeviceSize reach, VkBuffer *b
 			break;
 		}
 	}
+	if (!found && update_done_frame())
+		return transient_bytes(bytes, reach, buffer, offset);
 	if (!found) {
 		found = new_transient(reach);
 		start = 0;
@@ -2085,7 +2103,7 @@ static void destroy_big_transients()
 	size_t kept = 0, i;
 
 	for (const Transient &transient : transients) {
-		if (transient.size <= TRANSIENT_BYTES || mods_frame - transient.frame <= MIRROR_KEEP_FRAMES) {
+		if (transient.size <= TRANSIENT_BYTES || !reusable(transient.frame)) {
 			transients[kept++] = transient;
 			continue;
 		}
@@ -2332,7 +2350,7 @@ static SharedBuffer* shared_bytes(VkDeviceSize bytes, VkDeviceSize reach, VkDevi
 
 	for (SharedBuffer &shared : shared_buffers) {
 		if (shared.frame != frame) {
-			if (frame - shared.frame <= MIRROR_KEEP_FRAMES)
+			if (!reusable(shared.frame))
 				continue;
 			shared.frame = frame;
 			shared.used = 0;
@@ -2343,6 +2361,8 @@ static SharedBuffer* shared_bytes(VkDeviceSize bytes, VkDeviceSize reach, VkDevi
 			break;
 		}
 	}
+	if (!found && update_done_frame())
+		return shared_bytes(bytes, reach, offset);
 	// Not asked again in a frame it was found in: it is a call to the kernel
 	if (!found && (over_budget_frame == frame || over_budget(max(reach, SHARED_BYTES) + SHARED_BUDGET_MARGIN))) {
 		over_budget_frame = frame;
@@ -3109,6 +3129,7 @@ void VkScopeForgetResource(ShimResource *resource)
 
 static void destroy_mod_sets();
 static void destroy_variants(bool all);
+static void destroy_fences();
 
 void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkModsApi *functions,
 		PFN_vkGetMemoryWin32HandlePropertiesKHR handle_properties_function, PFN_vkImportSemaphoreWin32HandleKHR import_semaphore_function)
@@ -3152,6 +3173,7 @@ void VkModsForgetDevice(VkDevice device)
 		destroy_retired_mirrors(true);
 		destroy_shared_buffers(true);
 		destroy_shim_semaphores();
+		destroy_fences();
 		copies_pending = false;
 		destroy_mod_sets();
 		destroy_variants(true);
@@ -3738,6 +3760,15 @@ struct CmdState {
 	// Draws recorded to it, or to those it executes, that were shown to the
 	// engine
 	unsigned shown;
+	// From the first such draw on, what mods were given may be read when
+	// it is executed, which is of first_frame or later. See VkModsSubmitted.
+	UINT first_frame;
+	bool has_mods;
+	bool pending;
+	// Handed to a queue again before the GPU was known to be done with it
+	bool resubmitted;
+	// Of the fence after the submission it was last in, none before that
+	UINT64 serial;
 };
 
 // One for every handle there has been, which is what lets a thread remember
@@ -3774,29 +3805,63 @@ static CmdState* cmd_state(VkCommandBuffer cmd)
 	return state;
 }
 
+static void forget_pending(CmdState *state);
+
 void VkModsBeginCommands(VkCommandBuffer cmd)
 {
-	*cmd_state(cmd) = {};
+	CmdState *state = cmd_state(cmd);
+
+	// Which the game may only do once the GPU is done with it. pending is
+	// only set on this thread, while it records.
+	if (state->pending) {
+		Dx12ShimLock();
+		forget_pending(state);
+		Dx12ShimUnlock();
+	}
+	*state = {};
 }
 
-unsigned VkModsCommandsShown(VkCommandBuffer cmd)
+static CmdState* known_cmd_state(VkCommandBuffer cmd)
 {
-	unsigned shown = 0;
+	CmdState *state = NULL;
 
 	AcquireSRWLockShared(&cmd_lock);
 	auto found = cmd_states.find(cmd);
 	if (found != cmd_states.end())
-		shown = found->second->shown;
+		state = found->second;
 	ReleaseSRWLockShared(&cmd_lock);
-	return shown;
+	return state;
 }
+
+unsigned VkModsCommandsShown(VkCommandBuffer cmd)
+{
+	CmdState *state = known_cmd_state(cmd);
+
+	return state ? state->shown : 0;
+}
+
+static void make_pending(CmdState *state, UINT first_frame);
 
 void VkModsExecuteCommands(VkCommandBuffer cmd, uint32_t count, const VkCommandBuffer *cmds)
 {
+	CmdState *primary = cmd_state(cmd), *secondary;
 	uint32_t i;
 
-	for (i = 0; i < count; i++)
-		cmd_state(cmd)->shown += VkModsCommandsShown(cmds[i]);
+	for (i = 0; i < count; i++) {
+		secondary = known_cmd_state(cmds[i]);
+		if (!secondary)
+			continue;
+		primary->shown += secondary->shown;
+		// What the secondary was given is read when the primary is
+		// executed, which is the one submitted
+		if (secondary->has_mods) {
+			Dx12ShimLock();
+			make_pending(primary, secondary->first_frame);
+			if (secondary->pending)
+				forget_pending(secondary);
+			Dx12ShimUnlock();
+		}
+	}
 }
 
 // The engine counts a frame for every present of the D3D12 device, which is
@@ -3865,6 +3930,171 @@ bool VkModsFrameSubmitted(unsigned draws)
 	}
 	Dx12ShimUnlock();
 	return counted;
+}
+
+// -----------------------------------------------------------------------------
+// When the GPU is done with what mods were given
+//
+// Nothing of the game says when a command buffer has been executed. A fence of
+// ours handed to the queue right after a submission with draws of mods does:
+// its signal waits for everything submitted to the queue before it. A command
+// buffer is pending from the first draw of it the engine is shown until the
+// fence after the last submission it was in has been signalled, or until it
+// is recorded again, which the game may only do once the GPU is done with it.
+// All with the lock of dx12/Bridge.h held.
+
+struct Submission {
+	VkFence fence;
+	UINT64 serial;
+	bool done;
+};
+
+// By serial
+static std::vector<Submission> submissions;
+static std::vector<VkFence> spare_fences;
+static UINT64 last_serial;
+static std::vector<CmdState*> pending_cmds;
+
+static bool serial_done(UINT64 serial)
+{
+	auto found = std::lower_bound(submissions.begin(), submissions.end(), serial,
+		[](const Submission &submission, UINT64 value) { return submission.serial < value; });
+
+	// One is let go of once it is done
+	return found == submissions.end() || found->serial != serial || found->done;
+}
+
+static void forget_pending(CmdState *state)
+{
+	auto found = std::find(pending_cmds.begin(), pending_cmds.end(), state);
+
+	if (found != pending_cmds.end()) {
+		*found = pending_cmds.back();
+		pending_cmds.pop_back();
+	}
+	state->pending = false;
+}
+
+static void make_pending(CmdState *state, UINT first_frame)
+{
+	if (!state->has_mods || (int)(state->first_frame - first_frame) > 0)
+		state->first_frame = first_frame;
+	state->has_mods = true;
+	if (!state->pending) {
+		state->pending = true;
+		state->resubmitted = false;
+		state->serial = 0;
+		pending_cmds.push_back(state);
+	}
+}
+
+// True if done_frame moved on
+static bool update_done_frame()
+{
+	UINT oldest = mods_frame, before = done_frame;
+	size_t kept = 0;
+
+	if (!mods_device)
+		return false;
+	for (Submission &submission : submissions) {
+		if (!submission.done)
+			submission.done = api.GetFenceStatus(mods_device, submission.fence) != VK_NOT_READY;
+	}
+	for (CmdState *state : pending_cmds) {
+		if (state->serial && !state->resubmitted && serial_done(state->serial)) {
+			state->pending = false;
+			continue;
+		}
+		pending_cmds[kept++] = state;
+		if ((int)(oldest - state->first_frame) > 0)
+			oldest = state->first_frame;
+	}
+	pending_cmds.resize(kept);
+
+	// No command buffer left goes by those that are done
+	kept = 0;
+	for (const Submission &submission : submissions) {
+		if (!submission.done)
+			submissions[kept++] = submission;
+		else if (api.ResetFences(mods_device, 1, &submission.fence) == VK_SUCCESS)
+			spare_fences.push_back(submission.fence);
+		else
+			api.DestroyFence(mods_device, submission.fence, NULL);
+	}
+	submissions.resize(kept);
+
+	done_frame = oldest;
+	return done_frame != before;
+}
+
+static void destroy_fences()
+{
+	for (const Submission &submission : submissions)
+		api.DestroyFence(mods_device, submission.fence, NULL);
+	submissions.clear();
+	for (VkFence fence : spare_fences)
+		api.DestroyFence(mods_device, fence, NULL);
+	spare_fences.clear();
+	for (CmdState *state : pending_cmds)
+		state->pending = false;
+	pending_cmds.clear();
+	done_frame = mods_frame;
+}
+
+void VkModsSubmitted(VkQueue queue, const VkCommandBuffer *cmds, size_t count)
+{
+	static thread_local std::vector<CmdState*> states;
+	VkFenceCreateInfo info = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+	VkFence fence = VK_NULL_HANDLE;
+	size_t i, kept = 0;
+
+	states.clear();
+	for (i = 0; i < count; i++) {
+		CmdState *state = known_cmd_state(cmds[i]);
+
+		if (state && state->has_mods)
+			states.push_back(state);
+	}
+	if (states.empty())
+		return;
+
+	Dx12ShimLock();
+	if (!mods_device || device_lost || queue_families.find(queue) == queue_families.end()) {
+		Dx12ShimUnlock();
+		return;
+	}
+	for (CmdState *state : states) {
+		if (state->pending)
+			states[kept++] = state;
+	}
+	states.resize(kept);
+	if (states.empty()) {
+		Dx12ShimUnlock();
+		return;
+	}
+
+	if (!spare_fences.empty()) {
+		fence = spare_fences.back();
+		spare_fences.pop_back();
+	} else if (api.CreateFence(mods_device, &info, NULL, &fence) != VK_SUCCESS) {
+		fence = VK_NULL_HANDLE;
+	}
+	if (!fence || api.QueueSubmit(queue, 0, NULL, fence) != VK_SUCCESS) {
+		if (fence)
+			api.DestroyFence(mods_device, fence, NULL);
+		// Left to MIRROR_KEEP_FRAMES, and to being recorded again
+		for (CmdState *state : states)
+			state->resubmitted = true;
+		stats.fences_failed++;
+	} else {
+		submissions.push_back({ fence, ++last_serial, false });
+		for (CmdState *state : states) {
+			if (state->serial && !serial_done(state->serial))
+				state->resubmitted = true;
+			state->serial = last_serial;
+		}
+	}
+	Dx12ShimUnlock();
 }
 
 bool VkModsCountFrames()
@@ -5681,6 +5911,7 @@ bool VkModsDraw(VkCommandBuffer cmd, bool indexed, uint32_t count, uint32_t inst
 	Dx12WorkOutFilter(&state->pipeline->filter, state->pipeline->shaders);
 	stats.slow[reason]++;
 	state->shown++;
+	make_pending(state, mods_frame);
 
 	opened.cmd = cmd;
 	opened.state = *state;
@@ -5882,6 +6113,10 @@ static void report()
 		stats.presents, stats.presents_apart, stats.frame_submits, stats.frames_counted, stats.frames_unpresented, G->frame_no,
 		frames_by_submission ? "counted by the submissions" : "counted by the presents of the D3D12 device",
 		stats.overlay_submits, (unsigned)InterlockedExchange(&submits_apart, 0));
+	VkDumpNote("  What mods were given: the GPU was done with it %.1f frames after on average, by the fences after %llu submissions "
+		"(%u could not be followed); %Iu command buffers pending\n",
+		stats.frames_over ? (double)stats.frames_behind / stats.frames_over : 0.0, last_serial, stats.fences_failed,
+		pending_cmds.size());
 	SpatialPoolMisses spatial = TakeSpatialPoolMisses();
 	VkDumpNote("  Spatial pools: %u lookups took the slot of a nearby cell, %u found none within the radius (%u of them one "
 		"within twice the radius); frame_time %.2f ms\n",
@@ -5901,6 +6136,9 @@ static void frame_over()
 	forget_dead_buffers();
 	forget_unused_constants(false);
 	if (mods_device) {
+		update_done_frame();
+		stats.frames_behind += mods_frame - done_frame;
+		stats.frames_over++;
 		destroy_retired_mirrors(false);
 		destroy_shared_buffers(false);
 		destroy_retired_textures(false);

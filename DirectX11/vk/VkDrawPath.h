@@ -111,6 +111,10 @@ struct VkModsApi {
 	PFN_vkDestroySemaphore DestroySemaphore;
 	PFN_vkCmdDraw CmdDraw;
 	PFN_vkCmdDrawIndexed CmdDrawIndexed;
+	PFN_vkCreateFence CreateFence;
+	PFN_vkDestroyFence DestroyFence;
+	PFN_vkGetFenceStatus GetFenceStatus;
+	PFN_vkResetFences ResetFences;
 };
 
 // handle_properties is NULL for a device without VK_KHR_external_memory_win32,
@@ -171,6 +175,9 @@ VkSemaphore VkModsBeforeSubmit(VkQueue queue, UINT64 *value, bool shown);
 // game's frame, which the engine counts by. True if it counted a frame.
 unsigned VkModsCommandsShown(VkCommandBuffer cmd);
 bool VkModsFrameSubmitted(unsigned draws);
+// After the queue took the command buffers, those with draws the engine was
+// shown among them: they are followed to when the GPU is done with them
+void VkModsSubmitted(VkQueue queue, const VkCommandBuffer *cmds, size_t count);
 
 // True if the draw was dealt with, which includes making it with whichever of
 // the two functions it is for: the caller then has nothing left to do

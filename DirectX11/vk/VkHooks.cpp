@@ -594,23 +594,37 @@ static inline VkResult check_lost(VkQueue queue, VkResult result)
 	return result;
 }
 
+// What the submission had of draws the engine was shown, once the queue took it
+static VkResult submitted(VkQueue queue, VkResult result, const std::vector<VkCommandBuffer> &shown_cmds)
+{
+	if (result == VK_SUCCESS && !shown_cmds.empty())
+		VkModsSubmitted(queue, shown_cmds.data(), shown_cmds.size());
+	return check_lost(queue, result);
+}
+
 static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence)
 {
 	static thread_local std::vector<VkSemaphore> semaphores;
 	static thread_local std::vector<VkPipelineStageFlags> stages;
 	static thread_local std::vector<uint64_t> values, signals;
+	static thread_local std::vector<VkCommandBuffer> shown_cmds;
 	VkD3D12FenceSubmitInfoKHR fences = { VK_STRUCTURE_TYPE_D3D12_FENCE_SUBMIT_INFO_KHR };
 	VkSemaphore semaphore = VK_NULL_HANDLE;
 	VkSubmitInfo waiting;
 	UINT64 value = 0;
-	unsigned shown = 0;
+	unsigned shown = 0, draws;
 	bool counted = false;
 	uint32_t i, j;
 
+	shown_cmds.clear();
 	if (vk_mods_active) {
 		for (i = 0; i < count; i++) {
-			for (j = 0; j < submits[i].commandBufferCount; j++)
-				shown += VkModsCommandsShown(submits[i].pCommandBuffers[j]);
+			for (j = 0; j < submits[i].commandBufferCount; j++) {
+				draws = VkModsCommandsShown(submits[i].pCommandBuffers[j]);
+				if (draws)
+					shown_cmds.push_back(submits[i].pCommandBuffers[j]);
+				shown += draws;
+			}
 		}
 		if (shown)
 			counted = VkModsFrameSubmitted(shown);
@@ -621,7 +635,7 @@ static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, c
 		semaphore = VkModsBeforeSubmit(queue, can_wait_for_fence(count, submits) ? &value : NULL, !!shown);
 	}
 	if (!semaphore)
-		return check_lost(queue, next_QueueSubmit(queue)(queue, count, submits, fence));
+		return submitted(queue, next_QueueSubmit(queue)(queue, count, submits, fence), shown_cmds);
 
 	waiting = *submits;
 	semaphores.assign(submits->pWaitSemaphores, submits->pWaitSemaphores + submits->waitSemaphoreCount);
@@ -642,18 +656,25 @@ static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, c
 	waiting.waitSemaphoreCount = (uint32_t)semaphores.size();
 	waiting.pWaitSemaphores = semaphores.data();
 	waiting.pWaitDstStageMask = stages.data();
-	return check_lost(queue, next_QueueSubmit(queue)(queue, 1, &waiting, fence));
+	return submitted(queue, next_QueueSubmit(queue)(queue, 1, &waiting, fence), shown_cmds);
 }
 
 static VkResult VKAPI_CALL Hooked_vkQueueSubmit2(VkQueue queue, uint32_t count, const VkSubmitInfo2 *submits, VkFence fence)
 {
+	static thread_local std::vector<VkCommandBuffer> shown_cmds;
 	VkFrameEvent event = { "submit2", queue, 0, fence != VK_NULL_HANDLE, true, false, count };
+	unsigned draws;
 	uint32_t i, j;
 
+	shown_cmds.clear();
 	if (vk_mods_active) {
 		for (i = 0; i < count; i++) {
-			for (j = 0; j < submits[i].commandBufferInfoCount; j++)
-				event.shown += VkModsCommandsShown(submits[i].pCommandBufferInfos[j].commandBuffer);
+			for (j = 0; j < submits[i].commandBufferInfoCount; j++) {
+				draws = VkModsCommandsShown(submits[i].pCommandBufferInfos[j].commandBuffer);
+				if (draws)
+					shown_cmds.push_back(submits[i].pCommandBufferInfos[j].commandBuffer);
+				event.shown += draws;
+			}
 		}
 		if (event.shown)
 			event.counted = VkModsFrameSubmitted(event.shown);
@@ -673,7 +694,7 @@ static VkResult VKAPI_CALL Hooked_vkQueueSubmit2(VkQueue queue, uint32_t count, 
 	}
 	if (vk_mods_active)
 		VkModsBeforeSubmit(queue, NULL, !!event.shown);
-	return check_lost(queue, next_QueueSubmit2(queue)(queue, count, submits, fence));
+	return submitted(queue, next_QueueSubmit2(queue)(queue, count, submits, fence), shown_cmds);
 }
 
 static VkResult VKAPI_CALL Hooked_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *info)
@@ -802,6 +823,10 @@ static void register_device(VkDevice device, VkPhysicalDevice physical_device, b
 		api.DestroySemaphore = (PFN_vkDestroySemaphore)get(device, "vkDestroySemaphore");
 		api.CmdDraw = next.CmdDraw;
 		api.CmdDrawIndexed = next.CmdDrawIndexed;
+		api.CreateFence = (PFN_vkCreateFence)get(device, "vkCreateFence");
+		api.DestroyFence = (PFN_vkDestroyFence)get(device, "vkDestroyFence");
+		api.GetFenceStatus = (PFN_vkGetFenceStatus)get(device, "vkGetFenceStatus");
+		api.ResetFences = (PFN_vkResetFences)get(device, "vkResetFences");
 		VkModsDevice(device, physical_device, &api, !external_memory ? NULL
 			: (PFN_vkGetMemoryWin32HandlePropertiesKHR)get(device, "vkGetMemoryWin32HandlePropertiesKHR"),
 			!external_semaphore ? NULL

@@ -6128,9 +6128,26 @@ bool CommandListExpression::parse(const wstring *expression, const wstring *ini_
 	}
 }
 
+// What evaluatable->evaluate() returns. Most of what an expression is made
+// of is a number or a variable, which CommandListOperand::evaluate() returns
+// as it is (given a state or a device, which it complains about the lack
+// of first):
+static inline float evaluate_operand_or_call(CommandListEvaluatable *evaluatable, CommandListState *state, HackerDevice *device)
+{
+	CommandListOperand *operand = evaluatable->as_operand;
+
+	if (operand && (state || device)) {
+		if (operand->type == ParamOverrideType::VALUE)
+			return operand->val;
+		if (operand->type == ParamOverrideType::VARIABLE)
+			return *operand->var_ftarget;
+	}
+	return evaluatable->evaluate(state, device);
+}
+
 float CommandListExpression::evaluate(CommandListState *state, HackerDevice *device)
 {
-	return evaluatable->evaluate(state, device);
+	return evaluate_operand_or_call(evaluatable.get(), state, device);
 }
 
 bool CommandListExpression::static_evaluate(float *ret, HackerDevice *device, bool evaluate_variables)
@@ -6261,8 +6278,8 @@ CommandListSyntaxTree::Walk CommandListSyntaxTree::walk()
 float CommandListOperator::evaluate(CommandListState *state, HackerDevice *device)
 {
 	if (lhs) // Binary operator
-		return evaluate(lhs->evaluate(state, device), rhs->evaluate(state, device));
-	return evaluate(std::numeric_limits<float>::quiet_NaN(), rhs->evaluate(state, device));
+		return evaluate(evaluate_operand_or_call(lhs.get(), state, device), evaluate_operand_or_call(rhs.get(), state, device));
+	return evaluate(std::numeric_limits<float>::quiet_NaN(), evaluate_operand_or_call(rhs.get(), state, device));
 }
 
 bool CommandListOperator::static_evaluate(float *ret, HackerDevice *device, bool evaluate_variables)

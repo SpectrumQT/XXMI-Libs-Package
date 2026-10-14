@@ -1388,8 +1388,15 @@ public:
 // Expression nodes that are evaluatable - nodes start off as non-evaluatable
 // tokens and are later transformed into evaluatable operators and operands
 // that inherit from this class.
+class CommandListOperand;
+
 class CommandListEvaluatable {
 public:
+	// The object itself where it is an operand, for whoever evaluates it
+	// to read a constant or a variable without a call, see
+	// evaluate_operand_or_call():
+	CommandListOperand *as_operand = NULL;
+
 	virtual ~CommandListEvaluatable() {}; // Because C++
 
 	virtual float evaluate(CommandListState *state, HackerDevice *device=NULL) = 0;
@@ -1647,7 +1654,9 @@ public:
 		param_idx(0),
 		var_ftarget(NULL),
 		scissor(0)
-	{}
+	{
+		as_operand = this;
+	}
 
 	bool parse_float(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope, size_t& out_length);
 	bool parse_ini_param(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);

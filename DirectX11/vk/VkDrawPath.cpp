@@ -1714,6 +1714,40 @@ static VkDevice mods_device;
 static void *mods_device_key;
 static VkModsApi api;
 static VkPhysicalDeviceMemoryProperties memory_properties;
+static VkPhysicalDevice mods_physical_device;
+// The game enabled VK_EXT_memory_budget
+static bool budget_known;
+
+static bool memory_budget(VkPhysicalDeviceMemoryProperties2 *properties, VkPhysicalDeviceMemoryBudgetPropertiesEXT *budget)
+{
+	static PFN_vkGetPhysicalDeviceMemoryProperties2 get_properties = (PFN_vkGetPhysicalDeviceMemoryProperties2)
+		GetProcAddress(GetModuleHandleW(L"vulkan-1.dll"), "vkGetPhysicalDeviceMemoryProperties2");
+
+	if (!budget_known || !get_properties || !mods_physical_device)
+		return false;
+	*budget = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT };
+	*properties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, budget };
+	get_properties(mods_physical_device, properties);
+	return true;
+}
+
+// With vk_dump_hashes: how much of the memory of the GPU the process uses, of
+// what it is given, as VK_EXT_memory_budget tells it
+static void note_memory(const char *when)
+{
+	VkPhysicalDeviceMemoryBudgetPropertiesEXT budget;
+	VkPhysicalDeviceMemoryProperties2 properties;
+
+	if (!G->vk_dump_hashes || !memory_budget(&properties, &budget))
+		return;
+	for (uint32_t heap = 0; heap < properties.memoryProperties.memoryHeapCount; heap++) {
+		if (!(properties.memoryProperties.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT))
+			continue;
+		VkDumpNote("  %s: heap %u of the GPU's memory (%llu MB): %llu MB used by the process, which it was given %llu MB of\n",
+			when, heap, properties.memoryProperties.memoryHeaps[heap].size >> 20, budget.heapUsage[heap] >> 20,
+			budget.heapBudget[heap] >> 20);
+	}
+}
 
 // A device only allows so many allocations, and rounds each up
 const VkDeviceSize MIRROR_BLOCK_BYTES = 32 << 20;
@@ -2167,6 +2201,15 @@ static bool sharing_failed;
 // buffers read
 static bool copies_pending;
 
+static VkDeviceSize shared_bytes_total()
+{
+	VkDeviceSize total = 0;
+
+	for (const SharedBuffer &shared : shared_buffers)
+		total += shared.size;
+	return total;
+}
+
 static SharedBuffer* new_shared_buffer(VkDeviceSize size)
 {
 	const VkExternalMemoryHandleTypeFlagBits type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT;
@@ -2238,6 +2281,11 @@ static SharedBuffer* new_shared_buffer(VkDeviceSize size)
 	shared.size = desc.Width;
 	shared.frame = mods_frame;
 	shared_buffers.push_back(shared);
+	if (G->vk_dump_hashes) {
+		VkDumpNote("Mods: frame %u: %llu MB shared with the D3D12 device, %zu buffers\n", mods_frame,
+			shared_bytes_total() >> 20, shared_buffers.size());
+		note_memory("Then");
+	}
 	return &shared_buffers.back();
 }
 
@@ -3034,6 +3082,7 @@ void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkMod
 	if (!mods_device) {
 		api = *functions;
 		api.GetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
+		mods_physical_device = physical_device;
 		mods_device_key = *(void**)device;
 		mods_device = device;
 		handle_properties = handle_properties_function;
@@ -5781,6 +5830,7 @@ static void report()
 	VkDumpNote("  Spatial pools: %u lookups took the slot of a nearby cell, %u found none within the radius (%u of them one "
 		"within twice the radius); frame_time %.2f ms\n",
 		spatial.nearby, spatial.outside, spatial.within_twice, G->gFrameTime * 1000);
+	note_memory("Memory");
 	stats = {};
 	AcquireSRWLockExclusive(&descriptor_lock);
 	sets_allocated = sets_written = sets_written_by_template = 0;
@@ -5868,6 +5918,14 @@ void VkModsPresent(VkQueue queue)
 // -----------------------------------------------------------------------------
 // A lost device
 
+void VkModsMemoryBudget(VkDevice device)
+{
+	Dx12ShimLock();
+	if (device == mods_device)
+		budget_known = true;
+	Dx12ShimUnlock();
+}
+
 void VkModsDiagnostics(VkDevice device, PFN_vkGetDeviceFaultInfoEXT fault_info, PFN_vkCmdSetCheckpointNV set_checkpoint_function,
 		PFN_vkGetQueueCheckpointDataNV checkpoint_data)
 {
@@ -5912,6 +5970,158 @@ static void note_checkpoint(VkPipelineStageFlags stage, const void *marker)
 	VkDumpNote("    stage 0x%x: %s, frame %u, command buffer %p%s%s\n", stage, point->what, point->frame, point->cmd, game, mod);
 }
 
+// What GPU addresses are bound to, see VkModsAddressBinding: those bound now,
+// by where they start, and the last that were let go of. ours is whether it
+// was bound or let go of with the lock of dx12/Bridge.h held, which is how
+// everything of ours is made and destroyed.
+struct AddressRange {
+	UINT64 base, size, handle;
+	VkObjectType type;
+	UINT frame;
+	bool ours;
+};
+
+const UINT UNBOUND_KEPT = 1 << 16;
+static SRWLOCK address_lock = SRWLOCK_INIT;
+static std::multimap<UINT64, AddressRange> bound_ranges;
+static AddressRange unbound_ranges[UNBOUND_KEPT];
+static UINT unbound_next;
+
+void VkModsAddressBinding(bool bound, UINT64 base, UINT64 size, VkObjectType type, UINT64 handle)
+{
+	AddressRange range = { base, size, handle, type, mods_frame, Dx12ShimLockHeld() };
+
+	AcquireSRWLockExclusive(&address_lock);
+	if (bound) {
+		bound_ranges.emplace(base, range);
+	} else {
+		auto same = bound_ranges.equal_range(base);
+		for (auto i = same.first; i != same.second; ++i) {
+			if (i->second.handle == handle && i->second.type == type) {
+				range.ours |= i->second.ours;
+				bound_ranges.erase(i);
+				break;
+			}
+		}
+		unbound_ranges[unbound_next++ % UNBOUND_KEPT] = range;
+	}
+	ReleaseSRWLockExclusive(&address_lock);
+}
+
+// What one of ours or of the game's an object is, as far as it is still known.
+// With the lock of dx12/Bridge.h held.
+static const char* whose(VkObjectType type, UINT64 handle)
+{
+	if (type == VK_OBJECT_TYPE_BUFFER) {
+		VkBuffer buffer = (VkBuffer)(uintptr_t)handle;
+		bool game;
+
+		for (const auto &mirror : mirrors) {
+			if (mirror.second.buffer == buffer)
+				return mirror.second.shared ? "a buffer shared with the D3D12 device, as a vertex or index buffer of a mod"
+					: "a vertex or index buffer of a mod";
+		}
+		for (const RetiredMirror &retired : retired_mirrors) {
+			if (retired.buffer == buffer)
+				return "a vertex or index buffer of a mod, retired";
+		}
+		for (const Transient &transient : transients) {
+			if (transient.buffer == buffer)
+				return "a buffer of ours for what mods give the shaders of the game";
+		}
+		for (const SharedBuffer &shared : shared_buffers) {
+			if (shared.buffer == buffer)
+				return "a buffer shared with the D3D12 device";
+		}
+		AcquireSRWLockShared(&memory_lock);
+		game = buffers.count(buffer) != 0;
+		ReleaseSRWLockShared(&memory_lock);
+		if (game)
+			return "a buffer of the game";
+	} else if (type == VK_OBJECT_TYPE_IMAGE) {
+		VkImage image = (VkImage)(uintptr_t)handle;
+		bool game;
+
+		for (const auto &texture : mod_textures) {
+			if (texture.second.image == image)
+				return "an image of a texture of a mod";
+		}
+		for (const RetiredTexture &retired : retired_textures) {
+			if (retired.texture.image == image)
+				return "an image of a texture of a mod, retired";
+		}
+		AcquireSRWLockShared(&image_lock);
+		game = game_images.count(image) != 0;
+		ReleaseSRWLockShared(&image_lock);
+		if (game)
+			return "an image of the game";
+	} else if (type == VK_OBJECT_TYPE_DEVICE_MEMORY) {
+		VkDeviceMemory memory = (VkDeviceMemory)(uintptr_t)handle;
+
+		for (const MirrorBlock *block : mirror_blocks) {
+			if (block->memory == memory)
+				return "memory of ours for the buffers of mods";
+		}
+		for (const ImageBlock *block : image_blocks) {
+			if (block->memory == memory)
+				return "memory of ours for the textures of mods";
+		}
+		for (const SharedBuffer &shared : shared_buffers) {
+			if (shared.memory == memory)
+				return "memory shared with the D3D12 device";
+		}
+	}
+	return "nothing known now";
+}
+
+static void note_range(const char *what, const AddressRange &range)
+{
+	VkDumpNote("      %s: object type %d, %llx, 0x%llx + 0x%llx, %s at frame %u (%u frames ago), %s\n", what, range.type,
+		range.handle, range.base, range.size, range.ours ? "by us" : "not by us", range.frame, mods_frame - range.frame,
+		whose(range.type, range.handle));
+}
+
+// With the lock of dx12/Bridge.h held
+static void note_address(UINT64 address)
+{
+	const AddressRange *below = NULL;
+	UINT i, found = 0, kept;
+
+	AcquireSRWLockShared(&address_lock);
+	if (bound_ranges.empty() && !unbound_next) {
+		ReleaseSRWLockShared(&address_lock);
+		return;
+	}
+	for (auto at = bound_ranges.begin(); at != bound_ranges.end() && at->first <= address; ++at) {
+		if (address < at->first + at->second.size) {
+			note_range("bound there now", at->second);
+			found++;
+		} else if (!below || at->first + at->second.size > below->base + below->size) {
+			below = &at->second;
+		}
+	}
+	if (!found) {
+		auto above = bound_ranges.upper_bound(address);
+		if (below)
+			note_range("nothing bound there; the nearest below", *below);
+		if (above != bound_ranges.end())
+			note_range("the nearest above", above->second);
+	}
+	// Latest first
+	kept = min(unbound_next, UNBOUND_KEPT);
+	for (i = 0, found = 0; i < kept && found < 8; i++) {
+		const AddressRange &range = unbound_ranges[(unbound_next - 1 - i) % UNBOUND_KEPT];
+
+		if (range.base <= address && address < range.base + range.size) {
+			note_range("let go of there before", range);
+			found++;
+		}
+	}
+	if (!found)
+		VkDumpNote("      nothing let go of there among the last %u\n", kept);
+	ReleaseSRWLockShared(&address_lock);
+}
+
 static void note_fault()
 {
 	static const char *const address_types[] = { "none", "read of memory it may not read", "write of memory it may not write",
@@ -5945,9 +6155,85 @@ static void note_fault()
 		VkDumpNote("    %s at 0x%llx (to within 0x%llx)\n", address.addressType < ARRAYSIZE(address_types)
 			? address_types[address.addressType] : "an address of a kind not known", address.reportedAddress,
 			address.addressPrecision);
+		if (address.addressType >= VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT
+		    && address.addressType <= VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT)
+			note_address(address.reportedAddress & ~(address.addressPrecision ? address.addressPrecision - 1 : 0));
 	}
 	for (const VkDeviceFaultVendorInfoEXT &entry : vendor)
 		VkDumpNote("    %s: code 0x%llx, data 0x%llx\n", entry.description, entry.vendorFaultCode, entry.vendorFaultData);
+}
+
+static const char* breadcrumb_op(D3D12_AUTO_BREADCRUMB_OP op)
+{
+	static const char *names[] = {
+		"SetMarker", "BeginEvent", "EndEvent", "DrawInstanced", "DrawIndexedInstanced", "ExecuteIndirect", "Dispatch",
+		"CopyBufferRegion", "CopyTextureRegion", "CopyResource", "CopyTiles", "ResolveSubresource",
+		"ClearRenderTargetView", "ClearUnorderedAccessView", "ClearDepthStencilView", "ResourceBarrier", "ExecuteBundle",
+		"Present", "ResolveQueryData", "BeginSubmission", "EndSubmission", "DecodeFrame", "ProcessFrames",
+		"AtomicCopyBufferUINT", "AtomicCopyBufferUINT64", "ResolveSubresourceRegion", "WriteBufferImmediate",
+		"DecodeFrame1", "SetProtectedResourceSession", "DecodeFrame2", "ProcessFrames1",
+		"BuildRaytracingAccelerationStructure", "EmitRaytracingAccelerationStructurePostbuildInfo",
+		"CopyRaytracingAccelerationStructure", "DispatchRays", "InitializeMetaCommand", "ExecuteMetaCommand",
+		"EstimateMotion", "ResolveMotionVectorHeap", "SetPipelineState1", "InitializeExtensionCommand",
+		"ExecuteExtensionCommand", "DispatchMesh",
+	};
+
+	return (unsigned)op < ARRAYSIZE(names) ? names[op] : "another operation";
+}
+
+// What DRED (enable_dred in dx12/Dx12Hooks.cpp) kept of the D3D12 device. The
+// driver removes it some time after the Vulkan device is lost, if at all.
+static void note_dred()
+{
+	ID3D12DeviceRemovedExtendedData1 *dred = NULL;
+	D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs = {};
+	D3D12_DRED_PAGE_FAULT_OUTPUT1 page_fault = {};
+	HRESULT reason = S_OK;
+	unsigned complete = 0, shown;
+
+	for (int waited = 0; waited < 5000; waited += 50) {
+		reason = dx12_shim->device->GetDeviceRemovedReason();
+		if (reason != S_OK)
+			break;
+		Sleep(50);
+	}
+	VkDumpNote("  The D3D12 device: removed reason 0x%x%s\n", reason, reason == S_OK ? " 5 s after the Vulkan device was lost" : "");
+	if (reason == S_OK || FAILED(dx12_shim->device->QueryInterface(IID_PPV_ARGS(&dred))))
+		return;
+
+	if (FAILED(dred->GetAutoBreadcrumbsOutput1(&breadcrumbs))) {
+		VkDumpNote("  DRED has no breadcrumbs\n");
+	} else {
+		VkDumpNote("  Command lists of the D3D12 device the GPU had not got through (our queue is %p):\n", dx12_shim->queue);
+		for (const D3D12_AUTO_BREADCRUMB_NODE1 *node = breadcrumbs.pHeadAutoBreadcrumbNode; node; node = node->pNext) {
+			UINT32 last = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+
+			if (last >= node->BreadcrumbCount) {
+				complete++;
+				continue;
+			}
+			VkDumpNote("    list %p \"%ls\" on queue %p \"%ls\"%s: %u of %u operations done\n",
+				node->pCommandList, node->pCommandListDebugNameW ? node->pCommandListDebugNameW : L"",
+				node->pCommandQueue, node->pCommandQueueDebugNameW ? node->pCommandQueueDebugNameW : L"",
+				node->pCommandQueue == dx12_shim->queue ? " (ours)" : "", last, node->BreadcrumbCount);
+			for (UINT32 i = last >= 3 ? last - 3 : 0; i < node->BreadcrumbCount && i < last + 4; i++)
+				VkDumpNote("      %s%u %s\n", i == last ? "-> " : "   ", i, breadcrumb_op(node->pCommandHistory[i]));
+		}
+		VkDumpNote("    and %u it had got through\n", complete);
+	}
+
+	if (FAILED(dred->GetPageFaultAllocationOutput1(&page_fault))) {
+		VkDumpNote("  DRED has no page fault\n");
+	} else {
+		VkDumpNote("  Page fault at 0x%llx\n", page_fault.PageFaultVA);
+		shown = 0;
+		for (const D3D12_DRED_ALLOCATION_NODE1 *node = page_fault.pHeadExistingAllocationNode; node && shown < 8; node = node->pNext, shown++)
+			VkDumpNote("    there now: %p \"%ls\", type %u\n", node->pObject, node->ObjectNameW ? node->ObjectNameW : L"", node->AllocationType);
+		shown = 0;
+		for (const D3D12_DRED_ALLOCATION_NODE1 *node = page_fault.pHeadRecentFreedAllocationNode; node && shown < 8; node = node->pNext, shown++)
+			VkDumpNote("    freed recently: %p \"%ls\", type %u\n", node->pObject, node->ObjectNameW ? node->ObjectNameW : L"", node->AllocationType);
+	}
+	dred->Release();
 }
 
 void VkModsDeviceLost(VkQueue queue)
@@ -5974,6 +6260,7 @@ void VkModsDeviceLost(VkQueue queue)
 			dx12_shim->device->GetDeviceRemovedReason(), fence->GetCompletedValue(), signalled, chained_value);
 	}
 	note_fault();
+	note_memory("Now");
 
 	if (get_checkpoints) {
 		for (const auto &known : queue_families)
@@ -5993,4 +6280,9 @@ void VkModsDeviceLost(VkQueue queue)
 		}
 	}
 	Dx12ShimUnlock();
+
+	// Without the lock, which the game's other threads still take. dx12_shim
+	// does not go away once made.
+	if (dx12_shim)
+		note_dred();
 }

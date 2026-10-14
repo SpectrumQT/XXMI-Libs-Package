@@ -86,8 +86,11 @@ static VkFuncs exports;
 
 volatile UINT vk_frame;
 
+static PFN_vkCreateInstance fnOrigCreateInstance;
 static PFN_vkCreateDevice fnOrigCreateDevice;
 static PFN_vkGetDeviceProcAddr fnOrigGetDeviceProcAddr;
+// The instance has a messenger of ours for VkModsAddressBinding
+static bool binding_messenger;
 
 static inline const VkDispatch* find_dispatch(void *handle)
 {
@@ -806,11 +809,86 @@ static void register_device(VkDevice device, VkPhysicalDevice physical_device, b
 	}
 }
 
-// The device as the game asks for it, and with vulkan and vk_dump_hashes also
-// with what lets VkModsDeviceLost say where the GPU was, as far as the driver
-// has that. A driver that will not make it so makes it as the game asked.
-static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
-		const VkAllocationCallbacks *allocator, VkDevice *device, bool *fault, bool *checkpoints)
+static VkBool32 VKAPI_CALL address_bound(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT types,
+		const VkDebugUtilsMessengerCallbackDataEXT *data, void *user)
+{
+	const VkBaseInStructure *next;
+
+	if (!(types & VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT) || !data)
+		return VK_FALSE;
+	for (next = (const VkBaseInStructure*)data->pNext; next; next = next->pNext) {
+		if (next->sType != VK_STRUCTURE_TYPE_DEVICE_ADDRESS_BINDING_CALLBACK_DATA_EXT)
+			continue;
+		const VkDeviceAddressBindingCallbackDataEXT *binding = (const VkDeviceAddressBindingCallbackDataEXT*)next;
+		VkModsAddressBinding(binding->bindingType == VK_DEVICE_ADDRESS_BINDING_TYPE_BIND_EXT, binding->baseAddress,
+			binding->size, data->objectCount ? data->pObjects[0].objectType : VK_OBJECT_TYPE_UNKNOWN,
+			data->objectCount ? data->pObjects[0].objectHandle : 0);
+		break;
+	}
+	return VK_FALSE;
+}
+
+// With vulkan and vk_dump_hashes the instance gets VK_EXT_debug_utils and a
+// messenger of ours, which is how the device tells what its GPU addresses are
+// bound to (VkModsAddressBinding). Failing that it is made as the game asks.
+static VkResult VKAPI_CALL Hooked_vkCreateInstance(const VkInstanceCreateInfo *info, const VkAllocationCallbacks *allocator,
+		VkInstance *instance)
+{
+	HINSTANCE vulkan = NktHookLibHelpers::GetModuleBaseAddress(L"vulkan-1.dll");
+	PFN_vkEnumerateInstanceExtensionProperties enumerate = (PFN_vkEnumerateInstanceExtensionProperties)
+		NktHookLibHelpers::GetProcedureAddress(vulkan, "vkEnumerateInstanceExtensionProperties");
+	PFN_vkGetInstanceProcAddr get = (PFN_vkGetInstanceProcAddr)NktHookLibHelpers::GetProcedureAddress(vulkan, "vkGetInstanceProcAddr");
+	VkDebugUtilsMessengerCreateInfoEXT messenger_info = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
+	PFN_vkCreateDebugUtilsMessengerEXT create_messenger;
+	VkDebugUtilsMessengerEXT messenger;
+	std::vector<VkExtensionProperties> available;
+	std::vector<const char*> names;
+	VkInstanceCreateInfo extended;
+	bool asked = false, has = false;
+	uint32_t count = 0;
+	VkResult result;
+
+	InitCommon();
+	if (!info || !G->bIntendedTargetExe || !G->vulkan || !G->vk_dump_hashes || !enumerate || !get)
+		return fnOrigCreateInstance(info, allocator, instance);
+
+	names.assign(info->ppEnabledExtensionNames, info->ppEnabledExtensionNames + info->enabledExtensionCount);
+	for (const char *name : names)
+		asked |= !strcmp(name, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	if (!asked && enumerate(NULL, &count, NULL) == VK_SUCCESS) {
+		available.resize(count);
+		if (enumerate(NULL, &count, available.data()) < VK_SUCCESS)
+			count = 0;
+		available.resize(count);
+		for (const VkExtensionProperties &extension : available)
+			has |= !strcmp(extension.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+		if (!has)
+			return fnOrigCreateInstance(info, allocator, instance);
+		names.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	}
+	extended = *info;
+	extended.enabledExtensionCount = (uint32_t)names.size();
+	extended.ppEnabledExtensionNames = names.data();
+	result = fnOrigCreateInstance(&extended, allocator, instance);
+	if (result != VK_SUCCESS)
+		return fnOrigCreateInstance(info, allocator, instance);
+
+	create_messenger = (PFN_vkCreateDebugUtilsMessengerEXT)get(*instance, "vkCreateDebugUtilsMessengerEXT");
+	messenger_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
+		| VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+	messenger_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT;
+	messenger_info.pfnUserCallback = address_bound;
+	// Kept for as long as the instance is
+	if (create_messenger && create_messenger(*instance, &messenger_info, NULL, &messenger) == VK_SUCCESS)
+		binding_messenger = true;
+	return result;
+}
+
+// What makes a device with the game's create info: with what lets
+// VkModsDeviceLost say where the GPU was, as far as the driver has that, if
+// diagnose is set, and failing that as given
+static VkResult create_diagnosed(VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
+		const VkAllocationCallbacks *allocator, VkDevice *device, bool diagnose, bool *fault, bool *checkpoints, bool *bindings)
 {
 	HINSTANCE vulkan = NktHookLibHelpers::GetModuleBaseAddress(L"vulkan-1.dll");
 	PFN_vkEnumerateDeviceExtensionProperties enumerate = (PFN_vkEnumerateDeviceExtensionProperties)
@@ -818,18 +896,18 @@ static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCr
 	PFN_vkGetPhysicalDeviceFeatures2 get_features = (PFN_vkGetPhysicalDeviceFeatures2)
 		NktHookLibHelpers::GetProcedureAddress(vulkan, "vkGetPhysicalDeviceFeatures2");
 	VkPhysicalDeviceFaultFeaturesEXT fault_features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT };
+	VkPhysicalDeviceAddressBindingReportFeaturesEXT binding_features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT };
 	VkPhysicalDeviceFeatures2 features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
 	std::vector<VkExtensionProperties> available;
 	std::vector<const char*> names;
 	VkDeviceCreateInfo diagnosing;
 	const VkBaseInStructure *next;
-	bool has_fault = false, has_checkpoints = false;
+	bool has_fault = false, has_checkpoints = false, has_bindings = false;
 	uint32_t count = 0;
 	VkResult result;
 
-	*fault = *checkpoints = false;
-	if (!info || !G->bIntendedTargetExe || !G->vulkan || !G->vk_dump_hashes || !enumerate || !get_features
-	    || enumerate(physical_device, NULL, &count, NULL) != VK_SUCCESS)
+	*fault = *checkpoints = *bindings = false;
+	if (!diagnose || !enumerate || !get_features || enumerate(physical_device, NULL, &count, NULL) != VK_SUCCESS)
 		return fnOrigCreateDevice(physical_device, info, allocator, device);
 
 	available.resize(count);
@@ -839,7 +917,10 @@ static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCr
 	for (const VkExtensionProperties &extension : available) {
 		has_fault |= !strcmp(extension.extensionName, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
 		has_checkpoints |= !strcmp(extension.extensionName, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+		has_bindings |= !strcmp(extension.extensionName, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
 	}
+	// Reported to a messenger of the instance, which there has to be
+	has_bindings &= binding_messenger;
 	// What the game turns on itself is left as it has it
 	names.assign(info->ppEnabledExtensionNames, info->ppEnabledExtensionNames + info->enabledExtensionCount);
 	for (const char *name : names) {
@@ -847,15 +928,21 @@ static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCr
 			has_fault = false;
 		if (!strcmp(name, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME))
 			has_checkpoints = false;
+		if (!strcmp(name, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME))
+			has_bindings = false;
 	}
-	for (next = (const VkBaseInStructure*)info->pNext; next; next = next->pNext)
+	for (next = (const VkBaseInStructure*)info->pNext; next; next = next->pNext) {
 		has_fault &= next->sType != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT;
-	if (has_fault) {
-		features.pNext = &fault_features;
-		get_features(physical_device, &features);
-		has_fault = !!fault_features.deviceFault;
+		has_bindings &= next->sType != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT;
 	}
-	if (!has_fault && !has_checkpoints)
+	if (has_fault || has_bindings) {
+		features.pNext = &fault_features;
+		fault_features.pNext = &binding_features;
+		get_features(physical_device, &features);
+		has_fault &= !!fault_features.deviceFault;
+		has_bindings &= !!binding_features.reportAddressBinding;
+	}
+	if (!has_fault && !has_checkpoints && !has_bindings)
 		return fnOrigCreateDevice(physical_device, info, allocator, device);
 
 	diagnosing = *info;
@@ -863,8 +950,15 @@ static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCr
 		names.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
 		fault_features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT };
 		fault_features.deviceFault = VK_TRUE;
-		fault_features.pNext = (void*)info->pNext;
+		fault_features.pNext = (void*)diagnosing.pNext;
 		diagnosing.pNext = &fault_features;
+	}
+	if (has_bindings) {
+		names.push_back(VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
+		binding_features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT };
+		binding_features.reportAddressBinding = VK_TRUE;
+		binding_features.pNext = (void*)diagnosing.pNext;
+		diagnosing.pNext = &binding_features;
 	}
 	if (has_checkpoints)
 		names.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
@@ -875,21 +969,31 @@ static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCr
 	if (result == VK_SUCCESS) {
 		*fault = has_fault;
 		*checkpoints = has_checkpoints;
+		*bindings = has_bindings;
 		return result;
 	}
-	VkLogInfo("vkCreateDevice failed with %d once diagnostics were added, made as the game asked\n", result);
+	VkLogInfo("vkCreateDevice failed with %d once diagnostics were added, made without\n", result);
 	return fnOrigCreateDevice(physical_device, info, allocator, device);
+}
+
+// The device as the game asks for it, and with vulkan and vk_dump_hashes also
+// with what lets VkModsDeviceLost say where the GPU was
+static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
+		const VkAllocationCallbacks *allocator, VkDevice *device, bool *fault, bool *checkpoints, bool *bindings)
+{
+	return create_diagnosed(physical_device, info, allocator, device,
+		info && G->bIntendedTargetExe && G->vulkan && G->vk_dump_hashes, fault, checkpoints, bindings);
 }
 
 static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
 		const VkAllocationCallbacks *allocator, VkDevice *device)
 {
-	bool external_memory = false, external_semaphore = false, fault, checkpoints;
+	bool external_memory = false, external_semaphore = false, budget = false, fault, checkpoints, bindings;
 	VkResult result;
 	uint32_t i;
 
 	InitCommon();
-	result = create_device(physical_device, info, allocator, device, &fault, &checkpoints);
+	result = create_device(physical_device, info, allocator, device, &fault, &checkpoints, &bindings);
 	if (result != VK_SUCCESS || !device || !*device)
 		return result;
 
@@ -904,16 +1008,20 @@ static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_devic
 	for (i = 0; info && i < info->enabledExtensionCount; i++) {
 		external_memory |= !strcmp(info->ppEnabledExtensionNames[i], VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
 		external_semaphore |= !strcmp(info->ppEnabledExtensionNames[i], VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
+		budget |= !strcmp(info->ppEnabledExtensionNames[i], VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
 	}
 	register_device(*device, physical_device, external_memory, external_semaphore);
+	if (budget && vk_mods_active)
+		VkModsMemoryBudget(*device);
 
 	VkDumpNote("vkCreateDevice = %p, %u extensions\n", *device, info ? info->enabledExtensionCount : 0);
 	for (i = 0; info && i < info->enabledExtensionCount; i++)
 		VkDumpNote("  %s\n", info->ppEnabledExtensionNames[i]);
-	if (fault || checkpoints) {
-		VkDumpNote("  and for telling where the GPU was if the device is lost:%s%s\n",
+	if (fault || checkpoints || bindings) {
+		VkDumpNote("  and for telling where the GPU was if the device is lost:%s%s%s\n",
 			fault ? " " VK_EXT_DEVICE_FAULT_EXTENSION_NAME : "",
-			checkpoints ? " " VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME : "");
+			checkpoints ? " " VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME : "",
+			bindings ? " " VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME : "");
 	}
 	if (vk_mods_active) {
 		PFN_vkGetDeviceProcAddr get = fnOrigGetDeviceProcAddr ? fnOrigGetDeviceProcAddr : (PFN_vkGetDeviceProcAddr)
@@ -978,6 +1086,7 @@ void VkHookExports()
 	if (InterlockedCompareExchange(&hooked, 1, 0) != 0)
 		return;
 
+	InstallHookLate(vulkan, "vkCreateInstance", (void**)&fnOrigCreateInstance, Hooked_vkCreateInstance);
 	InstallHookLate(vulkan, "vkCreateDevice", (void**)&fnOrigCreateDevice, Hooked_vkCreateDevice);
 	InstallHookLate(vulkan, "vkGetDeviceProcAddr", (void**)&fnOrigGetDeviceProcAddr, Hooked_vkGetDeviceProcAddr);
 }

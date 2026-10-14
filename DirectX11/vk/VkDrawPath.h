@@ -185,6 +185,13 @@ void VkModsPresent(VkQueue queue);
 void VkModsDiagnostics(VkDevice device, PFN_vkGetDeviceFaultInfoEXT fault_info, PFN_vkCmdSetCheckpointNV set_checkpoint,
 		PFN_vkGetQueueCheckpointDataNV checkpoint_data);
 void VkModsCommandsBegun(VkCommandBuffer cmd);
+// The game enabled VK_EXT_memory_budget, by which the report tells how much
+// of the memory of the GPU the process uses
+void VkModsMemoryBudget(VkDevice device);
+// With VK_EXT_device_address_binding_report, which the instance is given
+// VK_EXT_debug_utils for: GPU addresses bound to an object or let go of, for
+// VkModsDeviceLost to say what was at the address of a fault. From any thread.
+void VkModsAddressBinding(bool bound, UINT64 base, UINT64 size, VkObjectType type, UINT64 handle);
 // A call on the queue returned VK_ERROR_DEVICE_LOST. The game may well go on
 // recording and submitting, which nothing of the mods is part of from then on.
 void VkModsDeviceLost(VkQueue queue);

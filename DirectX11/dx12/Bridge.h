@@ -103,6 +103,8 @@ void Dx12ShimNotImplemented(const char *method, bool *reported);
 
 void Dx12ShimLock();
 void Dx12ShimUnlock();
+// By the calling thread
+bool Dx12ShimLockHeld();
 
 // Moves what the debug layer has said since the last call to our log. Does
 // nothing unless the device was created with dx12_debug_layer.

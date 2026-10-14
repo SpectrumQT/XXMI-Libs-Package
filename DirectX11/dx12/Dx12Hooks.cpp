@@ -47,6 +47,30 @@ static void enable_debug_layer()
 	Dx12LogInfo("dx12_debug_layer: debug layer enabled\n");
 }
 
+// For a Vulkan game with vk_dump_hashes: the D3D12 device of the driver that
+// presents its frames then keeps a record of where its queues were, for
+// VkModsDeviceLost. Like the debug layer, only before the device is created.
+static void enable_dred()
+{
+	static bool enabled;
+	HRESULT (WINAPI *get_debug_interface)(REFIID, void**);
+	ID3D12DeviceRemovedExtendedDataSettings *settings = NULL;
+
+	if (enabled || !dx12_enabled() || !G->vulkan || !G->vk_dump_hashes)
+		return;
+	enabled = true;
+
+	*(FARPROC*)&get_debug_interface = GetProcAddress(GetModuleHandleW(L"d3d12.dll"), "D3D12GetDebugInterface");
+	if (!get_debug_interface || FAILED(get_debug_interface(IID_PPV_ARGS(&settings)))) {
+		Dx12LogInfo("*** DRED is not available\n");
+		return;
+	}
+	settings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+	settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+	settings->Release();
+	Dx12LogInfo("DRED enabled\n");
+}
+
 static void log_device_created(const char *func, IUnknown *adapter, D3D_FEATURE_LEVEL feature_level,
 		REFIID riid, void **ppDevice, HRESULT hr)
 {
@@ -212,6 +236,7 @@ static HRESULT STDMETHODCALLTYPE Hooked_DeviceFactory_CreateDevice(ID3D12DeviceF
 	}
 
 	enable_debug_layer();
+	enable_dred();
 	hr = orig(This, adapter, FeatureLevel, riid, ppvDevice);
 	device_created("ID3D12DeviceFactory::CreateDevice", adapter, FeatureLevel, riid, ppvDevice, hr);
 
@@ -249,6 +274,7 @@ static HRESULT WINAPI Hooked_D3D12CreateDevice(IUnknown *pAdapter, D3D_FEATURE_L
 	HRESULT hr;
 
 	enable_debug_layer();
+	enable_dred();
 	hr = fnOrigD3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
 
 	device_created("D3D12CreateDevice", pAdapter, MinimumFeatureLevel, riid, ppDevice, hr);

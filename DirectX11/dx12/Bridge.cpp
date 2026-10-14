@@ -146,6 +146,11 @@ void Dx12ShimUnlock()
 	LeaveCriticalSection(&shim_lock);
 }
 
+bool Dx12ShimLockHeld()
+{
+	return shim_lock.OwningThread == (HANDLE)(ULONG_PTR)GetCurrentThreadId();
+}
+
 void Dx12ShimNotImplemented(const char *method, bool *reported)
 {
 	if (*reported)
@@ -1022,6 +1027,8 @@ ID3D12GraphicsCommandList* Dx12ShimEarlyList()
 			early_allocators[current_early_allocator].allocator, NULL, IID_PPV_ARGS(&early_list)))) {
 		early_list = NULL;
 		return NULL;
+	} else {
+		early_list->SetName(L"3DMigoto mods, early");
 	}
 	early_open = true;
 	return early_list;
@@ -1161,6 +1168,7 @@ bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue)
 		Dx12LogInfo("*** Failed to create the command list for mods, they will not be applied\n");
 		return false;
 	}
+	shim_list->SetName(L"3DMigoto mods");
 	fence_event = CreateEvent(NULL, FALSE, FALSE, NULL);
 	allocators.push_back(allocator);
 	list_open = true;

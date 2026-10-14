@@ -798,6 +798,16 @@ private:
 
 typedef std::unordered_map<std::wstring, CustomResourcePool> CustomResourcePools;
 extern CustomResourcePools customResourcePools;
+
+// Lookups of spatial pools outside the cell of any slot: given the slot of a
+// nearby cell, given none within the radius, and how many of those had one
+// within twice the radius. For vk_report.txt, read and cleared together
+struct SpatialPoolMisses
+{
+	unsigned nearby, outside, within_twice;
+};
+SpatialPoolMisses TakeSpatialPoolMisses();
+
 // Pools indexed by their persist_path_name, so d3dx_user.ini entries of pool
 // variables saved under the path key can be resolved:
 extern std::unordered_map<std::wstring, CustomResourcePool*> custom_resource_pool_path_keys;

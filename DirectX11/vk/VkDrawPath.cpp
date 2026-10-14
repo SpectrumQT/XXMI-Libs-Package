@@ -5653,6 +5653,10 @@ static void report()
 		stats.presents, stats.presents_apart, stats.frame_submits, stats.frames_counted, G->frame_no,
 		frames_by_submission ? "counted by the submissions" : "counted by the presents of the D3D12 device",
 		(unsigned)InterlockedExchange(&submits_apart, 0));
+	SpatialPoolMisses spatial = TakeSpatialPoolMisses();
+	VkDumpNote("  Spatial pools: %u lookups took the slot of a nearby cell, %u found none within the radius (%u of them one "
+		"within twice the radius); frame_time %.2f ms\n",
+		spatial.nearby, spatial.outside, spatial.within_twice, G->gFrameTime * 1000);
 	stats = {};
 	AcquireSRWLockExclusive(&descriptor_lock);
 	sets_allocated = sets_written = sets_written_by_template = 0;

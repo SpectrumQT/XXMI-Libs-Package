@@ -7938,6 +7938,16 @@ bool CustomResourcePool::PropagateFlags(D3D11_BIND_FLAG bind_flags, D3D11_RESOUR
 	return ret;
 }
 
+static SpatialPoolMisses spatial_misses;
+
+SpatialPoolMisses TakeSpatialPoolMisses()
+{
+	SpatialPoolMisses taken = spatial_misses;
+
+	spatial_misses = {};
+	return taken;
+}
+
 size_t CustomResourcePool::GetElementIndex(float id, bool use_ring_index, bool is_assignment)
 {
 	ExpireElements();
@@ -8090,8 +8100,13 @@ size_t CustomResourcePool::GetElementIndex(float id, bool use_ring_index, bool i
 
 			AssignSlot(pool_index, spatial_hash, is_assignment);
 
+			spatial_misses.nearby++;
 			return pool_index;
 		}
+
+		spatial_misses.outside++;
+		if (nearest_slot != SIZE_MAX && closest_distance <= effective_radius * 2)
+			spatial_misses.within_twice++;
 
 		// No cached resource matches this lookup.
 		// Prevent new slot allocation on read access when `allocate_slot_on_missing` is disabled.

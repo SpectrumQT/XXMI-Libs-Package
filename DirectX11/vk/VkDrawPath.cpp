@@ -34,6 +34,8 @@ bool vk_mods_active;
 // worked out for a pipeline no longer holds.
 static volatile bool draw_path_active;
 static volatile LONG wanted_generation = 1;
+// For good, see VkModsDeviceLost
+static volatile bool device_lost;
 
 // Why a draw was stopped for, see draw_is_boring
 enum SlowReason {
@@ -2381,6 +2383,10 @@ static void destroy_shim_semaphores()
 	shim_semaphores.clear();
 }
 
+// The value of the fence of the D3D12 device that the last submission given
+// it waits for on the GPU, for VkModsDeviceLost
+static UINT64 chained_value;
+
 // With the lock of dx12/Bridge.h held
 static VkSemaphore finish_transfers(VkQueue queue, UINT64 *value)
 {
@@ -2397,12 +2403,19 @@ static VkSemaphore finish_transfers(VkQueue queue, UINT64 *value)
 		if (semaphore) {
 			Dx12ShimSubmit();
 			Dx12ShimFence(value);
+			chained_value = *value;
 			copies_pending = false;
 			stats.submits_chained++;
 		}
 	}
 	if (dx12_shim && (!transfers.empty() || copies_pending)) {
+		ULONGLONG waited = GetTickCount64();
+
 		Dx12ShimSubmitAndWait();
+		waited = GetTickCount64() - waited;
+		// A GPU that has stopped, which a lost device follows
+		if (waited >= 500)
+			VkDumpNote("*** Frame %u: the D3D12 device took %llu ms to get through the copies for mods\n", vk_frame, waited);
 		for (const Transfer &transfer : transfers)
 			memcpy(transfer.dst, transfer.src, transfer.bytes);
 	}
@@ -4390,6 +4403,9 @@ struct Scope {
 	// One of those could not be shown. What a mod makes of nothing is not
 	// worth drawing.
 	bool srv_missing;
+	// The game's draw
+	UINT count, first;
+	INT vertex_offset;
 };
 
 // A draw of a mod, with the bindings that are not to be the game's
@@ -4420,6 +4436,44 @@ struct ModDraw {
 // part that cannot be drawn is the game's mesh, all of it: so nothing is
 // recorded before the last of them is known to be possible.
 static std::vector<ModDraw> mod_draws;
+
+// Where the GPU was when the game's device was lost (VkModsDeviceLost), with
+// VK_NV_device_diagnostic_checkpoints: a checkpoint recorded to a command
+// buffer is the address of one of these, which says what it was put before.
+// They are given out in a ring that takes some frames to go round.
+struct Checkpoint {
+	const char *what;
+	UINT frame;
+	VkCommandBuffer cmd;
+	// The game's draw, where it is about one
+	UINT game_count, game_first;
+	INT game_base_vertex;
+	// The mod's, where it is one
+	UINT draw, draws, count, start, instances;
+	INT base_vertex;
+	VkBuffer ib, vb0;
+	VkDeviceSize ib_offset, ib_bytes, vb0_offset;
+	UINT index_bits;
+};
+
+const UINT CHECKPOINTS = 1 << 16;
+static Checkpoint checkpoints[CHECKPOINTS];
+static volatile LONG checkpoint_next;
+static PFN_vkGetDeviceFaultInfoEXT get_fault_info;
+static PFN_vkCmdSetCheckpointNV set_checkpoint;
+static PFN_vkGetQueueCheckpointDataNV get_checkpoints;
+
+// Filled in by the caller before it is set
+static Checkpoint* checkpoint(VkCommandBuffer cmd, const char *what)
+{
+	Checkpoint *point = &checkpoints[(UINT)InterlockedIncrement(&checkpoint_next) % CHECKPOINTS];
+
+	*point = {};
+	point->what = what;
+	point->frame = mods_frame;
+	point->cmd = cmd;
+	return point;
+}
 
 static Scope *scope;
 
@@ -5113,6 +5167,28 @@ static void record_mod_draws()
 				bind_set(slot, game->sets[slot], game->dynamic[slot]);
 		}
 
+		if (set_checkpoint) {
+			Checkpoint *point = checkpoint(scope->cmd, "a draw of a mod");
+
+			point->game_count = scope->count;
+			point->game_first = scope->first;
+			point->game_base_vertex = scope->vertex_offset;
+			point->draw = (UINT)(&draw - mod_draws.data());
+			point->draws = (UINT)mod_draws.size();
+			point->count = draw.count;
+			point->start = draw.start;
+			point->instances = draw.instances;
+			point->base_vertex = draw.base_vertex;
+			if (draw.indexed) {
+				point->ib = draw.ib_set ? draw.ib : game->ib;
+				point->ib_offset = draw.ib_set ? draw.ib_offset : game->ib_offset;
+				point->ib_bytes = draw.ib_set ? draw.ib_bytes : 0;
+				point->index_bits = (draw.ib_set ? draw.index_type : game->index_type) == VK_INDEX_TYPE_UINT16 ? 16 : 32;
+			}
+			point->vb0 = draw.vbs_set & 1 ? draw.vbs[0] : game->vbs[0];
+			point->vb0_offset = draw.vbs_set & 1 ? draw.vb_offsets[0] : game->vb_offsets[0];
+			set_checkpoint(scope->cmd, point);
+		}
 		if (draw.indexed)
 			api.CmdDrawIndexed(scope->cmd, draw.count, draw.instances, draw.start, draw.base_vertex, draw.start_instance);
 		else
@@ -5522,6 +5598,9 @@ bool VkModsDraw(VkCommandBuffer cmd, bool indexed, uint32_t count, uint32_t inst
 	memset(opened.cbs_asked, 0, sizeof(opened.cbs_asked));
 	memset(opened.srvs_asked, 0, sizeof(opened.srvs_asked));
 	opened.srv_missing = false;
+	opened.count = count;
+	opened.first = first;
+	opened.vertex_offset = vertex_offset;
 	mod_draws.clear();
 	scope = &opened;
 	Dx12OpenForeignScope();
@@ -5546,6 +5625,14 @@ bool VkModsDraw(VkCommandBuffer cmd, bool indexed, uint32_t count, uint32_t inst
 			draw_indexed(cmd, count, instances, first, vertex_offset, first_instance);
 		else
 			draw(cmd, count, instances, first, first_instance);
+	}
+	if (set_checkpoint && !opened.mod_draws_failed && !mod_draws.empty()) {
+		Checkpoint *point = checkpoint(cmd, "past the draws of mods and the game's draw they were for");
+
+		point->game_count = count;
+		point->game_first = first;
+		point->game_base_vertex = vertex_offset;
+		set_checkpoint(cmd, point);
 	}
 	dx12_shim->hacker_context->Dx12AfterDraw(c);
 
@@ -5770,10 +5857,140 @@ void VkModsPresent(VkQueue queue)
 		InterlockedIncrement(&wanted_generation);
 	}
 
-	draw_path_active = all || (!dx12_mods_disabled && G->fix_enabled && !wanted_hashes.empty());
+	draw_path_active = !device_lost && (all || (!dx12_mods_disabled && G->fix_enabled && !wanted_hashes.empty()));
 
 	if (G->vk_dump_hashes && !(vk_frame % 300))
 		report();
 
+	Dx12ShimUnlock();
+}
+
+// -----------------------------------------------------------------------------
+// A lost device
+
+void VkModsDiagnostics(VkDevice device, PFN_vkGetDeviceFaultInfoEXT fault_info, PFN_vkCmdSetCheckpointNV set_checkpoint_function,
+		PFN_vkGetQueueCheckpointDataNV checkpoint_data)
+{
+	if (device != mods_device)
+		return;
+	get_fault_info = fault_info;
+	get_checkpoints = checkpoint_data;
+	// The last, as recording reads it without a lock
+	MemoryBarrier();
+	set_checkpoint = set_checkpoint_function && checkpoint_data ? set_checkpoint_function : NULL;
+}
+
+void VkModsCommandsBegun(VkCommandBuffer cmd)
+{
+	PFN_vkCmdSetCheckpointNV set = set_checkpoint;
+
+	// Only the device the functions are of has them
+	if (set && *(void**)cmd == mods_device_key)
+		set(cmd, checkpoint(cmd, "the start of a command buffer"));
+}
+
+static void note_checkpoint(VkPipelineStageFlags stage, const void *marker)
+{
+	const Checkpoint *point = (const Checkpoint*)marker;
+	char game[128] = "", mod[512] = "";
+
+	if (point < checkpoints || point >= checkpoints + CHECKPOINTS) {
+		VkDumpNote("    stage 0x%x: %p, not a checkpoint of ours\n", stage, marker);
+		return;
+	}
+	if (point->game_count) {
+		_snprintf_s(game, _TRUNCATE, ", the game's draw of %u from %u (vertex offset %d)",
+			point->game_count, point->game_first, point->game_base_vertex);
+	}
+	if (point->draws) {
+		_snprintf_s(mod, _TRUNCATE, ", draw %u of %u of mods: %u from %u, %u instances, vertex offset %d, "
+			"index buffer %p + %llu (%llu bytes from there%s, %u bit), vb0 %p + %llu",
+			point->draw + 1, point->draws, point->count, point->start, point->instances, point->base_vertex,
+			point->ib, point->ib_offset, point->ib_bytes, point->ib_bytes ? "" : " = not known", point->index_bits,
+			point->vb0, point->vb0_offset);
+	}
+	VkDumpNote("    stage 0x%x: %s, frame %u, command buffer %p%s%s\n", stage, point->what, point->frame, point->cmd, game, mod);
+}
+
+static void note_fault()
+{
+	static const char *const address_types[] = { "none", "read of memory it may not read", "write of memory it may not write",
+		"execution of memory it may not execute", "instruction pointer, not known which", "instruction pointer, invalid",
+		"instruction pointer, of the fault" };
+	VkDeviceFaultCountsEXT counts = { VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT };
+	VkDeviceFaultInfoEXT info = { VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT };
+	std::vector<VkDeviceFaultAddressInfoEXT> addresses;
+	std::vector<VkDeviceFaultVendorInfoEXT> vendor;
+	VkResult result;
+
+	if (!get_fault_info)
+		return;
+	result = get_fault_info(mods_device, &counts, NULL);
+	if (result != VK_SUCCESS) {
+		VkDumpNote("  What the fault was could not be asked: %d\n", result);
+		return;
+	}
+	addresses.resize(counts.addressInfoCount);
+	vendor.resize(counts.vendorInfoCount);
+	info.pAddressInfos = addresses.data();
+	info.pVendorInfos = vendor.data();
+	counts.vendorBinarySize = 0;
+	result = get_fault_info(mods_device, &counts, &info);
+	if (result < VK_SUCCESS) {
+		VkDumpNote("  What the fault was could not be asked: %d\n", result);
+		return;
+	}
+	VkDumpNote("  The fault, as the driver tells it: %s\n", info.description);
+	for (const VkDeviceFaultAddressInfoEXT &address : addresses) {
+		VkDumpNote("    %s at 0x%llx (to within 0x%llx)\n", address.addressType < ARRAYSIZE(address_types)
+			? address_types[address.addressType] : "an address of a kind not known", address.reportedAddress,
+			address.addressPrecision);
+	}
+	for (const VkDeviceFaultVendorInfoEXT &entry : vendor)
+		VkDumpNote("    %s: code 0x%llx, data 0x%llx\n", entry.description, entry.vendorFaultCode, entry.vendorFaultData);
+}
+
+void VkModsDeviceLost(VkQueue queue)
+{
+	static volatile LONG noted;
+	std::vector<VkCheckpointDataNV> data;
+	std::vector<VkQueue> queues;
+	uint32_t count;
+
+	if (InterlockedExchange(&noted, 1))
+		return;
+	device_lost = true;
+	draw_path_active = false;
+
+	Dx12ShimLock();
+	VkDumpNote("*** Frame %u (FRAME_NUMBER %u): the game's Vulkan device has been lost, which a call on queue %p returned. "
+		"Nothing is drawn for mods from here on.\n", vk_frame, G->frame_no, queue);
+	if (dx12_shim) {
+		UINT64 signalled;
+		ID3D12Fence *fence = Dx12ShimFence(&signalled);
+
+		VkDumpNote("  The D3D12 device: removed reason 0x%x; its fence has reached %llu of the %llu signalled, "
+			"the last submission of the game that waited for it on the GPU waited for %llu\n",
+			dx12_shim->device->GetDeviceRemovedReason(), fence->GetCompletedValue(), signalled, chained_value);
+	}
+	note_fault();
+
+	if (get_checkpoints) {
+		for (const auto &known : queue_families)
+			queues.push_back(known.first);
+		if (std::find(queues.begin(), queues.end(), queue) == queues.end())
+			queues.push_back(queue);
+		for (VkQueue checked : queues) {
+			count = 0;
+			get_checkpoints(checked, &count, NULL);
+			data.assign(count, { VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV });
+			if (count)
+				get_checkpoints(checked, &count, data.data());
+			VkDumpNote("  The last checkpoints the GPU got past on queue %p, by stage of the pipeline:%s\n",
+				checked, count ? "" : " none");
+			for (uint32_t i = 0; i < count; i++)
+				note_checkpoint(data[i].stage, data[i].pCheckpointMarker);
+		}
+	}
 	Dx12ShimUnlock();
 }

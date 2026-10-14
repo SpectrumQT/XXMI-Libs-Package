@@ -318,7 +318,10 @@ static VkResult VKAPI_CALL Hooked_vkBeginCommandBuffer(VkCommandBuffer cmd, cons
 		VkDumpBeginCommands(cmd);
 	if (vk_mods_active)
 		VkModsBeginCommands(cmd);
-	return next_BeginCommandBuffer(cmd)(cmd, info);
+	VkResult result = next_BeginCommandBuffer(cmd)(cmd, info);
+	if (vk_mods_active && result == VK_SUCCESS)
+		VkModsCommandsBegun(cmd);
+	return result;
 }
 
 static void VKAPI_CALL Hooked_vkCmdExecuteCommands(VkCommandBuffer cmd, uint32_t count, const VkCommandBuffer *cmds)
@@ -581,6 +584,13 @@ static void dump_submit(VkQueue queue, uint32_t count, const VkSubmitInfo *submi
 	VkDumpFrameEvent(&event);
 }
 
+static inline VkResult check_lost(VkQueue queue, VkResult result)
+{
+	if (result == VK_ERROR_DEVICE_LOST && vk_mods_active)
+		VkModsDeviceLost(queue);
+	return result;
+}
+
 static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence)
 {
 	static thread_local std::vector<VkSemaphore> semaphores;
@@ -608,7 +618,7 @@ static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, c
 		semaphore = VkModsBeforeSubmit(queue, can_wait_for_fence(count, submits) ? &value : NULL, !!shown);
 	}
 	if (!semaphore)
-		return next_QueueSubmit(queue)(queue, count, submits, fence);
+		return check_lost(queue, next_QueueSubmit(queue)(queue, count, submits, fence));
 
 	waiting = *submits;
 	semaphores.assign(submits->pWaitSemaphores, submits->pWaitSemaphores + submits->waitSemaphoreCount);
@@ -629,7 +639,7 @@ static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, c
 	waiting.waitSemaphoreCount = (uint32_t)semaphores.size();
 	waiting.pWaitSemaphores = semaphores.data();
 	waiting.pWaitDstStageMask = stages.data();
-	return next_QueueSubmit(queue)(queue, 1, &waiting, fence);
+	return check_lost(queue, next_QueueSubmit(queue)(queue, 1, &waiting, fence));
 }
 
 static VkResult VKAPI_CALL Hooked_vkQueueSubmit2(VkQueue queue, uint32_t count, const VkSubmitInfo2 *submits, VkFence fence)
@@ -660,7 +670,7 @@ static VkResult VKAPI_CALL Hooked_vkQueueSubmit2(VkQueue queue, uint32_t count, 
 	}
 	if (vk_mods_active)
 		VkModsBeforeSubmit(queue, NULL, !!event.shown);
-	return next_QueueSubmit2(queue)(queue, count, submits, fence);
+	return check_lost(queue, next_QueueSubmit2(queue)(queue, count, submits, fence));
 }
 
 static VkResult VKAPI_CALL Hooked_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *info)
@@ -682,7 +692,7 @@ static VkResult VKAPI_CALL Hooked_vkQueuePresentKHR(VkQueue queue, const VkPrese
 	}
 	if (vk_mods_active)
 		VkModsPresent(queue);
-	return next_QueuePresentKHR(queue)(queue, info);
+	return check_lost(queue, next_QueuePresentKHR(queue)(queue, info));
 }
 
 // -----------------------------------------------------------------------------
@@ -796,17 +806,93 @@ static void register_device(VkDevice device, VkPhysicalDevice physical_device, b
 	}
 }
 
+// The device as the game asks for it, and with vulkan and vk_dump_hashes also
+// with what lets VkModsDeviceLost say where the GPU was, as far as the driver
+// has that. A driver that will not make it so makes it as the game asked.
+static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
+		const VkAllocationCallbacks *allocator, VkDevice *device, bool *fault, bool *checkpoints)
+{
+	HINSTANCE vulkan = NktHookLibHelpers::GetModuleBaseAddress(L"vulkan-1.dll");
+	PFN_vkEnumerateDeviceExtensionProperties enumerate = (PFN_vkEnumerateDeviceExtensionProperties)
+		NktHookLibHelpers::GetProcedureAddress(vulkan, "vkEnumerateDeviceExtensionProperties");
+	PFN_vkGetPhysicalDeviceFeatures2 get_features = (PFN_vkGetPhysicalDeviceFeatures2)
+		NktHookLibHelpers::GetProcedureAddress(vulkan, "vkGetPhysicalDeviceFeatures2");
+	VkPhysicalDeviceFaultFeaturesEXT fault_features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT };
+	VkPhysicalDeviceFeatures2 features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+	std::vector<VkExtensionProperties> available;
+	std::vector<const char*> names;
+	VkDeviceCreateInfo diagnosing;
+	const VkBaseInStructure *next;
+	bool has_fault = false, has_checkpoints = false;
+	uint32_t count = 0;
+	VkResult result;
+
+	*fault = *checkpoints = false;
+	if (!info || !G->bIntendedTargetExe || !G->vulkan || !G->vk_dump_hashes || !enumerate || !get_features
+	    || enumerate(physical_device, NULL, &count, NULL) != VK_SUCCESS)
+		return fnOrigCreateDevice(physical_device, info, allocator, device);
+
+	available.resize(count);
+	if (enumerate(physical_device, NULL, &count, available.data()) < VK_SUCCESS)
+		count = 0;
+	available.resize(count);
+	for (const VkExtensionProperties &extension : available) {
+		has_fault |= !strcmp(extension.extensionName, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+		has_checkpoints |= !strcmp(extension.extensionName, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+	}
+	// What the game turns on itself is left as it has it
+	names.assign(info->ppEnabledExtensionNames, info->ppEnabledExtensionNames + info->enabledExtensionCount);
+	for (const char *name : names) {
+		if (!strcmp(name, VK_EXT_DEVICE_FAULT_EXTENSION_NAME))
+			has_fault = false;
+		if (!strcmp(name, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME))
+			has_checkpoints = false;
+	}
+	for (next = (const VkBaseInStructure*)info->pNext; next; next = next->pNext)
+		has_fault &= next->sType != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT;
+	if (has_fault) {
+		features.pNext = &fault_features;
+		get_features(physical_device, &features);
+		has_fault = !!fault_features.deviceFault;
+	}
+	if (!has_fault && !has_checkpoints)
+		return fnOrigCreateDevice(physical_device, info, allocator, device);
+
+	diagnosing = *info;
+	if (has_fault) {
+		names.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+		fault_features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT };
+		fault_features.deviceFault = VK_TRUE;
+		fault_features.pNext = (void*)info->pNext;
+		diagnosing.pNext = &fault_features;
+	}
+	if (has_checkpoints)
+		names.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+	diagnosing.enabledExtensionCount = (uint32_t)names.size();
+	diagnosing.ppEnabledExtensionNames = names.data();
+
+	result = fnOrigCreateDevice(physical_device, &diagnosing, allocator, device);
+	if (result == VK_SUCCESS) {
+		*fault = has_fault;
+		*checkpoints = has_checkpoints;
+		return result;
+	}
+	VkLogInfo("vkCreateDevice failed with %d once diagnostics were added, made as the game asked\n", result);
+	return fnOrigCreateDevice(physical_device, info, allocator, device);
+}
+
 static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
 		const VkAllocationCallbacks *allocator, VkDevice *device)
 {
-	VkResult result = fnOrigCreateDevice(physical_device, info, allocator, device);
-	bool external_memory = false, external_semaphore = false;
+	bool external_memory = false, external_semaphore = false, fault, checkpoints;
+	VkResult result;
 	uint32_t i;
 
+	InitCommon();
+	result = create_device(physical_device, info, allocator, device, &fault, &checkpoints);
 	if (result != VK_SUCCESS || !device || !*device)
 		return result;
 
-	InitCommon();
 	if (!G->bIntendedTargetExe || (!G->vulkan && !G->vk_dump_hashes)) {
 		VkLogInfo("vkCreateDevice = %p, left alone without vulkan or vk_dump_hashes\n", *device);
 		return result;
@@ -824,6 +910,22 @@ static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_devic
 	VkDumpNote("vkCreateDevice = %p, %u extensions\n", *device, info ? info->enabledExtensionCount : 0);
 	for (i = 0; info && i < info->enabledExtensionCount; i++)
 		VkDumpNote("  %s\n", info->ppEnabledExtensionNames[i]);
+	if (fault || checkpoints) {
+		VkDumpNote("  and for telling where the GPU was if the device is lost:%s%s\n",
+			fault ? " " VK_EXT_DEVICE_FAULT_EXTENSION_NAME : "",
+			checkpoints ? " " VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME : "");
+	}
+	if (vk_mods_active) {
+		PFN_vkGetDeviceProcAddr get = fnOrigGetDeviceProcAddr ? fnOrigGetDeviceProcAddr : (PFN_vkGetDeviceProcAddr)
+			NktHookLibHelpers::GetProcedureAddress(NktHookLibHelpers::GetModuleBaseAddress(L"vulkan-1.dll"), "vkGetDeviceProcAddr");
+
+		if (get) {
+			VkModsDiagnostics(*device,
+				fault ? (PFN_vkGetDeviceFaultInfoEXT)get(*device, "vkGetDeviceFaultInfoEXT") : NULL,
+				checkpoints ? (PFN_vkCmdSetCheckpointNV)get(*device, "vkCmdSetCheckpointNV") : NULL,
+				checkpoints ? (PFN_vkGetQueueCheckpointDataNV)get(*device, "vkGetQueueCheckpointDataNV") : NULL);
+		}
+	}
 
 	return result;
 }

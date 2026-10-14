@@ -178,3 +178,13 @@ bool VkModsDraw(VkCommandBuffer cmd, bool indexed, uint32_t count, uint32_t inst
 		int32_t vertex_offset, uint32_t first_instance, PFN_vkCmdDraw draw, PFN_vkCmdDrawIndexed draw_indexed);
 
 void VkModsPresent(VkQueue queue);
+
+// With vk_dump_hashes the device is created with VK_EXT_device_fault and
+// VK_NV_device_diagnostic_checkpoints where the driver has them, for
+// VkModsDeviceLost to say where the GPU was. Either function may be NULL.
+void VkModsDiagnostics(VkDevice device, PFN_vkGetDeviceFaultInfoEXT fault_info, PFN_vkCmdSetCheckpointNV set_checkpoint,
+		PFN_vkGetQueueCheckpointDataNV checkpoint_data);
+void VkModsCommandsBegun(VkCommandBuffer cmd);
+// A call on the queue returned VK_ERROR_DEVICE_LOST. The game may well go on
+// recording and submitting, which nothing of the mods is part of from then on.
+void VkModsDeviceLost(VkQueue queue);

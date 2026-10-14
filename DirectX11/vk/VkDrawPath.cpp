@@ -4386,6 +4386,9 @@ struct ModDraw {
 	bool ib_set;
 	VkBuffer ib;
 	VkDeviceSize ib_offset;
+	// How much of the index buffer there is from ib_offset on, 0 if that is
+	// not known
+	VkDeviceSize ib_bytes;
 	VkIndexType index_type;
 	bool indexed;
 	UINT count, instances, start, start_instance;
@@ -5060,7 +5063,14 @@ static bool bind_for_mod(const ShimState *mod, ModDraw *draw)
 	}
 	draw->ib = mirror->buffer;
 	draw->ib_offset = mirror->offset + mod->ib_offset;
+	draw->ib_bytes = mirror->size - mod->ib_offset;
 	draw->index_type = mod->ib_format == DXGI_FORMAT_R16_UINT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+	// D3D11 reads an index past the end as 0, Vulkan leaves it to the GPU to
+	// read what is there, if anything
+	if (((UINT64)draw->start + draw->count) * (mod->ib_format == DXGI_FORMAT_R16_UINT ? 2 : 4) > draw->ib_bytes) {
+		mod_draw_failed("the draw reads indices past the end of the index buffer");
+		return false;
+	}
 	return true;
 }
 

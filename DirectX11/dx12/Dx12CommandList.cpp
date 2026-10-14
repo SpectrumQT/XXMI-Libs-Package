@@ -36,7 +36,9 @@ Dx12GraphicsCommandList::Dx12GraphicsCommandList(Dx12Device *device, ID3D12Graph
 	mPinned(),
 	mExecuted(false),
 	mShimFence(0),
-	mQueue(NULL)
+	mQueue(NULL),
+	mPipelineMemo(),
+	mMemoEpoch(0)
 {
 	mVersion = Dx12QueryNewest(orig, list_iids, ARRAYSIZE(list_iids), (void**)&mOrig);
 	mDevice->AddRef();
@@ -136,7 +138,10 @@ void Dx12GraphicsCommandList::ForgetInfo()
 	mInfoSignature[0] = mInfoSignature[1] = (ID3D12RootSignature*)(uintptr_t)-1;
 	mInfo = NULL;
 	mSignatureInfo[0] = mSignatureInfo[1] = NULL;
-	memset(mPipelineMemo, 0, sizeof(mPipelineMemo));
+	if (!++mMemoEpoch) {
+		memset(mPipelineMemo, 0, sizeof(mPipelineMemo));
+		mMemoEpoch = 1;
+	}
 }
 
 HRESULT STDMETHODCALLTYPE Dx12GraphicsCommandList::Reset(ID3D12CommandAllocator *pAllocator, ID3D12PipelineState *pInitialState)

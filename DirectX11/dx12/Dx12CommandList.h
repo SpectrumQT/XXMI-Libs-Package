@@ -69,16 +69,32 @@ public:
 	// back and forth between those of its materials from one draw to the
 	// next, and the registry is behind a lock that all lists share.
 	// wanted is what Dx12DrawWanted came to as of wanted_generation.
+	// A game's list goes through more pipeline states than a handful of
+	// entries hold without two of them sharing one, and each time they
+	// do the lock is back. An entry of an older epoch than the list's is
+	// read as empty, which forgets them all without clearing them:
+	static const unsigned PIPELINE_MEMO_BITS = 7;
 	struct PipelineMemo {
 		ID3D12PipelineState *pipeline;
 		const Dx12PipelineInfo *info;
 		UINT wanted_generation;
+		UINT epoch;
 		bool wanted;
-	} mPipelineMemo[16];
+	} mPipelineMemo[1 << PIPELINE_MEMO_BITS];
+	UINT mMemoEpoch;
 
 	PipelineMemo* MemoOf(ID3D12PipelineState *pipeline)
 	{
-		return &mPipelineMemo[((UINT64)(uintptr_t)pipeline * 0x9e3779b97f4a7c15ull) >> 60];
+		PipelineMemo *memo = &mPipelineMemo[((UINT64)(uintptr_t)pipeline * 0x9e3779b97f4a7c15ull) >> (64 - PIPELINE_MEMO_BITS)];
+
+		if (memo->epoch != mMemoEpoch) {
+			memo->pipeline = NULL;
+			memo->info = NULL;
+			memo->wanted_generation = 0;
+			memo->wanted = false;
+			memo->epoch = mMemoEpoch;
+		}
+		return memo;
 	}
 
 	// The resource states this list leaves behind, in recording order.

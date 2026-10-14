@@ -99,11 +99,20 @@ struct ShimResource {
 	// of the game that is gone (see foreign)
 	ID3D12Resource *resource;
 	D3D12_RESOURCE_DESC desc;
+	// What resource takes of the memory of the GPU, counted in dx12_memory
+	UINT64 allocated;
 	// Of the whole resource, as left by the commands recorded so far
 	D3D12_RESOURCE_STATES state;
 	// Every submission leaves the resources it used in the common state,
 	// see Bridge.h. touched_epoch tells which those are.
 	UINT touched_epoch;
+	// For Dx12ShimEvictIdle: the time of the present before the last use,
+	// the fence of the submission that use is in, whether it is evicted,
+	// and where it is among the resources that may be
+	ULONGLONG used_time;
+	UINT64 used_fence;
+	bool evicted;
+	size_t residency_index;
 
 	// Belongs to the game, like a back buffer. Not referenced: whoever
 	// made the wrapper clears resource when the game lets go of it.
@@ -157,6 +166,16 @@ struct ShimResource {
 	// (ShimFlushWrite): IniParams is written for many draws that read none
 	// of it, and each copy uploads all of it.
 	bool write_pending;
+	// Writes made while the resource was evicted and could not be made
+	// resident again, for Dx12ShimTransition to make once it can: offset
+	// for a buffer, subresource and row pitch for a texture
+	struct DeferredWrite {
+		UINT subresource;
+		UINT64 offset;
+		UINT row_pitch;
+		std::vector<BYTE> data;
+	};
+	std::vector<DeferredWrite> deferred_writes;
 	// What the device says of how subresource 0 lies in an upload, asked
 	// once (ShimFootprint): it is wanted every time a texture is mapped
 	// or written
@@ -185,6 +204,14 @@ struct ShimResource {
 	// are done with them. Referenced.
 	std::vector<ID3D12Resource*> spares;
 };
+
+// Not to be used for now, though it may be later: evicted and not made
+// resident again, or resident without all the writes it was given meanwhile.
+// What finds Dx12ShimTransition failing for it is to be tried again.
+static inline bool ShimNotReady(const ShimResource *resource)
+{
+	return resource->evicted || !resource->deferred_writes.empty();
+}
 
 void ShimDestroyResource(ShimResource *resource);
 

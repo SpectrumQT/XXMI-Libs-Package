@@ -1,5 +1,6 @@
 #include "Bridge.h"
 
+#include <algorithm>
 #include <deque>
 #include <map>
 #include <unordered_map>
@@ -535,13 +536,15 @@ static bool read_only(D3D12_RESOURCE_STATES state)
 	return state && !(state & ~READ_STATES);
 }
 
-void Dx12ShimTransition(ShimResource *resource, D3D12_RESOURCE_STATES state)
+bool Dx12ShimTransition(ShimResource *resource, D3D12_RESOURCE_STATES state)
 {
 	D3D12_RESOURCE_BARRIER barrier = {};
 
-	if (!resource->resource)
-		return;
+	if (!resource->resource || !Dx12ShimUseResource(resource))
+		return false;
 
+	if (!resource->deferred_writes.empty() && !ShimApplyDeferredWrites(resource))
+		return false;
 	if (resource->write_pending)
 		ShimFlushWrite(resource);
 
@@ -564,12 +567,12 @@ void Dx12ShimTransition(ShimResource *resource, D3D12_RESOURCE_STATES state)
 			barrier.UAV.pResource = resource->resource;
 			Dx12ShimList()->ResourceBarrier(1, &barrier);
 		}
-		return;
+		return true;
 	}
 
 	if (read_only(resource->state) && read_only(state)) {
 		if ((resource->state & state) == state)
-			return;
+			return true;
 		state |= resource->state;
 	}
 
@@ -580,6 +583,7 @@ void Dx12ShimTransition(ShimResource *resource, D3D12_RESOURCE_STATES state)
 	barrier.Transition.StateAfter = state;
 	Dx12ShimList()->ResourceBarrier(1, &barrier);
 	resource->state = state;
+	return true;
 }
 
 void Dx12ShimForgetResource(ShimResource *resource)
@@ -592,6 +596,166 @@ void Dx12ShimForgetResource(ShimResource *resource)
 			return;
 		}
 	}
+}
+
+// -----------------------------------------------------------------------------
+// Residency
+
+// Smaller resources are not worth the time it takes to make them resident
+const UINT64 EVICTED_BYTES_MIN = 1 << 20;
+const ULONGLONG EVICT_INTERVAL_MS = 1000;
+
+static std::vector<ShimResource*> residents;
+// GetTickCount64 at the last present, for Dx12ShimUseResource
+static ULONGLONG present_time;
+static ULONGLONG evicted_time;
+// Counts the presents, and the one after which making a resource resident
+// again last failed
+static UINT presents = 1, failed_present;
+
+void Dx12ShimTrackResidency(ShimResource *resource, bool tracked)
+{
+	if (tracked) {
+		resource->residency_index = residents.size();
+		resource->used_time = present_time;
+		residents.push_back(resource);
+		return;
+	}
+
+	residents.back()->residency_index = resource->residency_index;
+	residents[resource->residency_index] = residents.back();
+	residents.pop_back();
+	if (resource->evicted) {
+		resource->evicted = false;
+		dx12_memory.evicted--;
+		dx12_memory.evicted_bytes -= resource->allocated;
+	}
+}
+
+bool Dx12ShimProcessMemory(DXGI_QUERY_VIDEO_MEMORY_INFO *info)
+{
+	static IDXGIAdapter3 *adapter;
+	static bool failed;
+	IDXGIFactory4 *factory;
+
+	if (!adapter && !failed) {
+		failed = true;
+		if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+			failed = FAILED(factory->EnumAdapterByLuid(shim.device->GetAdapterLuid(), IID_PPV_ARGS(&adapter)));
+			factory->Release();
+		}
+	}
+	return adapter && SUCCEEDED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, info));
+}
+
+// Nothing recorded or executed, or yet to be, uses it: none of our
+// submissions since the GPU finished the last that did, nothing recorded on
+// our list since (touched in this epoch is not enough: the fence also moves
+// on for the game's lists while ours stays empty), and no list of the game,
+// which keeps a reference until it has been executed (Dx12ShimPin), as does
+// whatever else is yet to use it
+static bool resource_idle(ShimResource *resource, ULONGLONG idle_since)
+{
+	if (resource->evicted || resource->foreign || !resource->resource || resource->allocated < EVICTED_BYTES_MIN
+	    || resource->used_time > idle_since || !Dx12ShimFenceReached(resource->used_fence)
+	    || (resource->touched_epoch == dx12_shim_epoch && (list_used || resource->state != D3D12_RESOURCE_STATE_COMMON)))
+		return false;
+	resource->resource->AddRef();
+	return resource->resource->Release() == 1;
+}
+
+// Evicts the resources idle since then, oldest first, until that many bytes
+// are freed. Whether any was.
+static bool evict(UINT64 bytes, ULONGLONG idle_since)
+{
+	std::vector<std::pair<ULONGLONG, ShimResource*>> idle;
+	std::vector<ID3D12Pageable*> pageables;
+	UINT64 freed = 0;
+
+	for (ShimResource *resource : residents) {
+		if (resource_idle(resource, idle_since))
+			idle.push_back({ resource->used_time, resource });
+	}
+	std::sort(idle.begin(), idle.end());
+	for (auto &entry : idle) {
+		if (freed >= bytes)
+			break;
+		// Its transition to the common state at the next submission
+		// has nothing to do, and would make it resident again
+		if (entry.second->touched_epoch == dx12_shim_epoch) {
+			Dx12ShimForgetResource(entry.second);
+			entry.second->touched_epoch = 0;
+		}
+		pageables.push_back(entry.second->resource);
+		entry.second->evicted = true;
+		freed += entry.second->allocated;
+		dx12_memory.evicted++;
+		dx12_memory.evicted_bytes += entry.second->allocated;
+		dx12_memory.evictions++;
+		dx12_memory.eviction_bytes += entry.second->allocated;
+	}
+	if (pageables.empty())
+		return false;
+	shim.device->Evict((UINT)pageables.size(), pageables.data());
+	return true;
+}
+
+static void evict_idle()
+{
+	DXGI_QUERY_VIDEO_MEMORY_INFO memory;
+	ULONGLONG idle_ms = (ULONGLONG)G->dx12_evict_idle_seconds * 1000;
+	UINT64 limit;
+
+	if (!G->dx12_evict_idle || present_time - evicted_time < EVICT_INTERVAL_MS)
+		return;
+	evicted_time = present_time;
+	if (!Dx12ShimProcessMemory(&memory))
+		return;
+	limit = memory.Budget / 100 * G->dx12_evict_budget_percent;
+	if (memory.CurrentUsage > limit && present_time >= idle_ms)
+		evict(memory.CurrentUsage - limit, present_time - idle_ms);
+}
+
+bool Dx12ShimUseResource(ShimResource *resource)
+{
+	static bool failed;
+	LARGE_INTEGER start, end;
+	ID3D12Pageable *pageable = resource->resource;
+	HRESULT hr;
+
+	resource->used_time = present_time;
+	resource->used_fence = Dx12ShimPendingFence();
+	if (!resource->evicted)
+		return true;
+	// Each try takes long, and a frame has many uses: once one failed,
+	// the rest wait for the next present
+	if (failed_present == presents) {
+		dx12_memory.restore_failures++;
+		return false;
+	}
+
+	QueryPerformanceCounter(&start);
+	hr = shim.device->MakeResident(1, &pageable);
+	// With room made by evicting whatever else is not in use, short of
+	// what was used since the last present
+	if (FAILED(hr) && evict(resource->allocated, present_time - 1))
+		hr = shim.device->MakeResident(1, &pageable);
+	QueryPerformanceCounter(&end);
+	dx12_memory.restore_ticks += end.QuadPart - start.QuadPart;
+	if (FAILED(hr)) {
+		if (!failed)
+			Dx12LogInfo("*** Failed to make a resource of a mod resident again, what uses it is left out until it can be: 0x%x\n", hr);
+		failed = true;
+		failed_present = presents;
+		dx12_memory.restore_failures++;
+		return false;
+	}
+	resource->evicted = false;
+	dx12_memory.evicted--;
+	dx12_memory.evicted_bytes -= resource->allocated;
+	dx12_memory.restores++;
+	dx12_memory.restore_bytes += resource->allocated;
+	return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -780,14 +944,16 @@ void Dx12ShimPinsAbandoned(std::vector<IUnknown*> *pins, bool executed)
 void Dx12ShimFramePresented()
 {
 	release_retired();
+	present_time = GetTickCount64();
+	presents++;
+	evict_idle();
 }
 
 bool Dx12ShimUseOnGameList(ShimResource *resource, Dx12GraphicsCommandList *list)
 {
-	if (!resource->resource || resource->foreign)
+	if (!resource->resource || resource->foreign || !Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COMMON))
 		return false;
 
-	Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COMMON);
 	if (Dx12ShimPin(list, resource->resource))
 		game_uses[resource->resource]++;
 	return true;

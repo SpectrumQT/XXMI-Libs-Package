@@ -3354,8 +3354,9 @@ static bool reads_float_positions(UINT slot)
 }
 
 // into is the copy made before, to be written again. The lists of the game
-// that draw with it keep what it held, see ShimRenameResource.
-static ID3D11Buffer* unpack_buffer(ID3D11Buffer *buffer, UINT stride, ID3D11Buffer *into)
+// that draw with it keep what it held, see ShimRenameResource. retry tells a
+// failure that is worth trying again: a buffer was not ready (ShimNotReady).
+static ID3D11Buffer* unpack_buffer(ID3D11Buffer *buffer, UINT stride, ID3D11Buffer *into, bool *retry)
 {
 	D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
 	D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
@@ -3371,6 +3372,7 @@ static ID3D11Buffer* unpack_buffer(ID3D11Buffer *buffer, UINT stride, ID3D11Buff
 	bool done = false;
 	HRESULT hr;
 
+	*retry = false;
 	if (!unpack_shader && !unpack_failed) {
 		hr = D3DCompile(unpack_hlsl, sizeof(unpack_hlsl) - 1, "UnpackPositions", NULL, NULL, "main", "cs_5_0",
 			D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &errors);
@@ -3425,6 +3427,7 @@ static ID3D11Buffer* unpack_buffer(ID3D11Buffer *buffer, UINT stride, ID3D11Buff
 		}
 	}
 	if (!done) {
+		*retry = ShimNotReady(resource) || (out && ShimNotReady(ShimResourceOf(out)));
 		if (out && out != into)
 			out->Release();
 		out = NULL;
@@ -3443,6 +3446,7 @@ static ID3D11Buffer* unpack_buffer(ID3D11Buffer *buffer, UINT stride, ID3D11Buff
 static ID3D11Buffer* unpacked_buffer(ID3D11Buffer *buffer, UINT slot, UINT stride)
 {
 	static bool reported;
+	bool retry;
 
 	if (!reads_float_positions(slot))
 		return NULL;
@@ -3454,7 +3458,10 @@ static ID3D11Buffer* unpacked_buffer(ID3D11Buffer *buffer, UINT slot, UINT strid
 
 		if (!unpacked->copy || unpacked->version == version)
 			return unpacked->copy;
-		if (!unpack_buffer(buffer, stride, unpacked->copy)) {
+		if (!unpack_buffer(buffer, stride, unpacked->copy, &retry)) {
+			// Left at the version before, to be done at a later draw
+			if (retry)
+				return unpacked->copy;
 			unpacked->copy->Release();
 			unpacked->copy = NULL;
 		}
@@ -3462,8 +3469,10 @@ static ID3D11Buffer* unpacked_buffer(ID3D11Buffer *buffer, UINT slot, UINT strid
 		return unpacked->copy;
 	}
 
+	ID3D11Buffer *out = unpack_buffer(buffer, stride, NULL, &retry);
+	if (retry)
+		return NULL;
 	buffer->AddRef();
-	ID3D11Buffer *out = unpack_buffer(buffer, stride, NULL);
 	unpacked_buffers[buffer] = { out, version };
 	if (out) {
 		Dx12DumpNote("A mod's vertex buffer of stride %u was copied with its positions as floats for a draw that reads vertices of %u bytes\n",
@@ -5192,6 +5201,43 @@ void Dx12DrawPathConfigReloaded()
 
 static UINT reported_epoch;
 
+static void note_memory()
+{
+	DXGI_QUERY_VIDEO_MEMORY_INFO process = {};
+	UINT64 skinned = 0, standin_bytes = 0;
+	unsigned standins = 0;
+	LARGE_INTEGER frequency;
+
+	for (const auto &output : skin_outputs)
+		skinned += (output.second.buffer ? output.second.bytes : 0) + (output.second.spare ? output.second.spare_bytes : 0);
+	for (const auto &entry : published) {
+		D3D11_BUFFER_DESC desc;
+
+		if (!entry.second.standin)
+			continue;
+		entry.second.standin->GetDesc(&desc);
+		standin_bytes += desc.ByteWidth;
+		standins++;
+	}
+	Dx12ShimProcessMemory(&process);
+	QueryPerformanceFrequency(&frequency);
+	Dx12DumpNote("  Memory of the GPU: mods have %ld textures of %lld MB and %ld buffers of %lld MB (%ld of them under 64 KB, "
+		"which take %lld MB for %lld KB; %u stand in for buffers of the game, %llu MB), and %ld more for writes while the game's lists "
+		"use %ld of them, %lld MB; %llu MB of vertices skinned for mods in %Iu places; the process uses %llu MB of the GPU's memory, "
+		"which it was given %llu MB of\n",
+		dx12_memory.textures, dx12_memory.texture_bytes >> 20, dx12_memory.buffers, dx12_memory.buffer_bytes >> 20,
+		dx12_memory.small_buffers, ((LONG64)dx12_memory.small_buffers * D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT) >> 20,
+		dx12_memory.small_buffer_asked >> 10, standins, standin_bytes >> 20, dx12_memory.spares, dx12_memory.renamed,
+		dx12_memory.spare_bytes >> 20, skinned >> 20, skin_outputs.size(), process.CurrentUsage >> 20, process.Budget >> 20);
+	Dx12DumpNote("  Evicted mod resources: %ld of %lld MB now; since the last report %ld of %lld MB evicted, %ld of %lld MB made "
+		"resident again in %.1f ms, %ld uses left out as that failed\n",
+		dx12_memory.evicted, dx12_memory.evicted_bytes >> 20, dx12_memory.evictions, dx12_memory.eviction_bytes >> 20,
+		dx12_memory.restores, dx12_memory.restore_bytes >> 20, dx12_memory.restore_ticks * 1000.0 / frequency.QuadPart,
+		dx12_memory.restore_failures);
+	dx12_memory.evictions = dx12_memory.restores = dx12_memory.restore_failures = 0;
+	dx12_memory.eviction_bytes = dx12_memory.restore_bytes = dx12_memory.restore_ticks = 0;
+}
+
 static void link_shader_regex()
 {
 	std::vector<const Dx12ShaderInfo*> found;
@@ -5283,6 +5329,7 @@ void Dx12DrawPathFramePresented()
 			InterlockedExchange64(&dx12_stats.upload_pages_created, 0),
 			InterlockedExchange64(&dx12_stats.upload_pages_released, 0),
 			InterlockedExchange64(&dx12_stats.resources_renamed, 0));
+		note_memory();
 		stats = {};
 		reported_epoch = dx12_shim_epoch;
 	}

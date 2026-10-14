@@ -16,7 +16,8 @@ public:
 };
 
 // Copy CPU memory into a resource of ours. For a texture the data is one
-// whole subresource with rows row_pitch apart.
+// whole subresource with rows row_pitch apart. A resource that is evicted and
+// cannot be made resident now keeps the write in deferred_writes.
 bool ShimWriteBuffer(ShimResource *resource, UINT64 offset, const void *data, UINT64 size);
 // Gives a buffer that only had its contents in CPU memory a resource with
 // those contents, for the GPU to write to
@@ -31,10 +32,15 @@ void ShimFootprint(ShimResource *resource, D3D12_PLACED_SUBRESOURCE_FOOTPRINT *l
 // Copies the shadow of a texture with write_pending to it. Dx12ShimTransition
 // does, which whatever uses a resource goes through first.
 void ShimFlushWrite(ShimResource *resource);
+// Makes the writes kept in deferred_writes. Dx12ShimTransition does, once the
+// resource is resident again. False if some are still kept.
+bool ShimApplyDeferredWrites(ShimResource *resource);
 // Gives the resource a fresh D3D12 resource with the contents of the one it
 // has, which the game's lists that use it keep: for a write those lists are
 // not to see, see Bridge.h. Dx12ShimTransition does it for any write.
 bool ShimRenameResource(ShimResource *resource);
+// Adds what the resource takes to dx12_memory, or with -1 takes it away
+void ShimCountResource(ShimResource *resource, int sign);
 
 // Gives a shader of ours the DXIL it was compiled to as well, see
 // ShimShader::dxil_form

@@ -1440,6 +1440,10 @@ static bool refresh_later(ShimResource *resource, ConstantsSource *source, UINT 
 	if (!started || !Dx12ShimEarlyList())
 		return false;
 
+	// The early list would have the refresh land before older writes the
+	// resource was given while it could not be made resident
+	if (!resource->deferred_writes.empty() || !Dx12ShimUseResource(resource))
+		return false;
 	refreshing.resource = resource;
 	refreshing.target = resource->resource;
 	refreshing.target->AddRef();
@@ -2292,7 +2296,8 @@ static bool transfer_from_gpu(ShimResource *resource, UINT64 offset, UINT64 byte
 	if (!readback)
 		return false;
 
-	Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+	if (!Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE))
+		return false;
 	Dx12ShimList()->CopyBufferRegion(readback->resource, start, resource->resource, offset, bytes);
 	transfers.push_back({ readback->data + start, dst, (size_t)bytes });
 	transfers_pending = true;
@@ -2501,7 +2506,8 @@ static bool share_from_gpu(ShimResource *resource, UINT64 offset, UINT64 bytes, 
 	if (!shared)
 		return false;
 
-	Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+	if (!Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE))
+		return false;
 	Dx12ShimList()->CopyBufferRegion(shared->resource, *at, resource->resource, offset, bytes);
 	*buffer = shared->buffer;
 	copies_pending = true;
@@ -3041,7 +3047,8 @@ static bool fill_image(ModTexture *texture, ShimResource *resource, const D3D12_
 		return false;
 
 	// After this, so that what the engine has yet to write is written
-	Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+	if (!Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE))
+		return false;
 	src.pResource = resource->resource;
 	src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
 	dst.pResource = readback->resource;

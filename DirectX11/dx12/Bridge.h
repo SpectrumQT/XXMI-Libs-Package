@@ -165,9 +165,26 @@ void Dx12ShimFreeDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE type, D3D12_CPU_DESCRIPTO
 
 // Records the barrier that takes a resource of ours to the state, if it is
 // not there already. Read states accumulate, as a resource may be read in
-// several ways by one draw.
-void Dx12ShimTransition(ShimResource *resource, D3D12_RESOURCE_STATES state);
+// several ways by one draw. False if there is nothing the GPU may use: no
+// resource, or one that is not ready (ShimNotReady), which whatever was to
+// use it leaves out.
+bool Dx12ShimTransition(ShimResource *resource, D3D12_RESOURCE_STATES state);
 void Dx12ShimForgetResource(ShimResource *resource);
+
+// D3D12 keeps what mods load in the GPU's memory for good, where D3D11 has
+// the driver page out what goes unused. So once the process uses more than
+// G->dx12_evict_budget_percent of its budget, the mod resources unused for
+// G->dx12_evict_idle_seconds are evicted (Dx12ShimEvictIdle), and the next
+// use makes them resident again: Dx12ShimTransition, which every use goes
+// through, calls Dx12ShimUseResource first, as does whatever records a write
+// of the resource without it. False if it stays evicted.
+bool Dx12ShimUseResource(ShimResource *resource);
+// Adds a resource with memory of its own to those that may be evicted, or
+// takes it away
+void Dx12ShimTrackResidency(ShimResource *resource, bool tracked);
+// What the process uses of the GPU's local memory and the budget it has, as
+// the system counts them
+bool Dx12ShimProcessMemory(DXGI_QUERY_VIDEO_MEMORY_INFO *info);
 
 // Keeps the object alive until the game's list has been executed, as often
 // as it is, or has been reset without being executed. False if the list had

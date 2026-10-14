@@ -11,6 +11,7 @@
 #include "HashDump.h"
 
 Dx12Stats dx12_stats;
+Dx12Memory dx12_memory;
 volatile UINT dx12_frame;
 volatile UINT dx12_raytracing_frame;
 

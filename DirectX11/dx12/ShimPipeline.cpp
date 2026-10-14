@@ -272,7 +272,9 @@ static void null_uav(BYTE dimension, D3D12_CPU_DESCRIPTOR_HANDLE handle)
 	dx12_shim->device->CreateUnorderedAccessView(NULL, NULL, &desc, handle);
 }
 
-static void write_cbv(const ShimStageState *stage, UINT slot, D3D12_CPU_DESCRIPTOR_HANDLE handle)
+// The write_ functions are false if what is bound is not ready, see
+// ShimNotReady
+static bool write_cbv(const ShimStageState *stage, UINT slot, D3D12_CPU_DESCRIPTOR_HANDLE handle)
 {
 	D3D12_CONSTANT_BUFFER_VIEW_DESC desc = {};
 	ID3D11Buffer *buffer = stage->cbs[slot];
@@ -296,33 +298,35 @@ static void write_cbv(const ShimStageState *stage, UINT slot, D3D12_CPU_DESCRIPT
 	}
 
 	dx12_shim->device->CreateConstantBufferView(desc.BufferLocation ? &desc : NULL, handle);
+	return !buffer || !ShimNotReady(ShimResourceOf(buffer));
 }
 
-static void write_srv(const ShimShader *shader, ID3D11ShaderResourceView *srv, UINT slot, D3D12_CPU_DESCRIPTOR_HANDLE handle)
+static bool write_srv(const ShimShader *shader, ID3D11ShaderResourceView *srv, UINT slot, D3D12_CPU_DESCRIPTOR_HANDLE handle)
 {
 	ShimView *view = ShimViewOf(srv);
 
-	if (!view || !view->resource->resource) {
+	if (view && view->resource->resource)
+		ShimUploadShadow(view->resource);
+	if (!view || !Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)) {
 		null_srv(shader->srv_dimension[slot], handle);
-		return;
+		return !view || !ShimNotReady(view->resource);
 	}
 
-	ShimUploadShadow(view->resource);
-	Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 	dx12_shim->device->CopyDescriptorsSimple(1, handle, view->handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	return true;
 }
 
-static void write_uav(ID3D11UnorderedAccessView *uav, BYTE dimension, D3D12_CPU_DESCRIPTOR_HANDLE handle)
+static bool write_uav(ID3D11UnorderedAccessView *uav, BYTE dimension, D3D12_CPU_DESCRIPTOR_HANDLE handle)
 {
 	ShimView *view = ShimViewOf(uav);
 
-	if (!view || !view->resource->resource) {
+	if (!view || !Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)) {
 		null_uav(dimension, handle);
-		return;
+		return !view || !ShimNotReady(view->resource);
 	}
 
-	Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 	dx12_shim->device->CopyDescriptorsSimple(1, handle, view->handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	return true;
 }
 
 static BYTE uav_dimension(const ShimShader *const *shaders, UINT slot)
@@ -338,7 +342,9 @@ static BYTE uav_dimension(const ShimShader *const *shaders, UINT slot)
 
 // Fills in the tables for the shaders and gives them to the root signature
 // that has to be set on the list already. Records the transitions of what
-// they refer to on the way.
+// they refer to on the way. False if something bound is not ready
+// (ShimNotReady): what the shaders make of a null view in its place is not
+// to be drawn, nor kept as what a dispatch computed.
 static bool bind_tables(const ShimState *state, const RootKey *key, const ShimShader *const *shaders,
 		UINT64 uav_used, bool compute)
 {
@@ -348,6 +354,7 @@ static bool bind_tables(const ShimState *state, const RootKey *key, const ShimSh
 	D3D12_CPU_DESCRIPTOR_HANDLE cpu, samplers[SHIM_SAMPLER_SLOTS];
 	D3D12_GPU_DESCRIPTOR_HANDLE gpu;
 	UINT views = 0, sampler_count = 0, count = 0, i;
+	bool resident = true;
 
 	for_each_table(key, [&](TableKind kind, Dx12ShaderStage stage, UINT registers) {
 		if (kind == TABLE_SAMPLER)
@@ -381,22 +388,24 @@ static bool bind_tables(const ShimState *state, const RootKey *key, const ShimSh
 			// so its descriptor can stay whatever it is
 			switch (kind) {
 			case TABLE_CBV:
-				if (shader->cbv_used & (1u << slot))
-					write_cbv(bound, slot, cpu);
+				if ((shader->cbv_used & (1u << slot)) && !write_cbv(bound, slot, cpu))
+					resident = false;
 				break;
 			case TABLE_SRV:
-				if (shader->srv_used[slot / 64] & (1ull << (slot % 64)))
-					write_srv(shader, bound->srvs[slot], slot, cpu);
+				if ((shader->srv_used[slot / 64] & (1ull << (slot % 64))) && !write_srv(shader, bound->srvs[slot], slot, cpu))
+					resident = false;
 				break;
 			case TABLE_UAV:
-				if (uav_used & (1ull << slot))
-					write_uav(uavs[slot], uav_dimension(shaders, slot), cpu);
+				if ((uav_used & (1ull << slot)) && !write_uav(uavs[slot], uav_dimension(shaders, slot), cpu))
+					resident = false;
 				break;
 			}
 			cpu.ptr += dx12_shim_view_increment;
 			gpu.ptr += dx12_shim_view_increment;
 		}
 	});
+	if (!resident)
+		return false;
 
 	Dx12ShimBindHeaps();
 	for (i = 0; i < count; i++) {
@@ -711,6 +720,8 @@ bool Dx12ShimPrepareDraw(const ShimState *state, bool indexed)
 		if (state->vb_offsets[i] >= buffer.byte_width)
 			continue;
 		vbs[i].BufferLocation = Dx12ShimBufferAddress(state->vbs[i], D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+		if (!vbs[i].BufferLocation && ShimNotReady(ShimResourceOf(state->vbs[i])))
+			return false;
 		if (!vbs[i].BufferLocation)
 			continue;
 		vbs[i].BufferLocation += state->vb_offsets[i];
@@ -720,11 +731,11 @@ bool Dx12ShimPrepareDraw(const ShimState *state, bool indexed)
 	}
 
 	for (i = 0; i < key.rtv_count; i++) {
-		if (state->rtvs[i])
-			Dx12ShimTransition(ShimViewOf(state->rtvs[i])->resource, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		if (state->rtvs[i] && !Dx12ShimTransition(ShimViewOf(state->rtvs[i])->resource, D3D12_RESOURCE_STATE_RENDER_TARGET))
+			return false;
 	}
-	if (dsv)
-		Dx12ShimTransition(dsv->resource, dsv->read_only ? D3D12_RESOURCE_STATE_DEPTH_READ : D3D12_RESOURCE_STATE_DEPTH_WRITE);
+	if (dsv && !Dx12ShimTransition(dsv->resource, dsv->read_only ? D3D12_RESOURCE_STATE_DEPTH_READ : D3D12_RESOURCE_STATE_DEPTH_WRITE))
+		return false;
 
 	list = Dx12ShimList();
 	list->SetGraphicsRootSignature(signature);

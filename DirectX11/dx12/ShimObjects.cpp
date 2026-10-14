@@ -138,6 +138,8 @@ void ShimDestroyResource(ShimResource *resource)
 		Dx12ShimDeferRelease(resource->resource);
 		resource->resource->Release();
 	}
+	if (resource->allocated)
+		ShimCountResource(resource, -1);
 	if (resource->readback) {
 		Dx12ShimDeferRelease(resource->readback);
 		resource->readback->Release();
@@ -309,9 +311,8 @@ UINT64 Dx12ShimBufferAddress(ID3D11Buffer *buffer, D3D12_RESOURCE_STATES state)
 		return resource->foreign_va;
 
 	if (!resource->cpu_only) {
-		if (!resource->resource)
+		if (!Dx12ShimTransition(resource, state))
 			return 0;
-		Dx12ShimTransition(resource, state);
 		return resource->resource->GetGPUVirtualAddress();
 	}
 

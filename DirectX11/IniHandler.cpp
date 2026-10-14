@@ -4842,7 +4842,9 @@ void LoadConfigFile()
 	G->vulkan = GetIniBool(L"Rendering", L"vulkan", false, NULL);
 	G->vk_buffers_first = GetIniBool(L"Rendering", L"vk_buffers_first", false, NULL);
 	G->dx12_debug_layer = GetIniBool(L"Rendering", L"dx12_debug_layer", false, NULL);
-
+	G->dx12_evict_idle = GetIniBool(L"Rendering", L"dx12_evict_idle", true, NULL);
+	G->dx12_evict_idle_seconds = max(0, GetIniInt(L"Rendering", L"dx12_evict_idle_seconds", 30, NULL));
+	G->dx12_evict_budget_percent = min(max(0, GetIniInt(L"Rendering", L"dx12_evict_budget_percent", 90, NULL)), 1000);
 	if (GetIniStringAndLog(L"Rendering", L"override_directory", 0, G->SHADER_PATH, MAX_PATH))
 	{
 		while (G->SHADER_PATH[wcslen(G->SHADER_PATH) - 1] == L' ')

@@ -105,6 +105,28 @@ struct Dx12Stats {
 };
 extern Dx12Stats dx12_stats;
 
+// What the resources of mods take of the memory of the GPU now, by what
+// GetResourceAllocationInfo says of them
+struct Dx12Memory {
+	volatile LONG64 texture_bytes, buffer_bytes;
+	volatile LONG textures, buffers;
+	// Buffers of less than 64 KB, which take 64 KB each, and the bytes
+	// they were asked for
+	volatile LONG small_buffers;
+	volatile LONG64 small_buffer_asked;
+	// Kept by ShimRenameResource
+	volatile LONG64 spare_bytes;
+	volatile LONG spares, renamed;
+	// Evicted by Dx12ShimEvictIdle now, and since the last report: evicted,
+	// made resident again, with the time that took in performance counter
+	// ticks, and left out of what was recorded as that failed
+	LONG evicted;
+	LONG64 evicted_bytes;
+	LONG evictions, restores, restore_failures;
+	LONG64 eviction_bytes, restore_bytes, restore_ticks;
+};
+extern Dx12Memory dx12_memory;
+
 // The last frame the game built an acceleration structure or dispatched rays
 // in, 0 if never: whether it is ray tracing, which changes how it skins
 extern volatile UINT dx12_raytracing_frame;

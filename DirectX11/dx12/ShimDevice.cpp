@@ -1,5 +1,6 @@
 #include "ShimDevice.h"
 
+#include <algorithm>
 #include <d3dcompiler.h>
 
 #include "Dxc.h"
@@ -91,6 +92,48 @@ HRESULT STDMETHODCALLTYPE ShimDevice::CheckFormatSupport(DXGI_FORMAT Format, UIN
 // -----------------------------------------------------------------------------
 // Resources
 
+// The earlier writes this one covers are dropped, so that a resource written
+// every frame while it stays evicted keeps one
+static void defer_write(ShimResource *resource, UINT subresource, UINT64 offset, UINT row_pitch, const void *data, UINT64 size)
+{
+	auto &writes = resource->deferred_writes;
+	bool buffer = resource->desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
+
+	writes.erase(std::remove_if(writes.begin(), writes.end(), [&](const ShimResource::DeferredWrite &write) {
+		return write.subresource == subresource
+			&& (!buffer || (write.offset >= offset && write.offset + write.data.size() <= offset + size));
+	}), writes.end());
+	writes.push_back({ subresource, offset, row_pitch, std::vector<BYTE>((const BYTE*)data, (const BYTE*)data + size) });
+}
+
+bool ShimApplyDeferredWrites(ShimResource *resource)
+{
+	std::vector<ShimResource::DeferredWrite> writes;
+	// Each deferred write counted as a write when it was made, so a shadow
+	// that is still all of the contents has them already
+	bool shadow_whole = resource->shadow_version == resource->version;
+	size_t i;
+
+	// First, as writing goes through Dx12ShimTransition itself
+	writes.swap(resource->deferred_writes);
+	for (i = 0; i < writes.size(); i++) {
+		const auto &write = writes[i];
+
+		if (resource->desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER
+		    ? !ShimWriteBuffer(resource, write.offset, write.data.data(), write.data.size())
+		    : !ShimWriteSubresource(resource, write.subresource, write.data.data(), write.row_pitch, 0))
+			break;
+	}
+	if (shadow_whole)
+		resource->shadow_version = resource->version;
+	if (i == writes.size())
+		return true;
+	// Out of upload memory: the rest, in order, for the next use
+	writes.erase(writes.begin(), writes.begin() + i);
+	resource->deferred_writes.swap(writes);
+	return false;
+}
+
 bool ShimWriteBuffer(ShimResource *resource, UINT64 offset, const void *data, UINT64 size)
 {
 	ID3D12Resource *upload_buffer;
@@ -105,7 +148,11 @@ bool ShimWriteBuffer(ShimResource *resource, UINT64 offset, const void *data, UI
 		return false;
 	memcpy(upload, data, size);
 
-	Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_DEST);
+	if (!Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_DEST)) {
+		defer_write(resource, 0, offset, 0, data, size);
+		resource->version++;
+		return true;
+	}
 	Dx12ShimList()->CopyBufferRegion(resource->resource, offset, upload_buffer, upload_offset, size);
 	return true;
 }
@@ -167,7 +214,11 @@ bool ShimWriteSubresource(ShimResource *resource, UINT subresource, const void *
 	src.PlacedFootprint.Offset = upload_offset;
 
 	// The transition may give the resource another D3D12 resource
-	Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_DEST);
+	if (!Dx12ShimTransition(resource, D3D12_RESOURCE_STATE_COPY_DEST)) {
+		defer_write(resource, subresource, 0, layout.Footprint.RowPitch, upload, total);
+		resource->version++;
+		return true;
+	}
 	dst.pResource = resource->resource;
 	Dx12ShimList()->CopyTextureRegion(&dst, 0, 0, 0, &src, NULL);
 	return true;
@@ -194,6 +245,30 @@ static D3D12_RESOURCE_FLAGS resource_flags(UINT bind_flags)
 	return flags;
 }
 
+void ShimCountResource(ShimResource *resource, int sign)
+{
+	const UINT64 SMALL = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+	LONG64 bytes = (LONG64)resource->allocated * sign;
+
+	if (resource->desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
+		InterlockedAdd64(&dx12_memory.buffer_bytes, bytes);
+		InterlockedAdd(&dx12_memory.buffers, sign);
+		if (resource->desc.Width < SMALL) {
+			InterlockedAdd(&dx12_memory.small_buffers, sign);
+			InterlockedAdd64(&dx12_memory.small_buffer_asked, (LONG64)resource->desc.Width * sign);
+		}
+	} else {
+		InterlockedAdd64(&dx12_memory.texture_bytes, bytes);
+		InterlockedAdd(&dx12_memory.textures, sign);
+	}
+	if (!resource->spares.empty()) {
+		InterlockedAdd64(&dx12_memory.spare_bytes, bytes * (LONG64)resource->spares.size());
+		InterlockedAdd(&dx12_memory.spares, sign * (LONG)resource->spares.size());
+		InterlockedAdd(&dx12_memory.renamed, sign);
+	}
+	Dx12ShimTrackResidency(resource, sign > 0);
+}
+
 static HRESULT create_resource(ShimResource *resource, const D3D12_RESOURCE_DESC *desc)
 {
 	D3D12_HEAP_PROPERTIES heap = {};
@@ -211,6 +286,8 @@ static HRESULT create_resource(ShimResource *resource, const D3D12_RESOURCE_DESC
 
 	resource->desc = resource->resource->GetDesc();
 	resource->state = D3D12_RESOURCE_STATE_COMMON;
+	resource->allocated = dx12_shim->device->GetResourceAllocationInfo(0, 1, &resource->desc).SizeInBytes;
+	ShimCountResource(resource, 1);
 	return S_OK;
 }
 
@@ -218,6 +295,15 @@ static HRESULT create_resource(ShimResource *resource, const D3D12_RESOURCE_DESC
 // through as many D3D12 resources a frame, which the lists of the last frames
 // still hold, so a few more than that are kept before any is let go
 const size_t SPARES_KEPT = 16;
+
+// After resource->spares changed by one
+static void count_spares(ShimResource *resource, int sign)
+{
+	InterlockedAdd64(&dx12_memory.spare_bytes, (LONG64)resource->allocated * sign);
+	InterlockedAdd(&dx12_memory.spares, sign);
+	if (resource->spares.size() == (sign > 0 ? 1 : 0))
+		InterlockedAdd(&dx12_memory.renamed, sign);
+}
 
 bool ShimRenameResource(ShimResource *resource)
 {
@@ -234,6 +320,7 @@ bool ShimRenameResource(ShimResource *resource)
 			continue;
 		fresh = resource->spares[i];
 		resource->spares.erase(resource->spares.begin() + i);
+		count_spares(resource, -1);
 		break;
 	}
 	if (!fresh) {
@@ -262,10 +349,12 @@ bool ShimRenameResource(ShimResource *resource)
 	resource->resource = fresh;
 	resource->state = D3D12_RESOURCE_STATE_COPY_DEST;
 	resource->spares.push_back(old);
+	count_spares(resource, 1);
 	if (resource->spares.size() > SPARES_KEPT) {
 		Dx12ShimDeferRelease(resource->spares.front());
 		resource->spares.front()->Release();
 		resource->spares.erase(resource->spares.begin());
+		count_spares(resource, -1);
 	}
 	for (ShimView *view : resource->views)
 		ShimRecreateView(view);

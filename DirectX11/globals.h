@@ -531,6 +531,9 @@ struct Globals
 	Dx12Mode dx12;
 	bool dx12_dump_hashes;
 	bool dx12_debug_layer;
+	bool dx12_evict_idle;
+	UINT dx12_evict_idle_seconds;
+	UINT dx12_evict_budget_percent;
 	bool vk_dump_hashes;
 	bool vulkan;
 	bool vk_buffers_first;
@@ -788,6 +791,9 @@ struct Globals
 		dx12(Dx12Mode::AUTO),
 		dx12_dump_hashes(false),
 		dx12_debug_layer(false),
+		dx12_evict_idle(true),
+		dx12_evict_idle_seconds(30),
+		dx12_evict_budget_percent(90),
 		vk_dump_hashes(false),
 		vulkan(false),
 		vk_buffers_first(false),

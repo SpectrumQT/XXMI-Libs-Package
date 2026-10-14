@@ -782,10 +782,9 @@ void STDMETHODCALLTYPE ShimContext::ClearRenderTargetView(ID3D11RenderTargetView
 {
 	ShimView *view = ShimViewOf(pRenderTargetView);
 
-	if (!view || !view->resource->resource)
+	if (!view || !Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_RENDER_TARGET))
 		return;
 
-	Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_RENDER_TARGET);
 	Dx12ShimList()->ClearRenderTargetView(view->handle, ColorRGBA, 0, NULL);
 }
 
@@ -793,10 +792,9 @@ void STDMETHODCALLTYPE ShimContext::ClearDepthStencilView(ID3D11DepthStencilView
 {
 	ShimView *view = ShimViewOf(pDepthStencilView);
 
-	if (!view || !view->resource->resource)
+	if (!view || !Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_DEPTH_WRITE))
 		return;
 
-	Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 	// D3D12_CLEAR_FLAGS has the values of D3D11_CLEAR_FLAG
 	Dx12ShimList()->ClearDepthStencilView(view->handle, (D3D12_CLEAR_FLAGS)ClearFlags, Depth, Stencil, 0, NULL);
 }
@@ -814,7 +812,8 @@ static bool prepare_uav_clear(ShimView *view, D3D12_GPU_DESCRIPTOR_HANDLE *gpu)
 	if (!cpu.ptr)
 		return false;
 	// Before the descriptor is read: the transition may write it again
-	Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	if (!Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+		return false;
 	dx12_shim->device->CopyDescriptorsSimple(1, cpu, view->handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
 	Dx12ShimBindHeaps();
@@ -851,8 +850,7 @@ void STDMETHODCALLTYPE ShimContext::ClearUnorderedAccessViewUint(ID3D11Unordered
 
 	cpu = Dx12ShimAllocDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	shown = Dx12ShimAllocViews(1, &gpu);
-	if (cpu.ptr && shown.ptr) {
-		Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	if (cpu.ptr && shown.ptr && Dx12ShimTransition(view->resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)) {
 		dx12_shim->device->CreateUnorderedAccessView(view->resource->resource, NULL, &words, cpu);
 		dx12_shim->device->CopyDescriptorsSimple(1, shown, cpu, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		Dx12ShimBindHeaps();
@@ -1081,8 +1079,7 @@ static void copy_buffer(ID3D11Resource *dst11, UINT64 dst_offset, ID3D11Resource
 			VkScopeFinishRefresh(dst);
 			memcpy(dst->shadow.data() + dst_offset, src->shadow.data() + src_offset, (size_t)size);
 			dst->version++;
-		} else if (src->resource && create_readback(dst)) {
-			Dx12ShimTransition(src, D3D12_RESOURCE_STATE_COPY_SOURCE);
+		} else if (src->resource && create_readback(dst) && Dx12ShimTransition(src, D3D12_RESOURCE_STATE_COPY_SOURCE)) {
 			Dx12ShimList()->CopyBufferRegion(dst->readback, dst_offset, src->resource, src_offset, size);
 			dst->readback_fence = Dx12ShimPendingFence();
 			dst->readback_pending = true;
@@ -1093,11 +1090,10 @@ static void copy_buffer(ID3D11Resource *dst11, UINT64 dst_offset, ID3D11Resource
 	if (src_in_shadow) {
 		ShimWriteBuffer(dst, dst_offset, src->shadow.data() + src_offset, size);
 	} else if (dst->resource && (game_constants = game_constants_source(src, &game_offset))) {
-		Dx12ShimTransition(dst, D3D12_RESOURCE_STATE_COPY_DEST);
-		Dx12ShimList()->CopyBufferRegion(dst->resource, dst_offset, game_constants, game_offset + src_offset, size);
-	} else if (src->resource && dst->resource && src != dst) {
-		Dx12ShimTransition(src, D3D12_RESOURCE_STATE_COPY_SOURCE);
-		Dx12ShimTransition(dst, D3D12_RESOURCE_STATE_COPY_DEST);
+		if (Dx12ShimTransition(dst, D3D12_RESOURCE_STATE_COPY_DEST))
+			Dx12ShimList()->CopyBufferRegion(dst->resource, dst_offset, game_constants, game_offset + src_offset, size);
+	} else if (src->resource && dst->resource && src != dst && Dx12ShimTransition(src, D3D12_RESOURCE_STATE_COPY_SOURCE)
+		   && Dx12ShimTransition(dst, D3D12_RESOURCE_STATE_COPY_DEST)) {
 		Dx12ShimList()->CopyBufferRegion(dst->resource, dst_offset, src->resource, src_offset, size);
 	}
 }
@@ -1118,11 +1114,10 @@ void STDMETHODCALLTYPE ShimContext::CopySubresourceRegion(ID3D11Resource *pDstRe
 		return;
 	}
 
-	if (!dst->resource || !src->resource || dst == src)
+	if (dst == src || !Dx12ShimTransition(src, D3D12_RESOURCE_STATE_COPY_SOURCE)
+	    || !Dx12ShimTransition(dst, D3D12_RESOURCE_STATE_COPY_DEST))
 		return;
 
-	Dx12ShimTransition(src, D3D12_RESOURCE_STATE_COPY_SOURCE);
-	Dx12ShimTransition(dst, D3D12_RESOURCE_STATE_COPY_DEST);
 	dst_location.pResource = dst->resource;
 	dst_location.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
 	dst_location.SubresourceIndex = DstSubresource;
@@ -1150,11 +1145,10 @@ void STDMETHODCALLTYPE ShimContext::CopyResource(ID3D11Resource *pDstResource, I
 		return;
 	}
 
-	if (!dst->resource || !src->resource || dst == src)
+	if (dst == src || !Dx12ShimTransition(src, D3D12_RESOURCE_STATE_COPY_SOURCE)
+	    || !Dx12ShimTransition(dst, D3D12_RESOURCE_STATE_COPY_DEST))
 		return;
 
-	Dx12ShimTransition(src, D3D12_RESOURCE_STATE_COPY_SOURCE);
-	Dx12ShimTransition(dst, D3D12_RESOURCE_STATE_COPY_DEST);
 	Dx12ShimList()->CopyResource(dst->resource, src->resource);
 }
 

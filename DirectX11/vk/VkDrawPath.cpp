@@ -92,8 +92,9 @@ static struct {
 	unsigned idle_draws;
 	// Presents of the game's device, of which on another thread than the
 	// draws were last submitted on, submissions with draws the engine was
-	// shown and the frames counted by them
-	unsigned presents, presents_apart, frame_submits, frames_counted;
+	// shown and the frames counted by them, and such submissions of another
+	// thread that were not
+	unsigned presents, presents_apart, frame_submits, frames_counted, overlay_submits;
 } stats;
 
 // Submissions without such draws while something was yet to be brought for
@@ -3627,8 +3628,9 @@ struct CmdState {
 	VkPipelineLayout layouts[MAX_SETS];
 	BYTE dynamic_count[MAX_SETS];
 	uint32_t dynamic[MAX_SETS][MAX_DYNAMIC];
-	// A draw recorded to it, or to one it executes, was shown to the engine
-	bool shown;
+	// Draws recorded to it, or to those it executes, that were shown to the
+	// engine
+	unsigned shown;
 };
 
 // One for every handle there has been, which is what lets a thread remember
@@ -3670,9 +3672,9 @@ void VkModsBeginCommands(VkCommandBuffer cmd)
 	*cmd_state(cmd) = {};
 }
 
-bool VkModsCommandsShown(VkCommandBuffer cmd)
+unsigned VkModsCommandsShown(VkCommandBuffer cmd)
 {
-	bool shown = false;
+	unsigned shown = 0;
 
 	AcquireSRWLockShared(&cmd_lock);
 	auto found = cmd_states.find(cmd);
@@ -3686,12 +3688,8 @@ void VkModsExecuteCommands(VkCommandBuffer cmd, uint32_t count, const VkCommandB
 {
 	uint32_t i;
 
-	for (i = 0; i < count; i++) {
-		if (VkModsCommandsShown(cmds[i])) {
-			cmd_state(cmd)->shown = true;
-			return;
-		}
-	}
+	for (i = 0; i < count; i++)
+		cmd_state(cmd)->shown += VkModsCommandsShown(cmds[i]);
 }
 
 // The engine counts a frame for every present of the D3D12 device, which is
@@ -3705,16 +3703,25 @@ static bool frames_by_submission;
 static bool frame_presented;
 static UINT presents_without_frame;
 static DWORD submit_thread;
+// The draws shown to the engine that the last submission of submit_thread
+// had. Frame generation presents from a thread of its own, and an overlay
+// that draws over every picture presented records and submits there: a draw
+// or two that the engine may well be shown, but no frame of the game. A
+// submission of another thread with fewer is taken for such.
+static unsigned submit_draws;
 static uint64_t frame_ticks;
 // More than frame generation makes of one frame of the game
 const UINT PRESENTS_WITHOUT_FRAME_MAX = 16;
 
-bool VkModsFrameSubmitted()
+bool VkModsFrameSubmitted(unsigned draws)
 {
+	DWORD thread = GetCurrentThreadId();
 	bool counted = false;
 
 	Dx12ShimLock();
-	if (dx12_shim) {
+	if (dx12_shim && frames_by_submission && thread != submit_thread && draws < submit_draws) {
+		stats.overlay_submits++;
+	} else if (dx12_shim) {
 		if (frame_presented) {
 			counted = true;
 			uint64_t now = GetSystemTicks();
@@ -3731,7 +3738,8 @@ bool VkModsFrameSubmitted()
 		}
 		frames_by_submission = true;
 		presents_without_frame = 0;
-		submit_thread = GetCurrentThreadId();
+		submit_thread = thread;
+		submit_draws = draws;
 		stats.frame_submits++;
 	}
 	Dx12ShimUnlock();
@@ -5469,7 +5477,7 @@ bool VkModsDraw(VkCommandBuffer cmd, bool indexed, uint32_t count, uint32_t inst
 	forget_dead_buffers();
 	Dx12WorkOutFilter(&state->pipeline->filter, state->pipeline->shaders);
 	stats.slow[reason]++;
-	state->shown = true;
+	state->shown++;
 
 	opened.cmd = cmd;
 	opened.state = *state;
@@ -5652,11 +5660,11 @@ static void report()
 		stats.slow[SLOW_SETTINGS], stats.slow[SLOW_LISTS], stats.slow[SLOW_INDEX_COUNT], stats.slow[SLOW_CONSTANTS],
 		(unsigned)InterlockedExchange(&fast_draws, 0), (unsigned)InterlockedExchange(&quiet_draws, 0));
 	VkDumpNote("  Frames: %u presents of the game's device, %u of them on another thread than its draws were submitted on; "
-		"%u submissions with draws the engine was shown, %u frames counted by them (FRAME_NUMBER %u, %s); %u other submissions "
-		"while something was yet to be brought for the draws\n",
+		"%u submissions with draws the engine was shown, %u frames counted by them (FRAME_NUMBER %u, %s), %u more of another "
+		"thread with fewer such draws not counted; %u other submissions while something was yet to be brought for the draws\n",
 		stats.presents, stats.presents_apart, stats.frame_submits, stats.frames_counted, G->frame_no,
 		frames_by_submission ? "counted by the submissions" : "counted by the presents of the D3D12 device",
-		(unsigned)InterlockedExchange(&submits_apart, 0));
+		stats.overlay_submits, (unsigned)InterlockedExchange(&submits_apart, 0));
 	SpatialPoolMisses spatial = TakeSpatialPoolMisses();
 	VkDumpNote("  Spatial pools: %u lookups took the slot of a nearby cell, %u found none within the radius (%u of them one "
 		"within twice the radius); frame_time %.2f ms\n",

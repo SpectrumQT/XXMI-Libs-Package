@@ -165,11 +165,11 @@ void VkModsBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint bind_poin
 // see VkModsCommandsShown: no other submission is one to wait.
 VkSemaphore VkModsBeforeSubmit(VkQueue queue, UINT64 *value, bool shown);
 
-// Whether the command buffer has draws the engine was shown, and that such
-// are handed to a queue: the game's frame, which the engine counts by
-bool VkModsCommandsShown(VkCommandBuffer cmd);
-// True if it counted a frame
-bool VkModsFrameSubmitted();
+// How many draws of the command buffer the engine was shown, and that a
+// submission with such is handed to a queue, with how many it has: the
+// game's frame, which the engine counts by. True if it counted a frame.
+unsigned VkModsCommandsShown(VkCommandBuffer cmd);
+bool VkModsFrameSubmitted(unsigned draws);
 
 // True if the draw was dealt with, which includes making it with whichever of
 // the two functions it is for: the caller then has nothing left to do

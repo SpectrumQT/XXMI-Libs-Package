@@ -62,12 +62,13 @@ enum {
 	CSV_OBJECTS,
 	CSV_DRAWS,
 	CSV_PROBE,
+	CSV_FRAMES,
 	// Not a CSV: what the log is told, for when logging is disabled
 	CSV_REPORT,
 	CSV_COUNT
 };
 static const wchar_t *const csv_names[CSV_COUNT] = {
-	L"vk_shaders.csv", L"vk_pipelines.csv", L"vk_buffers.csv", L"vk_buffer_objects.csv", L"vk_draws.csv", L"vk_probe.csv", L"vk_report.txt",
+	L"vk_shaders.csv", L"vk_pipelines.csv", L"vk_buffers.csv", L"vk_buffer_objects.csv", L"vk_draws.csv", L"vk_probe.csv", L"vk_frames.csv", L"vk_report.txt",
 };
 static const char *const csv_headers[CSV_COUNT] = {
 	"hash,stage,bytes,spirv_version,generator,entry,named,unnamed,inputs,resources\n",
@@ -79,6 +80,7 @@ static const char *const csv_headers[CSV_COUNT] = {
 		"vb0,vb0_offset,vb0_stride,vb0_range,vb0_bytes,vb0_hash,vb0_hash_srv,"
 		"ib_buffer_bytes,ib_usage,ib_mapped,vb0_buffer_bytes,vb0_usage,vb0_mapped\n",
 	"frame,buffer,offset,bytes,first_index,index_count,region_hash,previous_hash\n",
+	"us,event,thread,queue,shown,batches,cbs,waits,signals,fence,timeline,first_wait,first_signal,present_id,counted,frame_no\n",
 	"",
 };
 
@@ -257,6 +259,35 @@ static FILE* csv(int which)
 	csv_failed[which] = false;
 	fputs(csv_headers[which], csv_files[which]);
 	return csv_files[which];
+}
+
+// Several minutes of a game that submits a few hundred times a second
+const unsigned FRAME_EVENTS_MAX = 500000;
+
+void VkDumpFrameEvent(const VkFrameEvent *event)
+{
+	static LARGE_INTEGER start, frequency;
+	static unsigned rows;
+	LARGE_INTEGER now;
+	FILE *file;
+
+	if (!vk_dump_active)
+		return;
+	QueryPerformanceCounter(&now);
+	AcquireSRWLockExclusive(&lock);
+	if (!start.QuadPart) {
+		QueryPerformanceFrequency(&frequency);
+		start = now;
+	}
+	file = rows < FRAME_EVENTS_MAX ? csv(CSV_FRAMES) : NULL;
+	if (file) {
+		rows++;
+		fprintf(file, "%llu,%s,%lu,%p,%u,%u,%u,%u,%u,%d,%d,%p,%p,%llu,%d,%u\n",
+			(now.QuadPart - start.QuadPart) * 1000000 / frequency.QuadPart, event->event, GetCurrentThreadId(),
+			event->queue, event->shown, event->batches, event->cbs, event->waits, event->signals, event->fence,
+			event->timeline, event->first_wait, event->first_signal, event->present_id, event->counted, event->frame_no);
+	}
+	ReleaseSRWLockExclusive(&lock);
 }
 
 void VkDumpNote(const char *format, ...)
@@ -980,6 +1011,8 @@ static void hash_report()
 
 	AcquireSRWLockExclusive(&lock);
 
+	if (csv_files[CSV_FRAMES])
+		fflush(csv_files[CSV_FRAMES]);
 	report = csv(CSV_REPORT);
 	if (report)
 		fprintf(report, "Frame %u\n", vk_frame);

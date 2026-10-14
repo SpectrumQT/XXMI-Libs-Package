@@ -3709,11 +3709,14 @@ static uint64_t frame_ticks;
 // More than frame generation makes of one frame of the game
 const UINT PRESENTS_WITHOUT_FRAME_MAX = 16;
 
-void VkModsFrameSubmitted()
+bool VkModsFrameSubmitted()
 {
+	bool counted = false;
+
 	Dx12ShimLock();
 	if (dx12_shim) {
 		if (frame_presented) {
+			counted = true;
 			uint64_t now = GetSystemTicks();
 
 			frame_presented = false;
@@ -3732,6 +3735,7 @@ void VkModsFrameSubmitted()
 		stats.frame_submits++;
 	}
 	Dx12ShimUnlock();
+	return counted;
 }
 
 bool VkModsCountFrames()

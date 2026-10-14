@@ -54,3 +54,18 @@ void VkDumpBindIndexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize of
 void VkDumpDraw(VkCommandBuffer cmd, const char *type, uint32_t count, uint32_t instances, uint32_t first, int32_t base_vertex);
 
 void VkDumpPresent();
+
+// A submission or present, for telling where the frames of the game begin
+// when frame generation presents for it (vk_frames.csv)
+struct VkFrameEvent {
+	const char *event;
+	VkQueue queue;
+	// Draws of it shown to the engine
+	unsigned shown;
+	bool fence, timeline, counted;
+	uint32_t batches, cbs, waits, signals;
+	VkSemaphore first_wait, first_signal;
+	uint64_t present_id;
+	unsigned frame_no;
+};
+void VkDumpFrameEvent(const VkFrameEvent *event);

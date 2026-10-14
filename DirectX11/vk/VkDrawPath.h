@@ -168,7 +168,8 @@ VkSemaphore VkModsBeforeSubmit(VkQueue queue, UINT64 *value, bool shown);
 // Whether the command buffer has draws the engine was shown, and that such
 // are handed to a queue: the game's frame, which the engine counts by
 bool VkModsCommandsShown(VkCommandBuffer cmd);
-void VkModsFrameSubmitted();
+// True if it counted a frame
+bool VkModsFrameSubmitted();
 
 // True if the draw was dealt with, which includes making it with whichever of
 // the two functions it is for: the caller then has nothing left to do

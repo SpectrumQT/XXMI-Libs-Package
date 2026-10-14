@@ -554,6 +554,27 @@ static bool can_wait_for_fence(uint32_t count, const VkSubmitInfo *submits)
 	return true;
 }
 
+static void dump_submit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence, bool shown, bool counted)
+{
+	VkFrameEvent event = { "submit", queue, shown, fence != VK_NULL_HANDLE, false, counted, count };
+	const VkBaseInStructure *next;
+	uint32_t i;
+
+	for (i = 0; i < count; i++) {
+		if (submits[i].waitSemaphoreCount && !event.first_wait)
+			event.first_wait = submits[i].pWaitSemaphores[0];
+		if (submits[i].signalSemaphoreCount && !event.first_signal)
+			event.first_signal = submits[i].pSignalSemaphores[0];
+		event.cbs += submits[i].commandBufferCount;
+		event.waits += submits[i].waitSemaphoreCount;
+		event.signals += submits[i].signalSemaphoreCount;
+		for (next = (const VkBaseInStructure*)submits[i].pNext; next; next = next->pNext)
+			event.timeline |= next->sType == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+	}
+	event.frame_no = G->frame_no;
+	VkDumpFrameEvent(&event);
+}
+
 static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence)
 {
 	static thread_local std::vector<VkSemaphore> semaphores;
@@ -563,7 +584,7 @@ static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, c
 	VkSemaphore semaphore = VK_NULL_HANDLE;
 	VkSubmitInfo waiting;
 	UINT64 value = 0;
-	bool shown = false;
+	bool shown = false, counted = false;
 	uint32_t i, j;
 
 	if (vk_mods_active) {
@@ -572,7 +593,11 @@ static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, c
 				shown = VkModsCommandsShown(submits[i].pCommandBuffers[j]);
 		}
 		if (shown)
-			VkModsFrameSubmitted();
+			counted = VkModsFrameSubmitted();
+	}
+	if (vk_dump_active)
+		dump_submit(queue, count, submits, fence, shown, counted);
+	if (vk_mods_active) {
 		semaphore = VkModsBeforeSubmit(queue, can_wait_for_fence(count, submits) ? &value : NULL, shown);
 	}
 	if (!semaphore)
@@ -602,26 +627,52 @@ static VkResult VKAPI_CALL Hooked_vkQueueSubmit(VkQueue queue, uint32_t count, c
 
 static VkResult VKAPI_CALL Hooked_vkQueueSubmit2(VkQueue queue, uint32_t count, const VkSubmitInfo2 *submits, VkFence fence)
 {
-	bool shown = false;
+	VkFrameEvent event = { "submit2", queue, 0, fence != VK_NULL_HANDLE, true, false, count };
 	uint32_t i, j;
 
 	if (vk_mods_active) {
-		for (i = 0; i < count && !shown; i++) {
-			for (j = 0; j < submits[i].commandBufferInfoCount && !shown; j++)
-				shown = VkModsCommandsShown(submits[i].pCommandBufferInfos[j].commandBuffer);
+		for (i = 0; i < count && !event.shown; i++) {
+			for (j = 0; j < submits[i].commandBufferInfoCount && !event.shown; j++)
+				event.shown = VkModsCommandsShown(submits[i].pCommandBufferInfos[j].commandBuffer);
 		}
-		if (shown)
-			VkModsFrameSubmitted();
-		VkModsBeforeSubmit(queue, NULL, shown);
+		if (event.shown)
+			event.counted = VkModsFrameSubmitted();
 	}
+	if (vk_dump_active) {
+		for (i = 0; i < count; i++) {
+			if (submits[i].waitSemaphoreInfoCount && !event.first_wait)
+				event.first_wait = submits[i].pWaitSemaphoreInfos[0].semaphore;
+			if (submits[i].signalSemaphoreInfoCount && !event.first_signal)
+				event.first_signal = submits[i].pSignalSemaphoreInfos[0].semaphore;
+			event.cbs += submits[i].commandBufferInfoCount;
+			event.waits += submits[i].waitSemaphoreInfoCount;
+			event.signals += submits[i].signalSemaphoreInfoCount;
+		}
+		event.frame_no = G->frame_no;
+		VkDumpFrameEvent(&event);
+	}
+	if (vk_mods_active)
+		VkModsBeforeSubmit(queue, NULL, !!event.shown);
 	return next_QueueSubmit2(queue)(queue, count, submits, fence);
 }
 
 static VkResult VKAPI_CALL Hooked_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *info)
 {
 	InterlockedIncrement((volatile LONG*)&vk_frame);
-	if (vk_dump_active)
+	if (vk_dump_active) {
+		VkFrameEvent event = { "present", queue, 0, false, false, false, info->swapchainCount, 0, info->waitSemaphoreCount };
+		const VkBaseInStructure *next;
+
+		if (info->waitSemaphoreCount)
+			event.first_wait = info->pWaitSemaphores[0];
+		for (next = (const VkBaseInStructure*)info->pNext; next; next = next->pNext) {
+			if (next->sType == VK_STRUCTURE_TYPE_PRESENT_ID_KHR && ((const VkPresentIdKHR*)next)->pPresentIds)
+				event.present_id = ((const VkPresentIdKHR*)next)->pPresentIds[0];
+		}
+		event.frame_no = G->frame_no;
+		VkDumpFrameEvent(&event);
 		VkDumpPresent();
+	}
 	if (vk_mods_active)
 		VkModsPresent(queue);
 	return next_QueuePresentKHR(queue)(queue, info);

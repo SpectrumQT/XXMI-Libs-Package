@@ -94,7 +94,7 @@ static struct {
 	// draws were last submitted on, submissions with draws the engine was
 	// shown and the frames counted by them, and such submissions of another
 	// thread that were not
-	unsigned presents, presents_apart, frame_submits, frames_counted, overlay_submits;
+	unsigned presents, presents_apart, frame_submits, frames_counted, frames_unpresented, overlay_submits;
 } stats;
 
 // Submissions without such draws while something was yet to be brought for
@@ -3711,6 +3711,13 @@ static unsigned submit_draws;
 static uint64_t frame_ticks;
 // More than frame generation makes of one frame of the game
 const UINT PRESENTS_WITHOUT_FRAME_MAX = 16;
+// A game that goes on drawing with nothing presented, as after its device was
+// lost, would otherwise keep all that was given out for mods since: frames
+// are counted by its submissions alone then, this many to a frame
+const UINT SUBMITS_WITHOUT_PRESENT_MAX = 4;
+static UINT submits_without_present;
+
+static void frame_over();
 
 bool VkModsFrameSubmitted(unsigned draws)
 {
@@ -3721,11 +3728,18 @@ bool VkModsFrameSubmitted(unsigned draws)
 	if (dx12_shim && frames_by_submission && thread != submit_thread && draws < submit_draws) {
 		stats.overlay_submits++;
 	} else if (dx12_shim) {
-		if (frame_presented) {
+		bool presented = frame_presented;
+
+		if (presented || ++submits_without_present >= SUBMITS_WITHOUT_PRESENT_MAX) {
 			counted = true;
 			uint64_t now = GetSystemTicks();
 
 			frame_presented = false;
+			submits_without_present = 0;
+			if (!presented) {
+				stats.frames_unpresented++;
+				frame_over();
+			}
 			// frame_time goes with FRAME_NUMBER: a spatial pool lets an
 			// object move further between its frames the longer they take
 			if (frames_by_submission)
@@ -5670,9 +5684,10 @@ static void report()
 		stats.slow[SLOW_SETTINGS], stats.slow[SLOW_LISTS], stats.slow[SLOW_INDEX_COUNT], stats.slow[SLOW_CONSTANTS],
 		(unsigned)InterlockedExchange(&fast_draws, 0), (unsigned)InterlockedExchange(&quiet_draws, 0));
 	VkDumpNote("  Frames: %u presents of the game's device, %u of them on another thread than its draws were submitted on; "
-		"%u submissions with draws the engine was shown, %u frames counted by them (FRAME_NUMBER %u, %s), %u more of another "
+		"%u submissions with draws the engine was shown, %u frames counted by them (%u with nothing presented since the "
+		"last; FRAME_NUMBER %u, %s), %u more of another "
 		"thread with fewer such draws not counted; %u other submissions while something was yet to be brought for the draws\n",
-		stats.presents, stats.presents_apart, stats.frame_submits, stats.frames_counted, G->frame_no,
+		stats.presents, stats.presents_apart, stats.frame_submits, stats.frames_counted, stats.frames_unpresented, G->frame_no,
 		frames_by_submission ? "counted by the submissions" : "counted by the presents of the D3D12 device",
 		stats.overlay_submits, (unsigned)InterlockedExchange(&submits_apart, 0));
 	SpatialPoolMisses spatial = TakeSpatialPoolMisses();
@@ -5683,6 +5698,23 @@ static void report()
 	AcquireSRWLockExclusive(&descriptor_lock);
 	sets_allocated = sets_written = sets_written_by_template = 0;
 	ReleaseSRWLockExclusive(&descriptor_lock);
+}
+
+// What is kept for some frames goes once they are over. With the lock of
+// dx12/Bridge.h held.
+static void frame_over()
+{
+	brought.clear();
+	forget_dead_buffers();
+	forget_unused_constants(false);
+	if (mods_device) {
+		destroy_retired_mirrors(false);
+		destroy_shared_buffers(false);
+		destroy_retired_textures(false);
+		destroy_big_transients();
+		release_unused_mod_sets();
+		destroy_variants(false);
+	}
 }
 
 void VkModsPresent(VkQueue queue)
@@ -5724,20 +5756,9 @@ void VkModsPresent(VkQueue queue)
 
 	// Whatever was recorded with them has been handed to a queue by now
 	finish_transfers(queue, NULL);
-	brought.clear();
 	if (!(vk_frame & 255))
 		release_readbacks();
-
-	forget_dead_buffers();
-	forget_unused_constants(false);
-	if (mods_device) {
-		destroy_retired_mirrors(false);
-		destroy_shared_buffers(false);
-		destroy_retired_textures(false);
-		destroy_big_transients();
-		release_unused_mod_sets();
-		destroy_variants(false);
-	}
+	frame_over();
 	refresh_wanted();
 	// The configuration as it was read when the DLL was loaded
 	if (!wanted_index_counts)

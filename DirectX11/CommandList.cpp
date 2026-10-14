@@ -13418,7 +13418,10 @@ static void SetShaderResourcesBatch(ID3D11DeviceContext1 *context, wchar_t shade
 
 void ShaderResourceBindBatch::run(CommandListState *state)
 {
-	ID3D11ShaderResourceView *views[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+	ID3D11ShaderResourceView *views[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
+
+	// Only the slots of the batch are looked at:
+	memset(views, 0, count * sizeof(views[0]));
 
 	COMMAND_LIST_LOG(state, "batched %lcs-t%u..%u {\n", shader_type, first_slot, first_slot + count - 1);
 
@@ -13457,7 +13460,10 @@ void ShaderResourceBindBatch::run(CommandListState *state)
 
 void ShaderResourceFetchBatch::run(CommandListState *state)
 {
-	ID3D11ShaderResourceView *views[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+	ID3D11ShaderResourceView *views[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
+
+	// Only the slots of the batch are looked at:
+	memset(views, 0, count * sizeof(views[0]));
 
 	COMMAND_LIST_LOG(state, "batched %lcs-t%u..%u {\n", shader_type, first_slot, first_slot + count - 1);
 

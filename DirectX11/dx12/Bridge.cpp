@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <deque>
 #include <map>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -220,9 +221,21 @@ struct UploadPage {
 	UINT64 va;
 	UINT64 used;
 	UINT64 fence;
+	// Of a big one, see upload_big_idle, and when it was last retired
+	UINT64 capacity;
+	ULONGLONG retired_time;
 };
 static std::vector<UploadPage> upload_active;
 static std::vector<UploadPage> upload_idle;
+// An upload larger than a quarter of a page has a buffer to itself. Those
+// are kept a while for the next ones, up to UPLOAD_BIG_KEPT bytes: a mod that
+// appears uploads up to hundreds of MB in a frame or two, and making an
+// upload buffer waits on the CPU until it is resident.
+const UINT64 UPLOAD_BIG_KEPT = 256 << 20;
+const ULONGLONG UPLOAD_BIG_IDLE_MS = 5000;
+static std::vector<UploadPage> upload_big_active;
+static std::vector<UploadPage> upload_big_idle;
+static UINT64 upload_big_idle_bytes;
 
 static bool create_upload_buffer(UINT64 size, UploadPage *page)
 {
@@ -260,10 +273,28 @@ BYTE* Dx12ShimUpload(UINT64 size, UINT64 alignment, ID3D12Resource **buffer, UIN
 	size_t i;
 
 	if (size > UPLOAD_PAGE_SIZE / 4) {
-		if (!create_upload_buffer(size, &page))
-			return NULL;
-		Dx12ShimDeferRelease(page.buffer);
-		page.buffer->Release();
+		auto best = upload_big_idle.end();
+
+		completed = fence->GetCompletedValue();
+		for (auto it = upload_big_idle.begin(); it != upload_big_idle.end(); it++) {
+			if (it->fence <= completed && it->capacity >= size
+					&& (best == upload_big_idle.end() || it->capacity < best->capacity))
+				best = it;
+		}
+		if (best != upload_big_idle.end()) {
+			page = *best;
+			upload_big_idle.erase(best);
+			upload_big_idle_bytes -= page.capacity;
+		} else {
+			// Rounded up so that it fits more of the next ones
+			UINT64 capacity = UPLOAD_PAGE_SIZE;
+			while (capacity < size)
+				capacity *= 2;
+			if (!create_upload_buffer(capacity, &page))
+				return NULL;
+			page.capacity = capacity;
+		}
+		upload_big_active.push_back(page);
 		if (buffer)
 			*buffer = page.buffer;
 		if (offset)
@@ -307,9 +338,27 @@ BYTE* Dx12ShimUpload(UINT64 size, UINT64 alignment, ID3D12Resource **buffer, UIN
 	return active.cpu + start;
 }
 
+// Also called at every present, as nothing may be submitted for a while
+static void release_idle_upload_buffers(UINT64 completed, ULONGLONG now)
+{
+	// Over UPLOAD_BIG_KEPT, the oldest go first
+	for (size_t i = 0; i < upload_big_idle.size(); ) {
+		UploadPage &page = upload_big_idle[i];
+		if (page.fence > completed || (upload_big_idle_bytes <= UPLOAD_BIG_KEPT
+				&& now - page.retired_time < UPLOAD_BIG_IDLE_MS)) {
+			i++;
+			continue;
+		}
+		upload_big_idle_bytes -= page.capacity;
+		page.buffer->Release();
+		upload_big_idle.erase(upload_big_idle.begin() + i);
+	}
+}
+
 static void retire_upload_pages()
 {
 	UINT64 completed = fence->GetCompletedValue();
+	ULONGLONG now = GetTickCount64();
 	size_t i, keep = 0;
 
 	// Keep filling the last page where this submission left off, or every
@@ -324,6 +373,15 @@ static void retire_upload_pages()
 		upload_idle.push_back(upload_active[i]);
 	}
 	upload_active.erase(upload_active.begin(), upload_active.end() - keep);
+
+	for (UploadPage &page : upload_big_active) {
+		page.fence = fence_signalled;
+		page.retired_time = now;
+		upload_big_idle.push_back(page);
+		upload_big_idle_bytes += page.capacity;
+	}
+	upload_big_active.clear();
+	release_idle_upload_buffers(completed, now);
 
 	for (i = upload_idle.size(); i-- > 0 && upload_idle.size() > UPLOAD_PAGES_KEPT;) {
 		if (upload_idle[i].fence > completed)
@@ -716,6 +774,62 @@ static void evict_idle()
 		evict(memory.CurrentUsage - limit, present_time - idle_ms);
 }
 
+// CreateCommittedResource waits on the CPU until what it made is resident,
+// a millisecond or two for a texture of a few tens of MB. Made not resident
+// instead, a resource of a mod is made so on the GPU's time, and every queue
+// waits there for the last that was asked for before what it executes next.
+// NULL where that cannot be done:
+static ID3D12Device3 *residency_device;
+static ID3D12Fence *residency_fence;
+static std::mutex residency_lock;
+static std::atomic<UINT64> residency_asked;
+
+static void residency_init()
+{
+	if (FAILED(shim.device->QueryInterface(IID_PPV_ARGS(&residency_device))))
+		return;
+	if (FAILED(shim.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&residency_fence)))) {
+		residency_device->Release();
+		residency_device = NULL;
+	}
+}
+
+HRESULT Dx12ShimCreateResource(const D3D12_RESOURCE_DESC *desc, ID3D12Resource **resource)
+{
+	D3D12_HEAP_PROPERTIES heap = {};
+	ID3D12Pageable *pageable;
+	HRESULT hr;
+
+	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+	if (residency_device && SUCCEEDED(shim.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT,
+			desc, D3D12_RESOURCE_STATE_COMMON, NULL, IID_PPV_ARGS(resource)))) {
+		pageable = *resource;
+		{
+			// The fence is signalled in the order of the values
+			std::lock_guard<std::mutex> lock(residency_lock);
+			UINT64 value = residency_asked + 1;
+			hr = residency_device->EnqueueMakeResident(D3D12_RESIDENCY_FLAG_NONE, 1, &pageable, residency_fence, value);
+			if (SUCCEEDED(hr))
+				residency_asked = value;
+		}
+		if (SUCCEEDED(hr))
+			return hr;
+		(*resource)->Release();
+		*resource = NULL;
+	}
+
+	return shim.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, desc,
+			D3D12_RESOURCE_STATE_COMMON, NULL, IID_PPV_ARGS(resource));
+}
+
+void Dx12ShimResidencyWait(ID3D12CommandQueue *queue)
+{
+	UINT64 value = residency_asked;
+
+	if (value && residency_fence->GetCompletedValue() < value)
+		queue->Wait(residency_fence, value);
+}
+
 bool Dx12ShimUseResource(ShimResource *resource)
 {
 	static bool failed;
@@ -945,6 +1059,8 @@ void Dx12ShimFramePresented()
 {
 	release_retired();
 	present_time = GetTickCount64();
+	if (!upload_big_idle.empty())
+		release_idle_upload_buffers(fence->GetCompletedValue(), present_time);
 	presents++;
 	evict_idle();
 }
@@ -1237,6 +1353,7 @@ void Dx12ShimSubmit()
 	}
 	shim_list->Close();
 	lists[count++] = shim_list;
+	Dx12ShimResidencyWait(shim.queue);
 	shim.queue->ExecuteCommandLists(count, lists);
 	shim.queue->Signal(fence, ++fence_signalled);
 	Dx12QueueSignalled(shim.queue, fence, fence_signalled);
@@ -1341,6 +1458,7 @@ bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue)
 
 	shim.device->AddRef();
 	shim.queue->AddRef();
+	residency_init();
 
 	for (type = 0; type < D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES; type++)
 		pools[type].increment = shim.device->GetDescriptorHandleIncrementSize((D3D12_DESCRIPTOR_HEAP_TYPE)type);

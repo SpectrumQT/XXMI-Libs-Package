@@ -182,6 +182,11 @@ bool Dx12ShimUseResource(ShimResource *resource);
 // Adds a resource with memory of its own to those that may be evicted, or
 // takes it away
 void Dx12ShimTrackResidency(ShimResource *resource, bool tracked);
+// A committed resource of the default heap in the common state, which may
+// only become resident on the GPU's time: whatever executes it on a queue
+// calls Dx12ShimResidencyWait for that queue first
+HRESULT Dx12ShimCreateResource(const D3D12_RESOURCE_DESC *desc, ID3D12Resource **resource);
+void Dx12ShimResidencyWait(ID3D12CommandQueue *queue);
 // What the process uses of the GPU's local memory and the budget it has, as
 // the system counts them
 bool Dx12ShimProcessMemory(DXGI_QUERY_VIDEO_MEMORY_INFO *info);

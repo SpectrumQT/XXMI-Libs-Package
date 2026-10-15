@@ -271,12 +271,9 @@ void ShimCountResource(ShimResource *resource, int sign)
 
 static HRESULT create_resource(ShimResource *resource, const D3D12_RESOURCE_DESC *desc)
 {
-	D3D12_HEAP_PROPERTIES heap = {};
 	HRESULT hr;
 
-	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-	hr = dx12_shim->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, desc,
-			D3D12_RESOURCE_STATE_COMMON, NULL, IID_PPV_ARGS(&resource->resource));
+	hr = Dx12ShimCreateResource(desc, &resource->resource);
 	if (FAILED(hr)) {
 		Dx12LogInfo("*** Failed to create a resource for a mod: dimension %d, %llux%ux%u, %u mips, format %d, flags 0x%x = 0x%x\n",
 			desc->Dimension, desc->Width, desc->Height, desc->DepthOrArraySize, desc->MipLevels,
@@ -450,9 +447,10 @@ HRESULT STDMETHODCALLTYPE ShimDevice::CreateBuffer(const D3D11_BUFFER_DESC *pDes
 	if (r->cpu_only || pDesc->Usage == D3D11_USAGE_DYNAMIC || keep_contents) {
 		// Padded like the resource would be, so a constant buffer
 		// view of the whole of it stays within what is uploaded
-		r->shadow.resize((size_t)ShimAlign(pDesc->ByteWidth, 256));
+		r->shadow.reserve((size_t)ShimAlign(pDesc->ByteWidth, 256));
 		if (pInitialData && pInitialData->pSysMem)
-			memcpy(r->shadow.data(), pInitialData->pSysMem, pDesc->ByteWidth);
+			r->shadow.assign((const BYTE*)pInitialData->pSysMem, (const BYTE*)pInitialData->pSysMem + pDesc->ByteWidth);
+		r->shadow.resize((size_t)ShimAlign(pDesc->ByteWidth, 256));
 	}
 	if (!r->cpu_only && pInitialData && pInitialData->pSysMem)
 		ShimWriteBuffer(r, 0, pInitialData->pSysMem, pDesc->ByteWidth);

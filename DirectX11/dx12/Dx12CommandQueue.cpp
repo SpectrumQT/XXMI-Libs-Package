@@ -149,6 +149,7 @@ void STDMETHODCALLTYPE Dx12CommandQueue::ExecuteCommandLists(UINT NumCommandList
 	if (!pins.empty() || Dx12ShimQueueUnordered(mOrig))
 		Dx12ShimQueueWaits(mOrig, needed, !pins.empty());
 
+	Dx12ShimResidencyWait(mOrig);
 	mOrig->ExecuteCommandLists(NumCommandLists, lists);
 
 	if (!pins.empty())

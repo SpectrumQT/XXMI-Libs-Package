@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -2746,8 +2747,86 @@ static SkinOutput* find_skin_output(UINT64 va)
 // that goes by the vertices has a section for the weights as well, named alike:
 // ...Position and ...Blend. So the vertices are given the hash of the former
 // where the weights have that of the latter.
+//
+// Older mods have no section for the weights, only ...Position and
+// ...VertexLimitRaise. The latter has the hash of the buffer the D3D11
+// renderer streamed the skinned vertices out to, which it creates without
+// contents, so the hash is that of its description alone: as many bytes as the
+// mesh has vertices, bound as a vertex buffer, a shader resource and a stream
+// output. That only narrows a dispatch down to the meshes of as many vertices,
+// so the weights of one that skins that many are noted with where it skins to.
+// A draw of what was skinned there with the index buffer or texture
+// coordinates of the mod's ...IB or ...Texcoord section says the mesh is the
+// mod's: its weights go by the ...Position section from then on.
 static std::unordered_map<uint32_t, uint32_t> skin_aliases;
 static UINT skin_aliases_config;
+
+struct SkinCandidate {
+	uint32_t position;
+	// 0 for none
+	uint32_t ib, texcoord;
+};
+// By the hash of the buffer skinned to
+static std::unordered_map<uint32_t, std::vector<SkinCandidate>> skin_candidates;
+
+struct SkinNoted {
+	uint32_t output_hash, weights_hash;
+	UINT64 source_va, weights_va;
+	UINT frame;
+};
+// By the address skinned to
+static std::unordered_map<UINT64, SkinNoted> skin_noted;
+// For draw_is_boring to tell without the lock which draws to look at for that:
+// a bit per address. Such a draw may be one the mods have nothing for until
+// the mesh is known to be theirs.
+static volatile LONG64 skin_noted_filter[64];
+static volatile LONG skin_noted_live;
+// How long a noted mesh has to be drawn as a mod's, and those that were not:
+// the draws of a mesh of the same size that is no mod's are not to be looked
+// at for good
+const UINT SKIN_CONFIRM_FRAMES = 60;
+static std::set<std::pair<UINT64, uint32_t>> skin_rejected;
+
+// The weights of the meshes that draws said are the mods', and the hash of the
+// vertices they go with
+static std::unordered_map<uint32_t, uint32_t> skin_learned;
+// For skin_is_boring to tell without the lock which vertices those are: a bit
+// per address of them. Their dispatch has to be looked at again however much
+// it was found to be nothing to the mods before.
+static volatile LONG64 skin_learned_filter[64];
+static volatile LONG skin_learned_live;
+
+static bool va_filter_has(const volatile LONG64 *filter, UINT64 va)
+{
+	UINT bit = skin_filter_bit(va);
+
+	return (filter[bit >> 6] >> (bit & 63)) & 1;
+}
+
+static void va_filter_add(volatile LONG64 *filter, volatile LONG *live, UINT64 va)
+{
+	UINT bit = skin_filter_bit(va);
+
+	InterlockedOr64(&filter[bit >> 6], 1ll << (bit & 63));
+	InterlockedExchange(live, 1);
+}
+
+static void rebuild_noted_filter()
+{
+	LONG64 filter[ARRAYSIZE(skin_noted_filter)] = {};
+	size_t i;
+
+	for (const auto &noted : skin_noted) {
+		UINT bit = skin_filter_bit(noted.first);
+
+		filter[bit >> 6] |= 1ll << (bit & 63);
+	}
+	for (i = 0; i < ARRAYSIZE(filter); i++) {
+		if (skin_noted_filter[i] != filter[i])
+			InterlockedExchange64(&skin_noted_filter[i], filter[i]);
+	}
+	InterlockedExchange(&skin_noted_live, !skin_noted.empty());
+}
 
 static bool ends_with(const std::wstring &name, const wchar_t *end, std::wstring *stem)
 {
@@ -2762,29 +2841,70 @@ static bool ends_with(const std::wstring &name, const wchar_t *end, std::wstring
 
 static void collect_skin_aliases()
 {
-	std::unordered_map<std::wstring, uint32_t> weights;
+	std::unordered_map<std::wstring, uint32_t> weights, outputs, ibs, texcoords;
 	std::wstring stem;
+	size_t i;
 
 	if (skin_aliases_config == config_generation)
 		return;
 	skin_aliases_config = config_generation;
 
 	skin_aliases.clear();
+	skin_candidates.clear();
+	skin_noted.clear();
+	rebuild_noted_filter();
+	skin_rejected.clear();
+	skin_learned.clear();
+	for (i = 0; i < ARRAYSIZE(skin_learned_filter); i++)
+		InterlockedExchange64(&skin_learned_filter[i], 0);
+	InterlockedExchange(&skin_learned_live, 0);
+
 	for (const auto &entry : G->mTextureOverrideMap) {
 		for (const TextureOverride &texture_override : entry.second) {
 			if (ends_with(texture_override.ini_section, L"Blend", &stem))
 				weights[stem] = entry.first;
+			else if (ends_with(texture_override.ini_section, L"VertexLimitRaise", &stem))
+				outputs[stem] = entry.first;
+			else if (ends_with(texture_override.ini_section, L"IB", &stem))
+				ibs[stem] = entry.first;
+			else if (ends_with(texture_override.ini_section, L"Texcoord", &stem))
+				texcoords[stem] = entry.first;
 		}
 	}
 	for (const auto &entry : G->mTextureOverrideMap) {
 		for (const TextureOverride &texture_override : entry.second) {
+			SkinCandidate candidate = { entry.first };
+
 			if (!ends_with(texture_override.ini_section, L"Position", &stem))
 				continue;
 			auto found = weights.find(stem);
-			if (found != weights.end())
+			if (found != weights.end()) {
 				skin_aliases[found->second] = entry.first;
+				continue;
+			}
+			found = outputs.find(stem);
+			if (found == outputs.end())
+				continue;
+			auto ib = ibs.find(stem);
+			auto texcoord = texcoords.find(stem);
+			candidate.ib = ib != ibs.end() ? ib->second : 0;
+			candidate.texcoord = texcoord != texcoords.end() ? texcoord->second : 0;
+			// Nothing a draw could tell it by
+			if (!candidate.ib && !candidate.texcoord)
+				continue;
+			skin_candidates[found->second].push_back(candidate);
 		}
 	}
+}
+
+static uint32_t skin_output_hash(const SkinDispatch *skin)
+{
+	D3D11_BUFFER_DESC desc = {};
+
+	desc.ByteWidth = skin->count * skin->stride;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_STREAM_OUTPUT;
+	return crc32c_hw(0, &desc, sizeof(desc));
 }
 
 static uint32_t published_hash(ID3D11Resource *resource)
@@ -2799,13 +2919,54 @@ static uint32_t published_hash(ID3D11Resource *resource)
 	return hash;
 }
 
+static void note_skin_candidate(const SkinDispatch *skin, uint32_t weights_hash)
+{
+	uint32_t output_hash = skin_output_hash(skin);
+
+	auto noted = skin_noted.find(skin->output_va);
+	if (noted != skin_noted.end()) {
+		// The same mesh again: its time to be drawn runs from the first
+		if (noted->second.output_hash == output_hash && noted->second.weights_hash == weights_hash
+		    && noted->second.source_va == skin->source_va)
+			return;
+		// Another mesh is skinned there now, which the draws to come are
+		// of
+		skin_noted.erase(noted);
+		rebuild_noted_filter();
+	}
+	if (!skin_candidates.count(output_hash) || skin_rejected.count({ skin->output_va, weights_hash }))
+		return;
+	// Not to grow without end on a game that skins to ever new places
+	if (skin_noted.size() >= 4096)
+		return;
+	skin_noted[skin->output_va] = { output_hash, weights_hash, skin->source_va, skin->weights_va, dx12_frame };
+	va_filter_add(skin_noted_filter, &skin_noted_live, skin->output_va);
+}
+
+// Before the engine looks at a dispatch that skins to where a mesh was noted,
+// which need not get as far as note_skin_candidate: if it is of another mesh,
+// mod's or not, the draws to come are of that one
+static void forget_noted_other(const SkinDispatch *skin)
+{
+	auto noted = skin_noted.find(skin->output_va);
+
+	if (noted == skin_noted.end())
+		return;
+	if (noted->second.source_va == skin->source_va && noted->second.weights_va == skin->weights_va
+	    && noted->second.output_hash == skin_output_hash(skin))
+		return;
+	skin_noted.erase(noted);
+	rebuild_noted_filter();
+}
+
 static void alias_skin_vertices(Published *vertices, const SkinDispatch *skin)
 {
 	Published *weights;
-	uint32_t hash;
+	uint32_t hash, weights_hash;
+	bool learned = false;
 
 	collect_skin_aliases();
-	if (skin_aliases.empty())
+	if (skin_aliases.empty() && skin_candidates.empty())
 		return;
 
 	hash = published_hash(vertices->resource);
@@ -2814,9 +2975,20 @@ static void alias_skin_vertices(Published *vertices, const SkinDispatch *skin)
 	weights = publish_buffer(skin->weights_va, (UINT64)skin->count * skin->weight_stride, PUBLISHED_SKIN_BUFFER, skin->weight_stride, NULL);
 	if (!weights)
 		return;
-	auto found = skin_aliases.find(published_hash(weights->resource));
-	if (found == skin_aliases.end())
-		return;
+	weights_hash = published_hash(weights->resource);
+	auto found = skin_aliases.find(weights_hash);
+	if (found == skin_aliases.end()) {
+		// What has no hash of its contents goes by 0, which every other
+		// such mesh would be taken for
+		if (!weights->has_data_hash)
+			return;
+		found = skin_learned.find(weights_hash);
+		if (found == skin_learned.end()) {
+			note_skin_candidate(skin, weights_hash);
+			return;
+		}
+		learned = true;
+	}
 
 	set_resource_hash(vertices->resource, D3D11_RESOURCE_DIMENSION_BUFFER, found->second, vertices->data_hash, NULL);
 	stats.skin_aliased++;
@@ -2825,9 +2997,82 @@ static void alias_skin_vertices(Published *vertices, const SkinDispatch *skin)
 
 		if (noted.size() < 400 && noted.insert((UINT64)hash << 32 | found->second).second) {
 			Dx12DumpNote("Skinning: the vertices that would have been hashed as %08x go by %08x, the hash a mod has for those skinned with "
-				"the weights of hash %08x\n", hash, found->second, found->first);
+				"the weights of hash %08x%s\n", hash, found->second, found->first,
+				learned ? ", as a draw of what was skinned told" : "");
 		}
 	}
+}
+
+// With the scope of a draw the engine looked at open: whether it draws what a
+// dispatch noted by note_skin_candidate skinned, with the index buffer or
+// texture coordinates of a mod for meshes of that many vertices
+static void confirm_skin_candidate(bool indexed)
+{
+	const Dx12CmdState *game = &scope->list->mState;
+	uint32_t ib = 0, texcoord = 0, position = 0;
+	bool ib_asked = false, texcoord_asked = false;
+	DXGI_FORMAT format;
+	UINT stride;
+
+	collect_skin_aliases();
+	auto noted = skin_noted.find(game->vertex_buffers[0].BufferLocation);
+	if (noted == skin_noted.end())
+		return;
+	auto candidates = skin_candidates.find(noted->second.output_hash);
+	if (candidates == skin_candidates.end())
+		return;
+
+	for (const SkinCandidate &candidate : candidates->second) {
+		if (candidate.ib && indexed && !ib_asked) {
+			ID3D11Buffer *buffer = Dx12ScopeIndexBuffer(&format);
+
+			ib = buffer ? published_hash(buffer) : 0;
+			ib_asked = true;
+		}
+		if (candidate.texcoord && !texcoord_asked) {
+			ID3D11Buffer *buffer = Dx12ScopeVertexBuffer(1, &stride);
+
+			texcoord = buffer ? published_hash(buffer) : 0;
+			texcoord_asked = true;
+		}
+		if ((!candidate.ib || !ib || candidate.ib != ib) && (!candidate.texcoord || !texcoord || candidate.texcoord != texcoord))
+			continue;
+		// Mods for different meshes that this draw would do for alike
+		if (position && position != candidate.position)
+			return;
+		position = candidate.position;
+	}
+	// Another draw of it may be the one, as of a pass that the mods have
+	// left alone
+	if (!position)
+		return;
+
+	skin_learned[noted->second.weights_hash] = position;
+	va_filter_add(skin_learned_filter, &skin_learned_live, noted->second.source_va);
+	if (G->dx12_dump_hashes) {
+		Dx12DumpNote("Skinning: a draw of the vertices skinned with the weights of hash %08x had the index buffer %08x and texture "
+			"coordinates %08x, which make them those of hash %08x\n", noted->second.weights_hash, ib, texcoord, position);
+	}
+	skin_noted.erase(noted);
+	rebuild_noted_filter();
+}
+
+static void expire_skin_candidates()
+{
+	bool expired = false;
+
+	for (auto i = skin_noted.begin(); i != skin_noted.end();) {
+		if (dx12_frame - i->second.frame > SKIN_CONFIRM_FRAMES) {
+			if (skin_rejected.size() < 4096)
+				skin_rejected.insert({ i->first, i->second.weights_hash });
+			i = skin_noted.erase(i);
+			expired = true;
+		} else {
+			++i;
+		}
+	}
+	if (expired)
+		rebuild_noted_filter();
 }
 
 static bool skin_output_at(UINT64 va)
@@ -4700,6 +4945,12 @@ static SlowReason draw_is_boring(Dx12GraphicsCommandList *list, const Dx12Pipeli
 	if (settings_slow())
 		return SLOW_SETTINGS;
 
+	// What a dispatch skinned that a mod may be for, see
+	// confirm_skin_candidate
+	if (skin_noted_live && (pipeline->vb_slots & 1) && game->vertex_buffers[0].BufferLocation
+	    && va_filter_has(skin_noted_filter, game->vertex_buffers[0].BufferLocation))
+		return SLOW_SKIN;
+
 	// A vertex buffer to be swapped for what a mod had skinned
 	for (vbs = skin_outputs_live ? pipeline->vb_slots : 0; _BitScanForward(&slot, vbs); vbs &= vbs - 1) {
 		if (slot < ARRAYSIZE(game->vertex_buffers) && game->vertex_buffers[slot].BufferLocation
@@ -4801,6 +5052,13 @@ static SlowReason skin_is_boring(const Dx12PipelineInfo *pipeline, const SkinDis
 	// What a mod had skinned to the buffer is to be let go of, see
 	// Dx12Dispatch
 	if (skin_outputs_live && skin_filter_has(skin->output_va))
+		return SLOW_SKIN;
+	// What draws said are a mod's vertices, see confirm_skin_candidate
+	if (skin_learned_live && va_filter_has(skin_learned_filter, skin->source_va))
+		return SLOW_SKIN;
+	// What may be another mesh skinned to where one was noted, see
+	// forget_noted_other
+	if (skin_noted_live && va_filter_has(skin_noted_filter, skin->output_va))
 		return SLOW_SKIN;
 
 	reason = filter_is_boring(&pipeline->filter, &worked_out);
@@ -5013,6 +5271,8 @@ bool Dx12Draw(Dx12GraphicsCommandList *list, bool indexed, UINT count, UINT inst
 			    && skin_output_at(list->mState.vertex_buffers[slot].BufferLocation))
 				any = true;
 		}
+		if (skin_noted.count(list->mState.vertex_buffers[0].BufferLocation))
+			any = true;
 		stats.skin_filter_misses += !any;
 	}
 
@@ -5041,6 +5301,8 @@ bool Dx12Draw(Dx12GraphicsCommandList *list, bool indexed, UINT count, UINT inst
 	dx12_shim->hacker_context->Dx12AfterDraw(c);
 
 	prime_filter(pipeline);
+	if (!skin_noted.empty())
+		confirm_skin_candidate(indexed);
 	close_scope();
 	if (timed) {
 		times[4] = ticks();
@@ -5097,6 +5359,9 @@ bool Dx12Dispatch(Dx12GraphicsCommandList *list, UINT x, UINT y, UINT z)
 		UINT64 hashes[DX12_STAGE_COUNT] = {};
 		const Dx12ShaderInfo *shaders[DX12_STAGE_COUNT] = {};
 		DrawContext draw(DrawCall::Draw, skin.count, 0, 0, 0, 0, 0, NULL, 0);
+
+		if (!skin_noted.empty())
+			forget_noted_other(&skin);
 
 		// The shader that skins is what a mod's command lists for
 		// vertex shaders are run for
@@ -5405,6 +5670,8 @@ void Dx12DrawPathFramePresented()
 		forget_unused_published();
 		forget_unused_skin_outputs();
 	}
+	if (!skin_noted.empty())
+		expire_skin_candidates();
 
 	refresh_guards();
 }

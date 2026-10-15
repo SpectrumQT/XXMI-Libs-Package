@@ -14,26 +14,20 @@
 #include "util.h"
 #include "globals.h"
 
-#pragma region MappedFile
+#pragma region FileContents
 
-struct MemoryRangeEntry {
-	PVOID VirtualAddress;
-	SIZE_T NumberOfBytes;
-};
-typedef BOOL (WINAPI *PrefetchVirtualMemory_t)(HANDLE, ULONG_PTR, MemoryRangeEntry*, ULONG);
+// Idle read buffers, kept for the next file. A file bigger than the largest
+// kept size is read into a buffer of its own, freed once it is done with.
+static std::mutex read_buffers_lock;
+static std::vector<std::pair<uint8_t*, size_t>> read_buffers;
+static const size_t kept_read_buffers = 2;
+static const size_t kept_read_buffer_size = 64 << 20;
 
-// Windows 8+; resolved at runtime so the DLL still loads on Windows 7,
-// where the pages are simply faulted in on first touch instead:
-static PrefetchVirtualMemory_t GetPrefetchVirtualMemory()
-{
-	static PrefetchVirtualMemory_t fn = (PrefetchVirtualMemory_t)
-		GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "PrefetchVirtualMemory");
-	return fn;
-}
-
-MappedFile::MappedFile(const wchar_t *path)
+FileContents::FileContents(const wchar_t *path)
 {
 	LARGE_INTEGER file_size;
+	HANDLE file;
+	size_t want;
 
 	file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
 			FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
@@ -47,20 +41,132 @@ MappedFile::MappedFile(const wchar_t *path)
 		error = GetLastError();
 		if (!error)
 			error = ERROR_FILE_INVALID;
+		CloseHandle(file);
 		return;
 	}
+	want = (size_t)file_size.QuadPart;
+
+	if (want <= kept_read_buffer_size) {
+		std::lock_guard<std::mutex> lock(read_buffers_lock);
+		auto best = read_buffers.end();
+		for (auto i = read_buffers.begin(); i != read_buffers.end(); i++) {
+			if (best == read_buffers.end() || i->second > best->second)
+				best = i;
+		}
+		if (best != read_buffers.end()) {
+			buffer = best->first;
+			capacity = best->second;
+			read_buffers.erase(best);
+		}
+	}
+	if (capacity < want) {
+		if (buffer)
+			VirtualFree(buffer, 0, MEM_RELEASE);
+		capacity = (want + 0xfffff) & ~(size_t)0xfffff;
+		buffer = (uint8_t*)VirtualAlloc(NULL, capacity, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+		if (!buffer) {
+			capacity = 0;
+			error = ERROR_NOT_ENOUGH_MEMORY;
+			CloseHandle(file);
+			return;
+		}
+	}
+
+	for (size_t at = 0; at < want; ) {
+		DWORD got = 0, chunk = (DWORD)std::min<size_t>(want - at, (size_t)1 << 30);
+		if (!ReadFile(file, buffer + at, chunk, &got, NULL) || !got) {
+			error = GetLastError();
+			if (!error)
+				error = ERROR_HANDLE_EOF;
+			CloseHandle(file);
+			return;
+		}
+		at += got;
+	}
+	CloseHandle(file);
+
+	data = buffer;
+	size = want;
+}
+
+FileContents::~FileContents()
+{
+	if (!buffer)
+		return;
+
+	if (capacity <= kept_read_buffer_size) {
+		std::lock_guard<std::mutex> lock(read_buffers_lock);
+		if (read_buffers.size() < kept_read_buffers) {
+			read_buffers.push_back({ buffer, capacity });
+			return;
+		}
+	}
+	VirtualFree(buffer, 0, MEM_RELEASE);
+}
+
+#pragma endregion FileContents
+
+#pragma region MappedFile
+
+struct MemoryRangeEntry {
+	PVOID VirtualAddress;
+	SIZE_T NumberOfBytes;
+};
+typedef BOOL (WINAPI *PrefetchVirtualMemory_t)(HANDLE, ULONG_PTR, MemoryRangeEntry*, ULONG);
+
+// Windows 8+; resolved at runtime so the DLL still loads on Windows 7,
+// where the prefetch thread reads the files through a scratch buffer:
+static PrefetchVirtualMemory_t GetPrefetchVirtualMemory()
+{
+	static PrefetchVirtualMemory_t fn = (PrefetchVirtualMemory_t)
+		GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "PrefetchVirtualMemory");
+	return fn;
+}
+
+// Read-only view of a whole file, only there so that prefetch() can ask the
+// OS to read the file into its file cache at the thread's low I/O priority
+// without copying it anywhere. That is a hint: the OS may read only part of
+// the file, or nothing.
+class MappedFile
+{
+public:
+	explicit MappedFile(const wchar_t *path);
+	~MappedFile();
+
+	MappedFile(const MappedFile&) = delete;
+	MappedFile& operator=(const MappedFile&) = delete;
+
+	bool valid() const { return data != nullptr; }
+	void prefetch() const;
+
+	const uint8_t *data = nullptr;
+	size_t size = 0;
+
+private:
+	HANDLE file = INVALID_HANDLE_VALUE;
+	HANDLE mapping = NULL;
+};
+
+MappedFile::MappedFile(const wchar_t *path)
+{
+	LARGE_INTEGER file_size;
+
+	file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+	if (file == INVALID_HANDLE_VALUE)
+		return;
+
+	if (!GetFileSizeEx(file, &file_size) || file_size.QuadPart <= 0
+			|| (uint64_t)file_size.QuadPart > (uint64_t)SIZE_MAX)
+		return;
 
 	mapping = CreateFileMappingW(file, NULL, PAGE_READONLY, 0, 0, NULL);
-	if (!mapping) {
-		error = GetLastError();
+	if (!mapping)
 		return;
-	}
 
 	data = (const uint8_t*)MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
-	if (!data) {
-		error = GetLastError();
+	if (!data)
 		return;
-	}
 
 	size = (size_t)file_size.QuadPart;
 }
@@ -118,7 +224,7 @@ static std::unordered_map<uint64_t, std::vector<SharedEntry>> shared_resources;
 
 static bool FileContentsEqual(const std::wstring &path, const void *data, size_t size)
 {
-	MappedFile file(path.c_str());
+	FileContents file(path.c_str());
 
 	return file.valid() && file.size == size && !memcmp(file.data, data, size);
 }
@@ -269,7 +375,7 @@ static bool AppendToFileLog(const std::wstring &path, unsigned age)
 static ResourceFileLog LoadResourceFileLog()
 {
 	std::wstring path = PrefetchLogPath();
-	MappedFile file(path.c_str());
+	FileContents file(path.c_str());
 	std::unordered_set<std::wstring> seen;
 	ResourceFileLog lines, log;
 	const char *p, *end, *line, *tab;

@@ -27,7 +27,7 @@ class HackerDevice;
 class HackerContext;
 enum class FrameAnalysisOptions;
 class ResourceCopyTarget;
-class MappedFile;
+class FileContents;
 
 struct InputLayoutElementOverride {
 	struct Match {
@@ -670,7 +670,7 @@ private:
 	void LoadBufferFromFile(ID3D11Device *mOrigDevice);
 	// share_file is the mapped file the data came from when its GPU
 	// resource may be shared with other sections loading identical data:
-	void SubstantiateBuffer(ID3D11Device *mOrigDevice, const void *data, DWORD size, const MappedFile *share_file);
+	void SubstantiateBuffer(ID3D11Device *mOrigDevice, const void *data, DWORD size, const FileContents *share_file);
 	void SubstantiateTexture1D(ID3D11Device *mOrigDevice);
 	void SubstantiateTexture2D(ID3D11Device *mOrigDevice);
 	void SubstantiateTexture3D(ID3D11Device *mOrigDevice);

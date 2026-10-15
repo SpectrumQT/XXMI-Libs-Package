@@ -7028,7 +7028,7 @@ bool CustomResource::ShareableFromFile(D3D11_BIND_FLAG effective_bind_flags)
 
 void CustomResource::LoadBufferFromFile(ID3D11Device *mOrigDevice1)
 {
-	MappedFile file(filename.c_str());
+	FileContents file(filename.c_str());
 
 	if (!file.valid()) {
 		LogOverlayW(LOG_WARNING, L"Failed to load custom buffer resource %ls: %d\n", filename.c_str(), file.error);
@@ -7039,7 +7039,6 @@ void CustomResource::LoadBufferFromFile(ID3D11Device *mOrigDevice1)
 		return;
 	}
 	RecordResourceFileUse(filename);
-	file.prefetch();
 
 	SubstantiateBuffer(mOrigDevice1, file.data, (DWORD)file.size, &file);
 
@@ -7124,15 +7123,12 @@ void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 	// Needs to be called at some point before CreateXXXTextureFromMemory:
 	EnsureCOM();
 
-	MappedFile file(filename.c_str());
+	FileContents file(filename.c_str());
 	if (!file.valid()) {
 		LogOverlayW(LOG_WARNING, L"Failed to load custom texture resource %ls: %d\n", filename.c_str(), file.error);
 		return;
 	}
 	RecordResourceFileUse(filename);
-	// Asks for the whole file to be read at once, instead of a page fault per 4K
-	// while the runtime copies the initial data out of the mapping:
-	file.prefetch();
 
 	dot = filename.rfind(L'.');
 	dds = dot != wstring::npos && !_wcsicmp(filename.c_str() + dot, L".dds");
@@ -7181,7 +7177,7 @@ void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 		LogOverlayW(LOG_WARNING, L"Failed to load custom texture resource %ls: 0x%x\n", filename.c_str(), hr);
 }
 
-void CustomResource::SubstantiateBuffer(ID3D11Device *mOrigDevice1, const void *data, DWORD size, const MappedFile *share_file)
+void CustomResource::SubstantiateBuffer(ID3D11Device *mOrigDevice1, const void *data, DWORD size, const FileContents *share_file)
 {
 	D3D11_SUBRESOURCE_DATA init_data = {0}, *pInitialData = NULL;
 	SharedResourceKey share_key;

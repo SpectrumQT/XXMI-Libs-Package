@@ -1026,14 +1026,26 @@ static bool create_readback(ShimResource *resource)
 			D3D12_RESOURCE_STATE_COPY_DEST, NULL, IID_PPV_ARGS(&resource->readback)));
 }
 
-// A constant buffer of the game has no resource to its name, only the address
-// the draw in the scope has it at (foreign_va). The memory there is the
-// game's to hand out again once its list is done, so it is kept until ours is.
-static ID3D12Resource* game_constants_source(ShimResource *src, UINT64 *offset)
+// A buffer of the game has no resource to its name, only the address the draw
+// in the scope has it at: a constant buffer in upload memory (foreign_va),
+// which holds what the draw reads, or a vertex or index buffer (game_va). The
+// latter holds that too if nothing of the game writes it, and otherwise what
+// it held at the end of the frame before: our list is executed first. A mod's
+// compute shader that reads the vertices of a mesh the game deforms every
+// frame, to deform its own along, so lags a frame behind; reading them where
+// the game has them would take its dispatch on the game's list. The memory is
+// the game's to hand out again once its list is done, so it is kept until
+// ours is.
+static ID3D12Resource* game_source(ShimResource *src, UINT64 *offset)
 {
+	UINT64 va = src->foreign_va ? src->foreign_va : src->game_va;
 	ID3D12Resource *resource;
+	Dx12ResourceInfo info;
 
-	if (!src->foreign || src->resource || !Dx12FindBuffer(src->foreign_va, &resource, offset))
+	if (!src->foreign || src->resource || !va || !Dx12FindBuffer(va, &resource, offset))
+		return NULL;
+	// Never a state a copy can read
+	if (!Dx12GetResourceInfo(resource, &info) || info.heap_type == D3D12_HEAP_TYPE_READBACK)
 		return NULL;
 
 	Dx12ShimDeferRelease(resource);
@@ -1045,13 +1057,14 @@ static void copy_buffer(ID3D11Resource *dst11, UINT64 dst_offset, ID3D11Resource
 	static bool from_staging_reported;
 	ShimResource *dst = ShimResourceOf(dst11), *src = ShimResourceOf(src11);
 	ShimResourceDesc dst_desc, src_desc;
-	ID3D12Resource *game_constants;
+	ID3D12Resource *game;
 	UINT64 game_offset;
 	bool src_in_shadow;
 
-	// The vertices are in no buffer a list of ours could copy from, and
-	// are not there before the game's list is executed. A mod copies them
-	// to draw them again, for which knowing whose they are will do.
+	// The vertices skinned for a mod are in no buffer a list of ours could
+	// copy from, and are not there before the game's list is executed. A
+	// mod copies them to draw them again, for which knowing whose they are
+	// will do.
 	dst->skin_va = src->foreign ? src->skin_va : 0;
 
 	ShimGetResourceDesc(dst11, &dst_desc);
@@ -1089,9 +1102,9 @@ static void copy_buffer(ID3D11Resource *dst11, UINT64 dst_offset, ID3D11Resource
 
 	if (src_in_shadow) {
 		ShimWriteBuffer(dst, dst_offset, src->shadow.data() + src_offset, size);
-	} else if (dst->resource && (game_constants = game_constants_source(src, &game_offset))) {
+	} else if (dst->resource && (game = game_source(src, &game_offset))) {
 		if (Dx12ShimTransition(dst, D3D12_RESOURCE_STATE_COPY_DEST))
-			Dx12ShimList()->CopyBufferRegion(dst->resource, dst_offset, game_constants, game_offset + src_offset, size);
+			Dx12ShimList()->CopyBufferRegion(dst->resource, dst_offset, game, game_offset + src_offset, size);
 	} else if (src->resource && dst->resource && src != dst && Dx12ShimTransition(src, D3D12_RESOURCE_STATE_COPY_SOURCE)
 		   && Dx12ShimTransition(dst, D3D12_RESOURCE_STATE_COPY_DEST)) {
 		Dx12ShimList()->CopyBufferRegion(dst->resource, dst_offset, src->resource, src_offset, size);

@@ -121,6 +121,10 @@ struct ShimResource {
 	// ours can read whatever the game is doing with it. Dx12ShimBufferAddress
 	// returns it.
 	UINT64 foreign_va;
+	// Where a vertex or index buffer of the game a draw had bound is. A copy
+	// from it made on our list, which is executed before the game's lists,
+	// finds what the game left there the frame before, see copy_buffer.
+	UINT64 game_va;
 
 	// Buffers whose contents come from the CPU and are only used where
 	// D3D12 takes an address (vertex, index and constant buffers) have no

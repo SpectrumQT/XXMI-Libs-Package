@@ -1252,6 +1252,7 @@ static Published* look_up_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride
 		desc.Width = bytes;
 		entry->resource = new_game_buffer(&desc, bytes,
 			kind == PUBLISHED_INDEX_BUFFER ? D3D11_BIND_INDEX_BUFFER : D3D11_BIND_VERTEX_BUFFER);
+		ShimResourceOf(entry->resource)->game_va = va;
 		entry->bytes = bytes;
 	}
 

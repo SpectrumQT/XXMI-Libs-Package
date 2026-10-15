@@ -207,6 +207,8 @@ HRESULT STDMETHODCALLTYPE Dx12Device::CreateCommandQueue(const D3D12_COMMAND_QUE
 	if (SUCCEEDED(hr) && ppCommandQueue && *ppCommandQueue) {
 		void *orig = *ppCommandQueue;
 		Dx12CommandQueue *proxy = wrap_child<Dx12CommandQueue, ID3D12CommandQueue>(this, riid, ppCommandQueue);
+		if (proxy)
+			proxy->Tie();
 		Dx12LogInfo("Dx12CommandQueue %p created to wrap ID3D12CommandQueue %p (type %d)\n", proxy, orig, pDesc->Type);
 	}
 
@@ -220,6 +222,8 @@ HRESULT STDMETHODCALLTYPE Dx12Device::CreateCommandQueue1(const D3D12_COMMAND_QU
 	if (SUCCEEDED(hr) && ppCommandQueue && *ppCommandQueue) {
 		void *orig = *ppCommandQueue;
 		Dx12CommandQueue *proxy = wrap_child<Dx12CommandQueue, ID3D12CommandQueue>(this, riid, ppCommandQueue);
+		if (proxy)
+			proxy->Tie();
 		Dx12LogInfo("Dx12CommandQueue %p created to wrap ID3D12CommandQueue %p (type %d)\n", proxy, orig, pDesc->Type);
 	}
 

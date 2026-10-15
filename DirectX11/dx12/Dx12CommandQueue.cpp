@@ -16,7 +16,8 @@ void *Dx12CommandQueue::sVtbl;
 Dx12CommandQueue::Dx12CommandQueue(Dx12Device *device, ID3D12CommandQueue *orig) :
 	mOrig(orig),
 	mDevice(device),
-	mRef(1)
+	mRef(1),
+	mTied(false)
 {
 	mOrig->AddRef();
 	mDevice->AddRef();
@@ -38,6 +39,29 @@ void Dx12CommandQueue::Abandon()
 	mOrig->Release();
 	mDevice->Release();
 	delete this;
+}
+
+// {7E3A61C4-2B9D-4F58-A0E7-5C14D8B2F396}
+static const GUID queue_destroyed_guid = { 0x7e3a61c4, 0x2b9d, 0x4f58, { 0xa0, 0xe7, 0x5c, 0x14, 0xd8, 0xb2, 0xf3, 0x96 } };
+
+static void queue_destroyed(void *context)
+{
+	Dx12CommandQueue *queue = (Dx12CommandQueue*)context;
+	Dx12Device *device = queue->mDevice;
+
+	Dx12LogInfo("Dx12CommandQueue %p destroyed\n", queue);
+	delete queue;
+	device->Release();
+}
+
+// A D3D12 object lives while any of its interfaces has a reference, and the
+// proxy only counts those taken through it. Whoever holds the queue by an
+// interface the proxy forwards to the original may still use the proxy after
+// the game let go of it: RTSS hands it to D3D11On12CreateDevice. So the proxy
+// goes when the original does.
+void Dx12CommandQueue::Tie()
+{
+	mTied = Dx12NotifyDestruction(mOrig, queue_destroyed_guid, queue_destroyed, this);
 }
 
 HRESULT STDMETHODCALLTYPE Dx12CommandQueue::QueryInterface(REFIID riid, void **ppvObject)
@@ -69,10 +93,11 @@ ULONG STDMETHODCALLTYPE Dx12CommandQueue::Release()
 	// Read first: once our reference is gone, so may be this object.
 	ID3D12CommandQueue *orig = mOrig;
 	Dx12Device *device = mDevice;
+	bool tied = mTied;
 	ULONG ref;
 
 	ref = InterlockedDecrement(&mRef);
-	if (ref) {
+	if (ref || tied) {
 		orig->Release();
 		return ref;
 	}

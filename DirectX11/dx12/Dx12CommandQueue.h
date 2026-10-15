@@ -13,11 +13,14 @@ public:
 	ID3D12CommandQueue *mOrig;
 	Dx12Device *mDevice;
 	volatile LONG mRef;
+	// Lives as long as the original, see Tie
+	bool mTied;
 
 	Dx12CommandQueue(Dx12Device *device, ID3D12CommandQueue *orig);
 
 	bool Usable(REFIID riid);
 	void Abandon();
+	void Tie();
 
 #include "generated/Dx12CommandQueue.decl.inl"
 };

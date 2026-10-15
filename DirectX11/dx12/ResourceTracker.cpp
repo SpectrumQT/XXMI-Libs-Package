@@ -58,13 +58,20 @@ public:
 	}
 };
 
-void Dx12NotifyDestruction(ID3D12Object *object, void (*callback)(void *object))
+bool Dx12NotifyDestruction(ID3D12Object *object, REFGUID guid, void (*callback)(void *context), void *context)
 {
-	DestructionNotifier *notifier = new DestructionNotifier(object, callback);
+	DestructionNotifier *notifier = new DestructionNotifier(context, callback);
+	bool armed = SUCCEEDED(object->SetPrivateDataInterface(guid, notifier));
 
-	if (FAILED(object->SetPrivateDataInterface(DestructionNotifierGuid, notifier)))
+	if (!armed)
 		notifier->Disarm();
 	notifier->Release();
+	return armed;
+}
+
+void Dx12NotifyDestruction(ID3D12Object *object, void (*callback)(void *object))
+{
+	Dx12NotifyDestruction(object, DestructionNotifierGuid, callback, object);
 }
 
 struct ResourceShard {

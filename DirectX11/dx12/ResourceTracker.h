@@ -45,6 +45,9 @@ struct Dx12ResourceInfo {
 
 // Calls back once when D3D12 destroys the object. One callback per object.
 void Dx12NotifyDestruction(ID3D12Object *object, void (*callback)(void *object));
+// The same for callbacks of another kind, which need a GUID of their own to
+// not take the place of the above. False if it could not be arranged.
+bool Dx12NotifyDestruction(ID3D12Object *object, REFGUID guid, void (*callback)(void *context), void *context);
 
 // For the device's Create*Resource methods, on success. ppvResource is what
 // the game asked for, which may be nothing at all.

@@ -1504,6 +1504,11 @@ struct Dx12DrawScope {
 	// Set for a dispatch that skins: compute as far as the list goes, a
 	// draw as far as the engine does
 	const SkinDispatch *skin;
+	// What a mod last skinned its vertices for it with, to the buffer of
+	// ours: its vertex buffers in slots 0 and SKIN_BLEND_SLOT
+	bool mod_skinned;
+	ID3D11Buffer *skinned_vbs[2];
+	UINT skinned_offsets[2];
 	// Of the list, which do not change while the scope is open. The root
 	// signature is NULL if the game's is not known.
 	const Dx12PipelineInfo *pipeline;
@@ -2989,6 +2994,36 @@ static bool skin_bind_mod_buffer(UINT reg, UINT slot, UINT stride, UINT vertices
 	return skin_bind_buffer(reg, false, resource, (offset + start) / stride, min(vertices, (size - start) / stride), stride);
 }
 
+static const UINT skin_input_slots[2] = { 0, SKIN_BLEND_SLOT };
+
+static void note_skin_inputs()
+{
+	const ShimState *mod = dx12_shim->shim_context->mState;
+	UINT i;
+
+	scope->mod_skinned = true;
+	for (i = 0; i < ARRAYSIZE(skin_input_slots); i++) {
+		scope->skinned_vbs[i] = mod->vbs[skin_input_slots[i]];
+		scope->skinned_offsets[i] = mod->vb_offsets[skin_input_slots[i]];
+	}
+}
+
+// Whether the mod has what it last skinned with bound still
+static bool mod_skin_inputs_bound()
+{
+	const ShimState *mod = dx12_shim->shim_context->mState;
+	UINT i;
+
+	if (!scope->mod_skinned)
+		return false;
+	for (i = 0; i < ARRAYSIZE(skin_input_slots); i++) {
+		if (mod->vbs[skin_input_slots[i]] != scope->skinned_vbs[i]
+		    || mod->vb_offsets[skin_input_slots[i]] != scope->skinned_offsets[i])
+			return false;
+	}
+	return true;
+}
+
 static bool skin_bind_count(const SkinDispatch *skin, UINT vertices)
 {
 	D3D12_CONSTANT_BUFFER_VIEW_DESC desc;
@@ -3133,6 +3168,7 @@ static void skin_draw(UINT vertices)
 	InterlockedExchange(&skin_outputs_live, (LONG)skin_outputs.size());
 	stats.mod_draws++;
 	stats.skin_replaced++;
+	note_skin_inputs();
 
 	if (G->dx12_dump_hashes) {
 		static std::unordered_set<UINT64> noted;
@@ -4082,6 +4118,7 @@ static void open_scope(Dx12DrawScope *opened, Dx12GraphicsCommandList *list, con
 	opened->list = list;
 	opened->compute = compute;
 	opened->skin = NULL;
+	opened->mod_skinned = false;
 	opened->pipeline = pipeline;
 	opened->signature = Dx12ListRootSignature(list, compute);
 	memcpy(opened->shaders, pipeline->shaders, sizeof(opened->shaders));
@@ -5081,7 +5118,12 @@ bool Dx12Dispatch(Dx12GraphicsCommandList *list, UINT x, UINT y, UINT z)
 		list->mOrig->Dispatch(x, y, z);
 		if (dx12_standins_live)
 			game_wrote_buffers(list, scope_serial);
-		if (!draw.call_info.skip) {
+		// A mod that skinned its own vertices without skipping the
+		// game's still has them drawn on D3D11 while it leaves them
+		// bound: the game's draw that follows skins what is bound, to
+		// the same buffer. One that bound something else has that
+		// drawn, which nothing of ours holds.
+		if (!draw.call_info.skip && !mod_skin_inputs_bound()) {
 			forget_skin_output(skin.output_va);
 			if (G->dx12_dump_hashes)
 				dump_skin_source(&skin, hashes[DX12_STAGE_VS]);

@@ -27,7 +27,8 @@ static const IID *const device_iids[] = {
 static SRWLOCK device_lock = SRWLOCK_INIT;
 
 Dx12Device::Dx12Device(ID3D12Device *orig) :
-	mRef(1)
+	mRef(1),
+	mTied(false)
 {
 	mVersion = Dx12QueryNewest(orig, device_iids, ARRAYSIZE(device_iids), (void**)&mOrig);
 	sVtbl = *(void**)this;
@@ -57,6 +58,22 @@ static bool add_ref_if_alive(volatile LONG *ref)
 	return true;
 }
 
+// {4C0E8B21-9A57-4F3D-B6E2-1D8A7C35F904}
+static const GUID device_destroyed_guid = { 0x4c0e8b21, 0x9a57, 0x4f3d, { 0xb6, 0xe2, 0x1d, 0x8a, 0x7c, 0x35, 0xf9, 0x04 } };
+
+static void device_destroyed(void *context)
+{
+	Dx12Device *device = (Dx12Device*)context;
+
+	Dx12LogInfo("Dx12Device %p destroyed\n", device);
+	delete device;
+}
+
+// Like the queues (see Dx12CommandQueue::Tie), the proxy goes when the
+// original does, not when the references taken through it are gone: swap
+// chains answer GetDevice with the proxy, and overlays keep the pointer after
+// letting go of it. RTSS hands it to D3D11On12CreateDevice after the game made
+// its swap chain again.
 void Dx12WrapDevice(REFIID riid, void **ppDevice)
 {
 	IUnknown *unknown = (IUnknown*)*ppDevice;
@@ -72,7 +89,8 @@ void Dx12WrapDevice(REFIID riid, void **ppDevice)
 	// A proxy found here may be on its way out in Release, in which case
 	// it is replaced.
 	if (SUCCEEDED(device->GetPrivateData(Dx12Device::ProxyIID, &size, &proxy))
-	    && size == sizeof(proxy) && proxy && proxy->Supports(riid) && add_ref_if_alive(&proxy->mRef)) {
+	    && size == sizeof(proxy) && proxy && proxy->Supports(riid)
+	    && (proxy->mTied ? InterlockedIncrement(&proxy->mRef) > 0 : add_ref_if_alive(&proxy->mRef))) {
 		// The reference the caller was given on the original now
 		// belongs to the reference just taken on the proxy.
 		Dx12LogInfo("Returning existing Dx12Device %p for ID3D12Device %p\n", proxy, device);
@@ -81,6 +99,7 @@ void Dx12WrapDevice(REFIID riid, void **ppDevice)
 		proxy = new Dx12Device(device);
 		if (proxy->Supports(riid)) {
 			device->SetPrivateData(Dx12Device::ProxyIID, sizeof(proxy), &proxy);
+			proxy->mTied = Dx12NotifyDestruction(proxy->mOrig, device_destroyed_guid, device_destroyed, proxy);
 			// The proxy took its own reference with the newest
 			// interface, this one is no longer needed.
 			unknown->Release();
@@ -129,10 +148,11 @@ ULONG STDMETHODCALLTYPE Dx12Device::Release()
 	ID3D12Device14 *orig = mOrig;
 	Dx12Device *registered = NULL;
 	UINT size = sizeof(registered);
+	bool tied = mTied;
 	ULONG ref;
 
 	ref = InterlockedDecrement(&mRef);
-	if (ref) {
+	if (ref || tied) {
 		orig->Release();
 		return ref;
 	}

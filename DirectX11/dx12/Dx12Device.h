@@ -12,6 +12,8 @@ public:
 	// Highest N of the ID3D12DeviceN the original implements
 	int mVersion;
 	volatile LONG mRef;
+	// Lives as long as the original, see Dx12WrapDevice
+	bool mTied;
 
 	Dx12Device(ID3D12Device *orig);
 

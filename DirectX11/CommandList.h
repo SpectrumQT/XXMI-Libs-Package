@@ -1051,6 +1051,7 @@ enum class ShaderTargetEvaluationMode : uint32_t {
 	DCL_SRV_STRIDE     = 0b00000000000000000000000010000000,
 	DCL_SRV_SAMPLED    = 0b00000000000000000000000100000000,
 	DCL_SRV_SET        = 0b00000000000000000000001000000000,
+	DCL_SRV_ORIGINAL_FORMAT = 0b00000000000000000000010000000000,
 };
 SENSIBLE_ENUM(ShaderTargetEvaluationMode);
 //static EnumName_t<const wchar_t*, ShaderTargetEvaluationMode> ShaderTargetEvaluationModeNames[] = {

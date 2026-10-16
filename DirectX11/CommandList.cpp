@@ -23,6 +23,7 @@
 #include "dx12/PipelineRegistry.h"
 #include "dx12/PresentPass.h"
 #include "dx12/ShimDevice.h"
+#include "vk/VkScope.h"
 
 #include <D3DCompiler.h>
 
@@ -3672,6 +3673,19 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 
 float CommandListOperand::process_shader_filter(CommandListState *state)
 {
+	if (shader_target.evaluation_mode == ShaderTargetEvaluationMode::DCL_SRV_ORIGINAL_FORMAT) {
+		if (shader_target.shader_type != L'p' || !VkInDrawScope())
+			return -1.0f;
+		UINT slot = (UINT)shader_target.member_args[0].GetValue(state);
+		// Bypass the shim's replacement bindings when identifying a game's material slots.
+		ID3D11ShaderResourceView *view = VkScopeShaderResource(DX12_STAGE_PS, slot);
+		if (!view)
+			return -1.0f;
+		D3D11_SHADER_RESOURCE_VIEW_DESC desc;
+		view->GetDesc(&desc);
+		return desc.Format != DXGI_FORMAT_UNKNOWN ? (float)desc.Format : -1.0f;
+	}
+
 	HackerContext *mHackerContext = state->mHackerContext;
 	ID3D11DeviceChild *shader = NULL;
 
@@ -8729,6 +8743,9 @@ IniParserResult ShaderTarget::ParseTargetMember(
 			MemberArg::Type::Unsigned, // Place in the order the code samples its textures
 		}} },
 		{ L"->srv_dimension",  15, ShaderTargetEvaluationMode::DCL_SRV_DIMENSION, {{
+			MemberArg::Type::Unsigned, // Slot ID
+		}} },
+		{ L"->srv_original_format", 21, ShaderTargetEvaluationMode::DCL_SRV_ORIGINAL_FORMAT, {{
 			MemberArg::Type::Unsigned, // Slot ID
 		}} },
 	};

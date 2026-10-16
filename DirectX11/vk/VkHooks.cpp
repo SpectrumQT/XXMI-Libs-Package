@@ -7,7 +7,6 @@
 #include "VkDump.h"
 
 #include "util.h"
-#include "../cursor.h" // For InstallHookLate
 #include "../D3D11Wrapper.h"
 #include "../DLLMainHook.h"
 #include "../Globals.h"
@@ -721,24 +720,222 @@ static VkResult VKAPI_CALL Hooked_vkQueuePresentKHR(VkQueue queue, const VkPrese
 
 // -----------------------------------------------------------------------------
 
-static void hook_device_exports()
-{
-	static bool hooked;
-	HINSTANCE vulkan;
+// A hook on an export of vulkan-1.dll. The loader can be unloaded and loaded
+// again, at the same address or another, which takes the hooks with it, and
+// whatever restores code that was changed can undo them.
+struct ExportHook {
+	const char *name;
+	void **trampoline;
+	void *hook;
+	SIZE_T id;
+	HINSTANCE module;
+	BYTE *at;
+	// Where the hook library put its jump, and what was there before,
+	// which is how a hook that was undone is told apart
+	BYTE *site;
+	BYTE original[8];
+	// Whether site was found
+	bool patched;
+};
 
-	if (hooked)
-		return;
-	hooked = true;
+static SRWLOCK export_hooks_lock = SRWLOCK_INIT;
 
-	vulkan = NktHookLibHelpers::GetModuleBaseAddress(L"vulkan-1.dll");
-	if (!vulkan)
-		return;
-
-#define X(name) \
-	if (InstallHookLate(vulkan, "vk" #name, (void**)&exports.name, Hooked_vk##name)) \
-		VkDumpNote("*** Failed to hook the export vk" #name "\n");
+static ExportHook device_export_hooks[] = {
+#define X(name) { "vk" #name, (void**)&exports.name, (void*)Hooked_vk##name },
 	VK_DEVICE_FUNCS(X)
 #undef X
+};
+static bool device_exports_wanted;
+
+// Where vulkan-1.dll was when its exports were last hooked, and how many
+// times it was unloaded from there, as the loader of Windows tells
+static void *volatile hooked_vulkan;
+static volatile LONG vulkan_unloads;
+static LONG vulkan_unloads_seen;
+
+struct DllNotificationData {
+	ULONG flags;
+	const void *full_name;
+	const void *base_name;
+	void *base;
+	ULONG size;
+};
+typedef VOID (CALLBACK *DllNotification)(ULONG reason, const DllNotificationData *data, void *context);
+typedef LONG (NTAPI *LdrRegisterDllNotificationFunc)(ULONG flags, DllNotification notification, void *context, void **cookie);
+typedef LONG (NTAPI *LdrUnregisterDllNotificationFunc)(void *cookie);
+static const ULONG LDR_DLL_NOTIFICATION_REASON_UNLOADED = 2;
+
+// With the loader lock held, so nothing that takes export_hooks_lock
+static VOID CALLBACK dll_notification(ULONG reason, const DllNotificationData *data, void *context)
+{
+	if (reason == LDR_DLL_NOTIFICATION_REASON_UNLOADED && data && data->base && data->base == hooked_vulkan)
+		InterlockedIncrement(&vulkan_unloads);
+}
+
+static bool watching_unloads;
+static void *unloads_cookie;
+
+// With export_hooks_lock held
+static void watch_unloads()
+{
+	LdrRegisterDllNotificationFunc register_notification;
+
+	if (watching_unloads)
+		return;
+	watching_unloads = true;
+	register_notification = (LdrRegisterDllNotificationFunc)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "LdrRegisterDllNotification");
+	if (!register_notification || register_notification(0, dll_notification, NULL, &unloads_cookie) < 0) {
+		unloads_cookie = NULL;
+		VkLogInfo("*** Unable to tell when vulkan-1.dll is unloaded, taking the hooks of its exports with it\n");
+	}
+}
+
+// Without export_hooks_lock: a thread ended at exit may have left it held
+void VkUnwatchUnloads()
+{
+	LdrUnregisterDllNotificationFunc unregister_notification;
+	void *cookie = InterlockedExchangePointer(&unloads_cookie, NULL);
+
+	unregister_notification = (LdrUnregisterDllNotificationFunc)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "LdrUnregisterDllNotification");
+	if (cookie && unregister_notification)
+		unregister_notification(cookie);
+}
+
+// With export_hooks_lock held. Hooks the loader took with it are only taken
+// out of the hook library's list: the code they were in is gone.
+static void forget_export_hooks(ExportHook *hooks, size_t count)
+{
+	size_t i;
+
+	for (i = 0; i < count; i++) {
+		if (hooks[i].id)
+			cHookMgr.RemoveHook(hooks[i].id, TRUE);
+		hooks[i].id = 0;
+		hooks[i].module = NULL;
+		hooks[i].at = NULL;
+	}
+}
+
+const int MAX_JUMPS = 8;
+
+// The places a call to an export goes through: the export, and where the
+// jumps it starts with lead within the module. Every export of the loader is
+// a jump to its code, and the hook library skips such jumps, so its hook is
+// at one of these, found by which one hooking changed.
+static int jump_chain(HINSTANCE module, BYTE *at, BYTE **chain)
+{
+	IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER*)module;
+	IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS*)((BYTE*)module + dos->e_lfanew);
+	BYTE *start = (BYTE*)module, *end = start + nt->OptionalHeader.SizeOfImage;
+	BYTE *next;
+	int count = 0;
+
+	chain[count++] = at;
+	while (count < MAX_JUMPS) {
+		if (at[0] == 0xE9)
+			next = at + 5 + *(INT32*)(at + 1);
+		else if (at[0] == 0xEB)
+			next = at + 2 + *(INT8*)(at + 1);
+		else
+			break;
+		if (next < start || next + sizeof(ExportHook::original) > end)
+			break;
+		chain[count++] = at = next;
+	}
+	return count;
+}
+
+// With export_hooks_lock held. The exports not hooked yet, or no longer, are
+// hooked. unloaded_from is where vulkan-1.dll was before it was unloaded.
+static void refresh_export_hooks(HINSTANCE vulkan, ExportHook *hooks, size_t count, const char *what, void *unloaded_from)
+{
+	unsigned hooked = 0, moved = 0, restored = 0, failed = 0;
+	BYTE *at, *chain[MAX_JUMPS], before[MAX_JUMPS][sizeof(ExportHook::original)];
+	void *trampoline;
+	int jumps, j;
+	DWORD err;
+	size_t i;
+
+	for (i = 0; i < count; i++) {
+		ExportHook *hook = &hooks[i];
+
+		// Looked up only when the loader is somewhere else, as this is
+		// done after every LoadLibraryExW
+		at = hook->module == vulkan ? hook->at : NULL;
+		if (!at)
+			at = (BYTE*)NktHookLibHelpers::GetProcedureAddress(vulkan, hook->name);
+		if (!at)
+			continue;
+		if (at == hook->at && !(hook->id && hook->patched && !memcmp(hook->site, hook->original, sizeof(hook->original))))
+			continue;
+
+		if (hook->at) {
+			if (at != hook->at)
+				moved++;
+			else
+				restored++;
+		}
+		if (hook->id)
+			cHookMgr.RemoveHook(hook->id, TRUE);
+		hook->id = 0;
+		hook->module = vulkan;
+		hook->at = at;
+		jumps = jump_chain(vulkan, at, chain);
+		for (j = 0; j < jumps; j++)
+			memcpy(before[j], chain[j], sizeof(before[j]));
+		// Threads already in the hook keep calling the trampoline they
+		// have, which Hook() would set to NULL first and leave so if it
+		// fails. The one of the hook removed above stays valid, as the hook
+		// library never frees it. Not enabled before the new one is there.
+		err = cHookMgr.Hook(&hook->id, &trampoline, at, hook->hook, NKTHOOKLIB_DontEnableHooks);
+		if (err) {
+			hook->id = 0;
+			failed++;
+			VkDumpNote("*** Failed to hook the export %s: 0x%x\n", hook->name, err);
+			continue;
+		}
+		InterlockedExchangePointer(hook->trampoline, trampoline);
+		cHookMgr.EnableHook(hook->id, TRUE);
+		hook->patched = false;
+		for (j = 0; j < jumps && !hook->patched; j++) {
+			if (memcmp(chain[j], before[j], sizeof(before[j]))) {
+				hook->site = chain[j];
+				memcpy(hook->original, before[j], sizeof(hook->original));
+				hook->patched = true;
+			}
+		}
+		if (!hook->patched)
+			VkLogInfo("*** The hook of %s is not within vulkan-1.dll, as when something else hooked it first, so it will not be noticed if it is undone\n", hook->name);
+		hooked++;
+	}
+
+	if (!hooked && !failed)
+		return;
+	if (unloaded_from) {
+		VkLogInfo("Hooked %u exports of vulkan-1.dll at %p again for %s, %u failed: it had been unloaded from %p\n",
+			hooked, vulkan, what, failed, unloaded_from);
+	} else if (moved || restored) {
+		VkLogInfo("Hooked %u exports of vulkan-1.dll at %p again for %s, %u failed: %u had moved, %u were back to "
+			"their code from before they were hooked\n", hooked, vulkan, what, failed, moved, restored);
+	} else {
+		VkLogInfo("Hooked %u exports of vulkan-1.dll at %p for %s, %u failed\n", hooked, vulkan, what, failed);
+	}
+}
+
+static void hook_exports(HMODULE vulkan);
+
+static void hook_device_exports()
+{
+	HMODULE vulkan;
+
+	// Kept loaded while its code is looked at
+	if (!GetModuleHandleExW(0, L"vulkan-1.dll", &vulkan))
+		return;
+	AcquireSRWLockExclusive(&export_hooks_lock);
+	device_exports_wanted = true;
+	hook_exports(vulkan);
+	ReleaseSRWLockExclusive(&export_hooks_lock);
+	FreeLibrary(vulkan);
 }
 
 static void register_device(VkDevice device, VkPhysicalDevice physical_device, bool external_memory, bool external_semaphore)
@@ -874,6 +1071,7 @@ static VkResult VKAPI_CALL Hooked_vkCreateInstance(const VkInstanceCreateInfo *i
 	VkResult result;
 
 	InitCommon();
+	VkLogInfo("vkCreateInstance, %u extensions\n", info ? info->enabledExtensionCount : 0);
 	if (!info || !G->bIntendedTargetExe || !G->vulkan || !G->vk_dump_hashes || !enumerate || !get)
 		return fnOrigCreateInstance(info, allocator, instance);
 
@@ -1158,22 +1356,42 @@ static PFN_vkVoidFunction VKAPI_CALL Hooked_vkGetDeviceProcAddr(VkDevice device,
 	return real;
 }
 
+static ExportHook loader_export_hooks[] = {
+	{ "vkCreateInstance", (void**)&fnOrigCreateInstance, (void*)Hooked_vkCreateInstance },
+	{ "vkCreateDevice", (void**)&fnOrigCreateDevice, (void*)Hooked_vkCreateDevice },
+	{ "vkGetDeviceProcAddr", (void**)&fnOrigGetDeviceProcAddr, (void*)Hooked_vkGetDeviceProcAddr },
+};
+
+// With export_hooks_lock held
+static void hook_exports(HMODULE vulkan)
+{
+	LONG unloads = vulkan_unloads;
+	void *unloaded_from = NULL;
+
+	watch_unloads();
+	if (unloads != vulkan_unloads_seen) {
+		vulkan_unloads_seen = unloads;
+		unloaded_from = hooked_vulkan;
+		forget_export_hooks(loader_export_hooks, ARRAYSIZE(loader_export_hooks));
+		forget_export_hooks(device_export_hooks, ARRAYSIZE(device_export_hooks));
+	}
+	hooked_vulkan = vulkan;
+	refresh_export_hooks(vulkan, loader_export_hooks, ARRAYSIZE(loader_export_hooks), "instances and devices", unloaded_from);
+	if (device_exports_wanted)
+		refresh_export_hooks(vulkan, device_export_hooks, ARRAYSIZE(device_export_hooks), "devices", unloaded_from);
+}
+
+// Called after every LoadLibraryExW, which is also where vulkan-1.dll comes
+// back if it was unloaded
 void VkHookExports()
 {
-	static volatile LONG hooked = 0;
-	HINSTANCE vulkan;
+	HMODULE vulkan;
 
-	if (hooked)
+	// Kept loaded while its code is looked at
+	if (!GetModuleHandleExW(0, L"vulkan-1.dll", &vulkan))
 		return;
-
-	vulkan = NktHookLibHelpers::GetModuleBaseAddress(L"vulkan-1.dll");
-	if (!vulkan)
-		return;
-
-	if (InterlockedCompareExchange(&hooked, 1, 0) != 0)
-		return;
-
-	InstallHookLate(vulkan, "vkCreateInstance", (void**)&fnOrigCreateInstance, Hooked_vkCreateInstance);
-	InstallHookLate(vulkan, "vkCreateDevice", (void**)&fnOrigCreateDevice, Hooked_vkCreateDevice);
-	InstallHookLate(vulkan, "vkGetDeviceProcAddr", (void**)&fnOrigGetDeviceProcAddr, Hooked_vkGetDeviceProcAddr);
+	AcquireSRWLockExclusive(&export_hooks_lock);
+	hook_exports(vulkan);
+	ReleaseSRWLockExclusive(&export_hooks_lock);
+	FreeLibrary(vulkan);
 }

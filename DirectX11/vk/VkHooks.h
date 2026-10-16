@@ -15,6 +15,9 @@
 // keeps at the start of every device, queue and command buffer.
 
 // Hooks the vulkan-1.dll exports we need if the DLL is in the process and
-// they are not hooked yet. Called from DllMain and from the LoadLibraryExW
-// hook, so it has to stay within what is permitted under the loader lock.
+// they are not hooked yet, or no longer: it may have been unloaded and loaded
+// again since. Called from DllMain and from the LoadLibraryExW hook, so it
+// has to stay within what is permitted under the loader lock.
 void VkHookExports();
+// For DLL_PROCESS_DETACH: no more being told of vulkan-1.dll being unloaded
+void VkUnwatchUnloads();

@@ -373,6 +373,7 @@ BOOL WINAPI DllMain(
 
 		case DLL_PROCESS_DETACH:
 			dx12_unloading = true;
+			VkUnwatchUnloads();
 			RemoveHooks();
 			if (tls_idx != TLS_OUT_OF_INDEXES) {
 				// FIXME: If we are being dynamically unloaded

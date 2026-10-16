@@ -9,7 +9,16 @@ import subprocess
 import tempfile
 
 
-def run_case(folder, ini):
+def run_case(folder, ini, extended_rendering=1):
+    rendering = "" if extended_rendering is None else f"extended_rendering = {extended_rendering}\n"
+    (folder / "d3dx.ini").write_text(
+        "[Loader]\ntarget = harness.exe\n"
+        "[Include]\ninclude_recursive = Mods\n"
+        f"[Rendering]\n{rendering}track_region_hashes = 1\n"
+        "[Hunting]\nhunting = 0\n"
+        "[Logging]\nlog_level = info\nshow_warnings = 0\nunbuffered = 1\n",
+        encoding="utf-8",
+    )
     (folder / "Mods" / "test.ini").write_text(ini, encoding="utf-8")
     result = subprocess.run(
         [str(folder / "harness.exe"), "1", "--pool"],
@@ -55,14 +64,6 @@ def main():
         (mods / "replacement_bc7.dds").write_bytes(
             b"DDS " + struct.pack("<31I", *header) + struct.pack("<5I", 98, 3, 0, 1, 0) + b"\x01" + bytes(15)
         )
-        (folder / "d3dx.ini").write_text(
-            "[Loader]\ntarget = harness.exe\n"
-            "[Include]\ninclude_recursive = Mods\n"
-            "[Rendering]\ndx12 = auto\nvulkan = 1\ntrack_region_hashes = 1\n"
-            "[Hunting]\nhunting = 0\n"
-            "[Logging]\nlog_level = info\nshow_warnings = 0\nunbuffered = 1\n",
-            encoding="utf-8",
-        )
         ini = Path(__file__).with_name("original_format.ini").read_text(encoding="utf-8")
         branch = "        if $ok\n"
         assert ini.count(branch) == 1
@@ -81,8 +82,16 @@ def main():
         actual = run_case(folder, ini)
         if actual != passing:
             raise AssertionError(f"Original-format contract failed: expected {passing}, got {actual}")
+        if run_case(folder, ini, extended_rendering=None) != passing:
+            raise AssertionError("Vulkan must be detected with the default rendering setting")
+        unmodified = run_case(folder, "", extended_rendering=0)
+        if unmodified == passing:
+            raise AssertionError("The enabled mod must visibly differ from the unmodified game")
+        if run_case(folder, ini, extended_rendering=0) != unmodified:
+            raise AssertionError("extended_rendering = 0 must leave Vulkan draws unmodified")
         print("PASS: the old detector fails after replacement; original-format detection passes")
         print("PASS: current format, dynamic slot, clearing, missing slots/stages and outside-draw queries")
+        print("PASS: Vulkan auto-detection, default setting and disabled mod support")
         print("Rendered pixels:", actual)
 
 

@@ -32,7 +32,7 @@ static std::atomic<bool> shim_created;
 
 bool Dx12IsD3D11Game()
 {
-	return dx12_d3d11_presented && !shim_created && G->dx12 != Dx12Mode::ON;
+	return dx12_d3d11_presented && !shim_created;
 }
 UINT dx12_shim_epoch = 1;
 UINT dx12_shim_view_increment;
@@ -1445,7 +1445,12 @@ bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue)
 		return false;
 	}
 
-	if (FAILED(shim.device->CreateFence(0, G->vulkan ? D3D12_FENCE_FLAG_SHARED : D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))
+	// The driver may present through D3D12 before the Vulkan device is known.
+	// Keep its fence shareable so Vulkan can use the same engine later.
+	HRESULT fence_hr = shim.device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence));
+	if (FAILED(fence_hr))
+		fence_hr = shim.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+	if (FAILED(fence_hr)
 	    || FAILED(shim.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator.allocator)))
 	    || FAILED(shim.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.allocator, NULL, IID_PPV_ARGS(&shim_list)))) {
 		Dx12LogInfo("*** Failed to create the command list for mods, they will not be applied\n");

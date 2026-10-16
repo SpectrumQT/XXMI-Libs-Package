@@ -21,7 +21,7 @@ static bool dx12_enabled()
 {
 	InitCommon();
 
-	return G->bIntendedTargetExe && G->dx12 != Dx12Mode::OFF;
+	return G->bIntendedTargetExe && G->extended_rendering;
 }
 
 // The debug layer has to be enabled before the device is created. What it has
@@ -56,7 +56,7 @@ static void enable_dred()
 	HRESULT (WINAPI *get_debug_interface)(REFIID, void**);
 	ID3D12DeviceRemovedExtendedDataSettings *settings = NULL;
 
-	if (enabled || !dx12_enabled() || !G->vulkan || !G->vk_dump_hashes)
+	if (enabled || !dx12_enabled() || !G->vk_dump_hashes)
 		return;
 	enabled = true;
 

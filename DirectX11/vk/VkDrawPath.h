@@ -1,8 +1,10 @@
 #pragma once
 
+#include <atomic>
+
 #include "VkCommon.h"
 
-// Mods for a Vulkan game, with vulkan = 1 in [Rendering].
+// Mods for a Vulkan game detected with extended_rendering enabled.
 //
 // The engine only knows D3D11, and there is no Vulkan version of what gives
 // it a D3D11 device to work with. What there is is the D3D12 one (dx12/): a
@@ -69,7 +71,7 @@
 
 // Set once a device has been taken on, for the hooks to tell whether to
 // report here
-extern bool vk_mods_active;
+extern std::atomic<bool> vk_mods_active;
 
 // The functions of a device as they are past the hooks, for what is made and
 // recorded here
@@ -135,6 +137,8 @@ void VkModsShaderModule(VkShaderModule module, const VkShaderModuleCreateInfo *i
 void VkModsForgetShaderModule(VkShaderModule module);
 void VkModsGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateInfo *info);
 void VkModsForgetPipeline(VkPipeline pipeline);
+// Stops modifying pipelines whose custom-allocated creation inputs are gone.
+void VkModsRetirePipelineObject(VkObjectType type, uint64_t handle);
 
 void VkModsBufferCreated(VkBuffer buffer, const VkBufferCreateInfo *info);
 void VkModsBufferBound(VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize offset);
@@ -150,6 +154,7 @@ void VkModsBindIndexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize of
 void VkModsSetLayout(VkDescriptorSetLayout layout, const VkDescriptorSetLayoutCreateInfo *info);
 // The game destroyed a layout, which is kept: see Hooked_vkDestroyDescriptorSetLayout
 void VkModsSetLayoutKept();
+void VkModsForgetSetLayout(VkDescriptorSetLayout layout);
 void VkModsSetsAllocated(const VkDescriptorSetAllocateInfo *info, const VkDescriptorSet *sets);
 void VkModsSetsUpdated(uint32_t write_count, const VkWriteDescriptorSet *writes, uint32_t copy_count, const VkCopyDescriptorSet *copies);
 void VkModsUpdateTemplate(VkDescriptorUpdateTemplate update_template, const VkDescriptorUpdateTemplateCreateInfo *info);

@@ -167,6 +167,14 @@ static HackerDevice* sort_out_swap_chain_device_mess(IUnknown **device)
 		// QueryInterface() it, but let's not tempt fate:
 		*device = (hackerDevice)->GetPossiblyHookedOrigDevice1();
 	} else {
+		if (check_interface_supported(*device, IID_ID3D12CommandQueue)) {
+			// An unwrapped queue may belong to a driver, or extended rendering
+			// may be disabled. The D3D11 warning overlay must not attach to it.
+			LogInfo("[DX12] Swap chain belongs to an unwrapped ID3D12CommandQueue, not touching it\n");
+			fflush(LogFile);
+			return NULL;
+		}
+
 		LogInfo("WARNING: Could not locate HackerDevice for %p\n", *device);
 		analyse_iunknown(*device);
 
@@ -180,16 +188,6 @@ static HackerDevice* sort_out_swap_chain_device_mess(IUnknown **device)
 			// That swap chain is not the game's, so leave it alone
 			// rather than treating it as fatal.
 			LogInfo("WARNING: Unwrapped ID3D11Device, not touching this swap chain\n");
-			fflush(LogFile);
-			return NULL;
-		}
-
-		if (G->dx12 != Dx12Mode::OFF && check_interface_supported(*device, IID_ID3D12CommandQueue)) {
-			// Not one of our queue proxies, so the device was not
-			// wrapped. Attaching the D3D11On12 device of the
-			// warning overlay below to somebody else's queue is
-			// intrusive.
-			LogInfo("[DX12] Swap chain belongs to an unwrapped ID3D12CommandQueue, not touching it\n");
 			fflush(LogFile);
 			return NULL;
 		}

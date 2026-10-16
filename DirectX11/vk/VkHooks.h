@@ -19,5 +19,7 @@
 // again since. Called from DllMain and from the LoadLibraryExW hook, so it
 // has to stay within what is permitted under the loader lock.
 void VkHookExports();
+// Releases deferred Vulkan destroys when a D3D11 present rules out its mod path.
+void VkDisableModsForD3D11();
 // For DLL_PROCESS_DETACH: no more being told of vulkan-1.dll being unloaded
 void VkUnwatchUnloads();

@@ -2636,8 +2636,7 @@ static void ParseShaderOverrideSections()
 	UINT64 hash, hash_dx12;
 	bool duplicate, found, found_dx12;
 	bool disable_scissor;
-	// Settled by the game presenting, unless the ini says
-	bool dx12 = dx12_shim || G->dx12 == Dx12Mode::ON;
+	bool dx12 = dx12_shim != NULL;
 
 	// Lock entire routine. This can be re-inited live.  These shaderoverrides
 	// are unlikely to be changing much, but for consistency.
@@ -2665,7 +2664,7 @@ static void ParseShaderOverrideSections()
 			found |= found_dx12;
 		} else if (found_dx12) {
 			// Read again once the shim is there, see Dx12ShimCreate
-			if (G->dx12 == Dx12Mode::AUTO)
+			if (G->extended_rendering)
 				dx12_hashes_provisional = true;
 			if (!found)
 				continue;
@@ -4836,10 +4835,9 @@ void LoadConfigFile()
 
 	G->shader_hash_type = GetIniEnumClass(L"Rendering", L"shader_hash", ShaderHashType::FNV, NULL, ShaderHashNames);
 	G->texture_hash_version = GetIniInt(L"Rendering", L"texture_hash", 0, NULL);
-	G->dx12 = GetIniEnumClass(L"Rendering", L"dx12", Dx12Mode::AUTO, NULL, Dx12ModeNames);
+	G->extended_rendering = GetIniBool(L"Rendering", L"extended_rendering", true, NULL);
 	G->dx12_dump_hashes = GetIniBool(L"Hunting", L"dx12_dump_hashes", false, NULL);
 	G->vk_dump_hashes = GetIniBool(L"Hunting", L"vk_dump_hashes", false, NULL);
-	G->vulkan = GetIniBool(L"Rendering", L"vulkan", false, NULL);
 	G->vk_buffers_first = GetIniBool(L"Rendering", L"vk_buffers_first", false, NULL);
 	G->dx12_debug_layer = GetIniBool(L"Rendering", L"dx12_debug_layer", false, NULL);
 	G->dx12_evict_idle = GetIniBool(L"Rendering", L"dx12_evict_idle", true, NULL);

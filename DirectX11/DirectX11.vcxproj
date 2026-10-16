@@ -144,6 +144,7 @@
     <ClInclude Include="vk\VkDrawPath.h" />
     <ClInclude Include="vk\VkDump.h" />
     <ClInclude Include="vk\VkHooks.h" />
+    <ClInclude Include="vk\VkObjectLifetime.h" />
     <ClInclude Include="vk\VkScope.h" />
     <ClInclude Include="FrameAnalysis.h" />
     <ClInclude Include="Globals.h" />

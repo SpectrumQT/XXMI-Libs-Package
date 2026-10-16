@@ -17,6 +17,7 @@
 * GPU-to-INI scope data transfer support via `store` command (backward-compatible with GIMI `.dll` implementation).
 * Periodic auto-saving of mod settings (persistent vars are saved to `d3dx_user.ini` every 1 minute by default).
 * Support for remote DLL loading (allows the loader `.exe` to reside in a separate directory).
+* Experimental DirectX 12 and Vulkan mod support through `[Rendering] extended_rendering = 1` (the default). The game API is detected automatically; D3D11 games retain their existing path. Set it to `0` for D3D11-only support and restart the game after changing it. This replaces the separate `dx12` and `vulkan` settings. Vulkan currently requires a driver presentation path through a D3D12 swap chain.
 
 ## Special Thanks
 

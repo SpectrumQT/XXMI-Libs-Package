@@ -1,4 +1,5 @@
 #include "VkHooks.h"
+#include "VkObjectLifetime.h"
 
 #include <vector>
 
@@ -10,6 +11,7 @@
 #include "../D3D11Wrapper.h"
 #include "../DLLMainHook.h"
 #include "../Globals.h"
+#include "../dx12/Bridge.h"
 
 // The functions of a device we step into. All of them take a device, queue or
 // command buffer first, which is what the continuation is found by.
@@ -91,6 +93,11 @@ static PFN_vkGetDeviceProcAddr fnOrigGetDeviceProcAddr;
 // The instance has a messenger of ours for VkModsAddressBinding
 static bool binding_messenger;
 
+static bool mods_enabled()
+{
+	return G->bIntendedTargetExe && G->extended_rendering && !Dx12IsD3D11Game();
+}
+
 static inline const VkDispatch* find_dispatch(void *handle)
 {
 	void *key = *(void**)handle;
@@ -128,8 +135,10 @@ static void VKAPI_CALL Hooked_vkDestroyDevice(VkDevice device, const VkAllocatio
 			}
 		}
 		ReleaseSRWLockExclusive(&dispatch_lock);
-		if (vk_mods_active)
-			VkModsForgetDevice(device);
+		VkModsForgetDevice(device);
+		AcquireSRWLockExclusive(&retained_lock);
+		release_retained(device);
+		ReleaseSRWLockExclusive(&retained_lock);
 		VkLogInfo("vkDestroyDevice(%p)\n", device);
 	}
 
@@ -168,11 +177,13 @@ static void VKAPI_CALL Hooked_vkDestroyShaderModule(VkDevice device, VkShaderMod
 {
 	// Kept, like the two below: a pipeline of the game may be made again
 	// for the vertices of a mod, of what it was created from
-	if (vk_mods_active)
+	if (retain_object(&retained_shaders, device, module, allocator, next_DestroyShaderModule(device)))
 		return;
+	if (allocator)
+		VkModsRetirePipelineObject(VK_OBJECT_TYPE_SHADER_MODULE, (uint64_t)module);
 	if (module && vk_dump_active)
 		VkDumpForgetShaderModule(module);
-	if (module && vk_mods_active)
+	if (module)
 		VkModsForgetShaderModule(module);
 	next_DestroyShaderModule(device)(device, module, allocator);
 }
@@ -219,14 +230,20 @@ static void VKAPI_CALL Hooked_vkDestroyPipeline(VkDevice device, VkPipeline pipe
 
 static void VKAPI_CALL Hooked_vkDestroyPipelineLayout(VkDevice device, VkPipelineLayout layout, const VkAllocationCallbacks *allocator)
 {
-	if (!vk_mods_active)
+	if (!retain_object(&retained_pipeline_layouts, device, layout, allocator, next_DestroyPipelineLayout(device))) {
+		if (allocator)
+			VkModsRetirePipelineObject(VK_OBJECT_TYPE_PIPELINE_LAYOUT, (uint64_t)layout);
 		next_DestroyPipelineLayout(device)(device, layout, allocator);
+	}
 }
 
 static void VKAPI_CALL Hooked_vkDestroyRenderPass(VkDevice device, VkRenderPass pass, const VkAllocationCallbacks *allocator)
 {
-	if (!vk_mods_active)
+	if (!retain_object(&retained_render_passes, device, pass, allocator, next_DestroyRenderPass(device))) {
+		if (allocator)
+			VkModsRetirePipelineObject(VK_OBJECT_TYPE_RENDER_PASS, (uint64_t)pass);
 		next_DestroyRenderPass(device)(device, pass, allocator);
+	}
 }
 
 static VkResult VKAPI_CALL Hooked_vkCreateBuffer(VkDevice device, const VkBufferCreateInfo *info,
@@ -453,7 +470,8 @@ static VkResult VKAPI_CALL Hooked_vkCreateDescriptorSetLayout(VkDevice device, c
 // while the layout lives. Its handle is not given out again either.
 static void VKAPI_CALL Hooked_vkDestroyDescriptorSetLayout(VkDevice device, VkDescriptorSetLayout layout, const VkAllocationCallbacks *allocator)
 {
-	if (!vk_mods_active) {
+	if (!retain_object(&retained_set_layouts, device, layout, allocator, next_DestroyDescriptorSetLayout(device))) {
+		VkModsForgetSetLayout(layout);
 		next_DestroyDescriptorSetLayout(device)(device, layout, allocator);
 		return;
 	}
@@ -1072,7 +1090,7 @@ static VkResult VKAPI_CALL Hooked_vkCreateInstance(const VkInstanceCreateInfo *i
 
 	InitCommon();
 	VkLogInfo("vkCreateInstance, %u extensions\n", info ? info->enabledExtensionCount : 0);
-	if (!info || !G->bIntendedTargetExe || !G->vulkan || !G->vk_dump_hashes || !enumerate || !get)
+	if (!info || !mods_enabled() || !G->vk_dump_hashes || !enumerate || !get)
 		return fnOrigCreateInstance(info, allocator, instance);
 
 	names.assign(info->ppEnabledExtensionNames, info->ppEnabledExtensionNames + info->enabledExtensionCount);
@@ -1210,14 +1228,15 @@ static VkResult create_diagnosed(VkPhysicalDevice physical_device, const VkDevic
 	return fnOrigCreateDevice(physical_device, info, allocator, device);
 }
 
-// The device as the game asks for it, and with vulkan with robustBufferAccess.
+// Extended rendering needs robustBufferAccess for Vulkan mod buffers.
 // D3D11 reads a buffer past its end as zeros, and mods are made for that: a
 // bone index past the skeleton a mod put together, constants read further
 // than a mod's buffer holds. Vulkan leaves such a read to whatever memory is
 // there, and where there is none the device is lost; robustBufferAccess keeps
 // it within the buffer. A driver that will not make it so makes it as asked.
 static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
-		const VkAllocationCallbacks *allocator, VkDevice *device, bool *robust, bool *fault, bool *checkpoints, bool *bindings)
+		const VkAllocationCallbacks *allocator, VkDevice *device, bool mods,
+		bool *robust, bool *fault, bool *checkpoints, bool *bindings)
 {
 	PFN_vkGetPhysicalDeviceFeatures get_features = (PFN_vkGetPhysicalDeviceFeatures)NktHookLibHelpers::GetProcedureAddress(
 		NktHookLibHelpers::GetModuleBaseAddress(L"vulkan-1.dll"), "vkGetPhysicalDeviceFeatures");
@@ -1229,7 +1248,7 @@ static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCr
 	VkResult result;
 
 	*robust = *fault = *checkpoints = *bindings = false;
-	if (!info || !G->bIntendedTargetExe || !G->vulkan)
+	if (!info || !mods)
 		return fnOrigCreateDevice(physical_device, info, allocator, device);
 	diagnose = G->vk_dump_hashes;
 
@@ -1276,17 +1295,21 @@ static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_devic
 	uint32_t i;
 
 	InitCommon();
-	result = create_device(physical_device, info, allocator, device, &robust, &fault, &checkpoints, &bindings);
+	bool mods = mods_enabled();
+	result = create_device(physical_device, info, allocator, device, mods, &robust, &fault, &checkpoints, &bindings);
 	if (result != VK_SUCCESS || !device || !*device)
 		return result;
 
-	if (!G->bIntendedTargetExe || (!G->vulkan && !G->vk_dump_hashes)) {
-		VkLogInfo("vkCreateDevice = %p, left alone without vulkan or vk_dump_hashes\n", *device);
+	if (!G->bIntendedTargetExe || (!mods && !G->vk_dump_hashes)) {
+		VkLogInfo("vkCreateDevice = %p, left alone without extended rendering or vk_dump_hashes\n", *device);
 		return result;
 	}
 
 	vk_dump_active = G->vk_dump_hashes;
-	vk_mods_active = G->vulkan;
+	AcquireSRWLockExclusive(&retained_lock);
+	if (mods && mods_enabled())
+		vk_mods_active = true;
+	ReleaseSRWLockExclusive(&retained_lock);
 	hook_device_exports();
 	for (i = 0; info && i < info->enabledExtensionCount; i++) {
 		external_memory |= !strcmp(info->ppEnabledExtensionNames[i], VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);

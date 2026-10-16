@@ -439,9 +439,9 @@ HRESULT STDMETHODCALLTYPE ShimDevice::CreateBuffer(const D3D11_BUFFER_DESC *pDes
 		}
 	}
 
-	// A Vulkan game draws a mesh of a mod from a buffer of its own device,
-	// which is filled from here
-	keep_contents = G->vulkan && pInitialData && pInitialData->pSysMem
+	// The engine may load meshes before a Vulkan device is detected. Keep
+	// their source data for copying to that device once it is available.
+	keep_contents = G->extended_rendering && pInitialData && pInitialData->pSysMem
 		&& (pDesc->BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER));
 
 	if (r->cpu_only || pDesc->Usage == D3D11_USAGE_DYNAMIC || keep_contents) {

@@ -27,7 +27,7 @@
 #include "../ResourceHash.h"
 #include "../ShaderRegex.h"
 
-bool vk_mods_active;
+std::atomic<bool> vk_mods_active;
 
 // Whether any draw could be of interest at all. Read without a lock by the
 // threads recording, like wanted_generation, which changes when what was
@@ -192,6 +192,11 @@ struct PipelineVariant {
 
 struct Pipeline {
 	VkPipeline handle;
+	VkPipelineLayout pipeline_layout;
+	VkRenderPass render_pass;
+	std::vector<VkShaderModule> modules;
+	// Read and changed with the shim lock, after registry publication.
+	bool can_modify;
 	// NULL if it could not be kept. This and the variants with
 	// registry_lock held.
 	std::shared_ptr<PipelineRecipe> recipe;
@@ -222,6 +227,8 @@ static std::unordered_map<VkShaderModule, UINT64> shader_modules;
 // By hash, and kept: pipelines point at them
 static std::unordered_map<UINT64, ShaderLayout*> shader_layouts;
 static std::unordered_map<VkPipeline, Pipeline*> pipelines;
+static std::unordered_map<VkPipelineLayout, UINT64> retired_layout_epochs;
+static std::atomic<bool> has_retired_layouts;
 // A command buffer may be left pointing at the pipeline it had bound when
 // that is destroyed, so these are never freed, only used again
 static std::vector<Pipeline*> spare_pipelines;
@@ -657,6 +664,14 @@ void VkModsGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 		spare_pipelines.pop_back();
 	}
 	entry->handle = pipeline;
+	entry->pipeline_layout = info->layout;
+	entry->render_pass = info->renderPass;
+	entry->modules.clear();
+	for (i = 0; has_shaders && info->pStages && i < info->stageCount; i++) {
+		if (info->pStages[i].module)
+			entry->modules.push_back(info->pStages[i].module);
+	}
+	entry->can_modify = true;
 	entry->recipe = recipe;
 	memcpy(entry->shaders, shaders, sizeof(shaders));
 	memcpy(entry->layouts, layouts, sizeof(layouts));
@@ -704,6 +719,33 @@ void VkModsForgetPipeline(VkPipeline pipeline)
 		pipelines.erase(found);
 	}
 	ReleaseSRWLockExclusive(&registry_lock);
+}
+
+void VkModsRetirePipelineObject(VkObjectType type, uint64_t handle)
+{
+	if (!handle)
+		return;
+	// A draw may already have copied a recipe or bound-layout state. Wait
+	// for it before retiring the handle, and keep later draws on the game path.
+	Dx12ShimLock();
+	AcquireSRWLockExclusive(&registry_lock);
+	if (type == VK_OBJECT_TYPE_PIPELINE_LAYOUT) {
+		retired_layout_epochs[(VkPipelineLayout)handle]++;
+		has_retired_layouts = true;
+	}
+	for (const auto &entry : pipelines) {
+		Pipeline *pipeline = entry.second;
+		bool uses = type == VK_OBJECT_TYPE_PIPELINE_LAYOUT && pipeline->pipeline_layout == (VkPipelineLayout)handle;
+		uses |= type == VK_OBJECT_TYPE_RENDER_PASS && pipeline->render_pass == (VkRenderPass)handle;
+		if (type == VK_OBJECT_TYPE_SHADER_MODULE)
+			uses |= std::find(pipeline->modules.begin(), pipeline->modules.end(), (VkShaderModule)handle) != pipeline->modules.end();
+		if (uses) {
+			pipeline->can_modify = false;
+			pipeline->recipe.reset();
+		}
+	}
+	ReleaseSRWLockExclusive(&registry_lock);
+	Dx12ShimUnlock();
 }
 
 static bool pipeline_wanted(Pipeline *pipeline)
@@ -3466,6 +3508,15 @@ void VkModsSetLayoutKept()
 	InterlockedIncrement(&set_layouts_kept);
 }
 
+void VkModsForgetSetLayout(VkDescriptorSetLayout layout)
+{
+	Dx12ShimLock();
+	AcquireSRWLockExclusive(&descriptor_lock);
+	set_layouts.erase(layout);
+	ReleaseSRWLockExclusive(&descriptor_lock);
+	Dx12ShimUnlock();
+}
+
 void VkModsSetsAllocated(const VkDescriptorSetAllocateInfo *info, const VkDescriptorSet *sets)
 {
 	uint32_t i;
@@ -3874,6 +3925,7 @@ struct CmdState {
 	// What each was bound with for the layout of the pipeline, which
 	// binding another in its place takes
 	VkPipelineLayout layouts[MAX_SETS];
+	UINT64 layout_epochs[MAX_SETS];
 	BYTE dynamic_count[MAX_SETS];
 	uint32_t dynamic[MAX_SETS][MAX_DYNAMIC];
 	// Draws recorded to it, or to those it executes, that were shown to the
@@ -4273,6 +4325,13 @@ void VkModsBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint bind_poin
 	if (bind_point != VK_PIPELINE_BIND_POINT_GRAPHICS)
 		return;
 	state = cmd_state(cmd);
+	UINT64 layout_epoch = 0;
+	if (has_retired_layouts) {
+		AcquireSRWLockShared(&registry_lock);
+		auto retired = retired_layout_epochs.find(layout);
+		layout_epoch = retired != retired_layout_epochs.end() ? retired->second : 0;
+		ReleaseSRWLockShared(&registry_lock);
+	}
 
 	for (i = 0; i < count; i++) {
 		index = first + i;
@@ -4296,6 +4355,7 @@ void VkModsBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint bind_poin
 		if (index < MAX_SETS) {
 			state->sets[index] = sets[i];
 			state->layouts[index] = layout;
+			state->layout_epochs[index] = layout_epoch;
 			state->dynamic_count[index] = lost ? 0 : (BYTE)min(dynamic, MAX_DYNAMIC);
 			if (state->dynamic_count[index])
 				memcpy(state->dynamic[index], dynamic_offsets, state->dynamic_count[index] * sizeof(uint32_t));
@@ -6019,9 +6079,24 @@ bool VkModsDraw(VkCommandBuffer cmd, bool indexed, uint32_t count, uint32_t inst
 	if (timed)
 		times[0] = ticks();
 	Dx12ShimLock();
-	if (!dx12_shim || dx12_mods_disabled || Dx12InDrawScope()) {
+	if (!dx12_shim || dx12_mods_disabled || Dx12InDrawScope() || !state->pipeline->can_modify) {
 		Dx12ShimUnlock();
 		return false;
+	}
+	// A compatible layout used to bind sets need not be the one the pipeline
+	// was created with. Its handle can also have been destroyed and reused.
+	if (has_retired_layouts) {
+		bool layouts_alive = true;
+		AcquireSRWLockShared(&registry_lock);
+		for (UINT i = 0; i < MAX_SETS && layouts_alive; i++) {
+			auto retired = retired_layout_epochs.find(state->layouts[i]);
+			layouts_alive = retired == retired_layout_epochs.end() || state->layout_epochs[i] == retired->second;
+		}
+		ReleaseSRWLockShared(&registry_lock);
+		if (!layouts_alive) {
+			Dx12ShimUnlock();
+			return false;
+		}
 	}
 	if (timed)
 		times[1] = ticks();
@@ -6304,7 +6379,7 @@ void VkModsPresent(VkQueue queue)
 		Dx12ShimUnlock();
 		if (vk_frame >= 600 && !no_engine_reported) {
 			no_engine_reported = true;
-			VkDumpNote("*** vulkan = 1, but no D3D12 device presents the frames of the game, which is where the engine "
+			VkDumpNote("*** Vulkan detected, but no D3D12 device presents the frames of the game, which is where the engine "
 				"for the mods comes from. Nothing is applied. With an NVIDIA driver, see \"Vulkan/OpenGL present method\".\n");
 		}
 		return;
@@ -6314,7 +6389,7 @@ void VkModsPresent(VkQueue queue)
 
 	if (!engine_reported) {
 		engine_reported = true;
-		VkDumpNote("vulkan = 1: the draws of the game are shown to the engine of the D3D12 device that presents its frames\n");
+		VkDumpNote("Vulkan detected: the draws of the game are shown to the engine of the D3D12 device that presents its frames\n");
 	}
 
 	if (!device_removed_reported && FAILED(removed = dx12_shim->device->GetDeviceRemovedReason())) {

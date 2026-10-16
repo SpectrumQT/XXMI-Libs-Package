@@ -91,8 +91,8 @@ extern std::atomic<bool> dx12_d3d11_presented;
 
 // Whether the game is taken to be a D3D11 game, where a D3D12 device belongs
 // to an overlay or a driver layer and neither that nor the D3D11 engine
-// expects the D3D12 side to step in. Whichever API presents first has the
-// game, unless dx12=1 says it is D3D12.
+// expects the D3D12 side to step in. A D3D11 present before the shared engine
+// was created keeps the extended rendering paths from taking over.
 bool Dx12IsD3D11Game();
 
 bool Dx12ShimCreate(Dx12Device *device, Dx12CommandQueue *queue);
@@ -125,8 +125,7 @@ void Dx12ShimSubmit();
 // The same, and does not return before the GPU is done with it
 void Dx12ShimSubmitAndWait();
 // The fence the queue signals after what was submitted, and the last value it
-// was told to. One of a device mods are applied for with vulkan = 1 is shared,
-// for the device of the game to wait for.
+// was told to. Shared where supported, for a Vulkan device to wait for.
 ID3D12Fence* Dx12ShimFence(UINT64 *signalled);
 // Dx12ShimSubmit for a caller without the lock, which is only taken if there
 // is anything to submit: the queue proxy, before it hands lists to the queue

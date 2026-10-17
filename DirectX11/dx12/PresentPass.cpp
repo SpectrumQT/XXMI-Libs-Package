@@ -155,6 +155,97 @@ bool Dx12DrawOverlay()
 	return overlay->DrawOverlay();
 }
 
+// The presents frame generation adds repeat the [Present] of the game's frame
+// as it ran: the variables it wrote, pre and post, are given back what they
+// held before it, the pools it touched their slots, and the ini params what
+// it saw. Whatever a repeat writes to variables, ini params and the slots of
+// pools is undone after.
+static VariableWriteLog frame_writes;
+static PoolUndoLog frame_pools;
+static std::vector<DirectX::XMFLOAT4> params_seen;
+static bool present_seen_valid;
+// Post of this present is still to go to frame_writes
+static bool frame_writes_open;
+static bool present_repeated;
+
+static void upload_params()
+{
+	ID3D11Texture1D *texture = dx12_shim->hacker_device->mIniTexture;
+	ID3D11DeviceContext1 *context = dx12_shim->hacker_context->GetPassThroughOrigContext1();
+	D3D11_MAPPED_SUBRESOURCE mapped;
+
+	if (texture && SUCCEEDED(context->Map(texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+		memcpy(mapped.pData, G->iniParams.data(), sizeof(DirectX::XMFLOAT4) * G->iniParams.size());
+		context->Unmap(texture, 0);
+	}
+}
+
+// Command lists only upload the params when they change them
+static void set_params(const std::vector<DirectX::XMFLOAT4> &params)
+{
+	size_t bytes = sizeof(DirectX::XMFLOAT4) * params.size();
+
+	if (memcmp(G->iniParams.data(), params.data(), bytes)) {
+		memcpy(G->iniParams.data(), params.data(), bytes);
+		upload_params();
+	}
+}
+
+static void run_present_list_for_frame()
+{
+	frame_writes.clear();
+	frame_pools.clear();
+	pool_undo_epoch++;
+	params_seen = G->iniParams;
+	variable_write_log = &frame_writes;
+	pool_undo_log = &frame_pools;
+	RunCommandList(dx12_shim->hacker_device, dx12_shim->hacker_context, &G->present_command_list, NULL, false);
+	variable_write_log = NULL;
+	pool_undo_log = NULL;
+	present_seen_valid = true;
+	frame_writes_open = true;
+}
+
+static void repeat_present_list()
+{
+	static VariableWriteLog repeat_writes;
+	static PoolUndoLog pool_states;
+	static std::vector<DirectX::XMFLOAT4> params_kept;
+
+	repeat_writes.clear();
+	pool_states.clear();
+	pool_undo_epoch++;
+	variable_write_log = &repeat_writes;
+	pool_undo_log = &pool_states;
+
+	// The first value noted for a variable is the one from before
+	for (auto write = frame_writes.rbegin(); write != frame_writes.rend(); ++write) {
+		LogVariableWrite(write->first);
+		*write->first = write->second;
+	}
+	for (auto &pool : frame_pools) {
+		pool.first->SaveStateForUndo();
+		pool.first->RestoreState(pool.second);
+	}
+	params_kept = G->iniParams;
+	set_params(params_seen);
+
+	// Post right away too: the draws of the game must not see the
+	// variables of the repeat, and the lock is let go of for the present.
+	// What it sets free of resources, such as references, is kept.
+	RunCommandList(dx12_shim->hacker_device, dx12_shim->hacker_context, &G->present_command_list, NULL, false);
+	G->bb_is_upscaling_bb = !!G->SCREEN_UPSCALING && G->upscaling_command_list_using_explicit_bb_flip;
+	RunCommandList(dx12_shim->hacker_device, dx12_shim->hacker_context, &G->post_present_command_list, NULL, true);
+
+	variable_write_log = NULL;
+	pool_undo_log = NULL;
+	for (auto write = repeat_writes.rbegin(); write != repeat_writes.rend(); ++write)
+		*write->first = write->second;
+	for (auto pool = pool_states.rbegin(); pool != pool_states.rend(); ++pool)
+		pool->first->RestoreState(pool->second);
+	set_params(params_kept);
+}
+
 // HackerSwapChain::RunFrameActions without what needs a D3D11 swap chain:
 // frame analysis
 static void frame_actions()
@@ -162,6 +253,7 @@ static void frame_actions()
 	HackerDevice *device = dx12_shim->hacker_device;
 	uint64_t ticks = GetSystemTicks();
 	bool frames_by_submission = VkModsCountFrames();
+	bool repeat = VkModsRepeatPresent();
 	bool new_event;
 
 	if (!frames_by_submission)
@@ -170,7 +262,13 @@ static void frame_actions()
 	G->gSystemTickCount = ticks;
 	G->gFPSCounter.Update(ticks);
 
-	if (!dx12_mods_disabled)
+	present_repeated = repeat && present_seen_valid && params_seen.size() == G->iniParams.size() && !dx12_mods_disabled;
+	frame_writes_open = false;
+	if (present_repeated)
+		repeat_present_list();
+	else if (!dx12_mods_disabled && frames_by_submission)
+		run_present_list_for_frame();
+	else if (!dx12_mods_disabled)
 		RunCommandList(device, dx12_shim->hacker_context, &G->present_command_list, NULL, false);
 
 	G->analyse_frame = false;
@@ -184,6 +282,8 @@ static void frame_actions()
 	CurrentTransition.UpdateTransitions(device);
 
 	if (G->gReloadConfigPending) {
+		present_seen_valid = false;
+		frame_writes_open = false;
 		ReloadConfig(device);
 		Dx12DrawPathConfigReloaded();
 		VkModsConfigReloaded();
@@ -194,6 +294,8 @@ static void frame_actions()
 			SavePersistentSettingsInBackground();
 	} else if (G->gTime > G->gConfigInitializationDelay) {
 		G->gConfigInitialized = true;
+		present_seen_valid = false;
+		frame_writes_open = false;
 		ReloadConfig(device);
 		Dx12DrawPathConfigReloaded();
 		VkModsConfigReloaded();
@@ -239,7 +341,15 @@ void Dx12PresentEnd(Dx12SwapChain *swap_chain)
 	Dx12ShimLock();
 	if (dx12_shim && swap_chain == presenting && !dx12_mods_disabled) {
 		G->bb_is_upscaling_bb = !!G->SCREEN_UPSCALING && G->upscaling_command_list_using_explicit_bb_flip;
-		RunCommandList(dx12_shim->hacker_device, dx12_shim->hacker_context, &G->post_present_command_list, NULL, true);
+		// A repeat of [Present] ran its post already
+		if (!present_repeated) {
+			variable_write_log = frame_writes_open ? &frame_writes : NULL;
+			pool_undo_log = frame_writes_open ? &frame_pools : NULL;
+			RunCommandList(dx12_shim->hacker_device, dx12_shim->hacker_context, &G->post_present_command_list, NULL, true);
+			variable_write_log = NULL;
+			pool_undo_log = NULL;
+		}
+		frame_writes_open = false;
 		Dx12DrawPathEngineRan();
 		submit();
 	}

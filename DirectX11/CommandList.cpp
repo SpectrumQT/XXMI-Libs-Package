@@ -37,6 +37,9 @@ std::vector<CommandListVariable*> persistent_variables;
 std::unordered_map<std::wstring, CommandListVariable*> persistent_variable_path_keys;
 std::map<std::wstring, float> unknown_variables;
 std::vector<CommandList*> registered_command_lists;
+VariableWriteLog *variable_write_log;
+PoolUndoLog *pool_undo_log;
+unsigned pool_undo_epoch = 1;
 std::unordered_set<CommandList*> command_lists_profiling;
 std::unordered_set<CommandListCommand*> command_lists_cmd_profiling;
 std::vector<std::shared_ptr<CommandList>> dynamically_allocated_command_lists;
@@ -2285,6 +2288,7 @@ bool StoreCommand::TryReadValueFromCache(ID3D11Resource* resource, UINT64 byte_o
 void StoreCommand::SetOutputValue(CommandListState* state, float value)
 {
 	CommandListVariable* dst_var = var ? var : pool_var.GetPoolVariable(state, true);
+	LogVariableWrite(&dst_var->fval);
 	dst_var->fval = value;
 }
 
@@ -6391,6 +6395,7 @@ void VariableAssignment::run(CommandListState *state)
 
 	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
 
+	LogVariableWrite(&var->fval);
 	var->fval = expression.evaluate(state);
 
 	COMMAND_LIST_LOG(state, "  = %f\n", var->fval);
@@ -7960,6 +7965,7 @@ SpatialPoolMisses TakeSpatialPoolMisses()
 
 size_t CustomResourcePool::GetElementIndex(float id, bool use_ring_index, bool is_assignment)
 {
+	SaveStateForUndo();
 	ExpireElements();
 
 	size_t pool_index;
@@ -8225,6 +8231,8 @@ bool CustomResourcePool::SetSourcePool(CustomResourcePool* src)
 	if (src == source_pool)
 		return true;
 
+	SaveStateForUndo();
+
 	if (!src)
 	{
 		source_pool = nullptr;
@@ -8283,12 +8291,14 @@ void CustomResourcePool::ResetElements(PoolElement::ResetType reset_type)
 	if (source_pool)
 		return source_pool->ResetElements(reset_type);
 
+	SaveStateForUndo();
 	for (size_t i = 0; i < pool_size; ++i)
 		ResetElement(i, reset_type);
 }
 
 void CustomResourcePool::ResetPool(bool reset_elements)
 {
+	SaveStateForUndo();
 	// Disable pool proxy mode.
 	if (source_pool) {
 		source_pool = nullptr;
@@ -8315,9 +8325,48 @@ void CustomResourcePool::ResetPool(bool reset_elements)
 		ResetElements();
 }
 
+void CustomResourcePool::RestoreState(const SavedState &state)
+{
+	source_pool = state.source_pool;
+	for (size_t i = 0; i < state.types.size() && i < elements.size(); i++)
+		elements[i].type = state.types[i];
+	if (state.index_map)
+		index_map = std::make_unique<FlatHashMap<uint32_t, size_t>>(*state.index_map);
+	else
+		index_map.reset();
+	index_table = state.index_table;
+	last_replacement_index = state.last_replacement_index;
+	last_expiration_run = state.last_expiration_run;
+}
+
 #pragma endregion CustomResourcePoolAPI
 
 #pragma region CustomResourcePoolImpl
+
+void CustomResourcePool::SaveStateForUndo()
+{
+	if (!pool_undo_log || saved_in_undo_epoch == pool_undo_epoch)
+		return;
+	saved_in_undo_epoch = pool_undo_epoch;
+
+	// Expiry comes out the same whoever touches the pool first in a frame,
+	// and resets resources, which nothing undoes. So it is done before, and
+	// kept: a repeat of [Present] put back to the slots saved here does not
+	// expire again what the frame's [Present] did already.
+	ExpireElements();
+
+	SavedState state;
+	state.source_pool = source_pool;
+	state.types.reserve(elements.size());
+	for (const PoolElement &element : elements)
+		state.types.push_back(element.type);
+	if (index_map)
+		state.index_map = std::make_unique<FlatHashMap<uint32_t, size_t>>(*index_map);
+	state.index_table = index_table;
+	state.last_replacement_index = last_replacement_index;
+	state.last_expiration_run = last_expiration_run;
+	pool_undo_log->emplace_back(this, std::move(state));
+}
 
 void CustomResourcePool::InitializeResource(size_t pool_index)
 {
@@ -8347,6 +8396,7 @@ void CustomResourcePool::InitializeVariable(size_t pool_index)
 			element.variable->persist_path_name = L"$" + persist_path_name + L"[" + std::to_wstring(pool_index) + L"]";
 	}
 	else {
+		LogVariableWrite(&element.variable->fval);
 		element.variable->fval = variable_template->fval;
 		element.variable->flags = variable_template->flags;
 	}
@@ -8409,6 +8459,7 @@ void CustomResourcePool::ResetVariable(CommandListVariable* variable)
 	if (!variable)
 		return;
 
+	LogVariableWrite(&variable->fval);
 	variable->fval = variable_template->fval;
 }
 
@@ -8475,6 +8526,10 @@ void CustomResourcePool::ExpireElements()
 
 	last_expiration_run = G->frame_no;
 
+	// Kept like the slots it frees (see SaveStateForUndo)
+	VariableWriteLog *write_log = variable_write_log;
+	variable_write_log = nullptr;
+
 	for (size_t i = 0; i < index_table.size(); ++i)
 	{
 		PoolSlot& pool_slot = index_table[i];
@@ -8496,6 +8551,8 @@ void CustomResourcePool::ExpireElements()
 				ResetElement(i);
 		}
 	}
+
+	variable_write_log = write_log;
 }
 
 #pragma endregion CustomResourcePoolImpl
@@ -9703,6 +9760,7 @@ void PoolVariableOperation::SetVariableValue(CommandListState* state, CommandLis
 
 	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
 
+	LogVariableWrite(&dst->fval);
 	dst->fval = value;
 
 	COMMAND_LIST_LOG(state, "  = %f\n", dst->fval);
@@ -14023,6 +14081,7 @@ void ConstantAssignmentBatch::run(CommandListState *state)
 		if (assignment.var) {
 			float orig = assignment.var->fval;
 
+			LogVariableWrite(&assignment.var->fval);
 			assignment.var->fval = assignment.val;
 
 			if ((assignment.var->flags & VariableFlags::PERSIST) && assignment.val != orig)

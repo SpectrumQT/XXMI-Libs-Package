@@ -182,6 +182,19 @@ extern std::vector<CommandListVariable*> persistent_variables;
 extern std::unordered_map<std::wstring, CommandListVariable*> persistent_variable_path_keys;
 extern std::map<std::wstring, float> unknown_variables;
 
+// While set, every write of a variable by a command list first notes what the
+// variable held, so the writes can be undone (dx12/PresentPass.cpp: the
+// presents frame generation adds repeat the frame's [Present] and keep none of
+// what it wrote). Only set with the lock of dx12/Bridge.h held, which every
+// run of command lists in a game where it can be set holds as well.
+typedef std::vector<std::pair<float*, float>> VariableWriteLog;
+extern VariableWriteLog *variable_write_log;
+static inline void LogVariableWrite(float *fval)
+{
+	if (variable_write_log)
+		variable_write_log->emplace_back(fval, *fval);
+}
+
 // The scope object is used to declare local variables in a command list. The
 // multiple levels are to isolate variables declared inside if blocks from
 // being accessed in a parent or sibling scope, while allowing variables
@@ -769,7 +782,23 @@ public:
 	void ResetElements(PoolElement::ResetType reset_type = PoolElement::ResetType::All);
 	void ResetPool(bool reset_elements = true);
 
+	// The slots of a pool as they were before it was first touched while
+	// pool_undo_log was set. The elements keep their variables and
+	// resources, which are registered by name and cannot be made again.
+	struct SavedState {
+		CustomResourcePool *source_pool;
+		std::vector<PoolElement::Type> types;
+		std::unique_ptr<FlatHashMap<uint32_t, size_t>> index_map;
+		std::vector<PoolSlot> index_table;
+		size_t last_replacement_index;
+		unsigned last_expiration_run;
+	};
+	void SaveStateForUndo();
+	void RestoreState(const SavedState &state);
+
 private:
+	unsigned saved_in_undo_epoch = 0;
+
 	void InitializeResource(size_t pool_index);
 	void InitializeVariable(size_t pool_index);
 
@@ -798,6 +827,12 @@ private:
 
 typedef std::unordered_map<std::wstring, CustomResourcePool> CustomResourcePools;
 extern CustomResourcePools customResourcePools;
+
+// Like variable_write_log, for the slots of pools. pool_undo_epoch is moved
+// on each time the log starts over.
+typedef std::vector<std::pair<CustomResourcePool*, CustomResourcePool::SavedState>> PoolUndoLog;
+extern PoolUndoLog *pool_undo_log;
+extern unsigned pool_undo_epoch;
 
 // Lookups of spatial pools outside the cell of any slot: given the slot of a
 // nearby cell, given none within the radius, and how many of those had one

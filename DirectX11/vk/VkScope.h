@@ -67,6 +67,9 @@ void VkModsConfigReloaded();
 // if the frames of the engine are counted by what the game submits, not by
 // the presents
 bool VkModsCountFrames();
+// Right after the above: true if [Present] is to repeat what it did for the
+// last frame of the game rather than run for a new one
+bool VkModsRepeatPresent();
 
 // For GetRegionHash. False if the buffer is not one of the above, and the
 // hash is the engine's to work out.

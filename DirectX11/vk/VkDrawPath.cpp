@@ -4060,6 +4060,16 @@ const UINT PRESENTS_WITHOUT_FRAME_MAX = 16;
 // are counted by its submissions alone then, this many to a frame
 const UINT SUBMITS_WITHOUT_PRESENT_MAX = 4;
 static UINT submits_without_present;
+// Frame generation presents pictures of its own between those of the game,
+// and [Present] runs for each. A mod that draws there what it found among the
+// game's draws and then forgets that with "post" draws on one picture of the
+// frame only: a menu of it flickers. The others repeat [Present] as it ran
+// for the first (dx12/PresentPass.cpp).
+static bool counted_since_present;
+static bool present_had_frame;
+static UINT present_repeats;
+// As many pictures as frame generation adds to one frame of the game
+const UINT PRESENT_REPEATS_MAX = 3;
 
 static void frame_over();
 
@@ -4092,6 +4102,7 @@ bool VkModsFrameSubmitted(unsigned draws)
 			G->frame_no++;
 			mods_frame++;
 			stats.frames_counted++;
+			counted_since_present = true;
 		}
 		frames_by_submission = true;
 		presents_without_frame = 0;
@@ -4277,6 +4288,21 @@ bool VkModsCountFrames()
 		return false;
 	}
 	return true;
+}
+
+bool VkModsRepeatPresent()
+{
+	// A present with no frame of the game since one that had is frame
+	// generation's. Without frames for longer the game draws nothing the
+	// engine is shown, and [Present] runs as usual.
+	if (frames_by_submission && present_had_frame && !counted_since_present && present_repeats < PRESENT_REPEATS_MAX) {
+		present_repeats++;
+		return true;
+	}
+	present_had_frame = counted_since_present;
+	counted_since_present = false;
+	present_repeats = 0;
+	return false;
 }
 
 void VkModsBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint bind_point, VkPipeline pipeline)

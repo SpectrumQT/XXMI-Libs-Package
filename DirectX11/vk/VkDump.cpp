@@ -72,7 +72,7 @@ static const wchar_t *const csv_names[CSV_COUNT] = {
 };
 static const char *const csv_headers[CSV_COUNT] = {
 	"hash,stage,bytes,spirv_version,generator,entry,named,unnamed,inputs,resources\n",
-	"frame,pipeline,kind,vs,hs,ds,gs,ps,cs,topology,layout,vertex_bindings,vertex_attributes\n",
+	"frame,pipeline,kind,vs,hs,ds,gs,ps,cs,topology,layout,vertex_bindings,vertex_attributes,depth,blend,dynamic,raster\n",
 	"frame,buffer,buffer_bytes,usage,offset,bytes,data_hash,hash_vb,hash_ib,hash_vb_srv,hash_ib_srv\n",
 	"frame,buffer,bytes,usage,memory,memory_offset\n",
 	"frame,cmd,draw,type,count,instances,first,base_vertex,pipeline,vs,ps,cs,"
@@ -436,7 +436,13 @@ void VkDumpGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 		| VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT));
 	const VkPipelineVertexInputStateCreateInfo *input = has_vertex_input ? create->pVertexInputState : NULL;
 	const VkPipelineInputAssemblyStateCreateInfo *assembly = has_vertex_input ? create->pInputAssemblyState : NULL;
-	std::string bindings, attributes;
+	const VkPipelineDepthStencilStateCreateInfo *depth = !library || (library->flags & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT)
+		? create->pDepthStencilState : NULL;
+	const VkPipelineColorBlendStateCreateInfo *blend = !library || (library->flags & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT)
+		? create->pColorBlendState : NULL;
+	const VkPipelineRasterizationStateCreateInfo *raster = !library || (library->flags & VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT)
+		? create->pRasterizationState : NULL;
+	std::string bindings, attributes, depth_text, blend_text, dynamic_text, raster_text;
 	PipelineInfo info = {};
 	char text[64];
 	FILE *file;
@@ -467,6 +473,34 @@ void VkDumpGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 		}
 	}
 
+	// test:write:VkCompareOp
+	if (depth) {
+		_snprintf_s(text, _TRUNCATE, "%u:%u:%d", depth->depthTestEnable, depth->depthWriteEnable, depth->depthCompareOp);
+		depth_text = text;
+	}
+	// enable:srcColor:dstColor:colorOp:writeMask for each attachment
+	if (blend && blend->pAttachments) {
+		for (i = 0; i < blend->attachmentCount; i++) {
+			const VkPipelineColorBlendAttachmentState *attachment = &blend->pAttachments[i];
+
+			_snprintf_s(text, _TRUNCATE, "%u:%d:%d:%d:%x ", attachment->blendEnable, attachment->srcColorBlendFactor,
+				attachment->dstColorBlendFactor, attachment->colorBlendOp, attachment->colorWriteMask);
+			blend_text += text;
+		}
+	}
+	// VkCullModeFlags:VkFrontFace:VkPolygonMode:depthBiasEnable
+	if (raster) {
+		_snprintf_s(text, _TRUNCATE, "%u:%d:%d:%u", raster->cullMode, raster->frontFace, raster->polygonMode,
+			raster->depthBiasEnable);
+		raster_text = text;
+	}
+	if (create->pDynamicState) {
+		for (i = 0; i < create->pDynamicState->dynamicStateCount; i++) {
+			_snprintf_s(text, _TRUNCATE, "%d ", create->pDynamicState->pDynamicStates[i]);
+			dynamic_text += text;
+		}
+	}
+
 	AcquireSRWLockExclusive(&lock);
 
 	graphics_pipelines++;
@@ -474,11 +508,12 @@ void VkDumpGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 
 	file = csv(CSV_PIPELINES);
 	if (file) {
-		fprintf(file, "%u,%p,%s,%016llx,%016llx,%016llx,%016llx,%016llx,%016llx,%d,%p,%s,%s\n",
+		fprintf(file, "%u,%p,%s,%016llx,%016llx,%016llx,%016llx,%016llx,%016llx,%d,%p,%s,%s,%s,%s,%s,%s\n",
 			vk_frame, pipeline, library ? "graphics_part" : "graphics",
 			info.shaders[STAGE_VS], info.shaders[STAGE_HS], info.shaders[STAGE_DS],
 			info.shaders[STAGE_GS], info.shaders[STAGE_PS], info.shaders[STAGE_CS],
-			assembly ? assembly->topology : -1, create->layout, bindings.c_str(), attributes.c_str());
+			assembly ? assembly->topology : -1, create->layout, bindings.c_str(), attributes.c_str(),
+			depth_text.c_str(), blend_text.c_str(), dynamic_text.c_str(), raster_text.c_str());
 	}
 
 	ReleaseSRWLockExclusive(&lock);
@@ -498,7 +533,7 @@ void VkDumpComputePipeline(VkPipeline pipeline, const VkComputePipelineCreateInf
 
 	file = csv(CSV_PIPELINES);
 	if (file) {
-		fprintf(file, "%u,%p,compute,%016llx,%016llx,%016llx,%016llx,%016llx,%016llx,-1,%p,,\n",
+		fprintf(file, "%u,%p,compute,%016llx,%016llx,%016llx,%016llx,%016llx,%016llx,-1,%p,,,,,,\n",
 			vk_frame, pipeline, 0ull, 0ull, 0ull, 0ull, 0ull, info.shaders[STAGE_CS], create->layout);
 	}
 

@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "files": [
+    {
+      "name": "dxcompiler.dll",
+      "for": ["dx12"],
+      "purpose": "Compiles the HLSL shaders of mods to DXIL for D3D12 games whose own shaders are DXIL"
+    },
+    {
+      "name": "dxil.dll",
+      "for": ["dx12"],
+      "purpose": "Signs the DXIL that dxcompiler.dll compiles"
+    },
+    {
+      "name": "SPIRV-Tools-shared.dll",
+      "for": ["vulkan"],
+      "purpose": "Disassembles, assembles and validates the SPIR-V shaders that ShaderRegex groups patch"
+    }
+  ]
+}

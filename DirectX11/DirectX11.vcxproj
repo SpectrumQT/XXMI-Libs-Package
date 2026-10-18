@@ -404,4 +404,7 @@ xcopy "$(SolutionDir)Dependencies\*.*" "$(TargetDir)"  /E /Y /s
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <Target Name="GenerateVersionHeader" BeforeTargets="PrepareForBuild">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(SolutionDir)tools\generate-version.ps1&quot; -VersionFile &quot;$(SolutionDir)version.h&quot; -OutputFile &quot;$(SolutionDir)version.generated.h&quot;" />
+  </Target>
 </Project>

@@ -395,6 +395,19 @@ private:
 	size_t data_size;
 };
 
+struct TextureOverride;
+
+// TextureOverride lookup memoised per resource. The resource description
+// never changes, so only the per-draw context filter such as
+// match_index_count still runs on each lookup. Lists keep the order of the
+// uncached lookup: hash_matches points into G->mTextureOverrideMap and
+// fuzzy_matches is the matching subset of G->mFuzzyTextureOverrides.
+struct TextureOverrideCandidates
+{
+	std::vector<TextureOverride>* hash_matches = nullptr;
+	std::vector<TextureOverride*> fuzzy_matches;
+};
+
 // Tracks info about specific resource instances:
 struct ResourceHandleInfo
 {
@@ -402,6 +415,12 @@ struct ResourceHandleInfo
 	uint32_t hash = 0;
 	uint32_t orig_hash = 0;	// Original hash at the time of creation
 	uint32_t data_hash = 0;	// Just the data hash for track_texture_updates
+
+	// Cleared on config reload, rebuilt on next lookup. The hash list is
+	// also rebuilt when track_texture_updates changes the hash:
+	bool texture_override_candidates_valid = false;
+	uint32_t texture_override_hash = 0;
+	TextureOverrideCandidates texture_override_candidates;
 
 	// CPU-side copy of the resource data captured via hooks or staging buffer.
 	// Used to compute hashes for arbitrary regions without re-mapping
@@ -853,12 +872,17 @@ TextureOverrideFuzzyMatches* get_fuzzy_matches_by_draw_info(DrawCallInfo* call_i
 
 template <typename DescType>
 void find_texture_overrides(uint32_t hash, const DescType *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info);
-void find_texture_overrides_for_resource_by_hash(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info);
-void find_texture_overrides_for_resource_desc(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 
 void find_texture_overrides_by_hash_from_fuzzy_matches(uint32_t hash, TextureOverrideFuzzyMatches* fuzzy_matches, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 void find_texture_overrides_for_resource_by_hash_from_fuzzy_matches(ID3D11Resource* resource, TextureOverrideFuzzyMatches* fuzzy_matches, TextureOverrideMatches* matches, DrawCallInfo* call_info);
+
+// Memoised lookup, see TextureOverrideCandidates. Returns NULL for resources
+// without handle info, i.e. created by 3DMigoto or the swap chain, which
+// never match a TextureOverride.
+TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resource);
+void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info);
+void InvalidateTextureOverrideCandidates();
 
 void ClearRegionHashesGlobalCache();

@@ -2178,6 +2178,8 @@ static CustomResourcePool* ParseResourcePoolSection(const wchar_t* section_name)
 
 static void ParseResourceSections()
 {
+	// Edges point at entries of the maps cleared below:
+	ClearDeferredBindFlags();
 	customResourcePools.clear();
 	customResources.clear();
 
@@ -3515,6 +3517,7 @@ static void ParseTextureOverrideSections()
 
 	G->mTextureOverrideMap.clear();
 	G->mFuzzyTextureOverrides.clear();
+	InvalidateTextureOverrideCandidates();
 
 	lower = ini_sections.lower_bound(wstring(L"TextureOverride"));
 	upper = prefix_upper_bound(ini_sections, wstring(L"TextureOverride"));
@@ -4707,7 +4710,24 @@ void LoadConfigFile()
 	G->CACHE_SHADERS = GetIniBool(L"Rendering", L"cache_shaders", false, NULL);
 	G->SCISSOR_DISABLE = GetIniBool(L"Rendering", L"rasterizer_disable_scissor", false, NULL);
 	G->track_texture_updates = GetIniBoolOrInt(L"Rendering", L"track_texture_updates", 0, NULL);
+
+	if (GetIniStringAndLog(L"Rendering", L"cache_resource_data", 0, setting, MAX_PATH)) {
+		if (wcscmp(setting, L"none") == 0)
+			G->cache_resource_data = DataCacheBindFlags::INVALID;
+		else
+			G->cache_resource_data = parse_enum_option_string<const wchar_t*, DataCacheBindFlags, wchar_t*>
+				(DataCacheBindFlagNames, setting, NULL);
+	}
+
 	G->track_region_hashes = GetIniBool(L"Rendering", L"track_region_hashes", false, NULL);
+	// Force enable IB and VB data caching, since efficient region hashing requires data to be in RAM.
+	if (G->track_region_hashes) {
+		G->cache_resource_data |= DataCacheBindFlags::INDEX_BUFFER;
+		G->cache_resource_data |= DataCacheBindFlags::VERTEX_BUFFER;
+		// CB caching is not really required, but lets keep it there until everyone gets updated EFMI and XXMI Launcher.
+		G->cache_resource_data |= DataCacheBindFlags::CONSTANT_BUFFER;  // TODO: Remove after a grace period.
+	}
+
 	G->track_implicit_index_buffers = GetIniBool(L"Rendering", L"track_implicit_index_buffers", false, NULL);
 	G->allow_buffer_resize = GetIniBool(L"Rendering", L"allow_buffer_resize", true, NULL);
 	G->assemble_signature_comments = GetIniBool(L"Rendering", L"assemble_signature_comments", false, NULL);
@@ -4900,6 +4920,10 @@ void LoadConfigFile()
 	G->clear_uav_float_command_list.clear();
 	G->post_clear_uav_float_command_list.clear();
 	ParseCommandList(L"ClearUnorderedAccessViewFloat", &G->clear_uav_float_command_list, &G->post_clear_uav_float_command_list, NULL);
+
+	// Every command list is parsed now, so bind flags can be resolved
+	// through chains of custom resource references:
+	PropagateDeferredBindFlags();
 
 	LogInfo("\n");
 
@@ -5174,8 +5198,7 @@ void ReloadConfig(HackerDevice *device)
 
 		// Clear active command lists set, as the pointers in this set will
 		// become invalid as the config is reloaded:
-		command_lists_profiling.clear();
-		command_lists_cmd_profiling.clear();
+		clear_command_list_profiling();
 
 		// Reset the counters on the global parameter save area:
 		OverrideSave.Reset(device);

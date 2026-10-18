@@ -96,5 +96,21 @@ bool get_namespaced_section_name_lower(const wstring *section, const wstring *in
 bool get_section_namespace(const wchar_t *section, wstring *ret);
 wstring get_namespaced_var_name_lower(const wstring& low_name, const wstring* ini_namespace);
 
+// A [ShaderRegex...] group of the loaded config as it is written, for
+// vk/SpirvConvert.cpp to make SPIR-V versions of D3D11 patches with
+struct ShaderRegexSource {
+	// The group's section with its namespace, split before the group's name:
+	// "ShaderRegex\<namespace>\" or "ShaderRegex", and the name after that
+	wstring prefix, name;
+	// The ini file it is in
+	wstring file;
+	// The lines of its sections, by the lower case name after the group's
+	// ("" for its main section, "pattern.replace", "insertdeclarations", ...)
+	std::map<wstring, std::vector<std::string>> sections;
+};
+// The groups of the config, and the ini files with a section whose name has
+// "vulkan" in it. Call on the thread that reloads the config.
+void GetShaderRegexSources(std::vector<ShaderRegexSource> *groups, std::set<wstring> *files_with_vulkan_sections);
+
 CommandListVariable* RegisterGlobalVariable(wstring& name, float* fval, VariableFlags flags);
 const wstring& persistent_variable_save_name(const CommandListVariable* var);

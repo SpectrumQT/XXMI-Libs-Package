@@ -7,6 +7,7 @@
 #include <set>
 #include <unordered_map>
 
+#include "SpirvConvert.h"
 #include "SpirvTools.h"
 #include "VkDrawPath.h"
 #include "../globals.h"
@@ -701,12 +702,14 @@ SpirvPatchOutcome SpirvPatchShader(const uint32_t *code, size_t words, const cha
 	std::vector<Candidate> candidates;
 	unsigned ordinal = 0;
 
-	for (auto &entry : shader_regex_groups) {
-		if (!entry.second.spirv())
-			continue;
-		if (group_wants(entry.second, stage, declarations))
-			candidates.push_back({ ordinal, &entry.second });
-		ordinal++;
+	for (const ShaderRegexGroups *groups : { &shader_regex_groups, &vk_converted_regex_groups }) {
+		for (auto &entry : *groups) {
+			if (!entry.second.spirv())
+				continue;
+			if (group_wants(entry.second, stage, declarations))
+				candidates.push_back({ ordinal, &entry.second });
+			ordinal++;
+		}
 	}
 	if (candidates.empty()) {
 		*patched = SpirvPatched();

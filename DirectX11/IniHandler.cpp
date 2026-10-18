@@ -3130,6 +3130,49 @@ static void ParseShaderRegexSections()
 		shader_regex_group_index.push_back(&j->second);
 }
 
+void GetShaderRegexSources(std::vector<ShaderRegexSource> *groups, std::set<wstring> *files_with_vulkan_sections)
+{
+	std::map<wstring, size_t, WStringInsensitiveLess> by_id;
+	wstring prefix = L"ShaderRegex";
+
+	groups->clear();
+	files_with_vulkan_sections->clear();
+	for (auto &entry : ini_sections) {
+		const wstring &file = entry.second.ini_path.empty() ? entry.second.ini_namespace : entry.second.ini_path;
+		wstring lower = entry.first;
+		size_t pos;
+
+		// The namespace of a file without one is its path, which may say Vulkan
+		if (!entry.second.ini_namespace.empty() && (pos = lower.find(entry.second.ini_namespace)) != lower.npos)
+			lower.erase(pos, entry.second.ini_namespace.length());
+		std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+		if (lower.find(L"vulkan") != lower.npos)
+			files_with_vulkan_sections->insert(file);
+	}
+	auto upper = prefix_upper_bound(ini_sections, prefix);
+	for (auto i = ini_sections.lower_bound(prefix); i != upper; i++) {
+		size_t namespace_endpos = get_section_namespace_endpos(i->first.c_str());
+		wstring suffix = i->first.substr(namespace_endpos);
+		size_t dot = suffix.find(L'.');
+		wstring name = suffix.substr(0, dot);
+		wstring id = i->first.substr(0, namespace_endpos) + name;
+		wstring subsection = dot == suffix.npos ? L"" : suffix.substr(dot + 1);
+
+		auto found = by_id.find(id);
+		if (found == by_id.end()) {
+			found = by_id.emplace(id, groups->size()).first;
+			groups->emplace_back();
+			groups->back().prefix = i->first.substr(0, namespace_endpos);
+			groups->back().name = name;
+			groups->back().file = i->second.ini_path.empty() ? i->second.ini_namespace : i->second.ini_path;
+		}
+		std::transform(subsection.begin(), subsection.end(), subsection.begin(), ::towlower);
+		std::vector<std::string> &lines = (*groups)[found->second].sections[subsection];
+		for (const IniLine &line : i->second.kv_vec)
+			lines.push_back(std::string(line.raw_line.begin(), line.raw_line.end()));
+	}
+}
+
 // For fuzzy matching instead of using hash. Using terms consistent
 // with [Resource] section. TODO: Consider providing MS naming aliases.
 // If any of these appear in a section that also contains a hash= the parser

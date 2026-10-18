@@ -58,6 +58,7 @@
     <ClCompile Include="dx12\ShimObjects.cpp" />
     <ClCompile Include="dx12\ShimPipeline.cpp" />
     <ClCompile Include="vk\Spirv.cpp" />
+    <ClCompile Include="vk\SpirvConvert.cpp" />
     <ClCompile Include="vk\SpirvPatch.cpp" />
     <ClCompile Include="vk\SpirvTools.cpp" />
     <ClCompile Include="vk\VkDrawPath.cpp" />
@@ -126,6 +127,7 @@
     <ClInclude Include="dx12\ShimObjects.h" />
     <ClInclude Include="dx12\ShimPipeline.h" />
     <ClInclude Include="vk\Spirv.h" />
+    <ClInclude Include="vk\SpirvConvert.h" />
     <ClInclude Include="vk\SpirvPatch.h" />
     <ClInclude Include="vk\SpirvTools.h" />
     <ClInclude Include="vk\VkCommon.h" />

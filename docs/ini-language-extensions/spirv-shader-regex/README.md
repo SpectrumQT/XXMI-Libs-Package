@@ -2,7 +2,7 @@
 
 **XXMI DLL** can patch the SPIR-V vertex and pixel shaders of Vulkan games with ShaderRegex groups, as 3DMigoto patches D3D11 assembly.
 
-A ShaderRegex group with at least one `SpirvPattern` subsection is a SPIR-V group. D3D11 and D3D12 never apply it, and the Vulkan path applies nothing else. Put SPIR-V groups in their own file: a DLL without this feature disables the group with a warning and does nothing else.
+A ShaderRegex group with at least one `SpirvPattern` subsection is a SPIR-V group. D3D11 and D3D12 never apply it, and the Vulkan path applies nothing else, apart from the D3D11 patches it [converts](#d3d11-patches-of-mods-on-vulkan). Put SPIR-V groups in their own file: a DLL without this feature disables the group with a warning and does nothing else.
 
 The feature needs `SPIRV-Tools-shared.dll` next to `d3d11.dll`. Without it SPIR-V groups patch nothing.
 
@@ -16,6 +16,23 @@ The feature needs `SPIRV-Tools-shared.dll` next to `d3d11.dll`. Without it SPIR-
 * Shaders are patched and their pipelines are made on a worker thread, when a draw first needs them. Until then the draw uses the game's shaders, so the patch can be missing for the first frames.
 * A declared texture is taken from the stage of the patched shader that reads it, from the pixel shader's if both do. If the game's shader of that stage already uses that `t` register, the patched shaders are not used for that draw.
 * `vk_report.txt` counts the mod draws that wanted a patched shader. Draws that want one only because a group declares no texture count only when the game's shader of that stage is patched or still being patched.
+
+## D3D11 patches of mods on Vulkan
+
+The Vulkan path makes SPIR-V groups of the D3D11 ShaderRegex patches it recognises, each time the configuration is loaded, and uses them as if they were in the mod's folder. Nothing is written to the mod. D3D11, D3D12 and the other importers never run this.
+
+* It knows these patches:
+  * the cutout mask of `CutoutMask.ini` (Zhuang Fangyi Ink Cheongsam, Liino Moonlit Violet and their copies), with any IniParams index, mod id, mask register, channel and threshold;
+  * `[ShaderRegexSmoothNormalColor]` of Si FGO lancer Melusine and its copies, with any IniParams index and mod id. It patches the outline vertex shader to take the normal made of the vertex colour when that IniParams value is set. The declaration checks of the D3D11 pattern become the `Pattern` subsection of the Vulkan group.
+* A patch is not converted when its ini has sections of its own for Vulkan (a section name with `Vulkan` in it, as RabbitFX has), or when its folder has a SPIR-V group of its own: that group is used instead. Groups that only classify shaders need no conversion.
+* `d3d11_log.txt` says what became of each patch:
+
+```
+ShaderRegex: [ShaderRegex\Mods\...\CutoutMask.ini\ZhuangCut] is used for Vulkan as [ShaderRegexZhuangCutVulkanV2] (cutout mask)
+ShaderRegex: the D3D11 patch [...] is not used for Vulkan: no conversion knows this patch
+```
+
+  The converted groups are named after the D3D11 group with `Vulkan` added (and for the cutout mask the width of the TEXCOORD it reads, `V2` or `V4`). That is the name the log gives when one of them patches a shader.
 
 ## Syntax
 
@@ -169,7 +186,7 @@ ${end} = OpLabel\n
 
 ## Vertex shader example
 
-The outline of a mod's mesh takes the normal made of the vertex colour when `x197 = 314159` is set for the draw, as if the material's flag for that were on. It is the SPIR-V version of `[ShaderRegexSmoothNormalColor]` of Si FGO lancer Melusine, without its `Pattern` subsection, which has the declaration checks of the D3D11 pattern. The group declares no texture, so every mod draw with a shader it patches uses the patched shader, and `x197` decides what it does.
+The outline of a mod's mesh takes the normal made of the vertex colour when `x197 = 314159` is set for the draw, as if the material's flag for that were on. This is what the Vulkan path makes of `[ShaderRegexSmoothNormalColor]` of Si FGO lancer Melusine, without the `Pattern` subsection that it copies from the D3D11 pattern. The group declares no texture, so every mod draw with a shader it patches uses the patched shader, and `x197` decides what it does.
 
 The game's shader compares a float of a uniform block with 0.5 (`%flag`) and branches on that to a block that makes the normal of the colour's xy. The patch keeps that comparison as `${was}` and makes `%flag` the OR of it and the IniParams test.
 

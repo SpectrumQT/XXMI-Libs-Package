@@ -69,6 +69,11 @@ without it drawn as before. With both groups, the pipeline that has both
 shaders patched must cut and move as each group does alone, and the game's draw
 after one with the patched vertex shader must render as the game's.
 
+The D3D11 group `spirv_patch_d3d11.ini` is the same cut written as a mod's
+`CutoutMask.ini` has it, with no SPIR-V version: the DLL must convert it, the
+log must name the converted group that patched the shader, and the triangle
+must be cut with a transparent mask and drawn with an opaque one.
+
 The cut is also checked with `config_initialization_delay = -1`, where the
 configuration read at load is never reloaded, and with
 `ps_two_entries.spv` from the fixture directory in place of `ps.spv`: a copy of

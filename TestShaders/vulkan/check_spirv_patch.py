@@ -60,6 +60,10 @@ def unmatched_group_ini():
     )
 
 
+def d3d11_patch_ini():
+    return (HERE / "spirv_patch_d3d11.ini").read_text(encoding="utf-8")
+
+
 def run_case(folder, mod, group=None, alpha=0, draws=1, system=""):
     (folder / "d3dx.ini").write_text(
         "[Loader]\ntarget = harness.exe\n"
@@ -220,6 +224,14 @@ def main():
             raise AssertionError(f"A draw of the game after a patched vertex shader must be as the game's: expected {game_twice}, got {after_moved}")
         print("PASS: the game's draw after one with a patched vertex shader is the game's")
 
+        converted, log = run_case(folder, mod_ini(), d3d11_patch_ini())
+        if converted != hidden:
+            raise AssertionError(f"The D3D11 patch converted for Vulkan must discard as the SPIR-V group does: expected {hidden}, got {converted}")
+        if not re.search(r"is patched by \[[^\]]*HarnessD3D11CutVulkanV4\]", log, re.I):
+            raise AssertionError("The log must say that the conversion of the D3D11 patch patched the shader")
+        if run_case(folder, mod_ini(), d3d11_patch_ini(), alpha=255)[0] != drawn:
+            raise AssertionError("With an opaque mask the converted patch must draw the triangle as without it")
+        print("PASS: a D3D11 patch the DLL converts cuts as the SPIR-V group, and only where the mask says so")
         print("Rendered pixels:", cut, drawn)
 
 

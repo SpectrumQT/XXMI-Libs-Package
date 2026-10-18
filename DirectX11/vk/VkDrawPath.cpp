@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "Spirv.h"
+#include "SpirvConvert.h"
 #include "SpirvPatch.h"
 #include "SpirvTools.h"
 #include "VkDump.h"
@@ -6971,10 +6972,13 @@ static void patching_reloaded()
 	memset(patching.textures, 0, sizeof(patching.textures));
 	memset(patching.always, 0, sizeof(patching.always));
 	patching.ini_params = false;
+	VkConvertShaderRegexGroups();
 	std::vector<const ShaderRegexGroup*> spirv_groups;
-	for (const auto &entry : shader_regex_groups) {
-		if (entry.second.spirv())
-			spirv_groups.push_back(&entry.second);
+	for (const ShaderRegexGroups *groups : { &shader_regex_groups, &vk_converted_regex_groups }) {
+		for (const auto &entry : *groups) {
+			if (entry.second.spirv())
+				spirv_groups.push_back(&entry.second);
+		}
 	}
 	for (const ShaderRegexGroup *spirv_group : spirv_groups) {
 		const ShaderRegexGroup &group = *spirv_group;

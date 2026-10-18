@@ -5552,7 +5552,7 @@ static void link_shader_regex()
 
 	Dx12GetShaders(regex_linked_shaders, &found);
 	regex_linked_shaders += found.size();
-	if (shader_regex_groups.empty())
+	if (!shader_regex_d3d_groups)
 		return;
 
 	for (const Dx12ShaderInfo *shader : found) {

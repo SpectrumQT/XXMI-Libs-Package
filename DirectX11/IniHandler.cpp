@@ -2840,7 +2840,8 @@ static bool parse_shader_regex_section_main(const std::wstring *section_id, Shad
 	return true;
 }
 
-static bool parse_shader_regex_section_pattern(const std::wstring *section_id, const std::wstring *pattern_id, ShaderRegexGroup *regex_group)
+static bool parse_shader_regex_section_pattern(const std::wstring *section_id, const std::wstring *pattern_id, ShaderRegexGroup *regex_group,
+		ShaderRegexPatterns *patterns)
 {
 	IniSectionVector *section = NULL;
 	IniSectionVector::iterator entry;
@@ -2869,7 +2870,7 @@ static bool parse_shader_regex_section_pattern(const std::wstring *section_id, c
 	LogInfo("%s\n", pattern.c_str());
 	LogInfo("--------------------------------------------------------------------\n");
 
-	regex_pattern = &regex_group->patterns[*pattern_id];
+	regex_pattern = &(*patterns)[*pattern_id];
 	if (!regex_pattern->compile(&pattern))
 		return false;
 
@@ -2908,7 +2909,7 @@ static bool parse_shader_regex_section_declarations(const std::wstring *section_
 	return true;
 }
 
-static bool parse_shader_regex_section_replace(const std::wstring *section_id, const std::wstring *pattern_id, ShaderRegexGroup *regex_group)
+static bool parse_shader_regex_section_replace(const std::wstring *section_id, const std::wstring *pattern_id, ShaderRegexPatterns *patterns)
 {
 	IniSectionVector *section = NULL;
 	IniSectionVector::iterator entry;
@@ -2917,7 +2918,7 @@ static bool parse_shader_regex_section_replace(const std::wstring *section_id, c
 	std::string aline;
 
 	try {
-		regex_pattern = &regex_group->patterns.at(*pattern_id);
+		regex_pattern = &patterns->at(*pattern_id);
 	} catch (std::out_of_range) {
 		IniWarningW(L"Missing corresponding pattern section\n - [%ls]\n", section_id->c_str());
 		return false;
@@ -2982,6 +2983,36 @@ static void delete_regex_group(std::wstring* regex_id)
 	shader_regex_groups.erase(i);
 }
 
+// The declarations a SPIR-V shader can be given, see vk/SpirvPatch.h, and
+// what the rest of a group for those may have
+static bool parse_shader_regex_spirv_group(const std::wstring *section_id, ShaderRegexGroup *regex_group)
+{
+	for (auto &pattern : regex_group->patterns) {
+		if (pattern.second.do_replace) {
+			IniWarningW(L"A ShaderRegex group with SpirvPattern can only match with Pattern, not replace\n - [%ls]\n", section_id->c_str());
+			return false;
+		}
+	}
+	if (!regex_group->command_list.noop() || !regex_group->post_command_list.noop() || regex_group->filter_index != FLT_MAX)
+		IniWarningW(L"Commands and filter_index of a ShaderRegex group with SpirvPattern are not run\n - [%ls]\n", section_id->c_str());
+
+	regex_group->spirv_declarations.clear();
+	for (const std::string &line : regex_group->declarations) {
+		SpirvDeclaration declaration;
+
+		if (!parse_spirv_declaration(line, G->IniParamsReg, &declaration)) {
+			IniWarningW(L"A SPIR-V shader can be given texture2d at a t register, texture1d at that of ini_params and "
+				L"samplers, not: %S\n - [%ls]\n", line.c_str(), section_id->c_str());
+			return false;
+		}
+		if (std::none_of(regex_group->spirv_declarations.begin(), regex_group->spirv_declarations.end(),
+				[&](const SpirvDeclaration &other) { return other.kind == declaration.kind && other.reg == declaration.reg; }))
+			regex_group->spirv_declarations.push_back(declaration);
+	}
+	regex_group->declarations.clear();
+	return true;
+}
+
 static void ParseShaderRegexSections()
 {
 	IniSections::iterator lower, upper, i;
@@ -3039,7 +3070,10 @@ static void ParseShaderRegexSections()
 					//
 					// Until then, the user will just have to write longer regex patterns
 					// and substitutions to match everything they need in one go.
-					if (parse_shader_regex_section_pattern(section_id, &subsection_names[1], regex_group))
+					if (parse_shader_regex_section_pattern(section_id, &subsection_names[1], regex_group, &regex_group->patterns))
+						continue;
+				} else if (!_wcsnicmp(subsection_names[1].c_str(), L"SpirvPattern", 12)) {
+					if (parse_shader_regex_section_pattern(section_id, &subsection_names[1], regex_group, &regex_group->spirv_patterns))
 						continue;
 				} else if (!_wcsicmp(subsection_names[1].c_str(), L"InsertDeclarations")) {
 					if (parse_shader_regex_section_declarations(section_id, &subsection_names[1], regex_group))
@@ -3049,7 +3083,11 @@ static void ParseShaderRegexSections()
 			case 3:
 				if (!_wcsnicmp(subsection_names[1].c_str(), L"Pattern", 7)
 				 && !_wcsicmp(subsection_names[2].c_str(), L"Replace")) {
-					if (parse_shader_regex_section_replace(section_id, &subsection_names[1], regex_group))
+					if (parse_shader_regex_section_replace(section_id, &subsection_names[1], &regex_group->patterns))
+						continue;
+				} else if (!_wcsnicmp(subsection_names[1].c_str(), L"SpirvPattern", 12)
+				 && !_wcsicmp(subsection_names[2].c_str(), L"Replace")) {
+					if (parse_shader_regex_section_replace(section_id, &subsection_names[1], &regex_group->spirv_patterns))
 						continue;
 				}
 				break;
@@ -3061,6 +3099,22 @@ static void ParseShaderRegexSections()
 		// applying an incomplete regex to any shaders.
 		IniWarningW(L"Disabling entire shader regex group\n - [%ls]\n", subsection_names[0].c_str());
 		delete_regex_group(&subsection_names[0]);
+	}
+
+	shader_regex_d3d_groups = false;
+	for (j = shader_regex_groups.begin(); j != shader_regex_groups.end();) {
+		std::wstring regex_id = j->first;
+
+		if (!j->second.spirv()) {
+			shader_regex_d3d_groups = true;
+			j++;
+			continue;
+		}
+		j++;
+		if (!parse_shader_regex_spirv_group(&regex_id, &shader_regex_groups[regex_id])) {
+			IniWarningW(L"Disabling entire shader regex group\n - [%ls]\n", regex_id.c_str());
+			delete_regex_group(&regex_id);
+		}
 	}
 
 	// When we load ShaderRegex metadata from the cache we need to look up

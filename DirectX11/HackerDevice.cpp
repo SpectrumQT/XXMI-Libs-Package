@@ -1402,7 +1402,7 @@ HRESULT HackerDevice::ProcessShaderNotFoundInShaderFixes(UINT64 hash,
 	// have a copy for every shader seen. If we are performing any sort of deferred shader replacement, such as pipline
 	// state analysis we always need to keep a copy of the original bytecode for later analysis. For now the shader
 	// regex engine counts as deferred, though that may change with optimisations in the future.
-	if (G->hunting || !shader_regex_groups.empty()) {
+	if (G->hunting || shader_regex_d3d_groups) {
 		// The copy is made before taking the lock the render thread
 		// holds for every draw call:
 		ID3DBlob* blob;

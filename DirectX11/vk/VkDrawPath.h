@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <string>
 
 #include "VkCommon.h"
 
@@ -117,6 +118,15 @@ struct VkModsApi {
 	PFN_vkDestroyFence DestroyFence;
 	PFN_vkGetFenceStatus GetFenceStatus;
 	PFN_vkResetFences ResetFences;
+	PFN_vkGetPhysicalDeviceProperties GetPhysicalDeviceProperties;
+	PFN_vkCreateShaderModule CreateShaderModule;
+	PFN_vkDestroyShaderModule DestroyShaderModule;
+	PFN_vkCreatePipelineLayout CreatePipelineLayout;
+	PFN_vkDestroyPipelineLayout DestroyPipelineLayout;
+	PFN_vkCreateDescriptorSetLayout CreateDescriptorSetLayout;
+	PFN_vkDestroyDescriptorSetLayout DestroyDescriptorSetLayout;
+	PFN_vkCreateSampler CreateSampler;
+	PFN_vkDestroySampler DestroySampler;
 };
 
 // handle_properties is NULL for a device without VK_KHR_external_memory_win32,
@@ -125,6 +135,9 @@ struct VkModsApi {
 void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkModsApi *api,
 		PFN_vkGetMemoryWin32HandlePropertiesKHR handle_properties, PFN_vkImportSemaphoreWin32HandleKHR import_semaphore);
 void VkModsForgetDevice(VkDevice device);
+// The device was made with the nullDescriptor of VK_EXT_robustness2: a texture
+// a patched shader is given and the mod has not set can be none
+void VkModsNullDescriptor(VkDevice device);
 // A queue the game got, and the family it is of
 void VkModsImageCreated(VkImage image, const VkImageCreateInfo *info);
 void VkModsForgetImage(VkImage image);
@@ -135,8 +148,15 @@ void VkModsQueue(VkDevice device, VkQueue queue, uint32_t family);
 
 void VkModsShaderModule(VkShaderModule module, const VkShaderModuleCreateInfo *info);
 void VkModsForgetShaderModule(VkShaderModule module);
+// What a shader would declare were it a D3D11 one, as the Pattern subsections
+// of ShaderRegex sections see it
+std::string VkShaderDeclarations(const uint32_t *code, size_t bytes);
 void VkModsGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateInfo *info);
 void VkModsForgetPipeline(VkPipeline pipeline);
+// What a pipeline layout is made of, for one with a set of ours after the
+// game's for the shaders the ShaderRegex sections patch
+void VkModsPipelineLayout(VkPipelineLayout layout, const VkPipelineLayoutCreateInfo *info);
+void VkModsForgetPipelineLayout(VkPipelineLayout layout);
 // Stops modifying pipelines whose custom-allocated creation inputs are gone.
 void VkModsRetirePipelineObject(VkObjectType type, uint64_t handle);
 

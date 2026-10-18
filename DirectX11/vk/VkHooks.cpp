@@ -24,6 +24,7 @@
 	X(CreateGraphicsPipelines) \
 	X(CreateComputePipelines) \
 	X(DestroyPipeline) \
+	X(CreatePipelineLayout) \
 	X(DestroyPipelineLayout) \
 	X(DestroyRenderPass) \
 	X(CreateBuffer) \
@@ -228,11 +229,23 @@ static void VKAPI_CALL Hooked_vkDestroyPipeline(VkDevice device, VkPipeline pipe
 	next_DestroyPipeline(device)(device, pipeline, allocator);
 }
 
+static VkResult VKAPI_CALL Hooked_vkCreatePipelineLayout(VkDevice device, const VkPipelineLayoutCreateInfo *info,
+		const VkAllocationCallbacks *allocator, VkPipelineLayout *layout)
+{
+	VkResult result = next_CreatePipelineLayout(device)(device, info, allocator, layout);
+
+	if (result == VK_SUCCESS && layout && *layout && vk_mods_active)
+		VkModsPipelineLayout(*layout, info);
+	return result;
+}
+
 static void VKAPI_CALL Hooked_vkDestroyPipelineLayout(VkDevice device, VkPipelineLayout layout, const VkAllocationCallbacks *allocator)
 {
 	if (!retain_object(&retained_pipeline_layouts, device, layout, allocator, next_DestroyPipelineLayout(device))) {
 		if (allocator)
 			VkModsRetirePipelineObject(VK_OBJECT_TYPE_PIPELINE_LAYOUT, (uint64_t)layout);
+		if (layout)
+			VkModsForgetPipelineLayout(layout);
 		next_DestroyPipelineLayout(device)(device, layout, allocator);
 	}
 }
@@ -1042,6 +1055,16 @@ static void register_device(VkDevice device, VkPhysicalDevice physical_device, b
 		api.DestroyFence = (PFN_vkDestroyFence)get(device, "vkDestroyFence");
 		api.GetFenceStatus = (PFN_vkGetFenceStatus)get(device, "vkGetFenceStatus");
 		api.ResetFences = (PFN_vkResetFences)get(device, "vkResetFences");
+		api.GetPhysicalDeviceProperties = (PFN_vkGetPhysicalDeviceProperties)
+			NktHookLibHelpers::GetProcedureAddress(vulkan, "vkGetPhysicalDeviceProperties");
+		api.CreateShaderModule = next.CreateShaderModule;
+		api.DestroyShaderModule = next.DestroyShaderModule;
+		api.CreatePipelineLayout = next.CreatePipelineLayout;
+		api.DestroyPipelineLayout = next.DestroyPipelineLayout;
+		api.CreateDescriptorSetLayout = next.CreateDescriptorSetLayout;
+		api.DestroyDescriptorSetLayout = next.DestroyDescriptorSetLayout;
+		api.CreateSampler = (PFN_vkCreateSampler)get(device, "vkCreateSampler");
+		api.DestroySampler = (PFN_vkDestroySampler)get(device, "vkDestroySampler");
 		VkModsDevice(device, physical_device, &api, !external_memory ? NULL
 			: (PFN_vkGetMemoryWin32HandlePropertiesKHR)get(device, "vkGetMemoryWin32HandlePropertiesKHR"),
 			!external_semaphore ? NULL
@@ -1234,9 +1257,86 @@ static VkResult create_diagnosed(VkPhysicalDevice physical_device, const VkDevic
 // than a mod's buffer holds. Vulkan leaves such a read to whatever memory is
 // there, and where there is none the device is lost; robustBufferAccess keeps
 // it within the buffer. A driver that will not make it so makes it as asked.
+// A shader the ShaderRegex sections patch may be given textures the mod has
+// not set, which D3D11 reads as zeros and as having no size. The nullDescriptor
+// of VK_EXT_robustness2 is how Vulkan has that. Turned on where the driver has
+// it for as long as the call takes, and the device is made without it if it
+// cannot be made with it.
+static VkResult create_with_null_descriptor(VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
+		const VkAllocationCallbacks *allocator, VkDevice *device, bool diagnose, bool *null_descriptor,
+		bool *fault, bool *checkpoints, bool *bindings)
+{
+	HINSTANCE vulkan = NktHookLibHelpers::GetModuleBaseAddress(L"vulkan-1.dll");
+	PFN_vkEnumerateDeviceExtensionProperties enumerate = (PFN_vkEnumerateDeviceExtensionProperties)
+		NktHookLibHelpers::GetProcedureAddress(vulkan, "vkEnumerateDeviceExtensionProperties");
+	PFN_vkGetPhysicalDeviceFeatures2 get_features = (PFN_vkGetPhysicalDeviceFeatures2)
+		NktHookLibHelpers::GetProcedureAddress(vulkan, "vkGetPhysicalDeviceFeatures2");
+	VkPhysicalDeviceRobustness2FeaturesEXT supported = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT };
+	VkPhysicalDeviceRobustness2FeaturesEXT ours = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT };
+	VkPhysicalDeviceFeatures2 features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+	VkPhysicalDeviceRobustness2FeaturesEXT *chained = NULL;
+	std::vector<VkExtensionProperties> available;
+	std::vector<const char*> names;
+	VkDeviceCreateInfo null_info = *info;
+	bool has_extension = false, enabled = false;
+	VkBaseOutStructure *next;
+	uint32_t count = 0;
+	VkResult result;
+
+	*null_descriptor = false;
+	for (next = (VkBaseOutStructure*)info->pNext; next && !chained; next = next->pNext) {
+		if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT)
+			chained = (VkPhysicalDeviceRobustness2FeaturesEXT*)next;
+	}
+	names.assign(info->ppEnabledExtensionNames, info->ppEnabledExtensionNames + info->enabledExtensionCount);
+	for (const char *name : names)
+		enabled |= !strcmp(name, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+	if (enabled && chained && chained->nullDescriptor) {
+		*null_descriptor = true;
+		return create_diagnosed(physical_device, info, allocator, device, diagnose, fault, checkpoints, bindings);
+	}
+
+	if (enumerate && get_features && enumerate(physical_device, NULL, &count, NULL) == VK_SUCCESS) {
+		available.resize(count);
+		if (enumerate(physical_device, NULL, &count, available.data()) < VK_SUCCESS)
+			count = 0;
+		available.resize(count);
+		for (const VkExtensionProperties &extension : available)
+			has_extension |= !strcmp(extension.extensionName, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+	}
+	if (has_extension) {
+		features.pNext = &supported;
+		get_features(physical_device, &features);
+	}
+	if (!supported.nullDescriptor || (chained && !writable(&chained->nullDescriptor, sizeof(VkBool32))))
+		return create_diagnosed(physical_device, info, allocator, device, diagnose, fault, checkpoints, bindings);
+
+	if (!enabled) {
+		names.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+		null_info.enabledExtensionCount = (uint32_t)names.size();
+		null_info.ppEnabledExtensionNames = names.data();
+	}
+	if (chained) {
+		chained->nullDescriptor = VK_TRUE;
+	} else {
+		ours.nullDescriptor = VK_TRUE;
+		ours.pNext = (void*)null_info.pNext;
+		null_info.pNext = &ours;
+	}
+	result = create_diagnosed(physical_device, &null_info, allocator, device, diagnose, fault, checkpoints, bindings);
+	if (chained)
+		chained->nullDescriptor = VK_FALSE;
+	if (result == VK_SUCCESS) {
+		*null_descriptor = true;
+		return result;
+	}
+	VkLogInfo("vkCreateDevice failed with %d with the nullDescriptor of VK_EXT_robustness2, made without\n", result);
+	return create_diagnosed(physical_device, info, allocator, device, diagnose, fault, checkpoints, bindings);
+}
+
 static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
 		const VkAllocationCallbacks *allocator, VkDevice *device, bool mods,
-		bool *robust, bool *fault, bool *checkpoints, bool *bindings)
+		bool *robust, bool *null_descriptor, bool *fault, bool *checkpoints, bool *bindings)
 {
 	PFN_vkGetPhysicalDeviceFeatures get_features = (PFN_vkGetPhysicalDeviceFeatures)NktHookLibHelpers::GetProcedureAddress(
 		NktHookLibHelpers::GetModuleBaseAddress(L"vulkan-1.dll"), "vkGetPhysicalDeviceFeatures");
@@ -1247,7 +1347,7 @@ static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCr
 	bool diagnose;
 	VkResult result;
 
-	*robust = *fault = *checkpoints = *bindings = false;
+	*robust = *null_descriptor = *fault = *checkpoints = *bindings = false;
 	if (!info || !mods)
 		return fnOrigCreateDevice(physical_device, info, allocator, device);
 	diagnose = G->vk_dump_hashes;
@@ -1267,7 +1367,7 @@ static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCr
 	}
 	if (enabled.robustBufferAccess || !supported.robustBufferAccess
 	    || (chained && !writable(&chained->features.robustBufferAccess, sizeof(VkBool32))))
-		return create_diagnosed(physical_device, info, allocator, device, diagnose, fault, checkpoints, bindings);
+		return create_with_null_descriptor(physical_device, info, allocator, device, diagnose, null_descriptor, fault, checkpoints, bindings);
 
 	// The game's own features are only changed for as long as the call takes
 	if (chained) {
@@ -1276,7 +1376,7 @@ static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCr
 		enabled.robustBufferAccess = VK_TRUE;
 		robust_info.pEnabledFeatures = &enabled;
 	}
-	result = create_diagnosed(physical_device, &robust_info, allocator, device, diagnose, fault, checkpoints, bindings);
+	result = create_with_null_descriptor(physical_device, &robust_info, allocator, device, diagnose, null_descriptor, fault, checkpoints, bindings);
 	if (chained)
 		chained->features.robustBufferAccess = VK_FALSE;
 	if (result == VK_SUCCESS) {
@@ -1284,19 +1384,19 @@ static VkResult create_device(VkPhysicalDevice physical_device, const VkDeviceCr
 		return result;
 	}
 	VkLogInfo("vkCreateDevice failed with %d with robustBufferAccess, made as the game asked\n", result);
-	return create_diagnosed(physical_device, info, allocator, device, diagnose, fault, checkpoints, bindings);
+	return create_with_null_descriptor(physical_device, info, allocator, device, diagnose, null_descriptor, fault, checkpoints, bindings);
 }
 
 static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
 		const VkAllocationCallbacks *allocator, VkDevice *device)
 {
-	bool external_memory = false, external_semaphore = false, budget = false, robust, fault, checkpoints, bindings;
+	bool external_memory = false, external_semaphore = false, budget = false, robust, null_descriptor, fault, checkpoints, bindings;
 	VkResult result;
 	uint32_t i;
 
 	InitCommon();
 	bool mods = mods_enabled();
-	result = create_device(physical_device, info, allocator, device, mods, &robust, &fault, &checkpoints, &bindings);
+	result = create_device(physical_device, info, allocator, device, mods, &robust, &null_descriptor, &fault, &checkpoints, &bindings);
 	if (result != VK_SUCCESS || !device || !*device)
 		return result;
 
@@ -1319,12 +1419,16 @@ static VkResult VKAPI_CALL Hooked_vkCreateDevice(VkPhysicalDevice physical_devic
 	register_device(*device, physical_device, external_memory, external_semaphore);
 	if (budget && vk_mods_active)
 		VkModsMemoryBudget(*device);
+	if (null_descriptor && vk_mods_active)
+		VkModsNullDescriptor(*device);
 
 	VkDumpNote("vkCreateDevice = %p, %u extensions\n", *device, info ? info->enabledExtensionCount : 0);
 	for (i = 0; info && i < info->enabledExtensionCount; i++)
 		VkDumpNote("  %s\n", info->ppEnabledExtensionNames[i]);
 	if (robust)
 		VkDumpNote("  with robustBufferAccess, which the game had not asked for: no read of a buffer goes past its end, as in D3D11\n");
+	if (null_descriptor)
+		VkDumpNote("  with the nullDescriptor of " VK_EXT_ROBUSTNESS_2_EXTENSION_NAME ": a texture a patched shader is given and the mod has not set reads as none\n");
 	if (fault || checkpoints || bindings) {
 		VkDumpNote("  and for telling where the GPU was if the device is lost:%s%s%s\n",
 			fault ? " " VK_EXT_DEVICE_FAULT_EXTENSION_NAME : "",

@@ -43,3 +43,41 @@ Objects with custom allocators are destroyed synchronously. Pipelines depending
 on destroyed shader modules, pipeline layouts or render passes fall back to the
 game's draw path; destroyed descriptor set layouts cannot be used to allocate
 new replacement sets. This avoids retaining application-owned allocator state.
+
+## SPIR-V ShaderRegex
+
+```powershell
+python TestShaders/vulkan/check_spirv_patch.py `
+  --harness-root local-patches/vk-harness/run `
+  --dll x64/Release/d3d11.dll `
+  --spirv-tools Dependencies/SPIRV-Tools-shared.dll `
+  --output build/vk-spirv-patch
+```
+
+The mod `spirv_patch.ini` draws a triangle with a mask at `ps-t116` and
+`x245 = 245997`; the group `spirv_patch_group.ini` patches the harness's pixel
+shader to discard where the mask's alpha is below 1. A transparent mask must
+discard the triangle, and the log must name the section that patched the shader.
+An opaque mask, another `x245` value or no mask must draw it as without the
+group. The same cut is checked with a declared sampler, and with `--draws 2` the
+game's draw after the patched one must render as the game's.
+
+The group `spirv_patch_vs_group.ini` patches the harness's vertex shader to move
+the triangle off the screen where `x246 = 246001`. It declares no texture, so
+the mod's draw uses it without one: with `x246` set the triangle must be gone,
+without it drawn as before. With both groups, the pipeline that has both
+shaders patched must cut and move as each group does alone, and the game's draw
+after one with the patched vertex shader must render as the game's.
+
+The cut is also checked with `config_initialization_delay = -1`, where the
+configuration read at load is never reloaded, and with
+`ps_two_entries.spv` from the fixture directory in place of `ps.spv`: a copy of
+its function is the module's first entry point, and the harness's pipeline uses
+`main`, the second, which the patch must go into. The fixture is assembled
+from `ps_two_entries.spvasm` next to it with
+`spirv-as --target-env spv1.0`.
+
+`vs_ps_main.spv` in the fixture directory is `vs.spv` and `ps.spv` linked into
+one module (`spirv-link vs.spv ps.spv`), with a vertex and a fragment entry
+point both named `main`. Used as both stages, each must be patched for itself:
+the pixel shader group cuts and the vertex shader group moves the triangle.

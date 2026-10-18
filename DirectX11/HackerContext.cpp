@@ -715,7 +715,7 @@ void HackerContext::DeferredShaderReplacementBeforeDraw()
 {
 	Profiling::State profiling_state;
 
-	if (shader_regex_groups.empty())
+	if (!shader_regex_d3d_groups)
 		return;
 
 	UpdateDeferredShaderGeneration();
@@ -765,7 +765,7 @@ void HackerContext::DeferredShaderReplacementBeforeDraw()
 
 void HackerContext::DeferredShaderReplacementBeforeDispatch()
 {
-	if (shader_regex_groups.empty())
+	if (!shader_regex_d3d_groups)
 		return;
 
 	UpdateDeferredShaderGeneration();
@@ -2544,7 +2544,7 @@ STDMETHODIMP_(void) HackerContext::SetShader(THIS_
 		// lookup/find takes measurable amounts of CPU time.
 		//
 		// grumble grumble this optimisation caught me out *TWICE* grumble grumble -DSS
-		if (!G->mShaderOverrideMap.empty() || !shader_regex_groups.empty() || (G->hunting == HUNTING_MODE_ENABLED)) {
+		if (!G->mShaderOverrideMap.empty() || shader_regex_d3d_groups || (G->hunting == HUNTING_MODE_ENABLED)) {
 			// Both this lookup and the one in mReloadedShaders below:
 			const ShaderHandleCacheEntry *entry = LookupShaderHandle(pShader);
 			reload_info = entry->reload_info;

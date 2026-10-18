@@ -3,6 +3,7 @@
 #include <immintrin.h>
 
 #include <algorithm>
+#include <deque>
 #include <map>
 #include <memory>
 #include <string>
@@ -12,6 +13,8 @@
 #include <vector>
 
 #include "Spirv.h"
+#include "SpirvPatch.h"
+#include "SpirvTools.h"
 #include "VkDump.h"
 #include "VkScope.h"
 
@@ -88,6 +91,11 @@ static struct {
 	UINT64 refresh_wait_ticks;
 	unsigned variants_made, variants_failed;
 	UINT64 variant_ticks;
+	// Draws of mods that want a patched shader, with a texture where it has
+	// one or not needing one, of which drawn with it, and why the others were
+	// not: a shader or the pipeline was still being made, a texture was still
+	// being brought, or it cannot be
+	unsigned patch_wanted, patch_drawn, patch_shader_pending, patch_pipeline_pending, patch_texture_pending, patch_impossible;
 	unsigned textures_made, textures_failed, textures_set;
 	unsigned apart_draws, textures_shown;
 	UINT64 textures_bytes;
@@ -170,6 +178,8 @@ struct ShaderLayout {
 	// The same as the engine has it of a D3D11 shader, once it asked. With
 	// the lock of dx12/Bridge.h held.
 	ShaderBindings *declared;
+	// By Dx12ShaderStage, -1 if none
+	int stage;
 };
 
 // What a pipeline was created from, with everything it points at
@@ -184,10 +194,18 @@ struct PipelineRecipe {
 // A pipeline made of that for a mod: by the input layout the mod has set, 0
 // for the game's, and the strides of its vertex buffers. No pipeline if none
 // could be made.
+//
+// Or one with the vertex or pixel shader or both as the ShaderRegex sections
+// of patch_generation patched them, which a thread of its own makes: none
+// while pending.
 struct PipelineVariant {
 	UINT64 layout;
 	UINT strides[MAX_VBS];
 	VkPipeline pipeline;
+	// A bit for each Dx12ShaderStage that has the patched shader
+	UINT patched;
+	bool pending;
+	UINT generation;
 };
 
 struct Pipeline {
@@ -204,6 +222,8 @@ struct Pipeline {
 	// By Dx12ShaderStage, 0 where it has none
 	UINT64 shaders[DX12_STAGE_COUNT];
 	ShaderLayout *layouts[DX12_STAGE_COUNT];
+	// The names of the entry points of those shaders it uses
+	std::string entries[DX12_STAGE_COUNT];
 	// The vertex bindings it was created with, if that is known: a bit for
 	// each, and their strides
 	bool vbs_known;
@@ -226,6 +246,9 @@ static SRWLOCK registry_lock = SRWLOCK_INIT;
 static std::unordered_map<VkShaderModule, UINT64> shader_modules;
 // By hash, and kept: pipelines point at them
 static std::unordered_map<UINT64, ShaderLayout*> shader_layouts;
+// The SPIR-V of the vertex and pixel shaders of shader modules, by hash, for
+// the ShaderRegex sections that patch them
+static std::unordered_map<UINT64, std::shared_ptr<const std::vector<uint32_t>>> patchable_code;
 static std::unordered_map<VkPipeline, Pipeline*> pipelines;
 static std::unordered_map<VkPipelineLayout, UINT64> retired_layout_epochs;
 static std::atomic<bool> has_retired_layouts;
@@ -356,8 +379,18 @@ static ShaderLayout* reflect_shader(const uint32_t *code, size_t bytes)
 		}
 	}
 	layout->declared = NULL;
+	layout->stage = stage;
 	declare_as_d3d11(info, layout);
 	return layout;
+}
+
+std::string VkShaderDeclarations(const uint32_t *code, size_t bytes)
+{
+	ShaderLayout *layout = reflect_shader(code, bytes);
+	std::string declarations = layout->declarations;
+
+	delete layout;
+	return declarations;
 }
 
 void VkModsShaderModule(VkShaderModule module, const VkShaderModuleCreateInfo *info)
@@ -378,9 +411,14 @@ void VkModsShaderModule(VkShaderModule module, const VkShaderModuleCreateInfo *i
 		return;
 
 	layout = reflect_shader(info->pCode, info->codeSize);
+	std::shared_ptr<const std::vector<uint32_t>> code;
+	if (layout->stage == DX12_STAGE_VS || layout->stage == DX12_STAGE_PS)
+		code = std::make_shared<const std::vector<uint32_t>>(info->pCode, info->pCode + info->codeSize / sizeof(uint32_t));
 	AcquireSRWLockExclusive(&registry_lock);
 	if (!shader_layouts.emplace(hash, layout).second)
 		delete layout;
+	if (code)
+		patchable_code.emplace(hash, code);
 	ReleaseSRWLockExclusive(&registry_lock);
 }
 
@@ -606,6 +644,7 @@ void VkModsGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 	const VkPipelineVertexInputStateCreateInfo *input = library ? NULL : info->pVertexInputState;
 	UINT64 shaders[DX12_STAGE_COUNT] = {};
 	ShaderLayout *layouts[DX12_STAGE_COUNT] = {};
+	const char *entries[DX12_STAGE_COUNT] = {};
 	std::shared_ptr<PipelineRecipe> recipe;
 	Pipeline *entry;
 	uint32_t i;
@@ -632,6 +671,7 @@ void VkModsGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 		stage = stage_of(created->stage);
 		if (stage < 0)
 			continue;
+		entries[stage] = created->pName;
 
 		if (created->module) {
 			auto module = shader_modules.find(created->module);
@@ -675,6 +715,8 @@ void VkModsGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 	entry->recipe = recipe;
 	memcpy(entry->shaders, shaders, sizeof(shaders));
 	memcpy(entry->layouts, layouts, sizeof(layouts));
+	for (stage = 0; stage < DX12_STAGE_COUNT; stage++)
+		entry->entries[stage] = entries[stage] ? entries[stage] : "";
 	entry->vbs = 0;
 	entry->vbs_per_instance = 0;
 	// Set while the pipeline is bound instead, the pointer is not looked at
@@ -721,12 +763,17 @@ void VkModsForgetPipeline(VkPipeline pipeline)
 	ReleaseSRWLockExclusive(&registry_lock);
 }
 
+// Held shared by the thread that makes the pipelines of patched shaders while
+// it makes one of a recipe, for the game not to destroy what that has
+static SRWLOCK variant_build_lock = SRWLOCK_INIT;
+
 void VkModsRetirePipelineObject(VkObjectType type, uint64_t handle)
 {
 	if (!handle)
 		return;
 	// A draw may already have copied a recipe or bound-layout state. Wait
 	// for it before retiring the handle, and keep later draws on the game path.
+	AcquireSRWLockExclusive(&variant_build_lock);
 	Dx12ShimLock();
 	AcquireSRWLockExclusive(&registry_lock);
 	if (type == VK_OBJECT_TYPE_PIPELINE_LAYOUT) {
@@ -746,6 +793,63 @@ void VkModsRetirePipelineObject(VkObjectType type, uint64_t handle)
 	}
 	ReleaseSRWLockExclusive(&registry_lock);
 	Dx12ShimUnlock();
+	ReleaseSRWLockExclusive(&variant_build_lock);
+}
+
+// What the game's pipeline layouts are made of, and the one of ours made of
+// each for the configuration of patch_generation. With registry_lock held.
+struct GameLayout {
+	std::vector<VkDescriptorSetLayout> sets;
+	std::vector<VkPushConstantRange> push;
+	VkPipelineLayoutCreateFlags flags;
+	VkPipelineLayout extended;
+	UINT generation;
+};
+
+static std::unordered_map<VkPipelineLayout, GameLayout> game_layouts;
+
+// Objects of ours that a command buffer may still have been recorded with,
+// until the GPU is done with the frame. With registry_lock held.
+struct RetiredObject {
+	VkObjectType type;
+	uint64_t handle;
+	UINT frame;
+};
+
+static std::vector<RetiredObject> retired_objects;
+
+static void retire_object(VkObjectType type, uint64_t handle)
+{
+	if (handle)
+		retired_objects.push_back({ type, handle, mods_frame });
+}
+
+void VkModsPipelineLayout(VkPipelineLayout layout, const VkPipelineLayoutCreateInfo *info)
+{
+	GameLayout made = {};
+
+	if (!info)
+		return;
+	made.sets.assign(info->pSetLayouts, info->pSetLayouts + info->setLayoutCount);
+	made.push.assign(info->pPushConstantRanges, info->pPushConstantRanges + info->pushConstantRangeCount);
+	made.flags = info->flags;
+	AcquireSRWLockExclusive(&registry_lock);
+	auto found = game_layouts.find(layout);
+	if (found != game_layouts.end())
+		retire_object(VK_OBJECT_TYPE_PIPELINE_LAYOUT, (uint64_t)found->second.extended);
+	game_layouts[layout] = made;
+	ReleaseSRWLockExclusive(&registry_lock);
+}
+
+void VkModsForgetPipelineLayout(VkPipelineLayout layout)
+{
+	AcquireSRWLockExclusive(&registry_lock);
+	auto found = game_layouts.find(layout);
+	if (found != game_layouts.end()) {
+		retire_object(VK_OBJECT_TYPE_PIPELINE_LAYOUT, (uint64_t)found->second.extended);
+		game_layouts.erase(found);
+	}
+	ReleaseSRWLockExclusive(&registry_lock);
 }
 
 static bool pipeline_wanted(Pipeline *pipeline)
@@ -1766,6 +1870,9 @@ static VkDevice mods_device;
 // What the loader has at the start of everything of the device
 static void *mods_device_key;
 static VkModsApi api;
+static VkPhysicalDeviceLimits device_limits;
+// See VkModsNullDescriptor
+static bool null_descriptor;
 static VkPhysicalDeviceMemoryProperties memory_properties;
 static VkPhysicalDevice mods_physical_device;
 // The game enabled VK_EXT_memory_budget
@@ -2217,6 +2324,8 @@ static BYTE* transient_bytes(VkDeviceSize bytes, VkDeviceSize reach, VkBuffer *b
 	return found->data + start;
 }
 
+static void release_patch_sets(VkBuffer gone);
+
 // One made for the contents of a texture is of no use to what a draw reads
 // once the GPU is done with it, and one of the usual size goes once there
 // have been that many frames without anything given out of it
@@ -2231,6 +2340,7 @@ static void destroy_idle_transients()
 		}
 		api.DestroyBuffer(mods_device, transient.buffer, NULL);
 		unplace(transient.block, transient.block_offset, transient.block_bytes);
+		release_patch_sets(transient.buffer);
 	}
 	transients.resize(kept);
 }
@@ -3291,6 +3401,7 @@ void VkScopeForgetResource(ShimResource *resource)
 static void destroy_mod_sets();
 static void destroy_variants(bool all);
 static void destroy_fences();
+static void forget_patching();
 
 void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkModsApi *functions,
 		PFN_vkGetMemoryWin32HandlePropertiesKHR handle_properties_function, PFN_vkImportSemaphoreWin32HandleKHR import_semaphore_function)
@@ -3308,8 +3419,13 @@ void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkMod
 	Dx12ShimLock();
 	// The first there is: the buffers are of one device
 	if (!mods_device) {
+		VkPhysicalDeviceProperties properties;
+
 		api = *functions;
 		api.GetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
+		api.GetPhysicalDeviceProperties(physical_device, &properties);
+		device_limits = properties.limits;
+		null_descriptor = false;
 		mods_physical_device = physical_device;
 		mods_device_key = *(void**)device;
 		mods_device = device;
@@ -3323,8 +3439,11 @@ void VkModsDevice(VkDevice device, VkPhysicalDevice physical_device, const VkMod
 
 void VkModsForgetDevice(VkDevice device)
 {
+	// Before the lock of dx12/Bridge.h, as VkModsRetirePipelineObject
+	AcquireSRWLockExclusive(&variant_build_lock);
 	Dx12ShimLock();
 	if (device == mods_device) {
+		forget_patching();
 		for (auto &mirror : mirrors) {
 			mirror.first->mirrored = false;
 			if (!mirror.second.shared)
@@ -3371,6 +3490,7 @@ void VkModsForgetDevice(VkDevice device)
 		mods_device_key = NULL;
 	}
 	Dx12ShimUnlock();
+	ReleaseSRWLockExclusive(&variant_build_lock);
 }
 
 // -----------------------------------------------------------------------------
@@ -4643,41 +4763,90 @@ static VkFormat vk_format(DXGI_FORMAT format)
 	return VK_FORMAT_UNDEFINED;
 }
 
-static VkPipeline make_variant(const PipelineRecipe *recipe, const ShimInputLayout *layout, const UINT *strides)
+// Of an input layout a mod has set
+struct InputElement {
+	DXGI_FORMAT format;
+	UINT offset;
+};
+
+static std::vector<InputElement> input_elements(const ShimInputLayout *layout)
+{
+	std::vector<InputElement> elements;
+
+	for (const D3D12_INPUT_ELEMENT_DESC &element : layout->mElements)
+		elements.push_back({ element.Format, element.AlignedByteOffset });
+	return elements;
+}
+
+// The vertex input for the elements, if any, and the strides, if those are
+// given, and the vertex shader, the pixel shader and the layout, if a shader
+// is
+static VkPipeline make_variant(const PipelineRecipe *recipe, const std::vector<InputElement> *elements, const UINT *strides,
+		VkShaderModule vertex = VK_NULL_HANDLE, VkShaderModule fragment = VK_NULL_HANDLE, VkPipelineLayout layout = VK_NULL_HANDLE)
 {
 	VkGraphicsPipelineCreateInfo info = recipe->info;
-	VkPipelineVertexInputStateCreateInfo input = *info.pVertexInputState;
-	std::vector<VkVertexInputBindingDescription> bindings(input.pVertexBindingDescriptions,
-		input.pVertexBindingDescriptions + input.vertexBindingDescriptionCount);
-	std::vector<VkVertexInputAttributeDescription> attributes(input.pVertexAttributeDescriptions,
-		input.pVertexAttributeDescriptions + input.vertexAttributeDescriptionCount);
+	VkPipelineVertexInputStateCreateInfo input;
+	std::vector<VkVertexInputBindingDescription> bindings;
+	std::vector<VkVertexInputAttributeDescription> attributes;
+	std::vector<VkPipelineShaderStageCreateInfo> stages;
 	VkPipeline variant = VK_NULL_HANDLE;
 	size_t i;
 
-	for (VkVertexInputBindingDescription &binding : bindings) {
-		if (binding.binding < MAX_VBS)
-			binding.stride = strides[binding.binding];
-	}
-
-	// Its elements are the attributes in their order, see
-	// VkScopeInputElements
-	if (layout && layout->mElements.size() != attributes.size())
-		return VK_NULL_HANDLE;
-	for (i = 0; layout && i < attributes.size(); i++) {
-		const D3D12_INPUT_ELEMENT_DESC *element = &layout->mElements[i];
-
-		if (element->Format != dxgi_format(attributes[i].format)) {
-			attributes[i].format = vk_format(element->Format);
-			if (!attributes[i].format)
-				return VK_NULL_HANDLE;
+	if (strides) {
+		if (!info.pVertexInputState)
+			return VK_NULL_HANDLE;
+		input = *info.pVertexInputState;
+		bindings.assign(input.pVertexBindingDescriptions, input.pVertexBindingDescriptions + input.vertexBindingDescriptionCount);
+		attributes.assign(input.pVertexAttributeDescriptions, input.pVertexAttributeDescriptions + input.vertexAttributeDescriptionCount);
+		for (VkVertexInputBindingDescription &binding : bindings) {
+			if (binding.binding < MAX_VBS)
+				binding.stride = strides[binding.binding];
 		}
-		if (element->AlignedByteOffset != D3D12_APPEND_ALIGNED_ELEMENT)
-			attributes[i].offset = element->AlignedByteOffset;
+
+		// Its elements are the attributes in their order, see
+		// VkScopeInputElements
+		if (elements && elements->size() != attributes.size())
+			return VK_NULL_HANDLE;
+		for (i = 0; elements && i < attributes.size(); i++) {
+			const InputElement *element = &(*elements)[i];
+
+			if (element->format != dxgi_format(attributes[i].format)) {
+				attributes[i].format = vk_format(element->format);
+				if (!attributes[i].format)
+					return VK_NULL_HANDLE;
+			}
+			if (element->offset != D3D12_APPEND_ALIGNED_ELEMENT)
+				attributes[i].offset = element->offset;
+		}
+
+		input.pVertexBindingDescriptions = bindings.data();
+		input.pVertexAttributeDescriptions = attributes.data();
+		info.pVertexInputState = &input;
 	}
 
-	input.pVertexBindingDescriptions = bindings.data();
-	input.pVertexAttributeDescriptions = attributes.data();
-	info.pVertexInputState = &input;
+	if (vertex || fragment) {
+		bool vertex_replaced = !vertex, fragment_replaced = !fragment;
+
+		stages.assign(info.pStages, info.pStages + info.stageCount);
+		for (VkPipelineShaderStageCreateInfo &stage : stages) {
+			VkShaderModule module = stage.stage == VK_SHADER_STAGE_VERTEX_BIT ? vertex
+				: stage.stage == VK_SHADER_STAGE_FRAGMENT_BIT ? fragment : VK_NULL_HANDLE;
+
+			if (!module)
+				continue;
+			// One with its code in the chain instead would have to be
+			// given ours there
+			if (!stage.module)
+				return VK_NULL_HANDLE;
+			stage.module = module;
+			(stage.stage == VK_SHADER_STAGE_VERTEX_BIT ? vertex_replaced : fragment_replaced) = true;
+		}
+		if (!vertex_replaced || !fragment_replaced)
+			return VK_NULL_HANDLE;
+		info.pStages = stages.data();
+		info.layout = layout;
+	}
+
 	if (api.CreateGraphicsPipelines(mods_device, VK_NULL_HANDLE, 1, &info, NULL, &variant) != VK_SUCCESS)
 		return VK_NULL_HANDLE;
 	return variant;
@@ -4693,7 +4862,7 @@ static VkPipeline pipeline_variant(Pipeline *pipeline, const ShimInputLayout *la
 
 	AcquireSRWLockShared(&registry_lock);
 	for (const PipelineVariant &variant : pipeline->variants) {
-		if (variant.layout == layout_id && !memcmp(variant.strides, strides, sizeof(variant.strides))) {
+		if (!variant.patched && variant.layout == layout_id && !memcmp(variant.strides, strides, sizeof(variant.strides))) {
 			made = variant;
 			found = true;
 			break;
@@ -4707,7 +4876,10 @@ static VkPipeline pipeline_variant(Pipeline *pipeline, const ShimInputLayout *la
 	start = ticks();
 	made.layout = layout_id;
 	memcpy(made.strides, strides, sizeof(made.strides));
-	made.pipeline = make_variant(recipe.get(), layout, strides);
+	std::vector<InputElement> elements;
+	if (layout)
+		elements = input_elements(layout);
+	made.pipeline = make_variant(recipe.get(), layout ? &elements : NULL, strides);
 	stats.variants_made++;
 	stats.variants_failed += !made.pipeline;
 	stats.variant_ticks += ticks() - start;
@@ -4960,6 +5132,16 @@ struct ModDraw {
 	uint32_t dynamic[MAX_SETS][MAX_DYNAMIC];
 	// Not the game's if set
 	VkPipeline pipeline;
+	// What the vertex input of that is for: the input layout the mod has
+	// set, if it is not the game's, and the strides
+	const ShimInputLayout *input_layout;
+	UINT strides[MAX_VBS];
+	// The set of the patched shaders, at that number with that layout,
+	// and the offset of its IniParams if it has those
+	VkDescriptorSet patch_set;
+	uint32_t patch_slot, patch_offset;
+	bool patch_dynamic;
+	VkPipelineLayout patch_layout;
 };
 
 // Those of the scope. A mod draws a mesh in parts, and what stands in for a
@@ -5628,6 +5810,8 @@ static bool bind_for_mod(const ShimState *mod, ModDraw *draw)
 		draw->vbs[slot] = replaced[slot]->buffer;
 		draw->vb_offsets[slot] = replaced[slot]->offset + mod->vb_offsets[slot];
 	}
+	draw->input_layout = layout;
+	memcpy(draw->strides, strides, sizeof(strides));
 	if (layout || memcmp(strides, pipeline->vb_strides, sizeof(strides))) {
 		draw->pipeline = pipeline_variant(game->pipeline, layout, strides);
 		if (!draw->pipeline) {
@@ -5704,6 +5888,12 @@ static void record_mod_draws()
 				bind_set(slot, draw.sets[slot], draw.dynamic[slot]);
 			else if (scope->sets_changed & 1u << slot)
 				bind_set(slot, game->sets[slot], game->dynamic[slot]);
+		}
+		// After those: binding one of the game's with the game's layout
+		// takes it away again
+		if (draw.patch_set) {
+			api.CmdBindDescriptorSets(scope->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, draw.patch_layout, draw.patch_slot, 1,
+				&draw.patch_set, draw.patch_dynamic, &draw.patch_offset);
 		}
 
 		if (set_checkpoint) {
@@ -5793,6 +5983,8 @@ static void describe_game_view(const SpirvBinding *slot, char *text, size_t size
 	ReleaseSRWLockShared(&image_lock);
 }
 
+static bool patch_texture_register(int stage, UINT i);
+
 // For the report: what a mod set a texture in place of, the first time for
 // each register of each pixel shader of the game and each kind of texture
 static void note_mod_texture(UINT i, const ShaderLayout *shader, const ShimView *view, bool set)
@@ -5816,7 +6008,8 @@ static void note_mod_texture(UINT i, const ShaderLayout *shader, const ShimView 
 		VkDumpNote("Mods: views of %016llx (vs %016llx):%s\n", hash, game->pipeline->shaders[DX12_STAGE_VS], all);
 	}
 	VkDumpNote("Mods: ps-t%u of %016llx: the mod's is %d/%llu, %s\n", i, hash, format, width,
-		i >= shader->views.size() ? "nothing reads it" : set ? "set" : "not set");
+		i >= shader->views.size() ? (patch_texture_register(DX12_STAGE_PS, i) ? "for the shader patched by ShaderRegex" : "nothing reads it")
+		: set ? "set" : "not set");
 }
 
 // What the mod has set for the stages before the pixel shader goes with its
@@ -6028,6 +6221,965 @@ static bool replace_buffers(const ShimState *mod, ModDraw *draw)
 	return !why;
 }
 
+// -----------------------------------------------------------------------------
+// Vertex and pixel shaders the ShaderRegex sections with SpirvPattern patch
+//
+// A shader of the game is patched the first time a draw of a mod wants it, on
+// a thread of its own, which then makes a pipeline like the game's with it for
+// the pipeline and vertex input of each such draw. Until both are there the
+// draw is made with the game's shaders. What InsertDeclarations asks for is in
+// a set of its own after those of the game: the textures the mod has at those
+// t registers of the stage and the IniParams as they are at the draw. Only
+// draws of mods are made with it, the game's never are: those that have such
+// a texture set, or any if a section for the stage declares no texture.
+
+enum PatchState {
+	PATCH_PENDING,
+	PATCH_READY,
+	PATCH_NO_MATCH,
+	PATCH_FAILED,
+};
+
+struct PatchedShader {
+	volatile LONG state;
+	// Written before the state is
+	SpirvPatched patched;
+};
+
+// Of the ShaderRegex sections as they are, which what is made for older ones
+// is told apart by; never 0. With the lock of dx12/Bridge.h held, as is
+// patching.
+static volatile UINT patch_generation = 1;
+// The stages a shader can be patched for
+static const int patch_stages[] = { DX12_STAGE_VS, DX12_STAGE_PS };
+
+static struct {
+	bool any;
+	// What all of the sections declare, in the order of their bindings, and
+	// the stages of the sections that declare each
+	std::vector<SpirvDeclaration> declarations;
+	std::vector<VkShaderStageFlags> declaration_stages;
+	// By Dx12ShaderStage: the t registers of the textures the sections for
+	// it declare, and whether one of them declares none, which makes every
+	// draw of a mod want it
+	UINT textures[DX12_STAGE_COUNT][D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT / 32];
+	bool always[DX12_STAGE_COUNT];
+	bool ini_params;
+	unsigned ini_param_count;
+	// Made when first needed
+	VkDescriptorSetLayout set_layout;
+	std::vector<VkDescriptorPoolSize> pool_sizes;
+	bool failed;
+	bool read;
+} patching;
+static VkSampler patch_sampler;
+
+static bool patch_texture_register(int stage, UINT i)
+{
+	return patching.any && i < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT && (patching.textures[stage][i / 32] & 1u << (i % 32));
+}
+
+// By the hash of the game's shader, for patch_generation
+static SRWLOCK patch_lock = SRWLOCK_INIT;
+// By the hash of the shader and the stage and name of the entry point
+// patched: a module can have entry points of one name for several stages
+struct PatchedShaderKey {
+	UINT64 hash;
+	int stage;
+	std::string entry;
+
+	bool operator==(const PatchedShaderKey &other) const { return hash == other.hash && stage == other.stage && entry == other.entry; }
+};
+struct PatchedShaderKeyHash {
+	size_t operator()(const PatchedShaderKey &key) const { return (size_t)key.hash ^ (size_t)key.stage << 1 ^ std::hash<std::string>()(key.entry); }
+};
+static std::unordered_map<PatchedShaderKey, std::shared_ptr<PatchedShader>, PatchedShaderKeyHash> patched_shaders;
+
+struct PatchJob {
+	UINT generation;
+	// Of the shader, or for a pipeline that of a patched shader of it
+	UINT64 hash;
+	int stage;
+	std::shared_ptr<PatchedShader> shader;
+	// To patch the shader, at that entry point
+	std::shared_ptr<const std::vector<uint32_t>> code;
+	std::string entry;
+	std::string declarations;
+	unsigned ini_params;
+	// Or to make a pipeline with the patched shaders there are, of what this
+	// was made of. The vertex input as for a variant, if it is not the
+	// game's.
+	std::shared_ptr<PatchedShader> vertex, fragment;
+	UINT patched;
+	Pipeline *pipeline;
+	std::shared_ptr<PipelineRecipe> recipe;
+	UINT64 layout_id;
+	bool vertex_input, has_elements;
+	std::vector<InputElement> elements;
+	UINT strides[MAX_VBS];
+	VkPipelineLayout layout;
+	uint32_t set;
+};
+
+static std::deque<PatchJob> patch_jobs;
+static HANDLE patch_wake;
+static bool patch_thread_started;
+// For the report, from either thread
+static volatile LONG shaders_patched, shaders_unmatched, shaders_unpatched, patch_pipelines_made, patch_pipelines_failed;
+static volatile LONG64 patch_ticks;
+
+// The texts the patterns were applied to and what they made of them, next to
+// the DLL for whoever writes the patterns
+static void write_patched_text(UINT64 hash, int stage, const SpirvPatched &patched)
+{
+	const std::pair<const wchar_t*, const std::string*> parts[] = { { L"before", &patched.before }, { L"after", &patched.after } };
+	wchar_t path[MAX_PATH], *slash;
+	size_t length;
+	FILE *file;
+
+	if (!GetModuleFileName(migoto_handle, path, MAX_PATH) || !(slash = wcsrchr(path, L'\\')))
+		return;
+	wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"vk_patched");
+	CreateDirectoryW(path, NULL);
+	length = wcslen(path);
+	for (const auto &part : parts) {
+		if (part.second->empty())
+			continue;
+		swprintf_s(path + length, MAX_PATH - length, L"\\%016llx-%S.%s.spvasm", hash, dx12_stage_names[stage], part.first);
+		if (!_wfopen_s(&file, path, L"wb")) {
+			fwrite(part.second->data(), 1, part.second->size(), file);
+			fclose(file);
+		}
+	}
+}
+
+static void patch_shader_job(PatchJob &job)
+{
+	const char *kind = job.stage == DX12_STAGE_VS ? "vertex" : "pixel";
+	SpirvPatchOutcome outcome;
+	SpirvPatched patched;
+	std::string why, groups;
+
+	{
+		ShaderRegexConfigRead config;
+
+		// The sections it was for are gone, and so is whoever waited
+		if (job.generation != patch_generation)
+			return;
+		outcome = SpirvPatchShader(job.code->data(), job.code->size(), dx12_stage_names[job.stage],
+			job.entry.empty() ? NULL : job.entry.c_str(), &job.declarations, job.ini_params,
+			G->vk_dump_hashes, &patched, &why);
+		for (const ShaderRegexGroup *group : patched.groups)
+			groups += (groups.empty() ? "[" : ", [") + std::string(group->ini_section.begin(), group->ini_section.end()) + "]";
+		// Gone with the sections
+		patched.groups.clear();
+	}
+	if (G->vk_dump_hashes)
+		write_patched_text(job.hash, job.stage, patched);
+	patched.before.clear();
+	patched.after.clear();
+
+	switch (outcome) {
+		case SpirvPatchOutcome::PATCHED:
+			InterlockedIncrement(&shaders_patched);
+			VkDumpNote("ShaderRegex: the %s shader %016llx is patched by %s\n", kind, job.hash, groups.c_str());
+			break;
+		case SpirvPatchOutcome::NO_MATCH:
+			InterlockedIncrement(&shaders_unmatched);
+			break;
+		default:
+			InterlockedIncrement(&shaders_unpatched);
+			VkDumpNote("*** ShaderRegex: the %s shader %016llx could not be patched: %s\n", kind, job.hash, why.c_str());
+			break;
+	}
+	job.shader->patched = std::move(patched);
+	MemoryBarrier();
+	job.shader->state = outcome == SpirvPatchOutcome::PATCHED ? PATCH_READY
+		: outcome == SpirvPatchOutcome::NO_MATCH ? PATCH_NO_MATCH : PATCH_FAILED;
+}
+
+static void patch_pipeline_job(PatchJob &job)
+{
+	const std::shared_ptr<PatchedShader> *shaders[] = { &job.vertex, &job.fragment };
+	VkShaderModule modules[ARRAYSIZE(shaders)] = {};
+	VkPipeline made = VK_NULL_HANDLE;
+	bool alive, placed = false, ready = true;
+	UINT64 start = ticks();
+	size_t i;
+
+	AcquireSRWLockShared(&variant_build_lock);
+	AcquireSRWLockShared(&registry_lock);
+	alive = job.pipeline->recipe == job.recipe && job.generation == patch_generation;
+	ReleaseSRWLockShared(&registry_lock);
+	for (i = 0; alive && ready && i < ARRAYSIZE(shaders); i++) {
+		VkShaderModuleCreateInfo info = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+		std::vector<uint32_t> code;
+
+		if (!*shaders[i])
+			continue;
+		code = SpirvPatchedCode((*shaders[i])->patched, job.set);
+		info.codeSize = code.size() * sizeof(uint32_t);
+		info.pCode = code.data();
+		ready = api.CreateShaderModule(mods_device, &info, NULL, &modules[i]) == VK_SUCCESS;
+		if (!ready)
+			modules[i] = VK_NULL_HANDLE;
+	}
+	if (alive && ready) {
+		made = make_variant(job.recipe.get(), job.has_elements ? &job.elements : NULL, job.vertex_input ? job.strides : NULL,
+			modules[0], modules[1], job.layout);
+	}
+	for (VkShaderModule module : modules) {
+		if (module)
+			api.DestroyShaderModule(mods_device, module, NULL);
+	}
+	if (!alive) {
+		ReleaseSRWLockShared(&variant_build_lock);
+		return;
+	}
+	InterlockedAdd64(&patch_ticks, ticks() - start);
+	InterlockedIncrement(made ? &patch_pipelines_made : &patch_pipelines_failed);
+	if (!made)
+		VkDumpNote("*** ShaderRegex: no pipeline could be made with the patched %s shader %016llx\n",
+			job.vertex ? "vertex" : "pixel", job.hash);
+
+	AcquireSRWLockExclusive(&registry_lock);
+	if (job.pipeline->recipe == job.recipe) {
+		for (PipelineVariant &variant : job.pipeline->variants) {
+			if (variant.patched == job.patched && variant.pending && variant.generation == job.generation && variant.layout == job.layout_id
+			    && !memcmp(variant.strides, job.strides, sizeof(variant.strides))) {
+				variant.pipeline = made;
+				variant.pending = false;
+				placed = true;
+				break;
+			}
+		}
+	}
+	if (!placed && made)
+		retire_object(VK_OBJECT_TYPE_PIPELINE, (uint64_t)made);
+	ReleaseSRWLockExclusive(&registry_lock);
+	// Until here, for the device not to go before what was made of it is
+	// where forgetting the device finds it
+	ReleaseSRWLockShared(&variant_build_lock);
+}
+
+static DWORD WINAPI patch_thread(void *param)
+{
+	for (;;) {
+		PatchJob job;
+		bool found;
+
+		AcquireSRWLockExclusive(&patch_lock);
+		found = !patch_jobs.empty();
+		if (found) {
+			job = std::move(patch_jobs.front());
+			patch_jobs.pop_front();
+		}
+		ReleaseSRWLockExclusive(&patch_lock);
+		if (!found) {
+			WaitForSingleObject(patch_wake, INFINITE);
+			continue;
+		}
+		if (job.pipeline)
+			patch_pipeline_job(job);
+		else
+			patch_shader_job(job);
+	}
+}
+
+// With patch_lock held
+static void queue_patch_job(PatchJob &&job)
+{
+	if (!patch_thread_started) {
+		patch_wake = CreateEvent(NULL, FALSE, FALSE, NULL);
+		HANDLE thread = patch_wake ? CreateThread(NULL, 0, patch_thread, NULL, 0, NULL) : NULL;
+		if (!thread) {
+			VkDumpNote("*** ShaderRegex: no thread could be started to patch shaders on\n");
+			return;
+		}
+		CloseHandle(thread);
+		patch_thread_started = true;
+	}
+	patch_jobs.push_back(std::move(job));
+	SetEvent(patch_wake);
+}
+
+// The game's shader as patched, and its state. Asked for the first time it is
+// started on.
+static std::shared_ptr<PatchedShader> patched_shader(UINT64 hash, int stage, const std::string &entry, const ShaderLayout *layout)
+{
+	PatchedShaderKey key = { hash, stage, entry };
+	std::shared_ptr<const std::vector<uint32_t>> code;
+	std::shared_ptr<PatchedShader> shader;
+
+	AcquireSRWLockShared(&patch_lock);
+	auto found = patched_shaders.find(key);
+	if (found != patched_shaders.end())
+		shader = found->second;
+	ReleaseSRWLockShared(&patch_lock);
+	if (shader)
+		return shader;
+
+	AcquireSRWLockShared(&registry_lock);
+	auto kept = patchable_code.find(hash);
+	if (kept != patchable_code.end())
+		code = kept->second;
+	ReleaseSRWLockShared(&registry_lock);
+
+	shader = std::make_shared<PatchedShader>();
+	// One whose code came with the pipeline, not in a module
+	shader->state = code ? PATCH_PENDING : PATCH_FAILED;
+	AcquireSRWLockExclusive(&patch_lock);
+	auto placed = patched_shaders.emplace(key, shader);
+	if (placed.second && code) {
+		PatchJob job = {};
+
+		job.generation = patch_generation;
+		job.hash = hash;
+		job.stage = stage;
+		job.shader = shader;
+		job.code = code;
+		job.entry = entry;
+		job.declarations = layout->declarations;
+		job.ini_params = patching.ini_param_count;
+		queue_patch_job(std::move(job));
+	}
+	shader = placed.first->second;
+	ReleaseSRWLockExclusive(&patch_lock);
+	return shader;
+}
+
+static bool patch_set_layout()
+{
+	VkSamplerCreateInfo sampler_info = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+	VkDescriptorSetLayoutCreateInfo info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	std::vector<VkDescriptorSetLayoutBinding> bindings;
+	UINT counts[3] = {};
+
+	if (patching.set_layout || patching.failed)
+		return !!patching.set_layout;
+	patching.failed = true;
+
+	for (size_t i = 0; i < patching.declarations.size(); i++) {
+		const SpirvDeclaration &declaration = patching.declarations[i];
+		VkDescriptorSetLayoutBinding binding = {};
+
+		binding.binding = SpirvPatchBinding(declaration);
+		binding.descriptorCount = 1;
+		binding.stageFlags = patching.declaration_stages[i];
+		switch (declaration.kind) {
+			case SpirvDeclarationKind::INI_PARAMS:
+				binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+				counts[0]++;
+				break;
+			case SpirvDeclarationKind::TEXTURE2D:
+				binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+				counts[1]++;
+				break;
+			case SpirvDeclarationKind::SAMPLER:
+				// Linear and wrapping, as a D3D11 shader has it without
+				// a sampler set
+				if (!patch_sampler) {
+					sampler_info.magFilter = sampler_info.minFilter = VK_FILTER_LINEAR;
+					sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+					sampler_info.addressModeU = sampler_info.addressModeV = sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+					sampler_info.maxLod = VK_LOD_CLAMP_NONE;
+					if (api.CreateSampler(mods_device, &sampler_info, NULL, &patch_sampler) != VK_SUCCESS) {
+						patch_sampler = VK_NULL_HANDLE;
+						VkDumpNote("*** ShaderRegex: no sampler could be made for the patched shaders\n");
+						return false;
+					}
+				}
+				binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+				binding.pImmutableSamplers = &patch_sampler;
+				counts[2]++;
+				break;
+		}
+		bindings.push_back(binding);
+	}
+	info.bindingCount = (uint32_t)bindings.size();
+	info.pBindings = bindings.data();
+	if (api.CreateDescriptorSetLayout(mods_device, &info, NULL, &patching.set_layout) != VK_SUCCESS) {
+		patching.set_layout = VK_NULL_HANDLE;
+		VkDumpNote("*** ShaderRegex: no descriptor set layout could be made for the patched shaders\n");
+		return false;
+	}
+
+	patching.pool_sizes.clear();
+	if (counts[0])
+		patching.pool_sizes.push_back({ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, counts[0] * SETS_PER_POOL });
+	if (counts[1])
+		patching.pool_sizes.push_back({ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, counts[1] * SETS_PER_POOL });
+	if (counts[2])
+		patching.pool_sizes.push_back({ VK_DESCRIPTOR_TYPE_SAMPLER, counts[2] * SETS_PER_POOL });
+	patching.failed = false;
+	return true;
+}
+
+// The game's pipeline layout with the set of the patched shaders after its own,
+// and the number of that
+static bool extended_layout(VkPipelineLayout game, VkPipelineLayout *layout, uint32_t *set)
+{
+	VkPipelineLayoutCreateInfo info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	std::vector<VkDescriptorSetLayout> sets;
+	VkPipelineLayout made = VK_NULL_HANDLE;
+	GameLayout known;
+	bool found, alive = true;
+
+	AcquireSRWLockShared(&registry_lock);
+	auto entry = game_layouts.find(game);
+	found = entry != game_layouts.end();
+	if (found)
+		known = entry->second;
+	ReleaseSRWLockShared(&registry_lock);
+	if (!found)
+		return false;
+	*set = (uint32_t)known.sets.size();
+	if (known.generation == patch_generation) {
+		*layout = known.extended;
+		return !!known.extended;
+	}
+
+	sets = known.sets;
+	sets.push_back(patching.set_layout);
+	info.flags = known.flags;
+	info.setLayoutCount = (uint32_t)sets.size();
+	info.pSetLayouts = sets.data();
+	info.pushConstantRangeCount = (uint32_t)known.push.size();
+	info.pPushConstantRanges = known.push.data();
+	if (sets.size() <= device_limits.maxBoundDescriptorSets) {
+		// The game's layouts may only be destroyed past this
+		AcquireSRWLockShared(&descriptor_lock);
+		for (VkDescriptorSetLayout handle : known.sets)
+			alive &= !handle || !!set_layouts.count(handle);
+		if (!alive || api.CreatePipelineLayout(mods_device, &info, NULL, &made) != VK_SUCCESS)
+			made = VK_NULL_HANDLE;
+		ReleaseSRWLockShared(&descriptor_lock);
+	}
+	if (!made) {
+		static bool noted;
+
+		if (!noted) {
+			noted = true;
+			VkDumpNote("*** ShaderRegex: no pipeline layout could be made with a set after the %u of the game's (%u can be bound)%s\n",
+				*set, device_limits.maxBoundDescriptorSets, alive ? "" : ", one of its set layouts is gone");
+		}
+	}
+
+	AcquireSRWLockExclusive(&registry_lock);
+	entry = game_layouts.find(game);
+	if (entry != game_layouts.end() && entry->second.generation != patch_generation) {
+		retire_object(VK_OBJECT_TYPE_PIPELINE_LAYOUT, (uint64_t)entry->second.extended);
+		entry->second.extended = made;
+		entry->second.generation = patch_generation;
+	} else if (entry != game_layouts.end()) {
+		retire_object(VK_OBJECT_TYPE_PIPELINE_LAYOUT, (uint64_t)made);
+		made = entry->second.extended;
+	} else {
+		retire_object(VK_OBJECT_TYPE_PIPELINE_LAYOUT, (uint64_t)made);
+		made = VK_NULL_HANDLE;
+	}
+	ReleaseSRWLockExclusive(&registry_lock);
+	*layout = made;
+	return !!made;
+}
+
+// The pipeline of the draw with the patched shaders, those of the stages in
+// that mask, none while it is being made or if it could not be
+static VkPipeline patched_variant(Pipeline *pipeline, const ModDraw *draw, const std::shared_ptr<PatchedShader> *shaders,
+		UINT patched, VkPipelineLayout layout, uint32_t set, bool *pending)
+{
+	UINT64 layout_id = draw->input_layout ? draw->input_layout->mId : 0;
+	UINT generation = patch_generation;
+	std::shared_ptr<PipelineRecipe> recipe;
+	PipelineVariant placeholder = {};
+	bool found = false;
+	PatchJob job = {};
+
+	*pending = false;
+	auto matches = [&](const PipelineVariant &variant) {
+		return variant.patched == patched && variant.generation == generation && variant.layout == layout_id
+			&& !memcmp(variant.strides, draw->strides, sizeof(variant.strides));
+	};
+
+	AcquireSRWLockShared(&registry_lock);
+	for (const PipelineVariant &variant : pipeline->variants) {
+		if (matches(variant)) {
+			placeholder = variant;
+			found = true;
+			break;
+		}
+	}
+	ReleaseSRWLockShared(&registry_lock);
+	if (found) {
+		*pending = placeholder.pending;
+		return placeholder.pipeline;
+	}
+
+	AcquireSRWLockExclusive(&registry_lock);
+	for (const PipelineVariant &variant : pipeline->variants) {
+		if (matches(variant)) {
+			placeholder = variant;
+			found = true;
+			break;
+		}
+	}
+	recipe = pipeline->recipe;
+	if (!found && recipe) {
+		placeholder.layout = layout_id;
+		memcpy(placeholder.strides, draw->strides, sizeof(placeholder.strides));
+		placeholder.patched = patched;
+		placeholder.pending = true;
+		placeholder.generation = generation;
+		pipeline->variants.push_back(placeholder);
+	}
+	ReleaseSRWLockExclusive(&registry_lock);
+	if (found || !recipe) {
+		*pending = found && placeholder.pending;
+		return placeholder.pipeline;
+	}
+
+	job.generation = generation;
+	job.hash = pipeline->shaders[patched & 1u << DX12_STAGE_VS ? DX12_STAGE_VS : DX12_STAGE_PS];
+	if (patched & 1u << DX12_STAGE_VS)
+		job.vertex = shaders[DX12_STAGE_VS];
+	if (patched & 1u << DX12_STAGE_PS)
+		job.fragment = shaders[DX12_STAGE_PS];
+	job.patched = patched;
+	job.pipeline = pipeline;
+	job.recipe = recipe;
+	job.layout_id = layout_id;
+	job.vertex_input = draw->input_layout || memcmp(draw->strides, pipeline->vb_strides, sizeof(draw->strides));
+	job.has_elements = !!draw->input_layout;
+	if (draw->input_layout)
+		job.elements = input_elements(draw->input_layout);
+	memcpy(job.strides, draw->strides, sizeof(job.strides));
+	job.layout = layout;
+	job.set = set;
+	AcquireSRWLockExclusive(&patch_lock);
+	queue_patch_job(std::move(job));
+	ReleaseSRWLockExclusive(&patch_lock);
+	*pending = true;
+	return VK_NULL_HANDLE;
+}
+
+// Sets of the patched shaders' layout, by the buffer the IniParams are in and
+// the textures in the order of the declarations, as for mod_sets
+typedef std::tuple<VkBuffer, std::vector<VkImageView>> PatchSetKey;
+
+struct PatchSet {
+	VkDescriptorSet set;
+	UINT used_frame;
+};
+
+static std::map<PatchSetKey, PatchSet> patch_sets;
+static std::vector<VkDescriptorSet> spare_patch_sets;
+static std::vector<VkDescriptorPool> patch_pools;
+
+static VkDescriptorSet patch_set(VkBuffer ini_buffer, VkDeviceSize ini_bytes, const std::vector<VkImageView> &images)
+{
+	VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+	VkDescriptorSetAllocateInfo info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+	VkDescriptorSetLayout layouts[SETS_PER_POOL];
+	VkDescriptorSet sets[SETS_PER_POOL];
+	std::vector<VkWriteDescriptorSet> writes;
+	std::vector<VkDescriptorImageInfo> image_infos;
+	VkDescriptorBufferInfo buffer_info = { ini_buffer, 0, ini_bytes };
+	PatchSetKey key(ini_buffer, images);
+	VkDescriptorPool pool;
+	VkDescriptorSet set;
+	size_t texture = 0;
+	UINT i;
+
+	auto found = patch_sets.find(key);
+	if (found != patch_sets.end()) {
+		found->second.used_frame = mods_frame;
+		return found->second.set;
+	}
+
+	if (spare_patch_sets.empty()) {
+		pool_info.maxSets = SETS_PER_POOL;
+		pool_info.poolSizeCount = (uint32_t)patching.pool_sizes.size();
+		pool_info.pPoolSizes = patching.pool_sizes.data();
+		if (api.CreateDescriptorPool(mods_device, &pool_info, NULL, &pool) != VK_SUCCESS)
+			return VK_NULL_HANDLE;
+		patch_pools.push_back(pool);
+		for (i = 0; i < SETS_PER_POOL; i++)
+			layouts[i] = patching.set_layout;
+		info.descriptorPool = pool;
+		info.descriptorSetCount = SETS_PER_POOL;
+		info.pSetLayouts = layouts;
+		if (api.AllocateDescriptorSets(mods_device, &info, sets) != VK_SUCCESS)
+			return VK_NULL_HANDLE;
+		spare_patch_sets.assign(sets, sets + SETS_PER_POOL);
+	}
+	set = spare_patch_sets.back();
+	spare_patch_sets.pop_back();
+
+	// Pointed at by the writes
+	image_infos.reserve(images.size());
+	for (const SpirvDeclaration &declaration : patching.declarations) {
+		VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+
+		write.dstSet = set;
+		write.dstBinding = SpirvPatchBinding(declaration);
+		write.descriptorCount = 1;
+		if (declaration.kind == SpirvDeclarationKind::INI_PARAMS) {
+			write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+			write.pBufferInfo = &buffer_info;
+		} else if (declaration.kind == SpirvDeclarationKind::TEXTURE2D) {
+			VkImageView view = images[texture++];
+
+			// One no shader reads stays as it is without
+			if (!view && !null_descriptor)
+				continue;
+			image_infos.push_back({ VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL });
+			write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			write.pImageInfo = &image_infos.back();
+		} else {
+			continue;
+		}
+		writes.push_back(write);
+	}
+	api.UpdateDescriptorSets(mods_device, (uint32_t)writes.size(), writes.data(), 0, NULL);
+
+	patch_sets[key] = { set, mods_frame };
+	return set;
+}
+
+// Those the command buffers that were recorded with them are taken to be done
+// with, and those with the IniParams in a buffer that is gone
+static void release_patch_sets(VkBuffer gone)
+{
+	UINT frame = mods_frame;
+
+	for (auto i = patch_sets.begin(); i != patch_sets.end();) {
+		if (gone ? std::get<0>(i->first) != gone : frame - i->second.used_frame <= MIRROR_KEEP_FRAMES) {
+			++i;
+			continue;
+		}
+		spare_patch_sets.push_back(i->second.set);
+		i = patch_sets.erase(i);
+	}
+}
+
+// What was made for the ShaderRegex sections there were, which the command
+// buffers of the frame may have been recorded with
+static void retire_patching()
+{
+	AcquireSRWLockExclusive(&registry_lock);
+	for (auto &entry : pipelines) {
+		std::vector<PipelineVariant> &variants = entry.second->variants;
+
+		for (const PipelineVariant &variant : variants) {
+			if (variant.patched)
+				retire_object(VK_OBJECT_TYPE_PIPELINE, (uint64_t)variant.pipeline);
+		}
+		variants.erase(std::remove_if(variants.begin(), variants.end(),
+			[](const PipelineVariant &variant) { return variant.patched; }), variants.end());
+	}
+	for (auto &entry : game_layouts) {
+		retire_object(VK_OBJECT_TYPE_PIPELINE_LAYOUT, (uint64_t)entry.second.extended);
+		entry.second.extended = VK_NULL_HANDLE;
+		entry.second.generation = 0;
+	}
+	for (VkDescriptorPool pool : patch_pools)
+		retire_object(VK_OBJECT_TYPE_DESCRIPTOR_POOL, (uint64_t)pool);
+	retire_object(VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, (uint64_t)patching.set_layout);
+	ReleaseSRWLockExclusive(&registry_lock);
+
+	patch_pools.clear();
+	patch_sets.clear();
+	spare_patch_sets.clear();
+	patching.set_layout = VK_NULL_HANDLE;
+	patching.pool_sizes.clear();
+	patching.failed = false;
+
+	AcquireSRWLockExclusive(&patch_lock);
+	patched_shaders.clear();
+	patch_jobs.clear();
+	ReleaseSRWLockExclusive(&patch_lock);
+	patch_generation = patch_generation + 1 ? patch_generation + 1 : 1;
+}
+
+static void destroy_retired_objects(bool all)
+{
+	// A pipeline being made may still use a retired layout: a finished frame
+	// says nothing of that, so wait for a frame with no pipeline being made.
+	// With all, the caller holds the lock already.
+	if (!all && !TryAcquireSRWLockExclusive(&variant_build_lock))
+		return;
+	AcquireSRWLockExclusive(&registry_lock);
+	for (size_t i = 0; i < retired_objects.size();) {
+		const RetiredObject &retired = retired_objects[i];
+
+		if (!all && !reusable(retired.frame)) {
+			i++;
+			continue;
+		}
+		switch (retired.type) {
+			case VK_OBJECT_TYPE_PIPELINE:
+				api.DestroyPipeline(mods_device, (VkPipeline)retired.handle, NULL);
+				break;
+			case VK_OBJECT_TYPE_PIPELINE_LAYOUT:
+				api.DestroyPipelineLayout(mods_device, (VkPipelineLayout)retired.handle, NULL);
+				break;
+			case VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT:
+				api.DestroyDescriptorSetLayout(mods_device, (VkDescriptorSetLayout)retired.handle, NULL);
+				break;
+			case VK_OBJECT_TYPE_DESCRIPTOR_POOL:
+				api.DestroyDescriptorPool(mods_device, (VkDescriptorPool)retired.handle, NULL);
+				break;
+		}
+		retired_objects[i] = retired_objects.back();
+		retired_objects.pop_back();
+	}
+	ReleaseSRWLockExclusive(&registry_lock);
+	if (!all)
+		ReleaseSRWLockExclusive(&variant_build_lock);
+}
+
+// The device goes, with the lock of dx12/Bridge.h and variant_build_lock held
+static void forget_patching()
+{
+	retire_patching();
+	destroy_retired_objects(true);
+	if (patch_sampler)
+		api.DestroySampler(mods_device, patch_sampler, NULL);
+	patch_sampler = VK_NULL_HANDLE;
+	AcquireSRWLockExclusive(&registry_lock);
+	game_layouts.clear();
+	ReleaseSRWLockExclusive(&registry_lock);
+}
+
+void VkModsNullDescriptor(VkDevice device)
+{
+	Dx12ShimLock();
+	if (device == mods_device)
+		null_descriptor = true;
+	Dx12ShimUnlock();
+}
+
+// The sections there are now, with the lock of dx12/Bridge.h held
+static void patching_reloaded()
+{
+	retire_patching();
+
+	patching.read = true;
+	patching.any = false;
+	patching.declarations.clear();
+	patching.declaration_stages.clear();
+	memset(patching.textures, 0, sizeof(patching.textures));
+	memset(patching.always, 0, sizeof(patching.always));
+	patching.ini_params = false;
+	std::vector<const ShaderRegexGroup*> spirv_groups;
+	for (const auto &entry : shader_regex_groups) {
+		if (entry.second.spirv())
+			spirv_groups.push_back(&entry.second);
+	}
+	for (const ShaderRegexGroup *spirv_group : spirv_groups) {
+		const ShaderRegexGroup &group = *spirv_group;
+		VkShaderStageFlags stage_flags = 0;
+		bool textures = false;
+		int stages = 0;
+
+		patching.any = true;
+		for (int stage : patch_stages) {
+			if (std::any_of(group.shader_models.begin(), group.shader_models.end(), [&](const std::string &model) {
+					return !model.compare(0, 3, std::string(dx12_stage_names[stage]) + "_"); })) {
+				stages |= 1 << stage;
+				stage_flags |= stage == DX12_STAGE_VS ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
+			}
+		}
+		for (const SpirvDeclaration &declaration : group.spirv_declarations) {
+			auto found = std::find_if(patching.declarations.begin(), patching.declarations.end(), [&](const SpirvDeclaration &other) {
+				return other.kind == declaration.kind && other.reg == declaration.reg; });
+			if (found == patching.declarations.end()) {
+				patching.declarations.push_back(declaration);
+				patching.declaration_stages.push_back(stage_flags);
+			} else {
+				patching.declaration_stages[found - patching.declarations.begin()] |= stage_flags;
+			}
+			if (declaration.kind == SpirvDeclarationKind::TEXTURE2D) {
+				textures = true;
+				for (int stage : patch_stages) {
+					if (stages & 1 << stage)
+						patching.textures[stage][declaration.reg / 32] |= 1u << (declaration.reg % 32);
+				}
+			}
+			patching.ini_params |= declaration.kind == SpirvDeclarationKind::INI_PARAMS;
+		}
+		for (int stage : patch_stages)
+			patching.always[stage] |= !textures && (stages & 1 << stage);
+	}
+	// In the order of their bindings, with the stages of each
+	std::vector<size_t> order(patching.declarations.size());
+	std::vector<SpirvDeclaration> declarations;
+	std::vector<VkShaderStageFlags> declaration_stages;
+	for (size_t i = 0; i < order.size(); i++)
+		order[i] = i;
+	std::sort(order.begin(), order.end(), [](size_t a, size_t b) {
+		return SpirvPatchBinding(patching.declarations[a]) < SpirvPatchBinding(patching.declarations[b]); });
+	for (size_t i : order) {
+		declarations.push_back(patching.declarations[i]);
+		// Of sections only for stages that are not patched, read by none
+		declaration_stages.push_back(patching.declaration_stages[i] ? patching.declaration_stages[i] : VK_SHADER_STAGE_FRAGMENT_BIT);
+	}
+	patching.declarations.swap(declarations);
+	patching.declaration_stages.swap(declaration_stages);
+	patching.ini_param_count = (unsigned)max(G->iniParams.size(), (size_t)1);
+
+	if (patching.any && !SpirvToolsAvailable()) {
+		patching.any = false;
+		return;
+	}
+	if (patching.ini_params && mods_device && patching.ini_param_count * sizeof(DirectX::XMFLOAT4) > device_limits.maxUniformBufferRange) {
+		VkDumpNote("*** ShaderRegex: there are %u IniParams, more than a uniform buffer of this device can hold for the patched "
+			"shaders: none are patched\n", patching.ini_param_count);
+		patching.any = false;
+	}
+}
+
+// The draw with the game's vertex and pixel shaders as the ShaderRegex
+// sections patch them, where the mod has set a texture for one of the stage
+// or a section for it declares none, once they are ready. As it was
+// otherwise.
+static void patch_for_mod(const ShimState *mod, ModDraw *draw)
+{
+	static const SpirvBinding texture_slot = { 0, 0, SPIRV_TEXTURE, 0, 0, true, 1, false };
+	static const int supplying_stages[] = { DX12_STAGE_PS, DX12_STAGE_VS };
+	const ID3D11ShaderResourceView *ini_params = dx12_shim->hacker_device->mIniResourceView;
+	const CmdState *game = &scope->state;
+	Pipeline *pipeline = game->pipeline;
+	std::shared_ptr<PatchedShader> patched[DX12_STAGE_COUNT];
+	std::vector<VkImageView> images;
+	VkPipelineLayout layout;
+	VkPipeline made;
+	VkBuffer ini_buffer = VK_NULL_HANDLE;
+	VkDeviceSize ini_offset = 0, ini_bytes = 0;
+	uint32_t set;
+	bool counted = false, shader_pending = false, pending;
+	UINT stages = 0, word;
+
+	if (!patching.any)
+		return;
+	for (int stage : patch_stages) {
+		const ShimStageState *state = &mod->stages[stage];
+		bool by_texture = false;
+		LONG ready;
+
+		if (!pipeline->shaders[stage] || !pipeline->layouts[stage])
+			continue;
+		for (word = 0; word < ARRAYSIZE(patching.textures[stage]) && !by_texture; word++) {
+			unsigned long slot;
+
+			for (UINT bits = state->srv_mask[word] & patching.textures[stage][word]; _BitScanForward(&slot, bits) && !by_texture; bits &= bits - 1)
+				by_texture = state->srvs[word * 32 + slot] != ini_params && ShimViewOf(state->srvs[word * 32 + slot]);
+		}
+		if (!by_texture && !patching.always[stage])
+			continue;
+
+		patched[stage] = patched_shader(pipeline->shaders[stage], stage, pipeline->entries[stage], pipeline->layouts[stage]);
+		ready = patched[stage]->state;
+		shader_pending |= ready == PATCH_PENDING;
+		if (ready == PATCH_READY)
+			stages |= 1u << stage;
+		// Every draw wants a stage a section declares no texture for: of
+		// those only the draws with a shader it patches count
+		counted |= by_texture || ready == PATCH_PENDING || ready == PATCH_READY;
+	}
+	if (!counted)
+		return;
+	stats.patch_wanted++;
+	if (shader_pending) {
+		stats.patch_shader_pending++;
+		return;
+	}
+	if (!stages) {
+		stats.patch_impossible++;
+		return;
+	}
+	MemoryBarrier();
+
+	// What the patched shaders are given, for all the declarations of the
+	// set: a texture as the mod has it for the stage of the shader that
+	// reads it, the pixel shader's if both do
+	for (const SpirvDeclaration &declaration : patching.declarations) {
+		const ShaderLayout *shader;
+		const ShimStageState *state;
+		ShimView *view;
+		VkImageView image = VK_NULL_HANDLE;
+		int from = -1;
+
+		if (declaration.kind != SpirvDeclarationKind::TEXTURE2D)
+			continue;
+		for (int stage : supplying_stages) {
+			if (from < 0 && (stages & 1u << stage) && std::any_of(patched[stage]->patched.declarations.begin(),
+					patched[stage]->patched.declarations.end(), [&](const SpirvDeclaration &other) {
+						return other.kind == declaration.kind && other.reg == declaration.reg; }))
+				from = stage;
+		}
+		if (from < 0) {
+			images.push_back(VK_NULL_HANDLE);
+			continue;
+		}
+		shader = pipeline->layouts[from];
+		state = &mod->stages[from];
+		// The game's shader has one of its own there
+		if (declaration.reg < shader->views.size()) {
+			stats.patch_impossible++;
+			return;
+		}
+		view = (state->srv_mask[declaration.reg / 32] & 1u << (declaration.reg % 32)) && state->srvs[declaration.reg] != ini_params
+			? ShimViewOf(state->srvs[declaration.reg]) : NULL;
+		if (view)
+			image = bring_texture(view, &texture_slot);
+		if (view && !image) {
+			stats.patch_texture_pending++;
+			return;
+		}
+		if (!image && !null_descriptor) {
+			stats.patch_impossible++;
+			return;
+		}
+		images.push_back(image);
+	}
+
+	if (!patch_set_layout() || !extended_layout(pipeline->pipeline_layout, &layout, &set)) {
+		stats.patch_impossible++;
+		return;
+	}
+	made = patched_variant(pipeline, draw, patched, stages, layout, set, &pending);
+	if (!made) {
+		(pending ? stats.patch_pipeline_pending : stats.patch_impossible)++;
+		return;
+	}
+
+	if (patching.ini_params) {
+		BYTE *data;
+		size_t have = min(G->iniParams.size(), (size_t)patching.ini_param_count) * sizeof(DirectX::XMFLOAT4);
+
+		ini_bytes = patching.ini_param_count * sizeof(DirectX::XMFLOAT4);
+		data = transient_bytes(ini_bytes, ini_bytes, &ini_buffer, &ini_offset);
+		if (!data || ini_offset > UINT32_MAX) {
+			stats.patch_impossible++;
+			return;
+		}
+		memcpy(data, G->iniParams.data(), have);
+		memset(data + have, 0, (size_t)ini_bytes - have);
+	}
+	draw->patch_set = patch_set(ini_buffer, ini_bytes, images);
+	if (!draw->patch_set) {
+		stats.patch_impossible++;
+		return;
+	}
+	draw->pipeline = made;
+	draw->patch_slot = set;
+	draw->patch_offset = (uint32_t)ini_offset;
+	draw->patch_dynamic = patching.ini_params;
+	draw->patch_layout = layout;
+	stats.patch_drawn++;
+}
+
 void VkScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT base_vertex, UINT start_instance)
 {
 	const ShimState *mod = dx12_shim->shim_context->mState;
@@ -6064,8 +7216,10 @@ void VkScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT base_
 	draw.start = start;
 	draw.base_vertex = base_vertex;
 	draw.start_instance = start_instance;
-	if (mod_draw_possible(mod) && bind_for_mod(mod, &draw) && replace_buffers(mod, &draw))
+	if (mod_draw_possible(mod) && bind_for_mod(mod, &draw) && replace_buffers(mod, &draw)) {
+		patch_for_mod(mod, &draw);
 		mod_draws.push_back(draw);
+	}
 }
 
 bool VkScopeRegionHash(ID3D11Buffer *buffer, UINT offset, UINT size, uint32_t *hash)
@@ -6267,6 +7421,7 @@ void VkModsConfigReloaded()
 	linked_shaders = matched_shaders = 0;
 	refresh_wanted();
 	collect_index_counts();
+	patching_reloaded();
 }
 
 static void report()
@@ -6316,6 +7471,15 @@ static void report()
 		"kept to be made again, %u could not be, the first structure not known: %d\n",
 		stats.variants_made, stats.variants_failed, stats.variant_ticks * per_frame, recipes_kept, recipes_failed,
 		(int)recipe_unknown_structure);
+	if (patching.any) {
+		VkDumpNote("  ShaderRegex sections with SpirvPattern, since the start: %d shaders patched, %d matched by none, %d could "
+			"not be; %d pipelines made with them, %d could not be, %.1f ms on their thread. Draws of mods that want one, "
+			"since the last of these lines: %u, %u drawn with it; drawn with the game's while its shader was being patched %u, its "
+			"pipeline made %u, a texture brought %u, and as it cannot be %u\n",
+			(int)shaders_patched, (int)shaders_unmatched, (int)shaders_unpatched, (int)patch_pipelines_made,
+			(int)patch_pipelines_failed, patch_ticks * 1000.0 / frequency.QuadPart, stats.patch_wanted, stats.patch_drawn,
+			stats.patch_shader_pending, stats.patch_pipeline_pending, stats.patch_texture_pending, stats.patch_impossible);
+	}
 	VkDumpNote("  Textures of mods for the pixel shaders of the game: set %u times, %u images made (%llu KB copied), %u could not be; "
 		"%Iu held in %Iu blocks of memory; draws of mods with shaders of their own: %u; textures of the game shown by their hashes "
 		"%u times, %d hashed, %d filled from memory that is not mapped\n",
@@ -6384,6 +7548,8 @@ static void frame_over()
 		free_empty_image_blocks();
 		release_unused_mod_sets();
 		destroy_variants(false);
+		release_patch_sets(VK_NULL_HANDLE);
+		destroy_retired_objects(false);
 	}
 }
 
@@ -6433,6 +7599,9 @@ void VkModsPresent(VkQueue queue)
 	// The configuration as it was read when the DLL was loaded
 	if (!wanted_index_counts)
 		collect_index_counts();
+	// No reload follows it with config_initialization_delay = -1
+	if (!patching.read)
+		patching_reloaded();
 
 	all = G->hunting == HUNTING_MODE_ENABLED && !dx12_mods_disabled;
 	if (want_all != all) {

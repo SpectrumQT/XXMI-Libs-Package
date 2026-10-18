@@ -426,6 +426,63 @@ static void pipeline_stage(const VkPipelineShaderStageCreateInfo *stage, Pipelin
 		InterlockedIncrement(&stages_without_module);
 }
 
+struct PipelineStateTexts {
+	std::string depth, blend, dynamic, raster;
+};
+
+static void pipeline_state_texts(const VkGraphicsPipelineCreateInfo *create, const VkPipelineDepthStencilStateCreateInfo *depth,
+		const VkPipelineColorBlendStateCreateInfo *blend, const VkPipelineRasterizationStateCreateInfo *raster,
+		PipelineStateTexts *texts)
+{
+	char text[64];
+	uint32_t i;
+
+	// test:write:VkCompareOp
+	if (depth) {
+		_snprintf_s(text, _TRUNCATE, "%u:%u:%d", depth->depthTestEnable, depth->depthWriteEnable, depth->depthCompareOp);
+		texts->depth = text;
+	}
+	// enable:srcColor:dstColor:colorOp:writeMask for each attachment
+	if (blend && blend->pAttachments) {
+		for (i = 0; i < blend->attachmentCount; i++) {
+			const VkPipelineColorBlendAttachmentState *attachment = &blend->pAttachments[i];
+
+			_snprintf_s(text, _TRUNCATE, "%u:%d:%d:%d:%x ", attachment->blendEnable, attachment->srcColorBlendFactor,
+				attachment->dstColorBlendFactor, attachment->colorBlendOp, attachment->colorWriteMask);
+			texts->blend += text;
+		}
+	}
+	// VkCullModeFlags:VkFrontFace:VkPolygonMode:depthBiasEnable
+	if (raster) {
+		_snprintf_s(text, _TRUNCATE, "%u:%d:%d:%u", raster->cullMode, raster->frontFace, raster->polygonMode,
+			raster->depthBiasEnable);
+		texts->raster = text;
+	}
+	if (create->pDynamicState) {
+		for (i = 0; i < create->pDynamicState->dynamicStateCount; i++) {
+			_snprintf_s(text, _TRUNCATE, "%d ", create->pDynamicState->pDynamicStates[i]);
+			texts->dynamic += text;
+		}
+	}
+}
+
+// Vulkan lets a state the pipeline ignores, such as the depth and blend state
+// with rasterization discarded, point anywhere, which nothing here can tell
+// from one that is used
+static void pipeline_state_texts_guarded(const VkGraphicsPipelineCreateInfo *create, const VkPipelineDepthStencilStateCreateInfo *depth,
+		const VkPipelineColorBlendStateCreateInfo *blend, const VkPipelineRasterizationStateCreateInfo *raster,
+		PipelineStateTexts *texts)
+{
+	__try {
+		pipeline_state_texts(create, depth, blend, raster, texts);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		texts->depth.clear();
+		texts->blend.clear();
+		texts->dynamic.clear();
+		texts->raster.clear();
+	}
+}
+
 void VkDumpGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateInfo *create)
 {
 	const VkGraphicsPipelineLibraryCreateInfoEXT *library = (const VkGraphicsPipelineLibraryCreateInfoEXT*)
@@ -442,7 +499,8 @@ void VkDumpGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 		? create->pColorBlendState : NULL;
 	const VkPipelineRasterizationStateCreateInfo *raster = !library || (library->flags & VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT)
 		? create->pRasterizationState : NULL;
-	std::string bindings, attributes, depth_text, blend_text, dynamic_text, raster_text;
+	std::string bindings, attributes;
+	PipelineStateTexts states;
 	PipelineInfo info = {};
 	char text[64];
 	FILE *file;
@@ -473,33 +531,7 @@ void VkDumpGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 		}
 	}
 
-	// test:write:VkCompareOp
-	if (depth) {
-		_snprintf_s(text, _TRUNCATE, "%u:%u:%d", depth->depthTestEnable, depth->depthWriteEnable, depth->depthCompareOp);
-		depth_text = text;
-	}
-	// enable:srcColor:dstColor:colorOp:writeMask for each attachment
-	if (blend && blend->pAttachments) {
-		for (i = 0; i < blend->attachmentCount; i++) {
-			const VkPipelineColorBlendAttachmentState *attachment = &blend->pAttachments[i];
-
-			_snprintf_s(text, _TRUNCATE, "%u:%d:%d:%d:%x ", attachment->blendEnable, attachment->srcColorBlendFactor,
-				attachment->dstColorBlendFactor, attachment->colorBlendOp, attachment->colorWriteMask);
-			blend_text += text;
-		}
-	}
-	// VkCullModeFlags:VkFrontFace:VkPolygonMode:depthBiasEnable
-	if (raster) {
-		_snprintf_s(text, _TRUNCATE, "%u:%d:%d:%u", raster->cullMode, raster->frontFace, raster->polygonMode,
-			raster->depthBiasEnable);
-		raster_text = text;
-	}
-	if (create->pDynamicState) {
-		for (i = 0; i < create->pDynamicState->dynamicStateCount; i++) {
-			_snprintf_s(text, _TRUNCATE, "%d ", create->pDynamicState->pDynamicStates[i]);
-			dynamic_text += text;
-		}
-	}
+	pipeline_state_texts_guarded(create, depth, blend, raster, &states);
 
 	AcquireSRWLockExclusive(&lock);
 
@@ -513,7 +545,7 @@ void VkDumpGraphicsPipeline(VkPipeline pipeline, const VkGraphicsPipelineCreateI
 			info.shaders[STAGE_VS], info.shaders[STAGE_HS], info.shaders[STAGE_DS],
 			info.shaders[STAGE_GS], info.shaders[STAGE_PS], info.shaders[STAGE_CS],
 			assembly ? assembly->topology : -1, create->layout, bindings.c_str(), attributes.c_str(),
-			depth_text.c_str(), blend_text.c_str(), dynamic_text.c_str(), raster_text.c_str());
+			states.depth.c_str(), states.blend.c_str(), states.dynamic.c_str(), states.raster.c_str());
 	}
 
 	ReleaseSRWLockExclusive(&lock);

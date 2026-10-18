@@ -24,6 +24,11 @@ Dx12CommandQueue::Dx12CommandQueue(Dx12Device *device, ID3D12CommandQueue *orig)
 	sVtbl = *(void**)this;
 }
 
+void Dx12CommandQueue::operator delete(void *storage)
+{
+	Dx12KeepGone(storage);
+}
+
 bool Dx12CommandQueue::Usable(REFIID riid)
 {
 	return IsEqualIID(riid, ProxyIID)

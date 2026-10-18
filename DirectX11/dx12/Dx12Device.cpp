@@ -34,6 +34,11 @@ Dx12Device::Dx12Device(ID3D12Device *orig) :
 	sVtbl = *(void**)this;
 }
 
+void Dx12Device::operator delete(void *storage)
+{
+	Dx12KeepGone(storage);
+}
+
 bool Dx12Device::Supports(REFIID riid)
 {
 	int version;

@@ -49,6 +49,15 @@ void Dx12NotifyDestruction(ID3D12Object *object, void (*callback)(void *object))
 // not take the place of the above. False if it could not be arranged.
 bool Dx12NotifyDestruction(ID3D12Object *object, REFGUID guid, void (*callback)(void *context), void *context);
 
+// For the operator delete of device and queue proxies: their storage is kept,
+// never freed, so that no other object can be made at the address. Overlays
+// keep such pointers after the game made its swap chain again (RTSS hands them
+// to D3D11On12CreateDevice), and calling into one crashes.
+void Dx12KeepGone(void *storage);
+// Whether the object is a deleted proxy, which with the storage kept cannot be
+// anything alive
+bool Dx12IsGone(const void *object);
+
 // For the device's Create*Resource methods, on success. ppvResource is what
 // the game asked for, which may be nothing at all.
 void Dx12TrackResource(REFIID riid, void **ppvResource, LONG initial_state);

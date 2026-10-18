@@ -17,6 +17,8 @@ public:
 	bool mTied;
 
 	Dx12CommandQueue(Dx12Device *device, ID3D12CommandQueue *orig);
+	// See Dx12KeepGone
+	static void operator delete(void *storage);
 
 	bool Usable(REFIID riid);
 	void Abandon();

@@ -16,6 +16,8 @@ public:
 	bool mTied;
 
 	Dx12Device(ID3D12Device *orig);
+	// See Dx12KeepGone
+	static void operator delete(void *storage);
 
 	bool Supports(REFIID riid);
 

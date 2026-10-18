@@ -2,6 +2,7 @@
 
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "BufferHash.h"
 
@@ -72,6 +73,26 @@ bool Dx12NotifyDestruction(ID3D12Object *object, REFGUID guid, void (*callback)(
 void Dx12NotifyDestruction(ID3D12Object *object, void (*callback)(void *object))
 {
 	Dx12NotifyDestruction(object, DestructionNotifierGuid, callback, object);
+}
+
+static SRWLOCK gone_lock = SRWLOCK_INIT;
+static std::unordered_set<const void*> gone;
+
+void Dx12KeepGone(void *storage)
+{
+	AcquireSRWLockExclusive(&gone_lock);
+	gone.insert(storage);
+	ReleaseSRWLockExclusive(&gone_lock);
+}
+
+bool Dx12IsGone(const void *object)
+{
+	bool result;
+
+	AcquireSRWLockShared(&gone_lock);
+	result = gone.count(object) != 0;
+	ReleaseSRWLockShared(&gone_lock);
+	return result;
 }
 
 struct ResourceShard {

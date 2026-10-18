@@ -6,6 +6,7 @@
 #include "Dx12Common.h"
 #include "Dx12CommandQueue.h"
 #include "Dx12Device.h"
+#include "ResourceTracker.h"
 
 #include "util.h"
 #include "../cursor.h" // For InstallHookLate
@@ -305,12 +306,25 @@ HRESULT Dx12D3D11On12CreateDevice(PFN_D3D11ON12_CREATE_DEVICE orig, IUnknown *pD
 		UINT NumQueues, UINT NodeMask, ID3D11Device **ppDevice, ID3D11DeviceContext **ppImmediateContext,
 		D3D_FEATURE_LEVEL *pChosenFeatureLevel)
 {
-	Dx12Device *device = Dx12QueryProxy<Dx12Device>(pDevice);
+	Dx12Device *device;
 	std::vector<Dx12CommandQueue*> proxies;
 	std::vector<IUnknown*> queues;
 	HRESULT hr;
 	UINT i;
 
+	// Checked before anything is called on them, see Dx12KeepGone
+	if (Dx12IsGone(pDevice)) {
+		Dx12LogInfo("*** D3D11On12CreateDevice refused: device %p was destroyed\n", pDevice);
+		return E_INVALIDARG;
+	}
+	for (i = 0; ppCommandQueues && i < NumQueues; i++) {
+		if (Dx12IsGone(ppCommandQueues[i])) {
+			Dx12LogInfo("*** D3D11On12CreateDevice refused: queue %p was destroyed\n", ppCommandQueues[i]);
+			return E_INVALIDARG;
+		}
+	}
+
+	device = Dx12QueryProxy<Dx12Device>(pDevice);
 	if (device)
 		pDevice = device->mOrig;
 

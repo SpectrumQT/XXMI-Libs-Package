@@ -24,6 +24,9 @@ struct Dx12BufferHash {
 void Dx12CopyBufferRegion(ID3D12Resource *dst, UINT64 dst_offset, ID3D12Resource *src, UINT64 src_offset, UINT64 bytes);
 
 bool Dx12FindBufferHash(ID3D12Resource *resource, UINT64 offset, Dx12BufferHash *hash);
+// For the report: what is known of the copies into the resource at the offset,
+// which says why Dx12FindBufferHash has or has no hash for it
+void Dx12DescribeBufferRange(ID3D12Resource *resource, UINT64 offset, char *text, size_t size);
 // For remembering what Dx12FindBufferHash said about a range: a number that
 // has changed if anything was written to these bytes of the resource, or
 // forgotten about them, since. It may change without that as well. Taken

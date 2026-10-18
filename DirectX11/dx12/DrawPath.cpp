@@ -38,6 +38,9 @@ static struct {
 	unsigned reaches_known, reaches_failed;
 	unsigned buffers_remembered, buffers_looked_up;
 	unsigned lookups_missing, lookups_unsettled, lookups_unstamped, lookups_new;
+	// Buffers whose hash a mod matched before or after it was worked out
+	// again, and how many of those the report has no line for
+	unsigned republished, republished_unnoted;
 	unsigned skin_dispatches, skin_unconfirmed, skin_replaced, skin_swapped, skin_failed;
 	// Tables copied for what mods replace: in the game's reserve, and in
 	// the side heap for a mod's changes and for the game's own tables
@@ -166,8 +169,12 @@ struct Published {
 	UINT64 reach_bytes;
 	uint32_t reach_hash;
 	UINT config;
-	// Buffers: counts the times any of the above changed
+	// Buffers: counts the times any of the above changed, and the hash and
+	// dx12_frame of the last of those, for the report. The hash is the one
+	// the resource has, which alias_skin_vertices may have replaced.
 	UINT version;
+	uint32_t hash;
+	UINT version_frame;
 
 	// Referenced. A buffer of ours that the compute shaders of mods write
 	// in place of this one, see "Buffers of the game that mods write".
@@ -1168,6 +1175,74 @@ static Published* publish_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride
 	return look_up_buffer(va, bytes, kind, stride, indices);
 }
 
+// The report's line for a buffer worked out again, as the draws of a mod that
+// matched it are not modded while the hash is another: what differs from the
+// last time, which before is a copy of the entry as it was
+static void note_republish(ID3D12Resource *resource, UINT64 offset, UINT kind, UINT stride, const Published *before,
+		const Published *entry, const ReachLookup *lookup, const D3D12_INDEX_BUFFER_VIEW *indices)
+{
+	static const char *names[] = { "Resource", "Vertex buffer", "Index buffer", "Skinned buffer" };
+	bool matched_before = G->mTextureOverrideMap.count(before->hash) != 0;
+	bool matched_now = G->mTextureOverrideMap.count(entry->hash) != 0;
+	char text[1024], part[256], range[192];
+
+	if (!matched_before && !matched_now)
+		return;
+	stats.republished++;
+	if (stats.republished > 100) {
+		stats.republished_unnoted++;
+		return;
+	}
+
+	_snprintf_s(text, _TRUNCATE, "%s %p+%llu worked out again after %u frames, hash %08x%s -> %08x%s:",
+		names[kind < ARRAYSIZE(names) ? kind : 0], resource, offset, dx12_frame - before->version_frame,
+		before->hash, matched_before ? " (matched)" : "", entry->hash, matched_now ? " (matched)" : "");
+
+	if (before->bytes != entry->bytes) {
+		_snprintf_s(part, _TRUNCATE, " the view is %llu bytes, was %llu;", entry->bytes, before->bytes);
+		strncat_s(text, part, _TRUNCATE);
+	}
+	if (before->has_data_hash != entry->has_data_hash || before->data_hash != entry->data_hash) {
+		Dx12DescribeBufferRange(resource, offset, range, sizeof(range));
+		if (!entry->has_data_hash)
+			_snprintf_s(part, _TRUNCATE, " its data has no hash now (%s);", range);
+		else if (!before->has_data_hash)
+			_snprintf_s(part, _TRUNCATE, " its data has a hash again (%s);", range);
+		else
+			_snprintf_s(part, _TRUNCATE, " its data was %08x (%s);", before->data_hash, range);
+		strncat_s(text, part, _TRUNCATE);
+	}
+	if (before->reach_bytes != entry->reach_bytes || before->reach_hash != entry->reach_hash) {
+		if (entry->reach_bytes) {
+			_snprintf_s(part, _TRUNCATE, " the index buffer reaches %llu bytes, %llu before;", entry->reach_bytes, before->reach_bytes);
+		} else if (!entry->has_data_hash) {
+			_snprintf_s(part, _TRUNCATE, " so the index buffer's reach was not asked for;");
+		} else if (!indices) {
+			_snprintf_s(part, _TRUNCATE, " drawn without an index buffer;");
+		} else if (!lookup->ib_asked) {
+			_snprintf_s(part, _TRUNCATE, " no reach is worked out for an index buffer view of %u bytes and format %d with vertices of %u bytes;",
+				indices->SizeInBytes, indices->Format, stride);
+		} else if (!lookup->ib_found) {
+			_snprintf_s(part, _TRUNCATE, " the index buffer at %llx is not a known buffer;", indices->BufferLocation);
+		} else if (!lookup->ib_hashed) {
+			Dx12DescribeBufferRange(lookup->ib, lookup->ib_offset, range, sizeof(range));
+			_snprintf_s(part, _TRUNCATE, " the index buffer %p+%llu has no hash (%s);", lookup->ib, lookup->ib_offset, range);
+		} else if (!lookup->settled) {
+			_snprintf_s(part, _TRUNCATE, " the index buffer's reach is being worked out or waits its turn;");
+		} else if (lookup->reach && lookup->reach->state == REACH_FAILED) {
+			_snprintf_s(part, _TRUNCATE, " working out the index buffer's reach failed;");
+		} else {
+			_snprintf_s(part, _TRUNCATE, " the index buffer's reach is not known;");
+		}
+		strncat_s(text, part, _TRUNCATE);
+	}
+	if (before->config != entry->config)
+		strncat_s(text, " the configuration was loaded again;", _TRUNCATE);
+
+	text[strlen(text) - 1] = '\n';
+	Dx12DumpNote("%s", text);
+}
+
 static Published* look_up_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride, const D3D12_INDEX_BUFFER_VIEW *indices)
 {
 	D3D12_RESOURCE_DESC desc = {};
@@ -1177,7 +1252,7 @@ static Published* look_up_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride
 	BufferCacheEntry asked = {};
 	BufferCacheSlot *bucket, *slot;
 	ID3D12Resource *resource;
-	Published *entry;
+	Published *entry, before;
 	UINT64 offset, tag;
 	uint32_t hash;
 	bool has_hash;
@@ -1197,6 +1272,7 @@ static Published* look_up_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride
 
 	entry = &published[{ resource, offset, kind }];
 	entry->frame = dx12_frame;
+	before = *entry;
 
 	if (lookup.settled) {
 		asked.resource = resource;
@@ -1273,6 +1349,10 @@ static Published* look_up_buffer(UINT64 va, UINT64 bytes, UINT kind, UINT stride
 		stats.vertex_buffers_matched++;
 		Dx12DumpNote("Vertex buffer %p+%llu matches the TextureOverride sections of hash %08x\n", resource, offset, hash);
 	}
+	entry->hash = hash;
+	entry->version_frame = dx12_frame;
+	if (G->dx12_dump_hashes && before.resource)
+		note_republish(resource, offset, kind, stride, &before, entry, &lookup, indices);
 	return entry;
 }
 
@@ -2991,6 +3071,7 @@ static void alias_skin_vertices(Published *vertices, const SkinDispatch *skin)
 	}
 
 	set_resource_hash(vertices->resource, D3D11_RESOURCE_DIMENSION_BUFFER, found->second, vertices->data_hash, NULL);
+	vertices->hash = found->second;
 	stats.skin_aliased++;
 	if (G->dx12_dump_hashes) {
 		static std::unordered_set<UINT64> noted;
@@ -5628,6 +5709,10 @@ void Dx12DrawPathFramePresented()
 			dx12_standins_live, stats.written_swapped);
 		Dx12DumpNote("  Mod draws with shaders of their own: %u made with them, %u with the game's for want of a pipeline with them\n",
 			stats.custom_draws, stats.custom_failed);
+		if (stats.republished) {
+			Dx12DumpNote("  Buffers a mod matches were worked out again %u times, %u of them without a line for being too many\n",
+				stats.republished, stats.republished_unnoted);
+		}
 		Dx12DumpNote("  The fence was signalled %lld times for what game lists had pinned, which %lld times were executed on "
 			"another queue than ours, which was made to wait for ours %lld times and %lld times ran them without, not being able to; "
 			"%lld pages of upload memory were created and %lld released; %lld times a resource "

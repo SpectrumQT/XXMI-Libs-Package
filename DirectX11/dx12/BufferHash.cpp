@@ -21,6 +21,8 @@ struct BufferRange {
 	UINT64 bytes;
 	uint32_t data_hash;
 	bool valid;
+	// Written by a copy from memory the CPU cannot read
+	bool unmapped;
 	UINT frame;
 	UINT hot;
 };
@@ -113,7 +115,7 @@ uint32_t Dx12BufferDescHash(const Dx12BufferHash *hash, UINT bind_flags)
 }
 
 // Returns false if the range turned out to be dynamic
-static bool note_write(ID3D12Resource *resource, UINT64 offset, UINT64 bytes)
+static bool note_write(ID3D12Resource *resource, UINT64 offset, UINT64 bytes, bool unmapped)
 {
 	UINT frame = dx12_frame;
 	bool hash_it = true;
@@ -149,6 +151,7 @@ static bool note_write(ID3D12Resource *resource, UINT64 offset, UINT64 bytes)
 	range.bytes = bytes;
 	range.frame = frame;
 	range.valid = false;
+	range.unmapped = unmapped;
 	hash_it = range.hot < HOT_LIMIT;
 
 	// Whatever was erased overlaps the write, and so shares a counter
@@ -179,7 +182,7 @@ void Dx12CopyBufferRegion(ID3D12Resource *dst, UINT64 dst_offset, ID3D12Resource
 		return;
 	if (!src_info.cpu_accessible || src_info.heap_type == D3D12_HEAP_TYPE_READBACK) {
 		// Still replaces what was hashed there before
-		note_write(dst, dst_offset, bytes);
+		note_write(dst, dst_offset, bytes, true);
 		InterlockedIncrement64(&dx12_buffer_stats.not_mappable);
 		return;
 	}
@@ -188,7 +191,7 @@ void Dx12CopyBufferRegion(ID3D12Resource *dst, UINT64 dst_offset, ID3D12Resource
 		return;
 	}
 
-	if (!note_write(dst, dst_offset, bytes)) {
+	if (!note_write(dst, dst_offset, bytes, false)) {
 		InterlockedIncrement64(&dx12_buffer_stats.dynamic);
 		return;
 	}
@@ -240,6 +243,43 @@ bool Dx12FindBufferHash(ID3D12Resource *resource, UINT64 offset, Dx12BufferHash 
 	ReleaseSRWLockShared(&lock);
 
 	return found;
+}
+
+void Dx12DescribeBufferRange(ID3D12Resource *resource, UINT64 offset, char *text, size_t size)
+{
+	AcquireSRWLockShared(&lock);
+	auto i = ranges.find(resource);
+	if (i == ranges.end()) {
+		_snprintf_s(text, size, _TRUNCATE, "no copy into the buffer was seen");
+	} else {
+		auto next = i->second.upper_bound(offset);
+		auto range = next;
+
+		if (range != i->second.begin() && std::prev(range)->first + std::prev(range)->second.bytes > offset) {
+			range = std::prev(range);
+			const BufferRange &r = range->second;
+
+			if (range->first != offset)
+				_snprintf_s(text, size, _TRUNCATE, "a copy of %llu bytes to +%llu at frame %u covers it", r.bytes, range->first, r.frame);
+			else if (r.valid)
+				_snprintf_s(text, size, _TRUNCATE, "hashed %08x, %llu bytes copied at frame %u", r.data_hash, r.bytes, r.frame);
+			else if (r.unmapped)
+				_snprintf_s(text, size, _TRUNCATE, "%llu bytes copied at frame %u from memory that is not mappable", r.bytes, r.frame);
+			else if (r.hot >= HOT_LIMIT)
+				_snprintf_s(text, size, _TRUNCATE, "%llu bytes copied at frame %u, %u times in a row within %u frames: taken for dynamic",
+					r.bytes, r.frame, r.hot + 1, HOT_FRAMES);
+			else
+				_snprintf_s(text, size, _TRUNCATE, "%llu bytes copied at frame %u, not hashed yet", r.bytes, r.frame);
+		} else if (next != i->second.end()) {
+			// What covered it may have been replaced by copies after
+			// its start
+			_snprintf_s(text, size, _TRUNCATE, "no copy covers it, the next is of %llu bytes to +%llu at frame %u",
+				next->second.bytes, next->first, next->second.frame);
+		} else {
+			_snprintf_s(text, size, _TRUNCATE, "no copy covers it or follows it");
+		}
+	}
+	ReleaseSRWLockShared(&lock);
 }
 
 void Dx12ForgetBufferHashes(ID3D12Resource *resource)

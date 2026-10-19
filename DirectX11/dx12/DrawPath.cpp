@@ -1662,6 +1662,14 @@ void Dx12ScopeUnsupported(const char *what)
 		Dx12DumpNote("*** A mod tried %s for a draw or dispatch of the game, which is not possible on D3D12 yet. Ignored.\n", what);
 }
 
+void Dx12SamplerBindingIgnored(const wchar_t *ini_line)
+{
+	static std::atomic<bool> reported;
+
+	if (!reported.exchange(true))
+		Dx12DumpNote("*** Mods bind samplers (%S), which only works with Direct3D 11 games yet. Ignored.\n", ini_line);
+}
+
 // The buffers Dx12ScopeWrittenBuffer gave out for the dispatch being prepared
 static std::vector<Published*> standins_pending;
 // Counts the scopes opened, to tell whether a mod wrote in the current one

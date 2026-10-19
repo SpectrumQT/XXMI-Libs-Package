@@ -18,6 +18,7 @@
 #include "Hunting.h"
 #include "cursor.h"
 #include "dx12/Bridge.h"
+#include "dx12/DrawPath.h"
 #include "dx12/Dxc.h"
 #include "dx12/HashDump.h"
 #include "dx12/PipelineRegistry.h"
@@ -2691,6 +2692,7 @@ CustomShader::CustomShader() :
 		blend_factor[i] = 1.0f;
 		blend_factor_merge_mask[i] = ~0;
 	}
+	memset(sampler_slots, 0, sizeof(sampler_slots));
 }
 
 CustomShader::~CustomShader()
@@ -3249,6 +3251,142 @@ void CustomShader::merge_rasterizer_states(ID3D11RasterizerState *src_state, ID3
 	mOrigDevice1->CreateRasterizerState(&rs_desc, &rs_state);
 }
 
+// The index of CustomShader::sampler_slots for the shader type of vs-s0 ... cs-s0
+static int sampler_stage(wchar_t shader_type)
+{
+	switch (shader_type) {
+		case L'v': return 0;
+		case L'h': return 1;
+		case L'd': return 2;
+		case L'g': return 3;
+		case L'p': return 4;
+		case L'c': return 5;
+	}
+	return -1;
+}
+
+static void get_samplers(ID3D11DeviceContext *context, int stage, UINT first, UINT count, ID3D11SamplerState **samplers)
+{
+	switch (stage) {
+		case 0: context->VSGetSamplers(first, count, samplers); break;
+		case 1: context->HSGetSamplers(first, count, samplers); break;
+		case 2: context->DSGetSamplers(first, count, samplers); break;
+		case 3: context->GSGetSamplers(first, count, samplers); break;
+		case 4: context->PSGetSamplers(first, count, samplers); break;
+		case 5: context->CSGetSamplers(first, count, samplers); break;
+	}
+}
+
+static void set_samplers(ID3D11DeviceContext *context, int stage, UINT first, UINT count, ID3D11SamplerState *const *samplers)
+{
+	switch (stage) {
+		case 0: context->VSSetSamplers(first, count, samplers); break;
+		case 1: context->HSSetSamplers(first, count, samplers); break;
+		case 2: context->DSSetSamplers(first, count, samplers); break;
+		case 3: context->GSSetSamplers(first, count, samplers); break;
+		case 4: context->PSSetSamplers(first, count, samplers); break;
+		case 5: context->CSSetSamplers(first, count, samplers); break;
+	}
+}
+
+static bool is_shim_device(ID3D11Device *device)
+{
+	return dx12_shim && device == static_cast<ID3D11Device*>(dx12_shim->shim_device);
+}
+
+static void find_sampler_slots(CommandList *command_list, UINT16 slots[6])
+{
+	SamplerBindCommand *bind;
+	IfCommand *if_command;
+
+	if (!command_list)
+		return;
+
+	for (auto &command : command_list->commands) {
+		if ((bind = dynamic_cast<SamplerBindCommand*>(command.get()))) {
+			slots[sampler_stage(bind->shader_type)] |= 1 << bind->slot;
+		} else if ((if_command = dynamic_cast<IfCommand*>(command.get()))) {
+			find_sampler_slots(if_command->true_commands_pre.get(), slots);
+			find_sampler_slots(if_command->true_commands_post.get(), slots);
+			find_sampler_slots(if_command->false_commands_pre.get(), slots);
+			find_sampler_slots(if_command->false_commands_post.get(), slots);
+		}
+	}
+}
+
+void CustomShader::find_sampler_slots()
+{
+	memset(sampler_slots, 0, sizeof(sampler_slots));
+	::find_sampler_slots(&command_list, sampler_slots);
+	::find_sampler_slots(&post_command_list, sampler_slots);
+}
+
+// Which sampler slots running the custom shader has to save and restore, false
+// if none
+static bool sampler_slots_to_save(CustomShader *custom_shader, ID3D11Device *device, UINT16 slots[6])
+{
+	bool any = false;
+	int stage;
+
+	// SamplerBindCommand ignores the *-s# lines on D3D12 and Vulkan
+	if (is_shim_device(device))
+		memset(slots, 0, sizeof(custom_shader->sampler_slots));
+	else
+		memcpy(slots, custom_shader->sampler_slots, sizeof(custom_shader->sampler_slots));
+
+	// What sampler = ... has always done
+	if (custom_shader->sampler_override)
+		slots[4] = (1 << D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) - 1;
+
+	for (stage = 0; stage < 6; stage++)
+		any |= !!slots[stage];
+	return any;
+}
+
+// The slots between the lowest and highest of a stage go too, so that each
+// stage takes one call
+static void sampler_slot_range(UINT16 slots, UINT *first, UINT *count)
+{
+	unsigned long low, high;
+
+	_BitScanForward(&low, slots);
+	_BitScanReverse(&high, slots);
+	*first = low;
+	*count = high - low + 1;
+}
+
+static void save_sampler_slots(ID3D11DeviceContext *context, const UINT16 slots[6],
+		ID3D11SamplerState *saved[6][D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT])
+{
+	UINT first, count;
+	int stage;
+
+	for (stage = 0; stage < 6; stage++) {
+		if (!slots[stage])
+			continue;
+		sampler_slot_range(slots[stage], &first, &count);
+		get_samplers(context, stage, first, count, saved[stage] + first);
+	}
+}
+
+static void restore_sampler_slots(ID3D11DeviceContext *context, const UINT16 slots[6],
+		ID3D11SamplerState *saved[6][D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT])
+{
+	UINT first, count, i;
+	int stage;
+
+	for (stage = 0; stage < 6; stage++) {
+		if (!slots[stage])
+			continue;
+		sampler_slot_range(slots[stage], &first, &count);
+		set_samplers(context, stage, first, count, saved[stage] + first);
+		for (i = first; i < first + count; i++) {
+			if (saved[stage][i])
+				saved[stage][i]->Release();
+		}
+	}
+}
+
 struct saved_shader_inst
 {
 	ID3D11ClassInstance *instances[256];
@@ -3289,15 +3427,10 @@ void RunCustomShaderCommand::run(CommandListState *state)
 	UINT saved_stencil_ref;
 	bool saved_post;
 	struct OMState om_state;
-	UINT i;
 	D3D11_PRIMITIVE_TOPOLOGY saved_topology;
-	UINT num_sampler = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT;
-	ID3D11SamplerState* saved_sampler_states[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT];
-
-	for (UINT i = 0; i < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++i)
-	{
-		saved_sampler_states[i] = nullptr;
-	}
+	UINT16 sampler_slots[6];
+	ID3D11SamplerState *saved_samplers[6][D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT];
+	bool save_samplers;
 
 	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
 
@@ -3313,6 +3446,7 @@ void RunCustomShaderCommand::run(CommandListState *state)
 	}
 
 	custom_shader->substantiate(mOrigDevice1);
+	save_samplers = sampler_slots_to_save(custom_shader, mOrigDevice1, sampler_slots);
 
 	saved_shader_inst vs_inst, hs_inst, ds_inst, gs_inst, ps_inst, cs_inst;
 
@@ -3366,10 +3500,11 @@ void RunCustomShaderCommand::run(CommandListState *state)
 		mOrigContext1->IAGetPrimitiveTopology(&saved_topology);
 		mOrigContext1->IASetPrimitiveTopology(custom_shader->topology);
 	}
-	if (custom_shader->sampler_override) {
-		mOrigContext1->PSGetSamplers(0, num_sampler, saved_sampler_states);
-		mOrigContext1->PSSetSamplers(0, 1, &custom_shader->sampler_state); //just one slot for the moment TODO: allow more via *.ini file
-	}
+	if (save_samplers)
+		save_sampler_slots(mOrigContext1, sampler_slots, saved_samplers);
+	// A ps-s0 = ... of the command list comes after this and so wins
+	if (custom_shader->sampler_override)
+		mOrigContext1->PSSetSamplers(0, 1, &custom_shader->sampler_state);
 	// We save off the viewports unconditionally for now. We could
 	// potentially skip this by flagging if a command list may alter them,
 	// but that probably wouldn't buy us anything:
@@ -3409,8 +3544,8 @@ void RunCustomShaderCommand::run(CommandListState *state)
 		mOrigContext1->RSSetState(saved_rs);
 	if (custom_shader->topology != D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED)
 		mOrigContext1->IASetPrimitiveTopology(saved_topology);
-	if (custom_shader->sampler_override)
-		mOrigContext1->PSSetSamplers(0, num_sampler, saved_sampler_states);
+	if (save_samplers)
+		restore_sampler_slots(mOrigContext1, sampler_slots, saved_samplers);
 
 	mOrigContext1->RSSetViewports(num_viewports, saved_viewports);
 	restore_om_state(mOrigContext1, &om_state);
@@ -3433,16 +3568,31 @@ void RunCustomShaderCommand::run(CommandListState *state)
 		saved_depth_stencil->Release();
 	if (saved_rs)
 		saved_rs->Release();
-
-	for (i = 0; i < num_sampler; ++i) {
-		if (saved_sampler_states[i])
-			saved_sampler_states[i]->Release();
-	}
 }
 
 bool RunCustomShaderCommand::noop(bool post, bool ignore_cto_pre, bool ignore_cto_post)
 {
 	return (custom_shader->command_list.noop() && custom_shader->post_command_list.noop());
+}
+
+void SamplerBindCommand::run(CommandListState *state)
+{
+	ID3D11SamplerState *sampler = NULL;
+
+	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
+
+	if (is_shim_device(state->mOrigDevice1)) {
+		Dx12SamplerBindingIgnored(ini_line.c_str());
+		return;
+	}
+
+	if (resource) {
+		sampler = resource->sampler->Get(state->mOrigDevice1, resource->name);
+		if (!sampler)
+			return;
+	}
+
+	set_samplers(state->mOrigContext1, sampler_stage(shader_type), slot, 1, &sampler);
 }
 
 #pragma endregion CustomShader
@@ -4295,6 +4445,9 @@ float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device
 			return 0;
 		case ParamOverrideType::DX12:
 			return dx12_shim ? 1.0f : 0.0f;
+		case ParamOverrideType::DLL_SAMPLER_SLOTS:
+			// SamplerBindCommand ignores *-s# lines on D3D12 and Vulkan
+			return dx12_shim ? 0.0f : 1.0f;
 		// XXX: If updating this list, be sure to also update
 		// XXX: operand_allowed_in_context()
 	}
@@ -5723,6 +5876,7 @@ static bool expression_is_stateless(CommandListEvaluatable *evaluatable, bool of
 			case ParamOverrideType::VALUE:
 			case ParamOverrideType::INI_PARAM:
 			case ParamOverrideType::DX12:
+			case ParamOverrideType::DLL_SAMPLER_SLOTS:
 				return true;
 			case ParamOverrideType::VARIABLE:
 				// var_ftarget is the fval of a CommandListVariable
@@ -6430,6 +6584,7 @@ static bool operand_allowed_in_context(ParamOverrideType type, CommandListScope 
 		case ParamOverrideType::STEREO_ACTIVE:
 		case ParamOverrideType::STEREO_AVAILABLE:
 		case ParamOverrideType::DX12:
+		case ParamOverrideType::DLL_SAMPLER_SLOTS:
 			return true;
 	}
 	return false;
@@ -6837,6 +6992,52 @@ static ResourceType* GetResourceFromPool(
 
 
 #pragma region CustomResource
+
+CustomSamplerState::CustomSamplerState()
+{
+	memset(&desc, 0, sizeof(desc));
+	desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+	desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+	desc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+	desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+	desc.MaxAnisotropy = 1;
+	desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+	desc.MaxLOD = D3D11_FLOAT32_MAX;
+}
+
+CustomSamplerState::~CustomSamplerState()
+{
+	if (state)
+		state->Release();
+}
+
+ID3D11SamplerState* CustomSamplerState::Get(ID3D11Device *device, const wstring &name)
+{
+	ID3D11SamplerState *created = NULL, *old = state;
+	HRESULT hr;
+
+	// A description the device refused stays refused, so a failure is
+	// not retried until the device changes
+	if (device == this->device.load(std::memory_order_acquire))
+		return state;
+
+	hr = device->CreateSamplerState(&desc, &created);
+	if (FAILED(hr)) {
+		created = NULL;
+		if (!warned)
+			LogOverlayW(LOG_WARNING, L"Could not create the sampler of [%ls]: 0x%x\n", name.c_str(), hr);
+		warned = true;
+	}
+
+	// Command lists of deferred contexts may get here at the same time
+	// without a lock: the device is only set once state is the sampler
+	// made for it
+	state = created;
+	this->device.store(device, std::memory_order_release);
+	if (old)
+		old->Release();
+	return created;
+}
 
 CustomResource::CustomResource() :
 	resource(NULL),
@@ -9221,9 +9422,7 @@ IniParserResult ResourceCopyTarget::ParseTargetPipelineSlot(const wchar_t*& targ
 		{ L"cursor_mask",  11, ResourceCopyTargetType::CURSOR_MASK,           true,                                                           },
 		{ L"cursor_color", 12, ResourceCopyTargetType::CURSOR_COLOR,          true,                                                           },
 
-		// TODO
-		// vs-s15 (length: min = 5, max = 6)
-		//{ L"%lcs-s%u%n",    5, ResourceCopyTargetType::SHADER_RESOURCE,      true,   true, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT           },
+		// vs-s15 is not here: samplers are not resources, see parse_sampler_binding()
 	};
 
 	// Consume member keyword (adjust `target` and `length` accordingly).
@@ -9864,11 +10063,105 @@ static CommandListCommand* parse_slot_range_operation(
 	const wchar_t* section, ResourceCopyTarget& dst, ResourceCopyTarget& src, ResourceCopyOptions options, CommandList* command_list, const wstring* ini_namespace
 );
 
+// vs-s0 ... cs-s15
+static IniParserResult parse_sampler_slot(const wchar_t *text, wchar_t *shader_type, unsigned *slot)
+{
+	int len = 0;
+
+	// Every resource copy line comes through here, so the cheap test first
+	if (!text[0] || wcsncmp(text + 1, L"s-s", 3))
+		return IniParserResult::TOKEN_NOT_FOUND;
+	if (swscanf_s(text, L"%lcs-s%u%n", shader_type, 1, slot, &len) != 2
+	    || (size_t)len != wcslen(text) || !is_shader_resource(*shader_type))
+		return IniParserResult::TOKEN_NOT_FOUND;
+	if (*slot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT)
+		return IniParserResult::SYNTAX_ERROR;
+	return IniParserResult::TOKEN_FOUND;
+}
+
+static bool is_sampler_resource(ResourceCopyTarget &target)
+{
+	CustomResource *resource;
+
+	if (target.type != ResourceCopyTargetType::CUSTOM_RESOURCE || target.custom_resource_pool)
+		return false;
+	resource = target.GetCustomResource(nullptr);
+	return resource && resource->sampler;
+}
+
+// ps-s0 = [ref] ResourceSampler and ps-s0 = null. A line that is about
+// sampler slots but cannot be done is warned about and dropped here, so this
+// only returns false for lines that are not about them.
+static bool parse_sampler_binding(const wchar_t *section, const wchar_t *key, const wstring *val,
+		CommandList *command_list, const wstring *ini_namespace)
+{
+	std::vector<wstring> words;
+	SamplerBindCommand *command;
+	CustomResource *resource = nullptr;
+	ResourceCopyTarget src;
+	wchar_t shader_type;
+	unsigned slot;
+	size_t last_blank;
+	wstring word;
+
+	switch (parse_sampler_slot(key, &shader_type, &slot)) {
+	case IniParserResult::SYNTAX_ERROR:
+		LogOverlayW(LOG_WARNING, L"Sampler slots go from 0 to %u: \"%ls = %ls\"\n - [%ls] @ [%ls]\n",
+			D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - 1, key, val->c_str(), section, ini_namespace->c_str());
+		return true;
+	case IniParserResult::TOKEN_NOT_FOUND:
+		// Values have their surrounding whitespace stripped, so the last
+		// word starts after the last blank
+		last_blank = val->find_last_of(L" \t");
+		if (parse_sampler_slot(val->c_str() + (last_blank == wstring::npos ? 0 : last_blank + 1), &shader_type, &slot)
+		    == IniParserResult::TOKEN_NOT_FOUND)
+			return false;
+		LogOverlayW(LOG_WARNING, L"The samplers of the game cannot be read, only bound over: \"%ls = %ls\"\n - [%ls] @ [%ls]\n",
+			key, val->c_str(), section, ini_namespace->c_str());
+		return true;
+	}
+
+	std::wistringstream tokens(*val);
+	while (tokens >> word)
+		words.push_back(word);
+
+	if (words.size() == 2 && (!_wcsicmp(words[0].c_str(), L"ref") || !_wcsicmp(words[0].c_str(), L"reference")))
+		words.erase(words.begin());
+
+	if (words.size() != 1) {
+		LogOverlayW(LOG_WARNING, L"A sampler slot takes a SamplerState resource or null, with nothing but an optional ref: \"%ls = %ls\"\n - [%ls] @ [%ls]\n",
+			key, val->c_str(), section, ini_namespace->c_str());
+		return true;
+	}
+
+	if (_wcsicmp(words[0].c_str(), L"null")) {
+		if (!src.ParseTarget(words[0].c_str(), true, ini_namespace, command_list->scope)
+		    || src.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE
+		    || !is_sampler_resource(src)) {
+			LogOverlayW(LOG_WARNING, L"%ls is not a [Resource] section with type = SamplerState: \"%ls = %ls\"\n - [%ls] @ [%ls]\n",
+				words[0].c_str(), key, val->c_str(), section, ini_namespace->c_str());
+			return true;
+		}
+		resource = src.GetCustomResource(nullptr);
+	}
+
+	command = new SamplerBindCommand();
+	command->shader_type = shader_type;
+	command->slot = slot;
+	command->resource = resource;
+	command->ini_line = L"[" + wstring(section) + L"] " + wstring(key) + L" = " + *val;
+	command_list->commands.push_back(std::shared_ptr<CommandListCommand>(command));
+	return true;
+}
+
 bool ParseCommandListResourceCopyTargetDirective(
 	const wchar_t *section, const wchar_t *key, wstring *val, CommandList *command_list, const wstring *ini_namespace
 )
 {
 	//LogInfo("Parsing CommandListResourceCopyTargetDirective: `%ls = %ls`\n", key, val->c_str());
+
+	if (parse_sampler_binding(section, key, val, command_list, ini_namespace))
+		return true;
 
 	ResourceCopyTarget dst = ResourceCopyTarget();
 
@@ -9914,6 +10207,12 @@ bool ParseCommandListResourceCopyTargetDirective(
 
 		if (!parse_resource_copy_target_source(section, *val, src, options, command_list, ini_namespace, key))
 			return false;
+
+		if (is_sampler_resource(dst) || is_sampler_resource(src)) {
+			LogOverlayW(LOG_WARNING, L"A SamplerState resource can only be bound to a sampler slot (ps-s0 = ResourceFoo): \"%ls = %ls\"\n - [%ls] @ [%ls]\n",
+				key, val->c_str(), section, ini_namespace->c_str());
+			return true;
+		}
 
 		if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::SLOT_RANGE
 			|| src.evaluation_mode == ResourceCopyTargetEvaluationMode::SLOT_RANGE)

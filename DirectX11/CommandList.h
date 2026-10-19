@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <array>
+#include <atomic>
 #include <unordered_map>
 #include <unordered_set>
 #include <forward_list>
@@ -408,6 +409,11 @@ public:
 	D3D11_SAMPLER_DESC sampler_desc;
 	ID3D11SamplerState* sampler_state;
 
+	// Slots the *-s# lines of this section bind, one bit a slot for each
+	// stage (vs, hs, ds, gs, ps, cs). Running the section puts back what
+	// was there before.
+	UINT16 sampler_slots[6];
+
 	D3D11_PRIMITIVE_TOPOLOGY topology;
 
 	CommandList command_list;
@@ -426,6 +432,8 @@ public:
 	bool compile(char type, wchar_t *filename, const wstring *wname, const wstring *mod_namespace);
 	void substantiate(ID3D11Device *mOrigDevice);
 	void add_dxil(ID3D11Device *mOrigDevice);
+	// Fills sampler_slots in, once the section's command lists are parsed
+	void find_sampler_slots();
 
 	void merge_blend_states(ID3D11BlendState *state, FLOAT blend_factor[4], UINT sample_mask, ID3D11Device *mOrigDevice);
 	void merge_depth_stencil_states(ID3D11DepthStencilState *state, UINT stencil_ref, ID3D11Device *mOrigDevice);
@@ -482,6 +490,7 @@ enum class CustomResourceType {
 	TEXTURE2D,
 	TEXTURE3D,
 	CUBE,
+	SAMPLER_STATE,
 };
 static EnumName_t<const wchar_t *, CustomResourceType> CustomResourceTypeNames[] = {
 	// Use the same names as HLSL here since they are what shaderhackers
@@ -503,6 +512,8 @@ static EnumName_t<const wchar_t *, CustomResourceType> CustomResourceTypeNames[]
 	{L"RWTexture1D", CustomResourceType::TEXTURE1D},
 	{L"RWTexture2D", CustomResourceType::TEXTURE2D},
 	{L"RWTexture3D", CustomResourceType::TEXTURE3D},
+	// Not a resource, only for the *-s# slots:
+	{L"SamplerState", CustomResourceType::SAMPLER_STATE},
 
 	{NULL, CustomResourceType::INVALID} // End of list marker
 };
@@ -597,6 +608,28 @@ public:
 
 class CustomResourcePool;
 
+// What a [Resource] section with type = SamplerState holds instead of a
+// resource. The sampler is made the first time it is bound, for the device of
+// the command list binding it.
+class CustomSamplerState
+{
+public:
+	D3D11_SAMPLER_DESC desc;
+
+	CustomSamplerState();
+	~CustomSamplerState();
+
+	// NULL (with a warning the first time) if the device refused the
+	// description
+	ID3D11SamplerState* Get(ID3D11Device *device, const wstring &name);
+
+private:
+	ID3D11SamplerState *state = nullptr;
+	// Set after state, see Get()
+	std::atomic<ID3D11Device*> device{nullptr};
+	bool warned = false;
+};
+
 class CustomResource
 {
 public:
@@ -656,6 +689,9 @@ public:
 	void *initial_data;
 	size_t initial_data_size;
 
+	// Only for override_type SAMPLER_STATE
+	std::unique_ptr<CustomSamplerState> sampler;
+
 	CustomResource();
 	~CustomResource();
 
@@ -691,6 +727,19 @@ private:
 
 typedef std::unordered_map<std::wstring, class CustomResource> CustomResources;
 extern CustomResources customResources;
+
+// ps-s0 = ResourceSampler / ps-s0 = null. A sampler is not an ID3D11Resource,
+// so the *-s# slots are a target of their own rather than one of
+// ResourceCopyOperation's.
+class SamplerBindCommand : public CommandListCommand {
+public:
+	wchar_t shader_type = L'\0';
+	unsigned slot = 0;
+	// NULL to unbind
+	CustomResource *resource = nullptr;
+
+	void run(CommandListState*) override;
+};
 
 enum class PoolIndexType : uint8_t {
 	INVALID          = 0b00000000,
@@ -1619,6 +1668,7 @@ enum class ParamOverrideType {
 	FRAME_TIME,
 	FPS,
 	DX12,
+	DLL_SAMPLER_SLOTS,
 };
 static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] = {
 	{L"rt_width", ParamOverrideType::RT_WIDTH},
@@ -1664,6 +1714,7 @@ static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] =
 	{L"frame_time", ParamOverrideType::FRAME_TIME},
 	{L"fps", ParamOverrideType::FPS},
 	{L"dx12", ParamOverrideType::DX12},
+	{L"dll_sampler_slots", ParamOverrideType::DLL_SAMPLER_SLOTS},
 	{NULL, ParamOverrideType::INVALID} // End of list marker
 };
 class CommandListOperand :

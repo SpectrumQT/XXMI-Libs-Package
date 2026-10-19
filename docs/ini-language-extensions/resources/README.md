@@ -8,3 +8,4 @@
 * [Resource Metadata](resource-metadata.md) — resource identity and attributes such as size, stride, offset, region and spatial hashes
 * [Resource Regions](resource-regions.md) — existing buffer regions and explicit regions for `copy` and `ref` operations
 * [Slot Indexing](slot-indexing.md) — dynamic slot indices and slot ranges
+* [Sampler States](sampler-states.md) — sampler state resources bound to `ps-s0` and the other sampler slots

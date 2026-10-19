@@ -84,3 +84,14 @@ dx12_match_cb1_size = 64
 ```
 
 The values of a game's shaders are listed in `dx12_shaders.csv`, written with `dx12_dump_hashes = 1` in `[Hunting]`.
+
+## `DLL_SAMPLER_SLOTS`
+
+Returns `1` when the DLL binds [sampler states](../resources/sampler-states.md) to `<stage>-s<slot>` slots for the running game, and `0` in Direct3D 12 and Vulkan games, where those lines are ignored.
+
+```ini
+[Present]
+$sampler_slots = dll_sampler_slots
+```
+
+DLLs without sampler state support do not know this name and drop the whole line when loading the ini, so copy it into a variable declared with a default of `0` rather than naming it in an `if`. See [Detecting Support](../resources/sampler-states.md#detecting-support).

@@ -2055,6 +2055,8 @@ static void ParseResourceInitialData(CustomResource *custom_resource, const wcha
 	}
 }
 
+static void ParseResourceSamplerState(CustomResource *custom_resource, const wchar_t *section);
+
 static CustomResource* ParseResourceSection(const wchar_t* section_name, const wchar_t* resource_id_suffix)
 {
 	wchar_t setting[MAX_PATH];
@@ -2103,6 +2105,20 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 	}
 
 	custom_resource->override_type = GetIniEnumClass(section_name, L"type", CustomResourceType::INVALID, NULL, CustomResourceTypeNames);
+
+	if (custom_resource->override_type == CustomResourceType::SAMPLER_STATE) {
+		if (resource_id_suffix) {
+			IniWarningW(L"type = SamplerState is only supported in [Resource] sections\n - [%ls]\n", section_name);
+			custom_resource->override_type = CustomResourceType::INVALID;
+		} else {
+			if (!custom_resource->filename.empty()) {
+				IniWarningW(L"A SamplerState cannot be loaded from a file, filename ignored\n - [%ls]\n", section_name);
+				custom_resource->filename.clear();
+			}
+			ParseResourceSamplerState(custom_resource, section_name);
+			return custom_resource;
+		}
+	}
 
 	if (GetIniString(section_name, L"format", 0, setting, MAX_PATH)) {
 		custom_resource->override_format = ParseFormatString(setting, true);
@@ -4053,6 +4069,79 @@ static wchar_t *ComparisonFuncs[] = {
 	L"ALWAYS",
 };
 
+static wchar_t *SamplerFilters[] = {
+	L"POINT",
+	L"LINEAR",
+	L"ANISOTROPIC",
+};
+
+static wchar_t *TextureAddressModes[] = {
+	L"",
+	L"WRAP",
+	L"MIRROR",
+	L"CLAMP",
+	L"BORDER",
+	L"MIRROR_ONCE",
+};
+
+static void ParseResourceSamplerState(CustomResource *custom_resource, const wchar_t *section)
+{
+	D3D11_TEXTURE_ADDRESS_MODE address;
+	wchar_t setting[MAX_PATH];
+	D3D11_SAMPLER_DESC *desc;
+	bool comparison;
+	int filter, anisotropy;
+
+	custom_resource->sampler = std::make_unique<CustomSamplerState>();
+	desc = &custom_resource->sampler->desc;
+
+	filter = GetIniEnum(section, L"filter", 1, NULL, NULL, SamplerFilters, ARRAYSIZE(SamplerFilters), 0);
+	desc->ComparisonFunc = (D3D11_COMPARISON_FUNC)GetIniEnum(section, L"comparison", D3D11_COMPARISON_NEVER, &comparison,
+			L"D3D11_COMPARISON_", ComparisonFuncs, ARRAYSIZE(ComparisonFuncs), 1);
+	switch (filter) {
+		case 0:
+			desc->Filter = comparison ? D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT : D3D11_FILTER_MIN_MAG_MIP_POINT;
+			break;
+		case 1:
+			desc->Filter = comparison ? D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+			break;
+		case 2:
+			desc->Filter = comparison ? D3D11_FILTER_COMPARISON_ANISOTROPIC : D3D11_FILTER_ANISOTROPIC;
+			break;
+	}
+
+	address = (D3D11_TEXTURE_ADDRESS_MODE)GetIniEnum(section, L"address", D3D11_TEXTURE_ADDRESS_CLAMP, NULL,
+			L"D3D11_TEXTURE_ADDRESS_", TextureAddressModes, ARRAYSIZE(TextureAddressModes), 1);
+	desc->AddressU = (D3D11_TEXTURE_ADDRESS_MODE)GetIniEnum(section, L"address_u", address, NULL,
+			L"D3D11_TEXTURE_ADDRESS_", TextureAddressModes, ARRAYSIZE(TextureAddressModes), 1);
+	desc->AddressV = (D3D11_TEXTURE_ADDRESS_MODE)GetIniEnum(section, L"address_v", address, NULL,
+			L"D3D11_TEXTURE_ADDRESS_", TextureAddressModes, ARRAYSIZE(TextureAddressModes), 1);
+	desc->AddressW = (D3D11_TEXTURE_ADDRESS_MODE)GetIniEnum(section, L"address_w", address, NULL,
+			L"D3D11_TEXTURE_ADDRESS_", TextureAddressModes, ARRAYSIZE(TextureAddressModes), 1);
+
+	anisotropy = GetIniInt(section, L"max_anisotropy", desc->Filter == D3D11_FILTER_ANISOTROPIC
+			|| desc->Filter == D3D11_FILTER_COMPARISON_ANISOTROPIC ? 16 : 1, NULL);
+	if (anisotropy < 1 || anisotropy > D3D11_REQ_MAXANISOTROPY) {
+		IniWarningW(L"max_anisotropy goes from 1 to %d\n - [%ls]\n", D3D11_REQ_MAXANISOTROPY, section);
+		anisotropy = anisotropy < 1 ? 1 : D3D11_REQ_MAXANISOTROPY;
+	}
+	desc->MaxAnisotropy = anisotropy;
+
+	desc->MipLODBias = GetIniFloat(section, L"mip_lod_bias", 0.0f, NULL);
+	desc->MinLOD = GetIniFloat(section, L"min_lod", 0.0f, NULL);
+	desc->MaxLOD = GetIniFloat(section, L"max_lod", D3D11_FLOAT32_MAX, NULL);
+
+	if (GetIniStringAndLog(section, L"border_color", 0, setting, MAX_PATH)) {
+		float color[4];
+		int len = 0;
+
+		if (swscanf_s(setting, L"%f %f %f %f%n", &color[0], &color[1], &color[2], &color[3], &len) == 4 && !setting[len])
+			memcpy(desc->BorderColor, color, sizeof(color));
+		else
+			IniWarningW(L"border_color takes four numbers: %ls\n - [%ls]\n", setting, section);
+	}
+}
+
 // https://msdn.microsoft.com/en-us/library/windows/desktop/ff476219(v=vs.85).aspx
 static wchar_t *StencilOps[] = {
 	L"",
@@ -4449,9 +4538,10 @@ wchar_t *CustomShaderIniKeys[] = {
 	L"rasterizer_state_merge",
 	// IA State overrides:
 	L"topology",
-	// Sampler State overrides
-	L"sampler", // TODO: add additional sampler parameter 
-				// For now due to the lack of sampler as a custom resource only filtering is added no further parameter are implemented
+	// Sampler State overrides. Only point, linear and anisotropic
+	// filtering for ps-s0: a [Resource] with type = SamplerState bound with
+	// ps-s0 = ... and the like does the rest.
+	L"sampler",
 	NULL
 };
 static void _EnumerateCustomShaderSections(IniSections::iterator lower, IniSections::iterator upper)
@@ -4555,6 +4645,7 @@ static void ParseCustomShaderSections()
 			GetIniInt(shader_id->c_str(), L"max_executions_per_frame", 0, NULL);
 
 		ParseCommandList(shader_id->c_str(), &custom_shader->command_list, &custom_shader->post_command_list, CustomShaderIniKeys);
+		custom_shader->find_sampler_slots();
 	}
 }
 

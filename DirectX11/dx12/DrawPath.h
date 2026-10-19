@@ -158,6 +158,8 @@ ID3D11UnorderedAccessView* Dx12ScopeUnorderedAccess(UINT slot);
 ID3D11UnorderedAccessView* Dx12ScopeWrittenBuffer(UINT slot);
 void Dx12ScopeDraw(bool indexed, UINT count, UINT instances, UINT start, INT base_vertex, UINT start_instance);
 void Dx12ScopeUnsupported(const char *what);
+// For a ps-s0 = ... line of a mod, which only does something on D3D11 so far
+void Dx12SamplerBindingIgnored(const wchar_t *ini_line);
 // Once a dispatch of a mod made it to our list, or was dropped: only the
 // first leaves what Dx12ScopeWrittenBuffer gave out written
 void Dx12ScopeDispatched(bool recorded);

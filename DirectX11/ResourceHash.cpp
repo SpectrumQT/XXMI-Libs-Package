@@ -1962,8 +1962,20 @@ void NoteTextureOverrideViewResource(ID3D11View *view, ID3D11Resource *resource)
 		return;
 
 	ViewResourceSlot *slot = view_resource_slot(view);
-	if (slot->view.load() == view)
+	ID3D11View *occupant = slot->view.load();
+	if (occupant == view)
 		return;
+
+	// Two views of a frame in one slot would otherwise take it from each
+	// other at every lookup, each time with a tracker to make and set, which
+	// costs more than the GetResource() the entry saves. One whose resource
+	// started matching is no use any more and gives the slot up. Read
+	// without the sequence: a torn read only picks the wrong one of the two.
+	if (occupant) {
+		ID3D11Resource *occupant_resource = slot->resource.load();
+		if (occupant_resource && texture_override_miss_slot(occupant_resource)->load(std::memory_order_relaxed) == occupant_resource)
+			return;
+	}
 
 	// Replaces the tracker the view has if it was entered before and lost
 	// its slot to another since. That one going may take an entry of the

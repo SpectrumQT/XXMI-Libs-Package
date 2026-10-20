@@ -779,7 +779,7 @@ struct Globals
 		dx12_debug_layer(false),
 		dx12_evict_idle(true),
 		dx12_evict_idle_seconds(30),
-		dx12_evict_budget_percent(90),
+		dx12_evict_budget_percent(100),
 		vk_dump_hashes(false),
 		vk_buffers_first(false),
 		track_region_hashes(false),

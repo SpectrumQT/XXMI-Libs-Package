@@ -174,7 +174,8 @@ void Dx12ShimForgetResource(ShimResource *resource);
 // the driver page out what goes unused. So once the process uses more than
 // G->dx12_evict_budget_percent of its budget, the mod resources unused for
 // G->dx12_evict_idle_seconds are evicted (Dx12ShimEvictIdle), and the next
-// use makes them resident again: Dx12ShimTransition, which every use goes
+// use has them made resident again, on the GPU's time where it can be as for
+// Dx12ShimCreateResource: Dx12ShimTransition, which every use goes
 // through, calls Dx12ShimUseResource first, as does whatever records a write
 // of the resource without it. False if it stays evicted.
 bool Dx12ShimUseResource(ShimResource *resource);
@@ -183,7 +184,8 @@ bool Dx12ShimUseResource(ShimResource *resource);
 void Dx12ShimTrackResidency(ShimResource *resource, bool tracked);
 // A committed resource of the default heap in the common state, which may
 // only become resident on the GPU's time: whatever executes it on a queue
-// calls Dx12ShimResidencyWait for that queue first
+// calls Dx12ShimResidencyWait for that queue first. A list of the game can
+// only use it with a pin on it (Dx12ShimPin), so only those wait.
 HRESULT Dx12ShimCreateResource(const D3D12_RESOURCE_DESC *desc, ID3D12Resource **resource);
 void Dx12ShimResidencyWait(ID3D12CommandQueue *queue);
 // What the process uses of the GPU's local memory and the budget it has, as

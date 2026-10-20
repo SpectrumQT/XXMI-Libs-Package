@@ -775,14 +775,27 @@ static void evict_idle()
 }
 
 // CreateCommittedResource waits on the CPU until what it made is resident,
-// a millisecond or two for a texture of a few tens of MB. Made not resident
-// instead, a resource of a mod is made so on the GPU's time, and every queue
-// waits there for the last that was asked for before what it executes next.
-// NULL where that cannot be done:
+// a millisecond or two for a texture of a few tens of MB, and so does
+// MakeResident for an evicted one. Instead a resource of a mod is made
+// resident on the GPU's time, and a queue about to execute what uses resources
+// of the mods waits there for the last that was asked for. NULL where that
+// cannot be done:
 static ID3D12Device3 *residency_device;
 static ID3D12Fence *residency_fence;
 static std::mutex residency_lock;
 static std::atomic<UINT64> residency_asked;
+
+static HRESULT enqueue_make_resident(ID3D12Pageable *pageable)
+{
+	// The fence is signalled in the order of the values
+	std::lock_guard<std::mutex> lock(residency_lock);
+	UINT64 value = residency_asked + 1;
+	HRESULT hr = residency_device->EnqueueMakeResident(D3D12_RESIDENCY_FLAG_NONE, 1, &pageable, residency_fence, value);
+
+	if (SUCCEEDED(hr))
+		residency_asked = value;
+	return hr;
+}
 
 static void residency_init()
 {
@@ -804,14 +817,7 @@ HRESULT Dx12ShimCreateResource(const D3D12_RESOURCE_DESC *desc, ID3D12Resource *
 	if (residency_device && SUCCEEDED(shim.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT,
 			desc, D3D12_RESOURCE_STATE_COMMON, NULL, IID_PPV_ARGS(resource)))) {
 		pageable = *resource;
-		{
-			// The fence is signalled in the order of the values
-			std::lock_guard<std::mutex> lock(residency_lock);
-			UINT64 value = residency_asked + 1;
-			hr = residency_device->EnqueueMakeResident(D3D12_RESIDENCY_FLAG_NONE, 1, &pageable, residency_fence, value);
-			if (SUCCEEDED(hr))
-				residency_asked = value;
-		}
+		hr = enqueue_make_resident(pageable);
 		if (SUCCEEDED(hr))
 			return hr;
 		(*resource)->Release();
@@ -820,6 +826,17 @@ HRESULT Dx12ShimCreateResource(const D3D12_RESOURCE_DESC *desc, ID3D12Resource *
 
 	return shim.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, desc,
 			D3D12_RESOURCE_STATE_COMMON, NULL, IID_PPV_ARGS(resource));
+}
+
+// Every use of an evicted resource is recorded after this and executed by a
+// queue that calls Dx12ShimResidencyWait first, so it need not be resident
+// before then. MakeResident would hold the draw up until it is, which with a
+// party of a few characters' mods switched in is many of them in a row.
+static HRESULT make_resident_again(ID3D12Pageable *pageable)
+{
+	if (residency_device)
+		return enqueue_make_resident(pageable);
+	return shim.device->MakeResident(1, &pageable);
 }
 
 void Dx12ShimResidencyWait(ID3D12CommandQueue *queue)
@@ -849,11 +866,11 @@ bool Dx12ShimUseResource(ShimResource *resource)
 	}
 
 	QueryPerformanceCounter(&start);
-	hr = shim.device->MakeResident(1, &pageable);
+	hr = make_resident_again(pageable);
 	// With room made by evicting whatever else is not in use, short of
 	// what was used since the last present
 	if (FAILED(hr) && evict(resource->allocated, present_time - 1))
-		hr = shim.device->MakeResident(1, &pageable);
+		hr = make_resident_again(pageable);
 	QueryPerformanceCounter(&end);
 	dx12_memory.restore_ticks += end.QuadPart - start.QuadPart;
 	if (FAILED(hr)) {

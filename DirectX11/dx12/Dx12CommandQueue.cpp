@@ -179,7 +179,10 @@ void STDMETHODCALLTYPE Dx12CommandQueue::ExecuteCommandLists(UINT NumCommandList
 	if (!pins.empty() || Dx12ShimQueueUnordered(mOrig))
 		Dx12ShimQueueWaits(mOrig, needed, !pins.empty());
 
-	Dx12ShimResidencyWait(mOrig);
+	// A list can only reach a resource of the mods it holds a pin on, so
+	// the game's lists that use none go ahead of what is being paged in
+	if (!pins.empty())
+		Dx12ShimResidencyWait(mOrig);
 	mOrig->ExecuteCommandLists(NumCommandLists, lists);
 
 	if (!pins.empty())

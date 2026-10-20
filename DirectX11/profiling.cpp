@@ -33,7 +33,9 @@ namespace Profiling {
 	Overhead texture_handle_info_lookup_overhead;
 	Overhead textureoverride_lookup_overhead;
 	Overhead resource_pool_lookup_overhead;
-	
+	Overhead texture_override_fuzzy_match_overhead;
+	Overhead texture_override_candidates_lookup_overhead;
+
 	unsigned resource_full_copies;
 	unsigned resource_reference_copies;
 	unsigned inter_device_copies;
@@ -138,6 +140,8 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 	LARGE_INTEGER texture_handle_info_lookup_overhead;
 	LARGE_INTEGER textureoverride_lookup_overhead;
 	LARGE_INTEGER resource_pool_lookup_overhead;
+	LARGE_INTEGER texture_override_fuzzy_match_overhead;
+	LARGE_INTEGER texture_override_candidates_lookup_overhead;
 	wchar_t buf[1024];
 
 	// The overlay overhead should be a subset of the present overhead, but
@@ -170,6 +174,8 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 	texture_handle_info_lookup_overhead.QuadPart = Profiling::texture_handle_info_lookup_overhead.cpu.QuadPart * 1000000 / freq.QuadPart;
 	textureoverride_lookup_overhead.QuadPart = Profiling::textureoverride_lookup_overhead.cpu.QuadPart * 1000000 / freq.QuadPart;
 	resource_pool_lookup_overhead.QuadPart = Profiling::resource_pool_lookup_overhead.cpu.QuadPart * 1000000 / freq.QuadPart;
+	texture_override_fuzzy_match_overhead.QuadPart = Profiling::texture_override_fuzzy_match_overhead.cpu.QuadPart * 1000000 / freq.QuadPart;
+	texture_override_candidates_lookup_overhead.QuadPart = Profiling::texture_override_candidates_lookup_overhead.cpu.QuadPart * 1000000 / freq.QuadPart;
 
 	Profiling::text += L" (CPU Performance Summary):\n";
 	_snwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE,
@@ -178,7 +184,7 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 			    L"   Draw call overhead: %7.2fus/frame ~%ffps\n"
 			    L"  Command lists total: %7.2fus/frame ~%ffps\n"
 			    L"   Map/Unmap overhead: %7.2fus/frame ~%ffps\n"
-			    L"track_texture_updates: %7.2fus/frame ~%ffps\n"
+			    L"track_texture_updates: %7.2fus/frame ~%ffps (%u/%u hits/frame)\n"
 		        L"  track_region_hashes: %7.2fus/frame ~%ffps\n"
 			    L"  dump_usage overhead: %7.2fus/frame ~%ffps\n"
 			    L" ShaderRegex overhead: %7.2fus/frame ~%ffps\n"
@@ -201,6 +207,8 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 
 			    (float)hash_tracking_overhead.QuadPart / frames,
 			    60.0 * hash_tracking_overhead.QuadPart / collection_duration.QuadPart,
+			    Profiling::hash_tracking_overhead.hits / frames,
+			    Profiling::hash_tracking_overhead.count / frames,
 
 				(float)region_tracking_overhead.QuadPart / frames,
 				60.0 * region_tracking_overhead.QuadPart / collection_duration.QuadPart,
@@ -226,6 +234,8 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 			    L"  Texture hash / info: %7.2fus/frame ~%ffps (%u/%u hits/frame)\n"
 			    L"      TextureOverride: %7.2fus/frame ~%ffps (%u/%u hits/frame)\n"
 			    L"       Resource pools: %7.2fus/frame ~%ffps (%u/%u hits/frame)\n"
+			    L"TO candidates rebuild: %7.2fus/frame ~%ffps (%u/%u hits/frame)\n"
+			    L" TO candidates lookup: %7.2fus/frame ~%ffps (%u/%u hits/frame)\n"
 			    ,
 			    (float)shader_hash_lookup_overhead.QuadPart / frames,
 			    60.0 * shader_hash_lookup_overhead.QuadPart / collection_duration.QuadPart,
@@ -260,7 +270,17 @@ static void update_txt_summary(LARGE_INTEGER collection_duration, LARGE_INTEGER 
 			    (float)resource_pool_lookup_overhead.QuadPart / frames,
 			    60.0 * resource_pool_lookup_overhead.QuadPart / collection_duration.QuadPart,
 			    Profiling::resource_pool_lookup_overhead.hits / frames,
-			    Profiling::resource_pool_lookup_overhead.count / frames
+			    Profiling::resource_pool_lookup_overhead.count / frames,
+
+			    (float)texture_override_fuzzy_match_overhead.QuadPart / frames,
+			    60.0 * texture_override_fuzzy_match_overhead.QuadPart / collection_duration.QuadPart,
+			    Profiling::texture_override_fuzzy_match_overhead.hits / frames,
+			    Profiling::texture_override_fuzzy_match_overhead.count / frames,
+
+			    (float)texture_override_candidates_lookup_overhead.QuadPart / frames,
+			    60.0 * texture_override_candidates_lookup_overhead.QuadPart / collection_duration.QuadPart,
+			    Profiling::texture_override_candidates_lookup_overhead.hits / frames,
+			    Profiling::texture_override_candidates_lookup_overhead.count / frames
 	);
 	Profiling::text += buf;
 
@@ -439,8 +459,7 @@ void Profiling::update_txt()
 
 void Profiling::clear()
 {
-	command_lists_profiling.clear();
-	command_lists_cmd_profiling.clear();
+	clear_command_list_profiling();
 	present_overhead.clear();
 	overlay_overhead.clear();
 	draw_overhead.clear();
@@ -459,6 +478,8 @@ void Profiling::clear()
 	texture_handle_info_lookup_overhead.clear();
 	textureoverride_lookup_overhead.clear();
 	resource_pool_lookup_overhead.clear();
+	texture_override_fuzzy_match_overhead.clear();
+	texture_override_candidates_lookup_overhead.clear();
 
 	resource_full_copies = 0;
 	resource_reference_copies = 0;

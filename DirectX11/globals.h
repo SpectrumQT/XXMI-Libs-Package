@@ -411,6 +411,19 @@ struct ShaderModelCacheEntry {
 	std::string shaderModel;
 };
 
+enum class InputDisableScope: int8_t {
+	INVALID = -1,
+	NONE    = 0,
+	MODS    = 1,
+	ALL     = 2,
+};
+static EnumName_t<const wchar_t*, InputDisableScope> InputDisableScopeNames[] = {
+	{L"mods", InputDisableScope::MODS},
+	{L"all", InputDisableScope::ALL},
+
+	{NULL, InputDisableScope::INVALID} // End of list marker
+};
+
 struct Globals
 {
 	bool gInitialized;
@@ -421,6 +434,10 @@ struct Globals
 	bool gWipeUserConfig;
 	bool gShowWarnings;
 	bool dump_all_profiles;
+
+	bool clear_unknown_settings = true;
+	uint32_t current_unknown_settings_hash = 0;
+	uint32_t last_unknown_settings_hash = 0;
 
 	uint64_t ticks_at_launch;
 	uint64_t gSystemTickCount;
@@ -439,7 +456,7 @@ struct Globals
 	int load_library_redirect;
 
 	std::wstring user_config;
-	int user_config_dirty;
+	bool user_config_dirty;
 
 	EnableHooks enable_hooks;
 	
@@ -485,6 +502,7 @@ struct Globals
 
 	ShaderHashType shader_hash_type;
 	bool track_region_hashes;
+	DataCacheBindFlags cache_resource_data = (DataCacheBindFlags)0;
 	bool track_implicit_index_buffers;
 	bool allow_buffer_resize;
 	int texture_hash_version;
@@ -531,8 +549,8 @@ struct Globals
 	bool hide_cursor;
 	bool cursor_upscaling_bypass;
 	bool check_foreground_window;
+	InputDisableScope input_disable_scope;
 	bool disable_input;
-	bool disable_input_initialized;
 	int gDllInitializationDelay;
 	int gSettingsAutoSaveInterval;
 	int gConfigInitializationDelay;
@@ -728,7 +746,7 @@ struct Globals
 		cursor_upscaling_bypass(true),
 		check_foreground_window(false),
 		disable_input(false),
-		disable_input_initialized(false),
+		input_disable_scope(InputDisableScope::INVALID),
 
 		GAME_INTERNAL_WIDTH(1), // it gonna be used by mouse pos hook in case of softwaremouse is on and it can be called before
 		GAME_INTERNAL_HEIGHT(1),//  the swap chain is created and the proper data set to avoid errors in the hooked winapi functions
@@ -757,7 +775,7 @@ struct Globals
 		gReloadConfigPending(false),
 		gConfigInitialized(false),
 		gWipeUserConfig(false),
-		user_config_dirty(0),
+		user_config_dirty(false),
 		gShowWarnings(true),
 		gDllInitializationDelay(0),
 		gSettingsAutoSaveInterval(0),

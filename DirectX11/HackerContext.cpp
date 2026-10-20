@@ -1419,18 +1419,16 @@ bool HackerContext::MapDenyCPURead(
 	return i->second.begin()->deny_cpu_read;
 }
 
-// Checks resource for being an index or vertex buffer.
+// Check whether this buffer should have its data cached in RAM.
 bool HackerContext::MapTrackRegionHashes(ID3D11Resource* pResource, D3D11_MAP MapType, D3D11_RESOURCE_DIMENSION* dim)
 {
 	if (MapType == D3D11_MAP_READ || *dim != D3D11_RESOURCE_DIMENSION_BUFFER)
 		return false;
-	ID3D11Buffer* buf = (ID3D11Buffer*)pResource;
+
 	D3D11_BUFFER_DESC buf_desc;
-	buf->GetDesc(&buf_desc);
-	if (buf_desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER)) {
-		return true;
-	}
-	return false;
+	((ID3D11Buffer*)pResource)->GetDesc(&buf_desc);
+
+	return (buf_desc.BindFlags & (D3D11_BIND_FLAG)G->cache_resource_data) != 0;
 }
 
 void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
@@ -1490,12 +1488,10 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 
 	pResource->GetType(&dim);
 
-	// Divert IB or VB buffer for use in region hashes system cache.
+	// Divert CB or IB or VB buffer for use in region hashes system cache.
 	// Data will be copied during TrackAndDivertUnmap from allocated replacement.
-	if (G->track_region_hashes) {
-		if (!divert)
-			divert = MapTrackRegionHashes(pResource, MapType, &dim);
-	}
+	if (!divert && G->cache_resource_data != DataCacheBindFlags::INVALID)
+		divert = MapTrackRegionHashes(pResource, MapType, &dim);
 
 	if (!track && !divert)
 		goto out_profile;
@@ -1598,7 +1594,7 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 
 	bool deallocate_diverted_memory = true;
 
-	if (G->track_region_hashes && map_info->bind_flags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER))
+	if ((map_info->bind_flags & (D3D11_BIND_FLAG)G->cache_resource_data) != 0)
 		UpdateResourceDataCacheFromMap(pResource, map_info->map.pData, map_info->size, &deallocate_diverted_memory);
 
 	if (G->track_texture_updates == 1 && Subresource == 0 && map_info->mapped_writable)
@@ -2030,6 +2026,13 @@ void CopySubresourceRegionCache(ID3D11Resource* pSrcResource, ID3D11Resource* pD
 	if (dim != D3D11_RESOURCE_DIMENSION_BUFFER)
 		return;
 
+	D3D11_BUFFER_DESC dst_desc;
+	((ID3D11Buffer*)pDstResource)->GetDesc(&dst_desc);
+
+	// Cache the destination buffer only if at least one of its bind flags is selected for resource data caching.
+	if ((dst_desc.BindFlags & (D3D11_BIND_FLAG)G->cache_resource_data) == 0)
+		return;
+
 	UINT src_offset = 0;
 	UINT region_size = 0;
 
@@ -2040,39 +2043,34 @@ void CopySubresourceRegionCache(ID3D11Resource* pSrcResource, ID3D11Resource* pD
 		region_size = pSrcBox->right - pSrcBox->left;
 	}
 
-	EnterCriticalSectionPretty(&G->mCriticalSection);
+	{
+		CriticalSectionGuard(&G->mCriticalSection);
 
-	ResourceHandleInfo* src_info = GetResourceHandleInfo(pSrcResource);
-	ResourceHandleInfo* dst_info = GetResourceHandleInfo(pDstResource);
+		ResourceHandleInfo* src_info = GetResourceHandleInfo(pSrcResource);
+		ResourceHandleInfo* dst_info = GetResourceHandleInfo(pDstResource);
 
-	if (!src_info || !dst_info) {
-		LeaveCriticalSection(&G->mCriticalSection);
-		return;
+		if (!src_info || !dst_info) {
+			return;
+		}
+
+		if (!src_info->cached_data_size || src_offset + region_size > src_info->cached_data_size) {
+			// Copy is happening from uncached data -> reset dst cache and leave it to slow fallback path.
+			dst_info->ClearDataCache();
+			return;
+		}
+
+		// If range is not specified, we must copy the entire src buffer.
+		if (!region_size)
+			region_size = src_info->cached_data_size;
+
+		// Initialize new cache of dst size.
+		if (!dst_info->cached_data_size)
+			dst_info->InitializeDataCache(dst_desc.ByteWidth);
+
+		dst_info->SetDataCacheRegion(src_info->GetCachedData() + src_offset, region_size, DstX);
+
+		//dst_info->cached_data_hash = crc32c_hw(0, dst_info->cached_data, dst_desc.ByteWidth);
 	}
-
-	if (!src_info->cached_data_size || src_offset + region_size > src_info->cached_data_size) {
-		// Copy is happening from uncached data -> reset dst cache and leave it to slow fallback path.
-		dst_info->ClearDataCache();
-		LeaveCriticalSection(&G->mCriticalSection);
-		return;
-	}
-
-	// If range is not specified, we must copy the entire src buffer.
-	if (!region_size)
-		region_size = src_info->cached_data_size;
-
-	// Initialize new cache of dst size.
-	if (!dst_info->cached_data_size) {
-		D3D11_BUFFER_DESC dst_desc;
-		((ID3D11Buffer*)pDstResource)->GetDesc(&dst_desc);
-		dst_info->InitializeDataCache(dst_desc.ByteWidth);
-	}
-
-	dst_info->SetDataCacheRegion(src_info->GetCachedData() + src_offset, region_size, DstX);
-
-	//dst_info->cached_data_hash = crc32c_hw(0, dst_info->cached_data, dst_desc.ByteWidth);
-
-	LeaveCriticalSection(&G->mCriticalSection);
 
 	//LogInfo("CopySubresourceRegion CacheBufferData region_size=%d, src_offset=%d, dst_offset=%d, src_hash=%08lx, src_data_hash=%08lx, dst_hash=%08lx, dst_data_hash=%08lx, srcResource=0x%p, dstResource=0x%p\n",
 	//	region_size, src_offset, DstX, src_info->hash, src_info->cached_data_hash, dst_info->hash, dst_info->cached_data_hash, pSrcResource, pDstResource);
@@ -2118,7 +2116,7 @@ STDMETHODIMP_(void) HackerContext::CopySubresourceRegion(THIS_
 	if (G->track_texture_updates == 1 && DstSubresource == 0 && DstX == 0 && DstY == 0 && DstZ == 0 && pSrcBox == NULL)
 		PropagateResourceHash(pDstResource, pSrcResource);
 
-	if (G->track_region_hashes)
+	if (G->cache_resource_data != DataCacheBindFlags::INVALID)
 		CopySubresourceRegionCache(pSrcResource, pDstResource, DstX, pSrcBox);
 }
 
@@ -2132,9 +2130,8 @@ STDMETHODIMP_(void) HackerContext::CopyResource(THIS_
 		MarkResourceHashContaminated(pDstResource, 0, pSrcResource, 0, 'C', 0, 0, 0, NULL);
 	}
 
-	if (G->track_region_hashes) {
+	if (G->cache_resource_data != DataCacheBindFlags::INVALID)
 		ClearResourceRegionHashCache(pDstResource);
-	}
 
 	TextureOverrideMatches matches;
 	find_texture_overrides_for_resource(pDstResource, &matches, NULL);
@@ -2195,9 +2192,8 @@ STDMETHODIMP_(void) HackerContext::UpdateSubresource(THIS_
 		MarkResourceHashContaminated(pDstResource, DstSubresource, NULL, 0, 'U', 0, 0, 0, NULL);
 	}
 
-	if (G->track_region_hashes) {
+	if (G->cache_resource_data != DataCacheBindFlags::INVALID)
 		ClearResourceRegionHashCache(pDstResource);
-	}
 
 	 mOrigContext1->UpdateSubresource(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch,
 		SrcDepthPitch);
@@ -3123,9 +3119,7 @@ void HackerContext::InitIniParams()
 	// We don't consider persistent globals set in the [Constants] pre
 	// command list as making the user config file dirty, because this
 	// command list includes the user config file's [Constants] itself.
-	// We clear only the low bit here, so that this may be overridden if
-	// an invalid value is found that is scheduled to be removed:
-	G->user_config_dirty &= ~1;
+	G->user_config_dirty = false;
 	RunCommandList(mHackerDevice, this, &G->post_constants_command_list, NULL, true);
 
 	// Only want to run [Constants] on initial load and config reload. In
@@ -3518,9 +3512,9 @@ void STDMETHODCALLTYPE HackerContext::CopySubresourceRegion1(
 	/* [annotation] */
 	_In_  UINT CopyFlags)
 {
-	if (G->track_region_hashes) {
+	if (G->cache_resource_data != DataCacheBindFlags::INVALID)
 		ClearResourceRegionHashCache(pDstResource);
-	}
+
 	mOrigContext1->CopySubresourceRegion1(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox, CopyFlags);
 }
 
@@ -3540,9 +3534,8 @@ void STDMETHODCALLTYPE HackerContext::UpdateSubresource1(
 	/* [annotation] */
 	_In_  UINT CopyFlags)
 {
-	if (G->track_region_hashes) {
+	if (G->cache_resource_data != DataCacheBindFlags::INVALID)
 		ClearResourceRegionHashCache(pDstResource);
-	}
 
 	mOrigContext1->UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
 
@@ -3554,9 +3547,9 @@ void STDMETHODCALLTYPE HackerContext::DiscardResource(
 	/* [annotation] */
 	_In_  ID3D11Resource *pResource)
 {
-	if (G->track_region_hashes) {
+	if (G->cache_resource_data != DataCacheBindFlags::INVALID)
 		ClearResourceRegionHashCache(pResource);
-	}
+
 	mOrigContext1->DiscardResource(pResource);
 }
 

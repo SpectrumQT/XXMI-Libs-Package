@@ -27,6 +27,7 @@ build/
 [Bb]in/
 [Oo]bj/
 *.zip
+version.generated.h
 
 # Enable "build/" folder in the NuGet Packages folder since NuGet packages use it for MSBuild targets
 !packages/*/build/
@@ -204,3 +205,4 @@ $RECYCLE.BIN/
 #
 # There's a great collection of .gitignore templates here:
 # https://github.com/github/gitignore
+.idea/

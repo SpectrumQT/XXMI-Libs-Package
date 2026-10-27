@@ -53,3 +53,13 @@ cs-cb0 = ref vs-cb0->Region($byte_offset, $byte_size)
 The same underlying buffer is referenced using the specified region without copying its contents.
 
 See [Constant Buffer Region](../examples/constant-buffer-region.md) for a practical example.
+
+### Binding a Region as a Stream Output Target
+
+```ini
+so0 = ref ResourceFoo->Region($start * $stride, $count * $stride)
+```
+
+Stream output is written from `$byte_offset` instead of from the start of the buffer, so a draw call can fill the part of a shared mesh that belongs to one object. Only the offset is used, as D3D11 takes no size for a stream output target.
+
+Stream output slots the line does not name are bound at offset 0, since D3D11 does not report the offsets they were bound at.

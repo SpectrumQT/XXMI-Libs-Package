@@ -11113,6 +11113,8 @@ static ID3D11Buffer *RecreateCompatibleBuffer(
 	D3D11_BUFFER_DESC new_desc;
 	ID3D11Buffer *buffer = NULL;
 
+	// Preserve an explicitly requested copy size before the compatibility
+	// logic below adjusts the destination size. Zero means use the default size.
 	UINT dst_size = *buf_dst_size;
 
 	src_resource->GetDesc(&new_desc);
@@ -11136,18 +11138,29 @@ static ID3D11Buffer *RecreateCompatibleBuffer(
 
 	bool src_is_cb = src && src->type == ResourceCopyTargetType::CONSTANT_BUFFER;
 
-	// Constant buffers created via SetConstantBuffer1 may have region size specified (derived from NumConstants).
-	// We'll use source CB size whenever it's available, since other data is irrelevant for current shader call.
+	// SetConstantBuffers1 can expose a subrange of a larger backing buffer.
+	// Use the visible range as the default destination size, but retain the
+	// backing buffer's full size in buf_src_size for source-bound calculations.
+	// An explicit copy size is preserved separately in dst_size.
 	if (src_is_cb && *buf_src_size) {
-		*buf_dst_size = *buf_src_size;      // Set DST CB size to "visible region" size
-		*buf_src_size = new_desc.ByteWidth; // Set SRC CB size to its actual size
-		new_desc.ByteWidth = *buf_dst_size; // Set DST DESC size to "visible region" size
+		*buf_dst_size = *buf_src_size;
+		*buf_src_size = new_desc.ByteWidth;
+		new_desc.ByteWidth = *buf_dst_size;
 	}
 
-	if (dst_size > 0)
-		dst_size = min(dst_size, new_desc.ByteWidth);
-	else
+	// Constant-buffer handling above may reduce new_desc.ByteWidth to the
+	// currently bound range, while buf_src_size retains the backing-buffer size.
+	UINT max_dst_size = new_desc.ByteWidth;
+	if (src_is_cb && *buf_src_size)
+		max_dst_size = max(max_dst_size, *buf_src_size);
+
+	if (dst_size > 0) {
+		// Preserve the requested copy length up to the available buffer extent.
+		// Do not truncate it to the visible constant-buffer range.
+		dst_size = min(dst_size, max_dst_size);
+	} else {
 		dst_size = new_desc.ByteWidth;
+	}
 
 	if (bind_flags & D3D11_BIND_CONSTANT_BUFFER)
 	{
@@ -12148,20 +12161,22 @@ static void SpecialCopyBufferRegion(ID3D11Resource *dst_resource,ID3D11Resource 
 		CommandListState *state, UINT src_stride, UINT *src_offset,
 		UINT buf_src_size, UINT buf_dst_size)
 {
-	// We are copying a buffer for use in a constant buffer and the size of
-	// the original buffer did not meet the constraints of a constant
-	// buffer.
+	// Copy a byte range from the source buffer into the destination, starting
+	// at destination offset 0. This also handles buffer conversions that require
+	// a region copy, including constant-buffer size and alignment constraints.
 	D3D11_BOX src_box;
 
-	// We want to copy from the offset to the end of the source buffer, but
-	// cap it to the destination size to avoid "undefined behaviour". Keep
-	// in mind that this is "right", not "size":
+	// D3D11_BOX::right is an exclusive end offset, whereas buf_dst_size is a
+	// byte count. Calculate the requested end and clamp it to the source buffer's
+	// total size so the copy does not extend beyond the source.
+	UINT available_size = buf_src_size - *src_offset;
+	UINT copy_size = min(buf_dst_size, available_size);
 	src_box.left = *src_offset;
-	src_box.right = min(buf_src_size, *src_offset + buf_dst_size);
+	src_box.right = *src_offset + copy_size;
 
 	if (src_stride) {
-		// If we are copying to a structured resource, the source box
-		// must be a multiple of the stride, so round it down:
+		// The copied byte range must contain whole elements when copying into
+		// a structured buffer. Round the end down to the nearest stride boundary.
 		src_box.right = (src_box.right - src_box.left) / src_stride * src_stride + src_box.left;
 	}
 
@@ -12549,6 +12564,9 @@ void ResourceCopyOperation::CopyResourceToResource(
 			COMMAND_LIST_LOG(state, "  WARNING: referenced resource is missing bind flags required by destination, view creation will fail\n");
 	}
 
+	// Region(offset, size) specifies a byte offset and a byte count.
+	// Keep size as the requested destination copy size.
+	// The copy helper calculates the exclusive source end offset from both values.
 	if (src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE_REGION) {
 		offset = (UINT)src.member_args[0].GetValue(state);
 		buf_dst_size = (UINT)src.member_args[1].GetValue(state);

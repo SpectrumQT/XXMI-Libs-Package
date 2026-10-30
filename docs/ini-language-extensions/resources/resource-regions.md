@@ -62,4 +62,4 @@ so0 = ref ResourceFoo->Region($start * $stride, $count * $stride)
 
 Stream output is written from `$byte_offset` instead of from the start of the buffer, so a draw call can fill the part of a shared mesh that belongs to one object. Only the offset is used, as D3D11 takes no size for a stream output target.
 
-Stream output slots the line does not name are bound at offset 0, since D3D11 does not report the offsets they were bound at.
+Stream output slots the line does not name are rebound to append: they carry on after whatever was last written to them, since D3D11 does not report the offsets they were bound at.

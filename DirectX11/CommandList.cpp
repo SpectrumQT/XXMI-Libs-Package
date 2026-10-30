@@ -10087,17 +10087,11 @@ void ResourceCopyTarget::SetResource(
 		// so a draw call can re-skin one object out of a shared mesh:
 		//   so0 = ref ResourceFoo->Region($start * $stride, $count * $stride)
 		//
-		// The slots this is not binding keep the offset 0,
-		// which is what they were given when offsets were NULL:
-		// SOGetTargets() does not report the offsets they were bound at,
-		// so there is nothing to put back.
-		//
-		// XXX: (UINT)-1 for those slots may well be better.
-		// It means "append": the stage carries on writing,
+		// SOGetTargets() does not report where the other slots were bound,
+		// so they are rebound at (UINT)-1, which D3D11 reads as "append":
+		// the stage carries on after whatever it last wrote,
 		// instead of starting over and overwriting what is there.
-		// That is closer to leaving an unmentioned slot alone,
-		// but it changes their behaviour,
-		// so it wants testing in a game that binds several targets.
+		std::fill_n(so_offsets, D3D11_SO_STREAM_COUNT, UINT(-1));
 		so_offsets[slot] = offset;
 		mOrigContext1->SOSetTargets(D3D11_SO_STREAM_COUNT, so_bufs, so_offsets);
 

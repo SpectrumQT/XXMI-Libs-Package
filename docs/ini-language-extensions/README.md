@@ -5,7 +5,7 @@
 * [Commands](commands/README.md) — new commands
 * [Command Lists](command-lists/README.md) — extended recursion and callback support
 * [Runtime Parameters](parameters/README.md) — new values provided by the runtime
-* [Expressions](expressions/README.md) — new operators and functions
+* [Expressions](expressions/README.md) — new operators, compound assignment and functions
 * [Variables](variables/README.md) — extended variable declarations and read-only mode
 * [Resources](resources/README.md) — resource metadata, buffer region and slot range support
 * [Pools](pools/README.md) — indexed storage for resources and variables

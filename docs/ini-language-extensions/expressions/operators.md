@@ -46,3 +46,19 @@ The following bitwise operators are supported:
 | -------- | ----------- |
 | `<<`     | Left shift  |
 | `>>`     | Right shift |
+
+## Compound Assignment Operators
+
+Any binary operator can be combined with `=` to apply it to the current value of the target:
+
+```ini
+$x += 1      ; $x = ($x) + (1)
+$x *= 2 + 3  ; $x = ($x) * (2 + 3)
+x0 |= 4      ; x0 = (x0) | (4)
+```
+
+Supported operators: `+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `<<=`, `>>=`, `&=`, `|=`, `^=`, `&&=` and `||=`.
+
+The right-hand side is evaluated as a whole before the operator is applied. The target can be an INI variable, a pool variable or an IniParam, and the `pre` and `post` keywords are accepted.
+
+Compound assignments are parsed into the same expression as the equivalent plain assignment, so they have no runtime overhead. The frame analysis log shows the line as written.

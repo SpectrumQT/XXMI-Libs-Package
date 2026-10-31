@@ -886,3 +886,7 @@ void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, Texture
 void InvalidateTextureOverrideCandidates();
 
 void ClearRegionHashesGlobalCache();
+
+uint32_t LookupSrvHash(ID3D11ShaderResourceView *srv);
+void InvalidateSrvHash(ID3D11ShaderResourceView *srv);
+void InvalidateResourceHandleInfo(ID3D11Resource *resource);

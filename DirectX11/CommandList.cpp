@@ -3,6 +3,9 @@
 #include "lock.h"
 
 #include "CommandList.h"
+#if defined(USING_DIRECTSTORAGE)
+#include "DirectStorageManager.h"
+#endif
 
 #include <DDSTextureLoader.h>
 #include <algorithm>
@@ -517,6 +520,9 @@ void optimise_command_lists(HackerDevice *device)
 		making_progress = false;
 		ignore_cto_pre = true;
 		ignore_cto_post = true;
+		G->ignore_cto_post_srv = true;
+		G->ignore_cto_post_vb = true;
+		G->ignore_cto_post_ib = true;
 
 		// If all TextureOverride sections have empty command lists of
 		// either pre or post, we can treat checktextureoverride as a
@@ -527,18 +533,50 @@ void optimise_command_lists(HackerDevice *device)
 		// (e.g. in DOAXVV this can easily save 0.2fps on a 4GHz CPU,
 		// more on a slower CPU since this command is used in the
 		// shadow map shaders)
-		//
-		// FIXME: This should itself ignore any checktextureoverrides
-		// inside these command lists
 		for (auto &tolkv : G->mTextureOverrideMap) {
 			for (TextureOverride &to : tolkv.second) {
-				ignore_cto_pre = ignore_cto_pre && to.command_list.noop();
-				ignore_cto_post = ignore_cto_post && to.post_command_list.noop();
+				bool pre_noop = to.command_list.noop();
+				bool post_noop = to.post_command_list.noop();
+				ignore_cto_pre = ignore_cto_pre && pre_noop;
+				ignore_cto_post = ignore_cto_post && post_noop;
+
+				if (!post_noop) {
+					if (to.is_vertex_buffer_override)
+						G->ignore_cto_post_vb = false;
+					if (to.is_index_buffer_override)
+						G->ignore_cto_post_ib = false;
+					if (!to.is_vertex_buffer_override && !to.is_index_buffer_override)
+						G->ignore_cto_post_srv = false;
+				}
 			}
 		}
 		for (auto &tof : G->mFuzzyTextureOverrides) {
-			ignore_cto_pre = ignore_cto_pre && tof->texture_override->command_list.noop();
-			ignore_cto_post = ignore_cto_post && tof->texture_override->post_command_list.noop();
+			bool pre_noop = tof->texture_override->command_list.noop();
+			bool post_noop = tof->texture_override->post_command_list.noop();
+			ignore_cto_pre = ignore_cto_pre && pre_noop;
+			ignore_cto_post = ignore_cto_post && post_noop;
+
+			if (!post_noop) {
+				if (tof->matches_buffer) {
+					D3D11_BUFFER_DESC vb_desc = {};
+					vb_desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+					if (tof->BindFlags.matches(vb_desc.BindFlags, &vb_desc))
+						G->ignore_cto_post_vb = false;
+
+					D3D11_BUFFER_DESC ib_desc = {};
+					ib_desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+					if (tof->BindFlags.matches(ib_desc.BindFlags, &ib_desc)) {
+						if (!tof->texture_override || tof->texture_override->priority > -9000)
+							G->ignore_cto_post_ib = false;
+					}
+				}
+				if (tof->matches_tex1d || tof->matches_tex2d || tof->matches_tex3d) {
+					D3D11_TEXTURE2D_DESC tex_desc = {};
+					tex_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+					if (tof->BindFlags.matches(tex_desc.BindFlags, &tex_desc))
+						G->ignore_cto_post_srv = false;
+				}
+			}
 		}
 
 		// Go through each registered command list and remove any
@@ -568,7 +606,7 @@ void optimise_command_lists(HackerDevice *device)
 	for (CommandList *command_list : registered_command_lists)
 		merge_shader_resource_batches(command_list);
 
-	Profiling::update_cto_warning(!ignore_cto_post);
+	Profiling::update_cto_warning(!(G->ignore_cto_post_srv && G->ignore_cto_post_vb && G->ignore_cto_post_ib));
 
 	LogInfo("Command List Optimiser finished after %ums\n", GetTickCount() - start);
 	registered_command_lists.clear();
@@ -1352,6 +1390,15 @@ void CheckTextureOverrideCommand::run(CommandListState *state)
 	bool saved_post;
 	unsigned i;
 
+	if (state->post && !run_pre_and_post_together) {
+		if (target.type == ResourceCopyTargetType::SHADER_RESOURCE && G->ignore_cto_post_srv)
+			return;
+		if (target.type == ResourceCopyTargetType::VERTEX_BUFFER && G->ignore_cto_post_vb)
+			return;
+		if (target.type == ResourceCopyTargetType::INDEX_BUFFER && G->ignore_cto_post_ib)
+			return;
+	}
+
 	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
 
 	// A range checks every slot or element in turn, as the equivalent single
@@ -1414,8 +1461,15 @@ bool CheckTextureOverrideCommand::noop(bool post, bool ignore_cto_pre, bool igno
 	if (run_pre_and_post_together)
 		return (ignore_cto_pre && ignore_cto_post);
 
-	if (post)
+	if (post) {
+		if (target.type == ResourceCopyTargetType::SHADER_RESOURCE)
+			return G->ignore_cto_post_srv;
+		if (target.type == ResourceCopyTargetType::VERTEX_BUFFER)
+			return G->ignore_cto_post_vb;
+		if (target.type == ResourceCopyTargetType::INDEX_BUFFER)
+			return G->ignore_cto_post_ib;
 		return ignore_cto_post;
+	}
 	return ignore_cto_pre;
 }
 
@@ -6589,8 +6643,38 @@ void CustomResource::LoadFromFile(ID3D11Device *mOrigDevice1)
 	EnsureCOM();
 
 	ext = filename.substr(filename.rfind(L"."));
-	if (!_wcsicmp(ext.c_str(), L".dds")) {
-		LogInfoW(L"Loading custom resource %s as DDS, bind_flags=0x%03x\n", filename.c_str(), bind_flags);
+	bool is_gdds = !_wcsicmp(ext.c_str(), L".gdds");
+	if (is_gdds) {
+		std::wstring dds_path = filename.substr(0, filename.rfind(L".")) + L".dds";
+		DWORD dds_attr = GetFileAttributesW(dds_path.c_str());
+		if (dds_attr != INVALID_FILE_ATTRIBUTES && !(dds_attr & FILE_ATTRIBUTE_DIRECTORY)) {
+			filename = dds_path;
+			ext = L".dds";
+			is_gdds = false;
+		}
+	}
+	if (is_gdds || !_wcsicmp(ext.c_str(), L".dds")) {
+		LogInfoW(L"Loading custom resource %s as %s, bind_flags=0x%03x\n",
+				filename.c_str(), is_gdds ? L"GDDS" : L"DDS", bind_flags);
+
+#ifdef USING_DIRECTSTORAGE
+		if (is_gdds && DirectStorageManager::IsEnabled() && DirectStorageManager::EnsureInitialized(mOrigDevice1)) {
+			ID3D11Texture2D *dsTex = nullptr;
+			hr = DirectStorageManager::GetInstance()->LoadTextureFromFile(
+					mOrigDevice1, filename,
+					(D3D11_BIND_FLAG)bind_flags,
+					(D3D11_RESOURCE_MISC_FLAG)misc_flags,
+					&dsTex);
+			if (SUCCEEDED(hr) && dsTex) {
+				resource = dsTex;
+				device = mOrigDevice1;
+				is_null = false;
+				return;
+			}
+			LogDebugW(L"DirectStorage failed for %s (0x%x), attempting fallback\n", filename.c_str(), hr);
+		}
+#endif
+
 		hr = DirectX::CreateDDSTextureFromFileEx(mOrigDevice1,
 				filename.c_str(), 0,
 				D3D11_USAGE_DEFAULT, bind_flags, 0, misc_flags,
@@ -9747,7 +9831,13 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 			mOrigContext1->GSGetShaderResources(slot, 1, &resource_view);
 			break;
 		case L'p':
-			mOrigContext1->PSGetShaderResources(slot, 1, &resource_view);
+			if (state && state->mHackerContext && slot < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
+				resource_view = state->mHackerContext->mCurrentPixelShaderResourceViews[slot];
+				if (resource_view)
+					resource_view->AddRef();
+			} else {
+				mOrigContext1->PSGetShaderResources(slot, 1, &resource_view);
+			}
 			break;
 		case L'c':
 			mOrigContext1->CSGetShaderResources(slot, 1, &resource_view);
@@ -9773,15 +9863,25 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 	// TODO: 	break;
 
 	case ResourceCopyTargetType::VERTEX_BUFFER:
-		// TODO: If copying this to a constant buffer, provide some
-		// means to get the strides + offsets from within the shader.
-		// Perhaps as an IniParam, or in another constant buffer?
+		if (state && state->mHackerContext && slot < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT) {
+			buf = state->mHackerContext->mCurrentVertexBuffersBindings[slot].buffer;
+			if (stride) *stride = state->mHackerContext->mCurrentVertexBuffersBindings[slot].stride;
+			if (offset) *offset = state->mHackerContext->mCurrentVertexBuffersBindings[slot].offset;
+			if (buf) buf->AddRef();
+			return buf;
+		}
 		mOrigContext1->IAGetVertexBuffers(slot, 1, &buf, stride, offset);
 		return buf;
 
 	case ResourceCopyTargetType::INDEX_BUFFER:
-		// TODO: Similar comment as vertex buffers above, provide a
-		// means for a shader to get format + offset.
+		if (state && state->mHackerContext) {
+			buf = state->mHackerContext->mCurrentIndexBufferBinding.buffer;
+			if (format) *format = state->mHackerContext->mCurrentIndexBufferBinding.format;
+			if (offset) *offset = state->mHackerContext->mCurrentIndexBufferBinding.offset;
+			if (stride && format && *format) *stride = dxgi_format_size(*format);
+			if (buf) buf->AddRef();
+			return buf;
+		}
 		mOrigContext1->IAGetIndexBuffer(&buf, format, offset);
 		if (stride && format)
 			*stride = dxgi_format_size(*format);
@@ -10076,6 +10176,10 @@ void ResourceCopyTarget::SetResource(
 			mOrigContext1->GSSetShaderResources(slot, 1, &resource_view);
 			break;
 		case L'p':
+			if (state && state->mHackerContext && slot < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
+				state->mHackerContext->mCurrentPixelShaderResourceViews[slot] = resource_view;
+				state->mHackerContext->mCurrentPixelShaderResourceHashes[slot] = resource_view ? LookupSrvHash(resource_view) : 0;
+			}
 			mOrigContext1->PSSetShaderResources(slot, 1, &resource_view);
 			break;
 		case L'c':
@@ -10310,6 +10414,76 @@ D3D11_BIND_FLAG ResourceCopyTarget::BindFlags(CommandListState *state, D3D11_RES
 
 void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *resource_found, TextureOverrideMatches *matches)
 {
+	// Fast early rejection: If this is a vertex or index buffer slot, check the tracked binding hash
+	// from HackerContext BEFORE querying DirectX. This avoids all COM calls, locks, and driver state queries.
+	if (this->type == ResourceCopyTargetType::VERTEX_BUFFER)
+	{
+		unsigned vb_slot = this->slot;
+		if (state && state->mHackerContext && vb_slot < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)
+		{
+			uint32_t vb_hash = state->mHackerContext->mCurrentVertexBuffers[vb_slot];
+			if (!vb_hash || (!G->has_fuzzy_vb_overrides && (!G->mVertexBufferBloom.MightContain(vb_hash) || G->mVertexBufferOverrideHashes.find(vb_hash) == G->mVertexBufferOverrideHashes.end())))
+			{
+				if (resource_found)
+					*resource_found = (vb_hash != 0);
+				return;
+			}
+		}
+		else if (!G->has_vertex_buffer_overrides && !G->has_fuzzy_vb_overrides)
+		{
+			if (resource_found)
+				*resource_found = false;
+			return;
+		}
+	}
+	else if (this->type == ResourceCopyTargetType::INDEX_BUFFER)
+	{
+		if (state && state->mHackerContext)
+		{
+			uint32_t ib_hash = state->mHackerContext->mCurrentIndexBuffer;
+			if (!ib_hash || (!G->has_non_fallback_fuzzy_ib_overrides && (!G->mIndexBufferBloom.MightContain(ib_hash) || G->mIndexBufferOverrideHashes.find(ib_hash) == G->mIndexBufferOverrideHashes.end())))
+			{
+				if (resource_found)
+					*resource_found = (ib_hash != 0);
+				return;
+			}
+		}
+		else if (!G->has_index_buffer_overrides && !G->has_non_fallback_fuzzy_ib_overrides)
+		{
+			if (resource_found)
+				*resource_found = false;
+			return;
+		}
+	}
+	else if (this->type == ResourceCopyTargetType::SHADER_RESOURCE && this->shader_type == L'p')
+	{
+		unsigned ps_slot = this->slot;
+		if (state && state->mHackerContext && ps_slot < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT)
+		{
+			ID3D11ShaderResourceView* srv = state->mHackerContext->mCurrentPixelShaderResourceViews[ps_slot];
+			if (!srv)
+			{
+				if (resource_found)
+					*resource_found = false;
+				return;
+			}
+
+			uint32_t ps_hash = state->mHackerContext->mCurrentPixelShaderResourceHashes[ps_slot];
+			if (!ps_hash)
+			{
+				ps_hash = LookupSrvHash(srv);
+				state->mHackerContext->mCurrentPixelShaderResourceHashes[ps_slot] = ps_hash;
+			}
+
+			if (!ps_hash || ps_hash == 1 || (!G->has_fuzzy_tex_overrides && (!G->mTextureOverrideBloom.MightContain(ps_hash) || G->mTextureOverrideMap.find(ps_hash) == G->mTextureOverrideMap.end())))
+			{
+				if (resource_found)
+					*resource_found = (ps_hash > 1);
+				return;
+			}
+		}
+	}
+
 	ID3D11View *view = NULL;
 	UINT stride = 0, offset = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
@@ -10321,6 +10495,55 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 
 	if (!resource)
 		return;
+
+	// Secondary buffer fast early-out: Even if some buffer overrides exist globally (e.g. character mods),
+	// world geometry draw calls almost never match them.
+	if (this->type == ResourceCopyTargetType::VERTEX_BUFFER)
+	{
+		if (G->track_region_hashes)
+		{
+			TextureOverrideFuzzyMatches* draw_info_matches = get_fuzzy_matches_by_draw_info(state->call_info);
+			if (!draw_info_matches && !G->has_fuzzy_vb_overrides)
+			{
+				resource->Release();
+				if (view) view->Release();
+				return;
+			}
+		}
+		else
+		{
+			ResourceHandleInfo *handle_info = GetResourceHandleInfo(resource);
+			if (handle_info && (!G->mVertexBufferBloom.MightContain(handle_info->hash) || G->mVertexBufferOverrideHashes.find(handle_info->hash) == G->mVertexBufferOverrideHashes.end()) && !G->has_fuzzy_vb_overrides)
+			{
+				resource->Release();
+				if (view) view->Release();
+				return;
+			}
+		}
+	}
+	else if (this->type == ResourceCopyTargetType::INDEX_BUFFER)
+	{
+		if (G->track_region_hashes)
+		{
+			TextureOverrideFuzzyMatches* draw_info_matches = get_fuzzy_matches_by_draw_info(state->call_info);
+			if (!draw_info_matches && !G->has_non_fallback_fuzzy_ib_overrides)
+			{
+				resource->Release();
+				if (view) view->Release();
+				return;
+			}
+		}
+		else
+		{
+			ResourceHandleInfo *handle_info = GetResourceHandleInfo(resource);
+			if (handle_info && (!G->mIndexBufferBloom.MightContain(handle_info->hash) || G->mIndexBufferOverrideHashes.find(handle_info->hash) == G->mIndexBufferOverrideHashes.end()) && !G->has_non_fallback_fuzzy_ib_overrides)
+			{
+				resource->Release();
+				if (view) view->Release();
+				return;
+			}
+		}
+	}
 
 	// For vertex and index buffers the game may pack multiple meshes into
 	// one buffer and bind them at different offsets. In that case the base
@@ -10352,9 +10575,9 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 		if (!region_size) 
 		{
 			// Resource isn't index or vertex buffer, or region size cannot be computed.
-			// Fallback to original behavior. 
-			// Run Hash Matching and Fuzzy Matching.
-			find_texture_overrides_for_resource(resource, matches, state->call_info);
+			// Fallback to original behavior for non-buffer resources only.
+			if (this->type != ResourceCopyTargetType::VERTEX_BUFFER && this->type != ResourceCopyTargetType::INDEX_BUFFER)
+				find_texture_overrides_for_resource(resource, matches, state->call_info);
 		} 
 		else 
 		{
@@ -10388,16 +10611,22 @@ void ResourceCopyTarget::FindTextureOverrides(CommandListState *state, bool *res
 				}
 			}
 
-			// Run Fuzzy Matching. Fuzzy candidates depend on the resource
-			// description only, not on the region, so the per resource
-			// cache applies here too - but only its fuzzy list, hash matching
-			// was done above by region_hash.
-			find_fuzzy_texture_overrides_for_resource(resource, matches, state->call_info);
+			// Run Fuzzy Matching only if fuzzy overrides exist.
+			if (!G->mFuzzyTextureOverrides.empty())
+				find_fuzzy_texture_overrides_for_resource(resource, matches, state->call_info);
 		}
 	}
 	else
 	{
 		find_texture_overrides_for_resource(resource, matches, state->call_info);
+	}
+
+	if (this->type == ResourceCopyTargetType::INDEX_BUFFER)
+	{
+		if (matches->size() == 1 && (*matches)[0]->priority <= -9000)
+		{
+			matches->clear();
+		}
 	}
 
 	//COMMAND_LIST_LOG(state, "  found texture hash = %08llx\n", hash);
@@ -12817,6 +13046,13 @@ void ShaderResourceBindBatch::run(CommandListState *state)
 		if (views[i])
 			views[i]->Release();
 		views[i] = (ID3D11ShaderResourceView*)binding.view;
+	}
+
+	if (shader_type == L'p' && state && state->mHackerContext) {
+		for (unsigned i = 0; i < count && (first_slot + i) < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; ++i) {
+			state->mHackerContext->mCurrentPixelShaderResourceViews[first_slot + i] = views[i];
+			state->mHackerContext->mCurrentPixelShaderResourceHashes[first_slot + i] = views[i] ? LookupSrvHash(views[i]) : 0;
+		}
 	}
 
 	SetShaderResourcesBatch(state->mOrigContext1, shader_type, first_slot, count, views);

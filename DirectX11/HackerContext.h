@@ -110,15 +110,10 @@ struct MappedResourceInfo {
 
 class HackerContext : public ID3D11DeviceContext1
 {
-private:
-	ID3D11Device1 *mOrigDevice1;
-	ID3D11DeviceContext1 *mOrigContext1;
-	ID3D11DeviceContext1 *mRealOrigContext1;
-	HackerDevice *mHackerDevice;
-
+public:
 	// These are per-context, moved from globals.h:
 	uint32_t mCurrentVertexBuffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
-	uint32_t mCurrentIndexBuffer; // Only valid while hunting=1
+	uint32_t mCurrentIndexBuffer;
 	struct VertexBufferBinding {
 		ID3D11Buffer* buffer;
 		UINT offset;
@@ -130,6 +125,14 @@ private:
 		DXGI_FORMAT format;
 		bool is_explicit;
 	} mCurrentIndexBufferBinding;
+	ID3D11ShaderResourceView* mCurrentPixelShaderResourceViews[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
+	uint32_t mCurrentPixelShaderResourceHashes[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
+
+private:
+	ID3D11Device1 *mOrigDevice1;
+	ID3D11DeviceContext1 *mOrigContext1;
+	ID3D11DeviceContext1 *mRealOrigContext1;
+	HackerDevice *mHackerDevice;
 	std::vector<ID3D11Resource *> mCurrentRenderTargets;
 	ID3D11Resource *mCurrentDepthTarget;
 	UINT mCurrentPSUAVStartSlot;

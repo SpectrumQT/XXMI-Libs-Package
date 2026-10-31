@@ -2173,6 +2173,7 @@ STDMETHODIMP HackerDevice::CreateBuffer(THIS_
 	if (hr == S_OK && ppBuffer && *ppBuffer)
 	{
 		EnterCriticalSectionPretty(&G->mResourcesLock);
+			InvalidateResourceHandleInfo(*ppBuffer);
 			ResourceHandleInfo *handle_info = &G->mResources[*ppBuffer];
 			new ResourceReleaseTracker(*ppBuffer);
 			handle_info->type = D3D11_RESOURCE_DIMENSION_BUFFER;
@@ -2228,6 +2229,7 @@ STDMETHODIMP HackerDevice::CreateTexture1D(THIS_
 	if (hr == S_OK && ppTexture1D && *ppTexture1D)
 	{
 		EnterCriticalSectionPretty(&G->mResourcesLock);
+			InvalidateResourceHandleInfo(*ppTexture1D);
 			ResourceHandleInfo *handle_info = &G->mResources[*ppTexture1D];
 			new ResourceReleaseTracker(*ppTexture1D);
 			handle_info->type = D3D11_RESOURCE_DIMENSION_TEXTURE1D;
@@ -2344,6 +2346,7 @@ STDMETHODIMP HackerDevice::CreateTexture2D(THIS_
 	if (hr == S_OK && ppTexture2D)
 	{
 		EnterCriticalSectionPretty(&G->mResourcesLock);
+			InvalidateResourceHandleInfo(*ppTexture2D);
 			ResourceHandleInfo *handle_info = &G->mResources[*ppTexture2D];
 			new ResourceReleaseTracker(*ppTexture2D);
 			handle_info->type = D3D11_RESOURCE_DIMENSION_TEXTURE2D;
@@ -2413,6 +2416,7 @@ STDMETHODIMP HackerDevice::CreateTexture3D(THIS_
 	if (hr == S_OK && ppTexture3D)
 	{
 		EnterCriticalSectionPretty(&G->mResourcesLock);
+			InvalidateResourceHandleInfo(*ppTexture3D);
 			ResourceHandleInfo *handle_info = &G->mResources[*ppTexture3D];
 			new ResourceReleaseTracker(*ppTexture3D);
 			handle_info->type = D3D11_RESOURCE_DIMENSION_TEXTURE3D;
@@ -2460,6 +2464,9 @@ STDMETHODIMP HackerDevice::CreateShaderResourceView(THIS_
 		}
 		LeaveCriticalSection(&G->mResourcesLock);
 	}
+
+	if (hr == S_OK && ppSRView && *ppSRView)
+		InvalidateSrvHash(*ppSRView);
 
 	LogDebug("  returns result = %x\n", hr);
 

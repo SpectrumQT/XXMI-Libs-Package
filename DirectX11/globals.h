@@ -298,6 +298,8 @@ struct TextureOverride {
 
 	bool has_draw_context_match;
 	bool has_match_priority;
+	bool is_vertex_buffer_override;
+	bool is_index_buffer_override;
 	int priority;
 	FuzzyMatch match_first_vertex;
 	FuzzyMatch match_first_index;
@@ -322,6 +324,8 @@ struct TextureOverride {
 		filter_index(FLT_MAX),
 		has_draw_context_match(false),
 		has_match_priority(false),
+		is_vertex_buffer_override(false),
+		is_index_buffer_override(false),
 		priority(0)
 	{}
 };
@@ -415,6 +419,41 @@ static EnumName_t<const wchar_t*, InputDisableScope> InputDisableScopeNames[] = 
 	{L"all", InputDisableScope::ALL},
 
 	{NULL, InputDisableScope::INVALID} // End of list marker
+};
+
+class FastHashBloomFilter {
+private:
+	static const size_t FILTER_BITS = 524288; // 64 KB
+	static const size_t FILTER_WORDS = FILTER_BITS / 64; // 8,192 uint64_t words
+	uint64_t m_bits[FILTER_WORDS] = {};
+
+	static inline uint32_t MurmurFinalizer(uint32_t h) {
+		h ^= h >> 16;
+		h *= 0x85ebca6b;
+		h ^= h >> 13;
+		h *= 0xc2b2ae35;
+		h ^= h >> 16;
+		return h;
+	}
+
+public:
+	void Clear() {
+		memset(m_bits, 0, sizeof(m_bits));
+	}
+
+	inline void Add(uint32_t hash) {
+		uint32_t h1 = MurmurFinalizer(hash) & (FILTER_BITS - 1);
+		uint32_t h2 = ((uint64_t)hash * 2654435761ULL) & (FILTER_BITS - 1);
+		m_bits[h1 >> 6] |= (1ULL << (h1 & 63));
+		m_bits[h2 >> 6] |= (1ULL << (h2 & 63));
+	}
+
+	inline bool MightContain(uint32_t hash) const {
+		uint32_t h1 = MurmurFinalizer(hash) & (FILTER_BITS - 1);
+		uint32_t h2 = ((uint64_t)hash * 2654435761ULL) & (FILTER_BITS - 1);
+		return ((m_bits[h1 >> 6] & (1ULL << (h1 & 63))) != 0) &&
+		       ((m_bits[h2 >> 6] & (1ULL << (h2 & 63))) != 0);
+	}
 };
 
 struct Globals
@@ -614,6 +653,20 @@ struct Globals
 	unordered_map<uint32_t, TextureOverrideFuzzyMatches> mTextureOverrideDrawIndexMap;  // Contains hash+TextureOverrides pairs indexed by match_index_count
 	unordered_map<uint32_t, TextureOverrideFuzzyMatches> mTextureOverrideDrawVertexMap; // Contains hash+TextureOverrides pairs indexed by match_vertex_count
 
+	bool has_vertex_buffer_overrides;
+	bool has_index_buffer_overrides;
+	bool has_fuzzy_vb_overrides;
+	bool has_non_fallback_fuzzy_ib_overrides;
+	bool has_fuzzy_tex_overrides;
+	bool ignore_cto_post_srv;
+	bool ignore_cto_post_vb;
+	bool ignore_cto_post_ib;
+	std::unordered_set<uint32_t> mVertexBufferOverrideHashes;
+	std::unordered_set<uint32_t> mIndexBufferOverrideHashes;
+	FastHashBloomFilter mTextureOverrideBloom;
+	FastHashBloomFilter mVertexBufferBloom;
+	FastHashBloomFilter mIndexBufferBloom;
+
 	// Statistics
 	///////////////////////////////////////////////////////////////////////
 	//                                                                   //
@@ -710,6 +763,14 @@ struct Globals
 
 		shader_hash_type(ShaderHashType::FNV),
 		track_region_hashes(false),
+		has_vertex_buffer_overrides(false),
+		has_index_buffer_overrides(false),
+		has_fuzzy_vb_overrides(false),
+		has_non_fallback_fuzzy_ib_overrides(false),
+		has_fuzzy_tex_overrides(false),
+		ignore_cto_post_srv(true),
+		ignore_cto_post_vb(true),
+		ignore_cto_post_ib(true),
 		track_implicit_index_buffers(false),
 		allow_buffer_resize(true),
 		texture_hash_version(0),

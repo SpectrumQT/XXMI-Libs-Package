@@ -1,4 +1,5 @@
 #include "ResourceHash.h"
+#include <atomic>
 
 #include <INITGUID.h>
 #include "log.h"
@@ -811,9 +812,22 @@ uint32_t CalcTexture2DDataHashAccurate(
 // Must be called with the critical section held to protect mResources against
 // simultaneous reads & modifications (hmm, tempted to implement a lock free
 // map given that it's add only, or use RCU). Is there anything on Windows like
-// lockdep to statically prove this is called with the lock held?
+static const size_t RES_CACHE_SIZE = 4096;
+struct ResCacheEntry {
+	std::atomic<ID3D11Resource*> resource{ nullptr };
+	ResourceHandleInfo* info = nullptr;
+};
+static ResCacheEntry s_res_cache[RES_CACHE_SIZE];
+
 ResourceHandleInfo* GetResourceHandleInfo(ID3D11Resource *resource)
 {
+	if (!resource)
+		return NULL;
+
+	size_t idx = (((uintptr_t)resource) >> 4) & (RES_CACHE_SIZE - 1);
+	if (s_res_cache[idx].resource.load(std::memory_order_acquire) == resource)
+		return s_res_cache[idx].info;
+
 	std::unordered_map<ID3D11Resource *, ResourceHandleInfo>::iterator j;
 	ResourceHandleInfo* ret = NULL;
 
@@ -825,7 +839,71 @@ ResourceHandleInfo* GetResourceHandleInfo(ID3D11Resource *resource)
 
 	LeaveCriticalSection(&G->mResourcesLock);
 
+	s_res_cache[idx].info = ret;
+	s_res_cache[idx].resource.store(resource, std::memory_order_release);
+
 	return ret;
+}
+
+void InvalidateResourceHandleInfo(ID3D11Resource *resource)
+{
+	if (!resource)
+		return;
+
+	size_t idx = (((uintptr_t)resource) >> 4) & (RES_CACHE_SIZE - 1);
+	if (s_res_cache[idx].resource.load(std::memory_order_relaxed) == resource)
+		s_res_cache[idx].resource.store(nullptr, std::memory_order_release);
+}
+
+static const size_t SRV_CACHE_WAYS = 4;
+static const size_t SRV_CACHE_SETS = 2048;
+struct SrvCacheEntry {
+	std::atomic<ID3D11ShaderResourceView*> srv{ nullptr };
+	uint32_t hash = 0;
+};
+static SrvCacheEntry s_srv_cache[SRV_CACHE_SETS][SRV_CACHE_WAYS];
+
+uint32_t LookupSrvHash(ID3D11ShaderResourceView *srv)
+{
+	if (!srv)
+		return 0;
+
+	size_t set = (((uintptr_t)srv) >> 4) & (SRV_CACHE_SETS - 1);
+	for (size_t way = 0; way < SRV_CACHE_WAYS; ++way) {
+		if (s_srv_cache[set][way].srv.load(std::memory_order_acquire) == srv) {
+			return s_srv_cache[set][way].hash;
+		}
+	}
+
+	ID3D11Resource* res = nullptr;
+	srv->GetResource(&res);
+	uint32_t hash = 1; // 1 = marker for unhashed or 0
+	if (res) {
+		uint32_t res_hash = GetResourceHash(res);
+		if (res_hash)
+			hash = res_hash;
+		res->Release();
+	}
+
+	static thread_local size_t s_way_counter = 0;
+	size_t way = (s_way_counter++) & (SRV_CACHE_WAYS - 1);
+	s_srv_cache[set][way].hash = hash;
+	s_srv_cache[set][way].srv.store(srv, std::memory_order_release);
+
+	return hash;
+}
+
+void InvalidateSrvHash(ID3D11ShaderResourceView *srv)
+{
+	if (!srv)
+		return;
+
+	size_t set = (((uintptr_t)srv) >> 4) & (SRV_CACHE_SETS - 1);
+	for (size_t way = 0; way < SRV_CACHE_WAYS; ++way) {
+		if (s_srv_cache[set][way].srv.load(std::memory_order_relaxed) == srv) {
+			s_srv_cache[set][way].srv.store(nullptr, std::memory_order_release);
+		}
+	}
 }
 
 // Must be called with the critical section held to protect mResources against
@@ -1349,6 +1427,7 @@ ULONG STDMETHODCALLTYPE ResourceReleaseTracker::Release(void)
 		EnterCriticalSectionPretty(&G->mResourcesLock);
 		G->mResources.erase(resource);
 		LeaveCriticalSection(&G->mResourcesLock);
+		InvalidateResourceHandleInfo(resource);
 		delete this;
 	}
 	return ret;
@@ -1686,6 +1765,9 @@ static uint32_t get_hash_for_resource(ID3D11Resource* resource)
 
 TextureOverrideFuzzyMatches* get_fuzzy_matches_by_draw_info(DrawCallInfo* call_info)
 {
+	if (G->mTextureOverrideDrawIndexMap.empty() && G->mTextureOverrideDrawVertexMap.empty())
+		return nullptr;
+
 	if (call_info->IndexCount)
 	{
 		auto it = G->mTextureOverrideDrawIndexMap.find(call_info->IndexCount);
@@ -1841,6 +1923,15 @@ void find_fuzzy_texture_overrides_for_resource(ID3D11Resource *resource, Texture
 	if (G->mFuzzyTextureOverrides.empty())
 		return;
 
+	ResourceHandleInfo *handle_info = GetResourceHandleInfo(resource);
+	if (handle_info && handle_info->texture_override_candidates_valid) {
+		for (TextureOverride *to : handle_info->texture_override_candidates.fuzzy_matches) {
+			if (matches_draw_info(to, call_info))
+				matches->push_back(to);
+		}
+		return;
+	}
+
 	Profiling::State profiling_state;
 	size_t matches_before = 0;
 	if (Profiling::mode == Profiling::Mode::SUMMARY) {
@@ -1914,6 +2005,28 @@ void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverri
 {
 	if (G->mTextureOverrideMap.empty() && G->mFuzzyTextureOverrides.empty())
 		return;
+
+	ResourceHandleInfo *handle_info = GetResourceHandleInfo(resource);
+	if (!handle_info)
+		return;
+
+	// Fast lock-free path: if candidates are already cached, read them with zero locks!
+	if (handle_info->texture_override_candidates_valid &&
+	    handle_info->texture_override_hash == handle_info->hash)
+	{
+		TextureOverrideCandidates *candidates = &handle_info->texture_override_candidates;
+		if (candidates->hash_matches) {
+			for (TextureOverride &to : *candidates->hash_matches) {
+				if (matches_draw_info(&to, call_info))
+					matches->push_back(&to);
+			}
+		}
+		for (TextureOverride *to : candidates->fuzzy_matches) {
+			if (matches_draw_info(to, call_info))
+				matches->push_back(to);
+		}
+		return;
+	}
 
 	Profiling::State profiling_state;
 	size_t matches_before = 0;

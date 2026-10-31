@@ -18,6 +18,7 @@
 #include "HackerDevice.h"
 #include "HackerContext.h"
 
+#include <cstring>
 #include <stdexcept>
 
 #define MAX_SIMULTANEOUS_NOTICES 10
@@ -189,6 +190,323 @@ Overlay::~Overlay()
 	mHackerDevice->Release();
 }
 
+HRESULT Overlay::UpdateProfilingTexture()
+{
+	ID3D11Resource* resource = Profiling::GetSelectedCustomResource();
+
+	if (resource == mProfilingTextureResource)
+		return mProfilingTextureSRV ? S_OK : E_FAIL;
+
+	mProfilingTextureSRV.Reset();
+	mProfilingTextureResource = nullptr;
+
+	if (!resource)
+		return S_FALSE;
+
+	D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+	resource->GetType(&dimension);
+
+	if (dimension != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+		return E_NOINTERFACE;
+
+	auto* texture = static_cast<ID3D11Texture2D*>(resource);
+	D3D11_TEXTURE2D_DESC desc;
+	texture->GetDesc(&desc);
+
+	if (!(desc.BindFlags & D3D11_BIND_SHADER_RESOURCE))
+		return E_ACCESSDENIED;
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+	srv_desc.Format = desc.Format;
+
+	if (desc.Format == DXGI_FORMAT_R32G32B32A32_TYPELESS)
+		srv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+
+	srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+	srv_desc.Texture2D.MostDetailedMip = 0;
+	srv_desc.Texture2D.MipLevels = desc.MipLevels;
+
+	HRESULT hr = mOrigDevice->CreateShaderResourceView(texture, &srv_desc, mProfilingTextureSRV.GetAddressOf());
+
+	if (FAILED(hr))
+		return hr;
+
+	mProfilingTextureResource = resource;
+	return S_OK;
+}
+
+void Overlay::DrawProfilingTexture(float x, float y)
+{
+	if (!mProfilingTextureSRV || !mProfilingTextureResource)
+		return;
+
+	auto* texture = static_cast<ID3D11Texture2D*>(mProfilingTextureResource);
+	D3D11_TEXTURE2D_DESC desc;
+	texture->GetDesc(&desc);
+
+	if (!desc.Width || !desc.Height)
+		return;
+
+	const float max_width = 512.0f;
+	const float max_height = 512.0f;
+
+	float width = (float)desc.Width;
+	float height = (float)desc.Height;
+	float scale = (std::min)(max_width / width, max_height / height);
+	scale = (std::min)(scale, 1.0f);
+
+	mSpriteBatch->Draw(mProfilingTextureSRV.Get(), DirectX::XMFLOAT2(x, y), nullptr, DirectX::Colors::White, 0.0f, DirectX::XMFLOAT2(0.0f, 0.0f), scale);
+}
+
+static UINT GetBufferFormatSize(DXGI_FORMAT format)
+{
+	switch (format)
+	{
+		case DXGI_FORMAT_R32_FLOAT:
+		case DXGI_FORMAT_R32_UINT:
+		case DXGI_FORMAT_R32_SINT:
+		case DXGI_FORMAT_R24G8_TYPELESS:
+		case DXGI_FORMAT_D24_UNORM_S8_UINT:
+		case DXGI_FORMAT_R10G10B10A2_UNORM:
+		case DXGI_FORMAT_R10G10B10A2_UINT:
+		case DXGI_FORMAT_R11G11B10_FLOAT:
+		case DXGI_FORMAT_R8G8B8A8_UNORM:
+		case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+		case DXGI_FORMAT_R8G8B8A8_UINT:
+		case DXGI_FORMAT_R8G8B8A8_SNORM:
+		case DXGI_FORMAT_R8G8B8A8_SINT:
+		case DXGI_FORMAT_B8G8R8A8_UNORM:
+			return 4;
+
+		case DXGI_FORMAT_R32G32_FLOAT:
+		case DXGI_FORMAT_R32G32_UINT:
+		case DXGI_FORMAT_R32G32_SINT:
+		case DXGI_FORMAT_R16G16B16A16_FLOAT:
+		case DXGI_FORMAT_R16G16B16A16_UNORM:
+		case DXGI_FORMAT_R16G16B16A16_UINT:
+		case DXGI_FORMAT_R16G16B16A16_SNORM:
+		case DXGI_FORMAT_R16G16B16A16_SINT:
+			return 8;
+
+		case DXGI_FORMAT_R32G32B32_FLOAT:
+		case DXGI_FORMAT_R32G32B32_UINT:
+		case DXGI_FORMAT_R32G32B32_SINT:
+			return 12;
+
+		case DXGI_FORMAT_R32G32B32A32_FLOAT:
+		case DXGI_FORMAT_R32G32B32A32_UINT:
+		case DXGI_FORMAT_R32G32B32A32_SINT:
+			return 16;
+
+		case DXGI_FORMAT_R16_FLOAT:
+		case DXGI_FORMAT_R16_UNORM:
+		case DXGI_FORMAT_R16_UINT:
+		case DXGI_FORMAT_R16_SNORM:
+		case DXGI_FORMAT_R16_SINT:
+		case DXGI_FORMAT_R8_UNORM:
+		case DXGI_FORMAT_R8_UINT:
+		case DXGI_FORMAT_R8_SNORM:
+		case DXGI_FORMAT_R8_SINT:
+			return 2;
+
+		default:
+			return 0;
+	}
+}
+
+HRESULT Overlay::UpdateProfilingBuffer()
+{
+	ID3D11Resource* resource = Profiling::GetSelectedCustomResource();
+
+	if (!resource)
+	{
+		mProfilingBufferResource = nullptr;
+		mProfilingBufferData.clear();
+		mProfilingBufferElementSize = 0;
+		mProfilingBufferLastUpdate = {};
+		return S_FALSE;
+	}
+
+	D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+	resource->GetType(&dimension);
+
+	if (dimension != D3D11_RESOURCE_DIMENSION_BUFFER)
+	{
+		mProfilingBufferResource = nullptr;
+		mProfilingBufferData.clear();
+		mProfilingBufferElementSize = 0;
+		mProfilingBufferLastUpdate = {};
+		return E_NOINTERFACE;
+	}
+
+	auto* buffer = static_cast<ID3D11Buffer*>(resource);
+
+	D3D11_BUFFER_DESC desc = {};
+	buffer->GetDesc(&desc);
+
+	if (!desc.ByteWidth)
+		return S_FALSE;
+
+	UINT element_size = 0;
+
+	if (desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED)
+		element_size = desc.StructureByteStride;
+
+	else
+	{
+		DXGI_FORMAT format = Profiling::GetSelectedCustomResourceFormat();
+
+		switch (format)
+		{
+			case DXGI_FORMAT_R32_FLOAT:
+			case DXGI_FORMAT_R32_UINT:
+			case DXGI_FORMAT_R32_SINT:
+				element_size = 4;
+				break;
+
+			case DXGI_FORMAT_R32G32_FLOAT:
+			case DXGI_FORMAT_R32G32_UINT:
+			case DXGI_FORMAT_R32G32_SINT:
+				element_size = 8;
+				break;
+
+			case DXGI_FORMAT_R32G32B32_FLOAT:
+			case DXGI_FORMAT_R32G32B32_UINT:
+			case DXGI_FORMAT_R32G32B32_SINT:
+				element_size = 12;
+				break;
+
+			case DXGI_FORMAT_R32G32B32A32_FLOAT:
+			case DXGI_FORMAT_R32G32B32A32_UINT:
+			case DXGI_FORMAT_R32G32B32A32_SINT:
+				element_size = 16;
+				break;
+
+			default:
+				element_size = Profiling::GetSelectedCustomResourceStride();
+				break;
+		}
+	}
+
+	if (!element_size)
+		element_size = 4;
+
+	LARGE_INTEGER now = {};
+	QueryPerformanceCounter(&now);
+
+	bool resource_changed = resource != mProfilingBufferResource;
+
+	if (!resource_changed && mProfilingBufferLastUpdate.QuadPart)
+	{
+		static LARGE_INTEGER frequency = {};
+
+		if (!frequency.QuadPart)
+			QueryPerformanceFrequency(&frequency);
+
+		if (frequency.QuadPart)
+		{
+			INT64 elapsed_us = (now.QuadPart - mProfilingBufferLastUpdate.QuadPart) * 1000000 / frequency.QuadPart;
+
+			if (elapsed_us < Profiling::interval)
+				return S_OK;
+		}
+	}
+
+	const UINT element_count = (std::min)((UINT)Profiling::visible_rows, desc.ByteWidth / element_size);
+	const UINT copy_size = element_count * element_size;
+
+	if (!copy_size)
+		return S_FALSE;
+
+	ID3D11Buffer* staging = mHackerContext->GetReadbackBuffer(copy_size);
+
+	if (!staging)
+	{
+		LogInfo("UpdateProfilingBuffer: Failed to acquire readback buffer\n");
+		return E_FAIL;
+	}
+
+	D3D11_BOX box = {};
+	box.left = 0;
+	box.right = copy_size;
+	box.top = 0;
+	box.bottom = 1;
+	box.front = 0;
+	box.back = 1;
+
+	mOrigContext->CopySubresourceRegion(staging, 0, 0, 0, 0, buffer, 0, &box);
+
+	D3D11_MAPPED_SUBRESOURCE map = {};
+	HRESULT hr = mOrigContext->Map(staging, 0, D3D11_MAP_READ, 0, &map);
+
+	if (FAILED(hr))
+	{
+		LogInfo("UpdateProfilingBuffer: Map(D3D11_MAP_READ) failed (hr=0x%08X)\n", hr);
+		return hr;
+	}
+
+	mProfilingBufferData.resize(copy_size);
+	memcpy(mProfilingBufferData.data(), map.pData, copy_size);
+
+	mOrigContext->Unmap(staging, 0);
+
+	mProfilingBufferResource = resource;
+	mProfilingBufferElementSize = element_size;
+	mProfilingBufferLastUpdate = now;
+
+	return S_OK;
+}
+
+void Overlay::DrawProfilingBuffer(float x, float y)
+{
+	if (!mProfilingBufferResource || mProfilingBufferData.empty() || !mProfilingBufferElementSize)
+		return;
+
+	const UINT element_size = mProfilingBufferElementSize;
+	const UINT element_count = (UINT)(mProfilingBufferData.size() / element_size);
+
+	if (!element_count)
+		return;
+
+	std::wstring text;
+
+	for (UINT i = 0; i < element_count; i++)
+	{
+		const uint8_t* data = mProfilingBufferData.data() + i * element_size;
+		const UINT value_count = (std::min)(element_size / (UINT)sizeof(float), 4u);
+
+		text += L"[" + std::to_wstring(i) + L"] ";
+
+		for (UINT j = 0; j < value_count; j++)
+		{
+			float value;
+			memcpy(&value, data + j * sizeof(float), sizeof(float));
+
+			if (j)
+				text += L" ";
+
+			wchar_t value_string[32];
+			swprintf_s(value_string, L"%.6f", value);
+			text += value_string;
+		}
+
+		if (element_size > value_count * sizeof(float))
+			text += L" ...";
+
+		text += L"\n";
+	}
+
+	if (text.empty())
+		return;
+
+	DirectX::XMVECTOR strSize = mFontProfiling->MeasureString(text.c_str());
+
+	float width = DirectX::XMVectorGetX(strSize);
+	float height = DirectX::XMVectorGetY(strSize);
+
+	DrawRectangle(x, y, width + 3.0f, height, 0, 0, 0, 0.75f);
+	mFontProfiling->DrawString(mSpriteBatch.get(), text.c_str(), DirectX::XMFLOAT2(x, y), DirectX::Colors::Goldenrod);
+}
 
 // -----------------------------------------------------------------------------
 
@@ -774,6 +1092,14 @@ void Overlay::DrawProfiling(float *y)
 	DrawRectangle(0, *y, strSize.x + 3, strSize.y, 0, 0, 0, 0.75);
 
 	mFontProfiling->DrawString(mSpriteBatch.get(), Profiling::text.c_str(), Vector2(0, *y), DirectX::Colors::Goldenrod);
+
+	if (Profiling::mode == Profiling::Mode::CUSTOM_RESOURCES)
+	{
+		if (SUCCEEDED(UpdateProfilingTexture()))
+			DrawProfilingTexture((float)mResolution.x - 522.0f, 10.0f);
+		else if (SUCCEEDED(UpdateProfilingBuffer()))
+			DrawProfilingBuffer((float)mResolution.x - 522.0f, 10.0f);
+	}
 }
 
 static void CreateInfoString(wchar_t* info)

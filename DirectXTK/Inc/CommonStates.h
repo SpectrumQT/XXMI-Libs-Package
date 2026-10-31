@@ -1,14 +1,10 @@
 //--------------------------------------------------------------------------------------
 // File: CommonStates.h
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
-// Copyright (c) Microsoft Corporation. All rights reserved.
-//
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 //--------------------------------------------------------------------------------------
 
 #pragma once
@@ -21,50 +17,74 @@
 
 #include <memory>
 
+#ifndef DIRECTX_TOOLKIT_API
+#ifdef DIRECTX_TOOLKIT_EXPORT
+#ifdef __GNUC__
+#define DIRECTX_TOOLKIT_API __attribute__ ((dllexport))
+#else
+#define DIRECTX_TOOLKIT_API __declspec(dllexport)
+#endif
+#elif defined(DIRECTX_TOOLKIT_IMPORT)
+#ifdef __GNUC__
+#define DIRECTX_TOOLKIT_API __attribute__ ((dllimport))
+#else
+#define DIRECTX_TOOLKIT_API __declspec(dllimport)
+#endif
+#else
+#define DIRECTX_TOOLKIT_API
+#endif
+#endif
+
 
 namespace DirectX
 {
-    class CommonStates
+    inline namespace DX11
     {
-    public:
-        explicit CommonStates(_In_ ID3D11Device* device);
-        CommonStates(CommonStates&& moveFrom);
-        CommonStates& operator= (CommonStates&& moveFrom);
+        class CommonStates
+        {
+        public:
+            DIRECTX_TOOLKIT_API explicit CommonStates(_In_ ID3D11Device* device);
 
-        CommonStates(CommonStates const&) = delete;
-        CommonStates& operator= (CommonStates const&) = delete;
+            DIRECTX_TOOLKIT_API CommonStates(CommonStates&&) noexcept;
+            DIRECTX_TOOLKIT_API CommonStates& operator= (CommonStates&&) noexcept;
 
-        virtual ~CommonStates();
+            CommonStates(CommonStates const&) = delete;
+            CommonStates& operator= (CommonStates const&) = delete;
 
-        // Blend states.
-        ID3D11BlendState* __cdecl Opaque() const;
-        ID3D11BlendState* __cdecl AlphaBlend() const;
-        ID3D11BlendState* __cdecl Additive() const;
-        ID3D11BlendState* __cdecl NonPremultiplied() const;
+            DIRECTX_TOOLKIT_API virtual ~CommonStates();
 
-        // Depth stencil states.
-        ID3D11DepthStencilState* __cdecl DepthNone() const;
-        ID3D11DepthStencilState* __cdecl DepthDefault() const;
-        ID3D11DepthStencilState* __cdecl DepthRead() const;
+            // Blend states.
+            DIRECTX_TOOLKIT_API ID3D11BlendState* __cdecl Opaque() const;
+            DIRECTX_TOOLKIT_API ID3D11BlendState* __cdecl AlphaBlend() const;
+            DIRECTX_TOOLKIT_API ID3D11BlendState* __cdecl Additive() const;
+            DIRECTX_TOOLKIT_API ID3D11BlendState* __cdecl NonPremultiplied() const;
 
-        // Rasterizer states.
-        ID3D11RasterizerState* __cdecl CullNone() const;
-        ID3D11RasterizerState* __cdecl CullClockwise() const;
-        ID3D11RasterizerState* __cdecl CullCounterClockwise() const;
-        ID3D11RasterizerState* __cdecl Wireframe() const;
+            // Depth stencil states.
+            DIRECTX_TOOLKIT_API ID3D11DepthStencilState* __cdecl DepthNone() const;
+            DIRECTX_TOOLKIT_API ID3D11DepthStencilState* __cdecl DepthDefault() const;
+            DIRECTX_TOOLKIT_API ID3D11DepthStencilState* __cdecl DepthRead() const;
+            DIRECTX_TOOLKIT_API ID3D11DepthStencilState* __cdecl DepthReverseZ() const;
+            DIRECTX_TOOLKIT_API ID3D11DepthStencilState* __cdecl DepthReadReverseZ() const;
 
-        // Sampler states.
-        ID3D11SamplerState* __cdecl PointWrap() const;
-        ID3D11SamplerState* __cdecl PointClamp() const;
-        ID3D11SamplerState* __cdecl LinearWrap() const;
-        ID3D11SamplerState* __cdecl LinearClamp() const;
-        ID3D11SamplerState* __cdecl AnisotropicWrap() const;
-        ID3D11SamplerState* __cdecl AnisotropicClamp() const;
+            // Rasterizer states.
+            DIRECTX_TOOLKIT_API ID3D11RasterizerState* __cdecl CullNone() const;
+            DIRECTX_TOOLKIT_API ID3D11RasterizerState* __cdecl CullClockwise() const;
+            DIRECTX_TOOLKIT_API ID3D11RasterizerState* __cdecl CullCounterClockwise() const;
+            DIRECTX_TOOLKIT_API ID3D11RasterizerState* __cdecl Wireframe() const;
 
-    private:
-        // Private implementation.
-        class Impl;
+            // Sampler states.
+            DIRECTX_TOOLKIT_API ID3D11SamplerState* __cdecl PointWrap() const;
+            DIRECTX_TOOLKIT_API ID3D11SamplerState* __cdecl PointClamp() const;
+            DIRECTX_TOOLKIT_API ID3D11SamplerState* __cdecl LinearWrap() const;
+            DIRECTX_TOOLKIT_API ID3D11SamplerState* __cdecl LinearClamp() const;
+            DIRECTX_TOOLKIT_API ID3D11SamplerState* __cdecl AnisotropicWrap() const;
+            DIRECTX_TOOLKIT_API ID3D11SamplerState* __cdecl AnisotropicClamp() const;
 
-        std::shared_ptr<Impl> pImpl;
-    };
+        private:
+            // Private implementation.
+            class Impl;
+
+            std::shared_ptr<Impl> pImpl;
+        };
+    }
 }

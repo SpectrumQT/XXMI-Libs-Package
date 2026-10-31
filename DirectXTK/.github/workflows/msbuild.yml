@@ -1,0 +1,136 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+#
+# http://go.microsoft.com/fwlink/?LinkId=248929
+
+name: MSBuild
+
+on:
+  push:
+    branches: "main"
+    paths-ignore:
+      - '*.md'
+      - LICENSE
+      - '.azuredevops/**'
+      - '.github/*.md'
+      - '.nuget/*'
+      - build/*
+  pull_request:
+    branches: "main"
+    paths-ignore:
+      - '*.md'
+      - LICENSE
+      - '.azuredevops/**'
+      - '.github/*.md'
+      - '.nuget/*'
+      - build/*
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022 # has v142 tools but not v142 spectre libs
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        build_type: [Debug, Release]
+        platform: [x86, x64, ARM64]
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+        with:
+          msbuild-architecture: x64
+
+      - if: matrix.platform != 'ARM64'
+        name: Build (Windows 8.1)
+        working-directory: ${{ github.workspace }}
+        run: >
+          msbuild /m /p:Configuration=${{ matrix.build_type }} /p:Platform=${{ matrix.platform }}
+          DirectXTK_Desktop_2022.sln
+
+      - name: 'Build (Windows 10)'
+        working-directory: ${{ github.workspace }}
+        run: >
+          msbuild /m /p:Configuration=${{ matrix.build_type }} /p:Platform=${{ matrix.platform }}
+          DirectXTK_Desktop_2022_Win10.sln
+
+      - name: 'Build (UWP)'
+        working-directory: ${{ github.workspace }}
+        run: >
+          msbuild /m /p:Configuration=${{ matrix.build_type }} /p:Platform=${{ matrix.platform }}
+          DirectXTK_Windows10_2022.sln
+
+      - if: matrix.platform != 'ARM64'
+        name: 'Build (Windows 8.1 w/ Spectre)'
+        working-directory: ${{ github.workspace }}
+        run: >
+          msbuild /m /p:Configuration=${{ matrix.build_type }} /p:Platform=${{ matrix.platform }}
+          /p:SpectreMitigation=Spectre
+          DirectXTK_Desktop_2022.sln
+
+      - if: matrix.platform != 'ARM64'
+        name: 'Build (Spectre Windows 10)'
+        working-directory: ${{ github.workspace }}
+        run: >
+          msbuild /m /p:Configuration=${{ matrix.build_type }} /p:Platform=${{ matrix.platform }}
+          /p:SpectreMitigation=Spectre
+          DirectXTK_Desktop_2022_Win10.sln
+
+  build2026:
+    runs-on: windows-2025-vs2026
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        build_type: [Debug, Release]
+        platform: [x86, x64, ARM64]
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+        with:
+          msbuild-architecture: x64
+
+      - name: 'Build'
+        working-directory: ${{ github.workspace }}
+        run: >
+          msbuild /m /p:Configuration=${{ matrix.build_type }} /p:Platform=${{ matrix.platform }}
+          DirectXTK_Desktop_2026.slnx
+
+  build2022_arm64:
+    runs-on: windows-11-arm
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        build_type: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+        with:
+          msbuild-architecture: arm64
+
+      - name: 'Build (Windows 10)'
+        working-directory: ${{ github.workspace }}
+        run: >
+          msbuild /m /p:Configuration=${{ matrix.build_type }} /p:Platform=ARM64
+          DirectXTK_Desktop_2022_Win10.sln
+
+      - name: 'Build (UWP)'
+        working-directory: ${{ github.workspace }}
+        run: >
+          msbuild /m /p:Configuration=${{ matrix.build_type }} /p:Platform=ARM64
+          DirectXTK_Windows10_2022.sln

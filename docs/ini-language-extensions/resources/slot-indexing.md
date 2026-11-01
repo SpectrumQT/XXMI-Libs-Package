@@ -68,7 +68,13 @@ Pool bounds follow [Ring indexing](../pools/indexing.md/#ring-indexing) rules, s
 
 This holds for every index type: on a `fifo` or `spatial` pool the bounds are still element indices, not keys, so the range addresses the physical elements directly and bypasses key lookup. Element keys are not touched by a range operation. A fetch counts as an update of the elements it writes for [expiration](../pools/declaration.md/#element-expiration) purposes, like any assignment.
 
-A pool range is only valid on the other side of a slot range. Each side states its own bounds, so that a range is visible in the line without reading the other side of the assignment, and the two ranges must have the same size.
+A pool range is only valid on the other side of a slot range or of another pool range. Each side states its own bounds, so that a range is visible in the line without reading the other side of the assignment, and the two ranges must have the same size.
+
+A pool range copy runs the equivalent single element line for each pair of elements, with the same copy types and options. Without a copy type it is a `copy`, like `PoolFoo[0] = PoolBar[0]`. `unless_null` leaves the destination elements whose source element is `null` untouched. Within one pool, overlapping ranges are copied in a safe order, a range copied onto itself does nothing, and a range that wraps onto itself so that no order is safe is skipped with a warning:
+
+```ini
+PoolFoo[0:18] = ref PoolBar[0:18] unless_null
+```
 
 ### Copy Options
 

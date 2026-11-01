@@ -1201,6 +1201,9 @@ public:
 
 	void CopyResourceToResource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size);
 	void CopyResourceToPool(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size);
+	// Copies a resolved source to the destination,
+	// then releases what the caller got from GetResource():
+	void CopyResolvedSource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size);
 
 	void run(CommandListState*) override;
 	// Used by ShaderResourceFetchBatch, which fetched the source itself:
@@ -1318,6 +1321,24 @@ private:
 	void FetchSlotOp(CommandListState *state, const SlotRangeBindings &bindings, unsigned index, unsigned slot, CustomResource *element, ID3D11Resource *resource);
 	void FetchSlotRef(CommandListState *state, const SlotRangeBindings &bindings, unsigned index, unsigned slot, CustomResource *element, ID3D11Resource *resource);
 	ID3D11View* ViewForSlot(CommandListState *state, unsigned index, ID3D11Resource *resource, ID3D11View *src_view);
+};
+
+// "PoolFoo[$a:$b] = ref PoolBar[$c:$d]":
+// the equivalent single element line for each element, with unless_null judged per element.
+class PoolRangeCopyOperation : public CommandListCommand {
+public:
+	ResourceCopyTarget src;
+	ResourceCopyTarget dst;
+	ResourceCopyOptions options = ResourceCopyOptions::INVALID;
+
+	bool optimise(HackerDevice *device) override;
+	void run(CommandListState*) override;
+
+private:
+	enum class Order { FORWARD, BACKWARD, SKIP };
+
+	Order CopyOrder(int src_first, int dst_first, unsigned count);
+	void CopyElement(CommandListState *state, ResourceCopyOperation &element_op, int src_first, int dst_first, unsigned index);
 };
 
 class PoolCopyOperation : public CommandListCommand {

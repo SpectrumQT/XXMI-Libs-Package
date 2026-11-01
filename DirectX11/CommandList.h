@@ -702,6 +702,7 @@ public:
 	void Initialize(size_t pool_size);
 	bool PropagateFlags(D3D11_BIND_FLAG bind_flags, D3D11_RESOURCE_MISC_FLAG misc_flags);
 
+	size_t RingIndex(float id) const;
 	size_t GetElementIndex(float id, bool use_ring_index, bool is_assignment);
 	CustomResource* GetResource(float id, bool template_lookup, bool use_ring_index, bool is_assignment);
 	CommandListVariable* GetVariable(float id, bool template_lookup, bool use_ring_index, bool is_assignment);

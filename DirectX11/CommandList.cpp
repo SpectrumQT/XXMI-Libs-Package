@@ -7349,6 +7349,14 @@ bool CustomResourcePool::PropagateFlags(D3D11_BIND_FLAG bind_flags, D3D11_RESOUR
 	return ret;
 }
 
+size_t CustomResourcePool::RingIndex(float id) const
+{
+	// Signed arithmetic: an unsigned pool_size makes a negative id huge.
+	int size = (int)pool_size;
+
+	return (size_t)(((int)id % size + size) % size);
+}
+
 size_t CustomResourcePool::GetElementIndex(float id, bool use_ring_index, bool is_assignment)
 {
 	ExpireElements();
@@ -7366,7 +7374,7 @@ size_t CustomResourcePool::GetElementIndex(float id, bool use_ring_index, bool i
 		// For pool [ResourceA, ResourceB, ResourceC]
 		//   ResourcePoolFoo[-1] returns ResourceC pool_index (2)
 		//   ResourcePoolFoo[3] returns ResourceA pool_index (0)
-		pool_index = ((int)id % pool_size + pool_size) % pool_size;
+		pool_index = RingIndex(id);
 
 		if (expiration_timeout_frames != UINT32_MAX)
 			PostponeExpiration(index_table[pool_index], is_assignment);

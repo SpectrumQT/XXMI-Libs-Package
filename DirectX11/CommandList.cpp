@@ -6,6 +6,7 @@
 
 #include <DDSTextureLoader.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <sstream>
 #include "HackerDevice.h"
@@ -39,6 +40,16 @@ std::vector<std::shared_ptr<CommandList>> dynamically_allocated_command_lists;
 	do { \
 		(state)->mHackerContext->FrameAnalysisLog("3DMigoto%*s " fmt, state->recursion + state->extra_indent, "", __VA_ARGS__); \
 	} while (0)
+
+// %f prints the tiny floats an @ identity encodes to as 0.000000,
+// so values below 0.001 get nine significant digits instead.
+static std::string log_float(float value)
+{
+	char buf[64];
+
+	sprintf_s(buf, value != 0.0f && fabsf(value) < 0.001f ? "%.9g" : "%f", value);
+	return buf;
+}
 
 
 #pragma region CommandListProfiling
@@ -5834,7 +5845,8 @@ void ParamOverride::run(CommandListState *state)
 
 	*dest = expression.evaluate(state);
 
-	COMMAND_LIST_LOG(state, "  ini param override = %f\n", *dest);
+	if (G->analyse_frame)
+		COMMAND_LIST_LOG(state, "  ini param override = %s\n", log_float(*dest).c_str());
 
 	state->update_params |= (*dest != orig);
 }
@@ -5847,7 +5859,8 @@ void VariableAssignment::run(CommandListState *state)
 
 	var->fval = expression.evaluate(state);
 
-	COMMAND_LIST_LOG(state, "  = %f\n", var->fval);
+	if (G->analyse_frame)
+		COMMAND_LIST_LOG(state, "  = %s\n", log_float(var->fval).c_str());
 
 	if ((var->flags & VariableFlags::PERSIST) && var->fval != orig)
 		G->user_config_dirty = true;
@@ -9048,7 +9061,8 @@ void PoolVariableOperation::SetVariableValue(CommandListState* state, CommandLis
 
 	dst->fval = value;
 
-	COMMAND_LIST_LOG(state, "  = %f\n", dst->fval);
+	if (G->analyse_frame)
+		COMMAND_LIST_LOG(state, "  = %s\n", log_float(dst->fval).c_str());
 
 	if ((dst->flags & VariableFlags::PERSIST) && dst->fval != orig)
 		G->user_config_dirty = true;

@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -61,6 +61,7 @@
     <ClCompile Include="HookedDXGI.cpp" />
     <ClCompile Include="Hunting.cpp" />
     <ClCompile Include="IniHandler.cpp" />
+    <ClCompile Include="DirectStorageManager.cpp" />
     <ClCompile Include="Input.cpp" />
     <ClCompile Include="lock.cpp" />
     <ClCompile Include="Overlay.cpp" />
@@ -95,6 +96,7 @@
     <ClInclude Include="HookedDXGI.h" />
     <ClInclude Include="Hunting.h" />
     <ClInclude Include="IniHandler.h" />
+    <ClInclude Include="DirectStorageManager.h" />
     <ClInclude Include="Input.h" />
     <ClInclude Include="lock.h" />
     <ClInclude Include="Overlay.h" />
@@ -204,8 +206,8 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
     <TargetName>d3d11</TargetName>
-    <IncludePath>$(SolutionDir)crc32c-hw-1.0.5\include;$(SolutionDir)BinaryDecompiler;$(SolutionDir)BinaryDecompiler\include;$(WindowsSDK_IncludePath);$(VC_IncludePath)</IncludePath>
-    <LibraryPath>$(WindowsSDK_LibraryPath_x64);$(VC_LibraryPath_x64)</LibraryPath>
+    <IncludePath>$(SolutionDir)crc32c-hw-1.0.5\include;$(SolutionDir)BinaryDecompiler;$(SolutionDir)Dependencies\DirectStorage\include;$(SolutionDir)BinaryDecompiler\include;$(WindowsSDK_IncludePath);$(VC_IncludePath)</IncludePath>
+    <LibraryPath>$(SolutionDir)Dependencies\DirectStorage\lib\x64;$(WindowsSDK_LibraryPath_x64);$(VC_LibraryPath_x64)</LibraryPath>
     <OutDir>$(SolutionDir)x64\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)x64\$(Configuration)\</IntDir>
   </PropertyGroup>
@@ -220,8 +222,8 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Zip Release|x64'">
     <LinkIncremental>false</LinkIncremental>
     <TargetName>d3d11</TargetName>
-    <IncludePath>$(SolutionDir)crc32c-hw-1.0.5\include;$(SolutionDir)BinaryDecompiler;$(SolutionDir)BinaryDecompiler\include;$(WindowsSDK_IncludePath);$(VC_IncludePath)</IncludePath>
-    <LibraryPath>$(WindowsSDK_LibraryPath_x64);$(VC_LibraryPath_x64)</LibraryPath>
+    <IncludePath>$(SolutionDir)crc32c-hw-1.0.5\include;$(SolutionDir)BinaryDecompiler;$(SolutionDir)Dependencies\DirectStorage\include;$(SolutionDir)BinaryDecompiler\include;$(WindowsSDK_IncludePath);$(VC_IncludePath)</IncludePath>
+    <LibraryPath>$(SolutionDir)Dependencies\DirectStorage\lib\x64;$(WindowsSDK_LibraryPath_x64);$(VC_LibraryPath_x64)</LibraryPath>
     <OutDir>$(SolutionDir)x64\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)x64\$(Configuration)\</IntDir>
   </PropertyGroup>
@@ -348,7 +350,7 @@ xcopy "$(SolutionDir)Dependencies\*.*" "$(TargetDir)"  /E /Y /s
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>CRC32C_STATIC=1;PCRE2_STATIC;PCRE2_CODE_UNIT_WIDTH=8;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT=1;_WINDOWS;_USRDLL;MIGOTO_DX=11;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>CRC32C_STATIC=1;PCRE2_STATIC;PCRE2_CODE_UNIT_WIDTH=8;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT=1;_WINDOWS;_USRDLL;MIGOTO_DX=11;NDEBUG;USING_DIRECTSTORAGE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ExceptionHandling>Async</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <AdditionalIncludeDirectories>$(SolutionDir);$(SolutionDir)HLSLDecompiler;$(SolutionDir)DirectXTK\Inc;$(SolutionDir)D3D_Shaders;$(SolutionDir)pcre2</AdditionalIncludeDirectories>
@@ -358,12 +360,13 @@ xcopy "$(SolutionDir)Dependencies\*.*" "$(TargetDir)"  /E /Y /s
       <LanguageStandard>stdcpp14</LanguageStandard>
     </ClCompile>
     <Link>
+      <DelayLoadDLLs>DSTORAGE.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <ModuleDefinitionFile>d3d11Wrapper.def</ModuleDefinitionFile>
-      <AdditionalDependencies>..\Nektra\NktHookLib64.lib;..\pcre2\pcre2-8-64.lib;XINPUT9_1_0.lib;d3dcompiler.lib;DXGI.lib;Shlwapi.lib;Dbghelp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>..\Nektra\NktHookLib64.lib;..\pcre2\pcre2-8-64.lib;XINPUT9_1_0.lib;$(SolutionDir)Dependencies\DirectStorage\lib\x64\dstorage.lib;d3d12.lib;dxgi.lib;delayimp.lib;d3dcompiler.lib;DXGI.lib;Shlwapi.lib;Dbghelp.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ForceSymbolReferences>CreateDXGIFactory</ForceSymbolReferences>
     </Link>
     <PostBuildEvent>
@@ -378,7 +381,7 @@ xcopy "$(SolutionDir)Dependencies\*.*" "$(TargetDir)"  /E /Y /s
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>CRC32C_STATIC=1;PCRE2_STATIC;PCRE2_CODE_UNIT_WIDTH=8;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT=1;_WINDOWS;_USRDLL;MIGOTO_DX=11;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>CRC32C_STATIC=1;PCRE2_STATIC;PCRE2_CODE_UNIT_WIDTH=8;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT=1;_WINDOWS;_USRDLL;MIGOTO_DX=11;NDEBUG;USING_DIRECTSTORAGE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ExceptionHandling>Async</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <AdditionalIncludeDirectories>$(SolutionDir);$(SolutionDir)HLSLDecompiler;$(SolutionDir)DirectXTK\Inc;$(SolutionDir)D3D_Shaders;$(SolutionDir)pcre2</AdditionalIncludeDirectories>
@@ -388,12 +391,13 @@ xcopy "$(SolutionDir)Dependencies\*.*" "$(TargetDir)"  /E /Y /s
       <LanguageStandard>stdcpp14</LanguageStandard>
     </ClCompile>
     <Link>
+      <DelayLoadDLLs>DSTORAGE.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <ModuleDefinitionFile>d3d11Wrapper.def</ModuleDefinitionFile>
-      <AdditionalDependencies>..\Nektra\NktHookLib64.lib;..\pcre2\pcre2-8-64.lib;XINPUT9_1_0.lib;d3dcompiler.lib;DXGI.lib;Shlwapi.lib;Dbghelp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>..\Nektra\NktHookLib64.lib;..\pcre2\pcre2-8-64.lib;XINPUT9_1_0.lib;$(SolutionDir)Dependencies\DirectStorage\lib\x64\dstorage.lib;d3d12.lib;dxgi.lib;delayimp.lib;d3dcompiler.lib;DXGI.lib;Shlwapi.lib;Dbghelp.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ForceSymbolReferences>CreateDXGIFactory</ForceSymbolReferences>
     </Link>
     <PostBuildEvent>

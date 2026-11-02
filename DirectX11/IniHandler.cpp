@@ -15,6 +15,9 @@
 #include "Override.h"
 #include "Hunting.h"
 #include "ShaderRegex.h"
+#if defined(USING_DIRECTSTORAGE)
+#include "DirectStorageManager.h"
+#endif
 #include "cursor.h"
 #include <chrono>
 
@@ -4614,6 +4617,11 @@ void LoadConfigFile()
 	G->enable_check_interface = GetIniBool(L"System", L"allow_check_interface", false, NULL);
 	G->enable_create_device = GetIniInt(L"System", L"allow_create_device", 0, NULL);
 	G->enable_platform_update = GetIniBool(L"System", L"allow_platform_update", false, NULL);
+#if defined(USING_DIRECTSTORAGE)
+	DirectStorageManager::SetEnabled(GetIniBool(L"System", L"direct_storage", false, NULL));
+	if (DirectStorageManager::IsEnabled())
+		LogInfo("  direct_storage=1\n");
+#endif
 	// TODO: Enable this by default if wider testing goes well:
 	G->check_foreground_window = GetIniBool(L"System", L"check_foreground_window", false, NULL);
 

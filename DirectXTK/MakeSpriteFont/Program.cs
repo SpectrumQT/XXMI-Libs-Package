@@ -1,13 +1,9 @@
 // DirectXTK MakeSpriteFont tool
 //
-// THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-// THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A
-// PARTICULAR PURPOSE.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
 //
-// Copyright (c) Microsoft Corporation. All rights reserved.
-//
-// http://go.microsoft.com/fwlink/?LinkId=248929
+// https://go.microsoft.com/fwlink/?LinkId=248929
 
 using System;
 using System.IO;
@@ -31,7 +27,7 @@ namespace MakeSpriteFont
             {
                 // Convert the font.
                 MakeSpriteFont(options);
-                
+
                 return 0;
             }
             catch (Exception e)
@@ -39,7 +35,7 @@ namespace MakeSpriteFont
                 // Print an error message if conversion failed.
                 Console.WriteLine();
                 Console.Error.WriteLine("Error: {0}", e.Message);
-     
+
                 return 1;
             }
         }
@@ -80,7 +76,7 @@ namespace MakeSpriteFont
             // Emit texture size warning based on known Feature Level limits.
             if (bitmap.Width > 16384 || bitmap.Height > 16384)
             {
-                Console.WriteLine("WARNING: Resulting texture is too large for all known Feature Levels (9.1 - 12.1)");
+                Console.WriteLine("WARNING: Resulting texture is too large for all known Feature Levels (9.1 - 12.2)");
             }
             else if (bitmap.Width > 8192 || bitmap.Height > 8192)
             {

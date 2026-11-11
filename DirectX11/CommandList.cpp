@@ -3323,6 +3323,34 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
 
 		return (float)t.dimension;
 	}
+	case ShaderTargetEvaluationMode::DCL_CB_SLOT_COUNT:
+	{
+		return (float)it->second.constant_buffer_slots.count;
+	}
+	case ShaderTargetEvaluationMode::DCL_CB_FIRST_SLOT:
+	{
+		const auto& range = it->second.constant_buffer_slots;
+		return range.count ? (float)range.first : -1.0f;
+	}
+	case ShaderTargetEvaluationMode::DCL_CB_LAST_SLOT:
+	{
+		const auto& range = it->second.constant_buffer_slots;
+		return range.count ? (float)range.last : -1.0f;
+	}
+	case ShaderTargetEvaluationMode::DCL_SRV_SLOT_COUNT:
+	{
+		return (float)it->second.resource_slots.count;
+	}
+	case ShaderTargetEvaluationMode::DCL_SRV_FIRST_SLOT:
+	{
+		const auto& range = it->second.resource_slots;
+		return range.count ? (float)range.first : -1.0f;
+	}
+	case ShaderTargetEvaluationMode::DCL_SRV_LAST_SLOT:
+	{
+		const auto& range = it->second.resource_slots;
+		return range.count ? (float)range.last : -1.0f;
+	}
 	}
 	
 	return 0.0;
@@ -8104,9 +8132,15 @@ IniParserResult ShaderTarget::ParseTargetMember(
 		{ L"->srv_stride",     12, ShaderTargetEvaluationMode::DCL_SRV_STRIDE, {{
 			MemberArg::Type::Unsigned, // Slot ID
 		}} },
+		{ L"->cb_last_slot",   14, ShaderTargetEvaluationMode::DCL_CB_LAST_SLOT },
 		{ L"->srv_dimension",  15, ShaderTargetEvaluationMode::DCL_SRV_DIMENSION, {{
 			MemberArg::Type::Unsigned, // Slot ID
 		}} },
+		{ L"->cb_slot_count",  15, ShaderTargetEvaluationMode::DCL_CB_SLOT_COUNT },
+		{ L"->cb_first_slot",  15, ShaderTargetEvaluationMode::DCL_CB_FIRST_SLOT },
+		{ L"->srv_last_slot",  15, ShaderTargetEvaluationMode::DCL_SRV_LAST_SLOT },
+		{ L"->srv_slot_count", 16, ShaderTargetEvaluationMode::DCL_SRV_SLOT_COUNT },
+		{ L"->srv_first_slot", 16, ShaderTargetEvaluationMode::DCL_SRV_FIRST_SLOT },
 	};
 
 	return SyntaxTarget::ParseTargetMember(members, target, length, temp_target, evaluation_mode, ini_namespace, scope);

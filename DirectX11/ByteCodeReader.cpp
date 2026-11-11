@@ -133,6 +133,7 @@ bool get_shader_bindings_from_bytecode(const void* data, size_t size, ShaderBind
 						r.type = ShaderResourceType::TYPED;
 						r.dimension = dxbc_dimension_to_srv(DECODE_D3D10_SB_RESOURCE_DIMENSION(token));
 						r.stride = 0;
+						out->resource_slots.include(slot);
 						//LogInfo("DCL SRV TYPED slot=%u\n", slot);
 					}
 				}
@@ -163,6 +164,7 @@ bool get_shader_bindings_from_bytecode(const void* data, size_t size, ShaderBind
 						r.type = ShaderResourceType::RAW;
 						r.dimension = D3D_SRV_DIMENSION_BUFFEREX;
 						r.stride = 0;
+						out->resource_slots.include(slot);
 						//LogInfo("DCL SRV RAW slot=%u\n", slot);
 					}
 				}
@@ -195,6 +197,7 @@ bool get_shader_bindings_from_bytecode(const void* data, size_t size, ShaderBind
 						r.type = ShaderResourceType::STRUCTURED;
 						r.dimension = D3D_SRV_DIMENSION_BUFFER;
 						r.stride = stride;
+						out->resource_slots.include(slot);
 						//LogInfo("DCL SRV STRUCTURED slot=%u, stride=%u\n", slot, stride);
 					}
 				}
@@ -232,6 +235,7 @@ bool get_shader_bindings_from_bytecode(const void* data, size_t size, ShaderBind
 							D3D10_SB_CONSTANT_BUFFER_DYNAMIC_INDEXED
 							? ShaderConstantBufferType::DYNAMIC_INDEXED
 							: ShaderConstantBufferType::IMMEDIATE_INDEXED;
+						out->constant_buffer_slots.include(slot);
 						//LogInfo("DCL CB slot=%u, size=%u, dynamic=%d\n", slot, cb_size, cb.type == ShaderConstantBufferType::DYNAMIC_INDEXED);
 					}
 				}

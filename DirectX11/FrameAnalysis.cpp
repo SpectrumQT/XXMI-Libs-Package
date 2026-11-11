@@ -2365,7 +2365,7 @@ void FrameAnalysisContext::_DumpCBs(char shader_type, bool compute,
 }
 
 void FrameAnalysisContext::_DumpTextures(char shader_type, bool compute,
-	ID3D11ShaderResourceView *views[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT])
+	ID3D11ShaderResourceView *views[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT], const ShaderBindings* bindings)
 {
 	ID3D11Resource *resource;
 	D3D11_SHADER_RESOURCE_VIEW_DESC view_desc;
@@ -2379,6 +2379,12 @@ void FrameAnalysisContext::_DumpTextures(char shader_type, bool compute,
 
 		if (i == G->IniParamsReg) {
 			FALogInfo(L"Skipped 3DMigoto resource in slot %Cs-t%i\n", shader_type, i);
+			continue;
+		}
+
+		if (bindings && bindings->resources[i].type == ShaderResourceType::NONE) {
+			FALogInfo(L"Skipped undeclared resource in slot %Cs-t%i\n", shader_type, i);
+			views[i]->Release();
 			continue;
 		}
 
@@ -2584,28 +2590,32 @@ void FrameAnalysisContext::DumpTextures(bool compute)
 	if (compute) {
 		if (mCurrentComputeShader) {
 			GetPassThroughOrigContext1()->CSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, views);
-			_DumpTextures('c', compute, views);
+			_DumpTextures('c', compute, views, nullptr);
 		}
 	} else {
 		if (mCurrentVertexShader) {
 			GetPassThroughOrigContext1()->VSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, views);
-			_DumpTextures('v', compute, views);
+			_DumpTextures('v', compute, views, nullptr);
 		}
 		if (mCurrentHullShader) {
 			GetPassThroughOrigContext1()->HSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, views);
-			_DumpTextures('h', compute, views);
+			_DumpTextures('h', compute, views, nullptr);
 		}
 		if (mCurrentDomainShader) {
 			GetPassThroughOrigContext1()->DSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, views);
-			_DumpTextures('d', compute, views);
+			_DumpTextures('d', compute, views, nullptr);
 		}
 		if (mCurrentGeometryShader) {
 			GetPassThroughOrigContext1()->GSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, views);
-			_DumpTextures('g', compute, views);
+			_DumpTextures('g', compute, views, nullptr);
 		}
 		if (mCurrentPixelShader) {
+			ShaderBindings* bindings = nullptr;
+			auto it = G->mShaderBindingsCache.find(mCurrentPixelShader);
+			if (it != G->mShaderBindingsCache.end())
+				bindings = &it->second;
 			GetPassThroughOrigContext1()->PSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, views);
-			_DumpTextures('p', compute, views);
+			_DumpTextures('p', compute, views, bindings);
 		}
 	}
 }

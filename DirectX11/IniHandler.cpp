@@ -2092,6 +2092,16 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		}
 	}
 
+	if (GetIniString(section_name, L"original_format", 0, setting, MAX_PATH)) {
+		custom_resource->original_format = ParseFormatString(setting, true);
+		if (custom_resource->original_format == (DXGI_FORMAT)-1) {
+			IniWarningW(L"Unknown original_format \"%ls\"\n - [%ls]\n", setting, section_name);
+		}
+		else {
+			LogInfo("  original_format=%s\n", TexFormatStr(custom_resource->override_format));
+		}
+	}
+
 	custom_resource->override_color_space = GetIniEnumClass(section_name, L"color_space", CustomColorSpace::DEFAULT, NULL, CustomColorSpaceNames);
 	custom_resource->override_width = GetIniInt(section_name, L"width", -1, NULL);
 	custom_resource->override_height = GetIniInt(section_name, L"height", -1, NULL);

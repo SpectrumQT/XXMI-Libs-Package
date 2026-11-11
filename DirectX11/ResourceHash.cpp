@@ -860,6 +860,276 @@ uint32_t GetResourceHash(ID3D11Resource *resource)
 	return 0;
 }
 
+static ResourceHandleInfo* FindTrackedTexture2DNoLock(ID3D11Resource* resource)
+{
+	if (!resource)
+		return nullptr;
+
+	auto it = lookup_resource_handle_info(resource);
+
+	if (it == G->mResources.end())
+		return nullptr;
+
+	ResourceHandleInfo& info = it->second;
+
+	if (info.type != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+		return nullptr;
+
+	return &info;
+}
+
+void UpdateTextureSubresourceState(ID3D11Resource* resource, UINT subresource, bool fullSubresource, bool discard)
+{
+    if (!resource)
+        return;
+
+	{
+		CriticalSectionGuard(&G->mResourcesLock);
+
+		ResourceHandleInfo* info = FindTrackedTexture2DNoLock(resource);
+
+		if (!info)
+			return;
+
+		info->ProcessSubresourceUpdate(subresource, fullSubresource, discard);
+	}
+}
+
+void UpdateTextureResourceStateFromCopy(ID3D11Resource* dstResource, ID3D11Resource* srcResource)
+{
+	if (!dstResource)
+		return;
+
+	{
+		CriticalSectionGuard(&G->mResourcesLock);
+
+		ResourceHandleInfo* dstInfo = FindTrackedTexture2DNoLock(dstResource);
+
+		if (!dstInfo)
+			return;
+
+		ResourceHandleInfo* srcInfo = srcResource ? FindTrackedTexture2DNoLock(srcResource) : nullptr;
+		dstInfo->ProcessResourceCopy(srcInfo);
+	}
+}
+
+struct Texture2DViewRange
+{
+	UINT mostDetailedMip = 0;
+	UINT mipLevels = 0;
+	UINT firstArraySlice = 0;
+	UINT arraySize = 0;
+};
+
+bool GetTexture2DViewRange(const D3D11_SHADER_RESOURCE_VIEW_DESC& desc, Texture2DViewRange& range)
+{
+	switch (desc.ViewDimension)
+	{
+	case D3D11_SRV_DIMENSION_TEXTURE2D:
+		range.mostDetailedMip = desc.Texture2D.MostDetailedMip;
+		range.mipLevels = desc.Texture2D.MipLevels;
+		range.firstArraySlice = 0;
+		range.arraySize = 1;
+		return true;
+
+	case D3D11_SRV_DIMENSION_TEXTURE2DARRAY:
+		range.mostDetailedMip = desc.Texture2DArray.MostDetailedMip;
+		range.mipLevels = desc.Texture2DArray.MipLevels;
+		range.firstArraySlice = desc.Texture2DArray.FirstArraySlice;
+		range.arraySize = desc.Texture2DArray.ArraySize;
+		return true;
+
+	case D3D11_SRV_DIMENSION_TEXTURE2DMS:
+		range.mostDetailedMip = 0;
+		range.mipLevels = 1;
+		range.firstArraySlice = 0;
+		range.arraySize = 1;
+		return true;
+
+	case D3D11_SRV_DIMENSION_TEXTURE2DMSARRAY:
+		range.mostDetailedMip = 0;
+		range.mipLevels = 1;
+		range.firstArraySlice = desc.Texture2DMSArray.FirstArraySlice;
+		range.arraySize = desc.Texture2DMSArray.ArraySize;
+		return true;
+
+	case D3D11_SRV_DIMENSION_TEXTURECUBE:
+		range.mostDetailedMip = desc.TextureCube.MostDetailedMip;
+		range.mipLevels = desc.TextureCube.MipLevels;
+		range.firstArraySlice = 0;
+		range.arraySize = 6;
+		return true;
+
+	case D3D11_SRV_DIMENSION_TEXTURECUBEARRAY:
+		if (desc.TextureCubeArray.NumCubes > UINT_MAX / 6)
+			return false;
+		range.mostDetailedMip = desc.TextureCubeArray.MostDetailedMip;
+		range.mipLevels = desc.TextureCubeArray.MipLevels;
+		range.firstArraySlice = desc.TextureCubeArray.First2DArrayFace;
+		range.arraySize = desc.TextureCubeArray.NumCubes * 6;
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+void UpdateTextureGenerateMipsState(ID3D11ShaderResourceView* pShaderResourceView)
+{
+	if (!pShaderResourceView)
+		return;
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	pShaderResourceView->GetDesc(&srvDesc);
+
+	Texture2DViewRange range;
+
+	if (!GetTexture2DViewRange(srvDesc, range))
+		return;
+
+	ID3D11Resource* resource = nullptr;
+	pShaderResourceView->GetResource(&resource);
+
+	if (!resource)
+		return;
+
+	{
+		CriticalSectionGuard(&G->mResourcesLock);
+
+		ResourceHandleInfo* info = FindTrackedTexture2DNoLock(resource);
+
+		if (!info)
+			return;
+		
+		info->ProcessGenerateMips(range.mostDetailedMip, range.mipLevels, range.firstArraySlice, range.arraySize);
+	}
+
+	resource->Release();
+}
+
+void UpdateTextureSubresourceStateFromResolve(ID3D11Resource* pDstResource, UINT DstSubresource, ID3D11Resource* pSrcResource, UINT SrcSubresource)
+{
+	if (!pDstResource || !pSrcResource)
+		return;
+
+	{
+		CriticalSectionGuard(&G->mResourcesLock);
+
+		ResourceHandleInfo* dstInfo = FindTrackedTexture2DNoLock(pDstResource);
+
+		if (!dstInfo)
+			return;
+
+		ResourceHandleInfo* srcInfo = FindTrackedTexture2DNoLock(pSrcResource);
+
+		const bool sourceInitialized = srcInfo && srcInfo->IsSubresourceUploaded(SrcSubresource);
+
+		// Resolve always replaces the entire destination subresource.
+		dstInfo->ProcessSubresourceCopy(DstSubresource, sourceInitialized, true, false);
+	}
+}
+
+static UINT GetMipDimension(UINT dimension, UINT mip)
+{
+	while (mip-- && dimension > 1)
+		dimension >>= 1;
+
+	return (std::max)(1u, dimension);
+}
+
+static bool IsFullTexture2DCopy(
+	const ResourceHandleInfo* dstInfo,
+	UINT dstSubresource,
+	UINT dstX,
+	UINT dstY,
+	UINT dstZ,
+	const ResourceHandleInfo* srcInfo,
+	UINT srcSubresource,
+	const D3D11_BOX* pSrcBox)
+{
+	if (!dstInfo || !srcInfo ||
+		dstInfo->mip_levels == 0 ||
+		srcInfo->mip_levels == 0 ||
+		dstSubresource >= dstInfo->subresource_generations.size() ||
+		srcSubresource >= srcInfo->subresource_generations.size())
+		return false;
+
+	// Destination must start at the origin.
+	if (dstX != 0 || dstY != 0 || dstZ != 0)
+		return false;
+
+	const UINT dstMip = dstSubresource % dstInfo->mip_levels;
+	const UINT srcMip = srcSubresource % srcInfo->mip_levels;
+
+	const UINT dstWidth = GetMipDimension(dstInfo->desc2D.Width, dstMip);
+	const UINT dstHeight = GetMipDimension(dstInfo->desc2D.Height, dstMip);
+
+	const UINT srcWidth = GetMipDimension(srcInfo->desc2D.Width, srcMip);
+	const UINT srcHeight = GetMipDimension(srcInfo->desc2D.Height, srcMip);
+
+	UINT copyWidth = srcWidth;
+	UINT copyHeight = srcHeight;
+
+	if (pSrcBox)
+	{
+		if (pSrcBox->left >= pSrcBox->right ||
+			pSrcBox->top >= pSrcBox->bottom ||
+			pSrcBox->front != 0 ||
+			pSrcBox->back != 1 ||
+			pSrcBox->right > srcWidth ||
+			pSrcBox->bottom > srcHeight)
+			return false;
+
+		copyWidth = pSrcBox->right - pSrcBox->left;
+		copyHeight = pSrcBox->bottom - pSrcBox->top;
+	}
+
+	return copyWidth == dstWidth && copyHeight == dstHeight;
+}
+
+void UpdateTextureSubresourceStateFromCopy(
+	ID3D11Resource* pDstResource,
+	UINT DstSubresource,
+	UINT DstX,
+	UINT DstY,
+	UINT DstZ,
+	ID3D11Resource* pSrcResource,
+	UINT SrcSubresource,
+	const D3D11_BOX* pSrcBox,
+	UINT CopyFlags)
+{
+	if (!pDstResource || !pSrcResource)
+		return;
+
+	// Empty source boxes are no-op copies.
+	if (pSrcBox &&
+		(pSrcBox->left >= pSrcBox->right ||
+			pSrcBox->top >= pSrcBox->bottom ||
+			pSrcBox->front >= pSrcBox->back))
+		return;
+
+	const bool discard = (CopyFlags & D3D11_COPY_DISCARD) != 0;
+
+	{
+		CriticalSectionGuard(&G->mResourcesLock);
+
+		ResourceHandleInfo* dstInfo = FindTrackedTexture2DNoLock(pDstResource);
+
+		if (!dstInfo)
+			return;
+
+		ResourceHandleInfo* srcInfo = FindTrackedTexture2DNoLock(pSrcResource);
+
+		// Read source state before modifying destination state.
+		const bool sourceInitialized = srcInfo && srcInfo->IsSubresourceUploaded(SrcSubresource);
+
+		const bool fullDestinationSubresource =
+			IsFullTexture2DCopy(dstInfo, DstSubresource, DstX, DstY, DstZ, srcInfo, SrcSubresource, pSrcBox);
+
+		dstInfo->ProcessSubresourceCopy(DstSubresource, sourceInitialized, fullDestinationSubresource, discard);
+	}
+}
+
 uint32_t CalcTexture1DDataHash(
 	const D3D11_TEXTURE1D_DESC *pDesc,
 	const D3D11_SUBRESOURCE_DATA *pInitialData)
@@ -2166,6 +2436,153 @@ uint32_t ResourceHandleInfo::GetCachedRegionHash(const RegionHashKeyL2& key)
 	if (!region_hashes_cache)
 		return 0;
 	return region_hashes_cache->Get(key);
+}
+
+void ResourceHandleInfo::InitializeSubresourceTracking(UINT mipLevels, UINT arraySize, bool dataUploaded)
+{
+	mip_levels = mipLevels;
+	array_size = arraySize;
+
+	resource_generation = 0;
+
+	const UINT subresource_count = mipLevels * arraySize;
+
+	subresource_generations.assign(subresource_count, 0);
+
+	if (dataUploaded && subresource_count > 0) {
+		// Treat initial data as one resource-generation event.
+		++resource_generation;
+		std::fill(subresource_generations.begin(), subresource_generations.end(), resource_generation);
+	}
+}
+
+void ResourceHandleInfo::ProcessSubresourceUpdate(UINT subresource, bool fullSubresource, bool discard)
+{
+	if (mip_levels == 0 || subresource >= subresource_generations.size())
+		return;
+
+	const bool wasInitialized = subresource_generations[subresource] != 0;
+
+	// Every update/discard is a new generation event.
+	// Never reset this counter.
+	++resource_generation;
+
+	// With discard, previous resource contents are no longer guaranteed.
+	if (discard)
+		std::fill(subresource_generations.begin(), subresource_generations.end(), 0);
+
+	// A full upload initializes the destination subresource.
+	// A partial non-discard update preserves initialization
+	// only if the subresource was already initialized.
+	if (fullSubresource || (!discard && wasInitialized))
+		subresource_generations[subresource] = resource_generation;
+}
+
+void ResourceHandleInfo::ProcessResourceCopy(const ResourceHandleInfo* srcInfo)
+{
+	if (mip_levels == 0)
+		return;
+
+	// A CopyResource operation is one generation event for the destination.
+	++resource_generation;
+
+	const size_t count = subresource_generations.size();
+
+	// If the source isn't tracked, or its subresource layout doesn't match,
+	// we cannot reliably determine which destination subresources are valid.
+	if (!srcInfo ||
+		srcInfo->mip_levels != mip_levels ||
+		srcInfo->array_size != array_size ||
+		srcInfo->subresource_generations.size() != count)
+	{
+		std::fill(subresource_generations.begin(), subresource_generations.end(), 0);
+	}
+	else
+	{
+		// Copy initialization state, not generation numbers.
+		// Every initialized destination subresource was updated by this copy.
+		for (size_t i = 0; i < count; ++i)
+		{
+			subresource_generations[i] = srcInfo->subresource_generations[i] != 0 ? resource_generation : 0;
+		}
+	}
+}
+
+void ResourceHandleInfo::ProcessSubresourceCopy(UINT dstSubresource, bool sourceInitialized, bool fullDestinationSubresource, bool discard)
+{
+	if (mip_levels == 0 || dstSubresource >= subresource_generations.size())
+		return;
+
+	const bool wasInitialized = IsSubresourceUploaded(dstSubresource);
+
+	// One generation event per copy operation.
+	++resource_generation;
+
+	// Discard can invalidate contents outside the copied region, including other subresources.
+	if (discard)
+		std::fill(subresource_generations.begin(), subresource_generations.end(), 0);
+
+	if (sourceInitialized && (fullDestinationSubresource || (!discard && wasInitialized)))
+		subresource_generations[dstSubresource] = resource_generation;
+	else if (!sourceInitialized)
+		subresource_generations[dstSubresource] = 0;
+}
+
+void ResourceHandleInfo::ProcessGenerateMips(UINT mostDetailedMip, UINT viewMipLevels, UINT firstArraySlice, UINT viewArraySize)
+{
+	if (mip_levels == 0 ||
+		mostDetailedMip >= mip_levels ||
+		firstArraySlice >= array_size)
+		return;
+
+	// UINT_MAX means all remaining mip levels / array slices.
+	const UINT availableMips = mip_levels - mostDetailedMip;
+	const UINT availableSlices = array_size - firstArraySlice;
+
+	viewMipLevels = (viewMipLevels == UINT_MAX) ? availableMips : (std::min)(viewMipLevels, availableMips);
+
+	viewArraySize = (viewArraySize == UINT_MAX) ? availableSlices : (std::min)(viewArraySize, availableSlices);
+
+	// Nothing to generate if the view contains only one mip.
+	if (viewMipLevels <= 1 || viewArraySize == 0)
+		return;
+
+	// One generation event for the entire GenerateMips operation.
+	++resource_generation;
+
+	for (UINT slice = firstArraySlice; slice < firstArraySlice + viewArraySize; ++slice)
+	{
+		const UINT sourceSubresource = D3D11CalcSubresource(mostDetailedMip, slice, mip_levels);
+
+		// Generated mips are only considered initialized when
+		// their source mip was already initialized.
+		const bool sourceInitialized = subresource_generations[sourceSubresource] != 0;
+
+		// The source mip itself is unchanged.
+		for (UINT mip = mostDetailedMip + 1; mip < mostDetailedMip + viewMipLevels; ++mip)
+		{
+			const UINT subresource = D3D11CalcSubresource(mip, slice, mip_levels);
+			subresource_generations[subresource] = sourceInitialized ? resource_generation : 0;
+		}
+	}
+}
+
+bool ResourceHandleInfo::IsSubresourceUploaded(UINT subresource) const
+{
+	return subresource < subresource_generations.size() && subresource_generations[subresource];
+}
+
+uint64_t ResourceHandleInfo::GetSubresourceGeneration(UINT subresource) const
+{
+	return subresource < subresource_generations.size() ? subresource_generations[subresource] : 0;
+}
+
+UINT ResourceHandleInfo::GetSubresourceIndex(UINT mip, UINT arraySlice) const
+{
+	if (mip >= mip_levels || arraySlice >= array_size)
+		return UINT_MAX;
+
+	return D3D11CalcSubresource(mip, arraySlice, mip_levels);
 }
 
 // Helper function that clears region hash cache for a specific D3D resource.

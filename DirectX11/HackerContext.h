@@ -71,16 +71,24 @@ struct DispatchContext
 // These are per-context so we shouldn't need locks
 struct MappedResourceInfo {
 	D3D11_MAPPED_SUBRESOURCE map;
+
 	bool mapped_writable;
 	void *orig_pData;
 	size_t size;
 	UINT bind_flags;
 
+	UINT subresource;
+	D3D11_MAP map_type;
+	bool tracks_texture_subresource;
+
 	MappedResourceInfo() :
 		orig_pData(NULL),
 		size(0),
 		mapped_writable(false),
-		bind_flags(0)
+		bind_flags(0),
+		subresource(0),
+		map_type(D3D11_MAP_READ),
+		tracks_texture_subresource(false)
 	{}
 };
 
@@ -140,7 +148,7 @@ private:
 	HackerInputLayout* mOverrideInputLayout;
 
 	// Used for deny_cpu_read, track_texture_updates and constant buffer matching
-	typedef std::unordered_map<ID3D11Resource*, MappedResourceInfo> MappedResources;
+	typedef std::unordered_map<ID3D11Resource*, std::unordered_map<UINT, MappedResourceInfo>> MappedResources;
 	MappedResources mMappedResources;
 
 	unsigned draw_number;

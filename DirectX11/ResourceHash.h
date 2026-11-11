@@ -445,6 +445,16 @@ struct ResourceHandleInfo
 		D3D11_TEXTURE3D_DESC desc3D;
 	};
 
+	// Texture subresource tracking.
+	// Indexed using D3D11CalcSubresource(mip, arraySlice, mip_levels).
+	// These are the actual dimensions of the created resource, not
+	// necessarily the values from the original creation descriptor.
+	UINT mip_levels = 0;
+	UINT array_size = 0;
+	uint64_t resource_generation = 0;
+	// One entry per subresource. Access only while G->mResourcesLock is held.
+	std::vector<uint64_t> subresource_generations;
+
 	void InitializeDataCache(size_t size, size_t offset = 0);
 	void SetDataCache(void* src, size_t size);
 	void SetDataCacheRegion(const void* src, size_t size, UINT offset);
@@ -455,6 +465,16 @@ struct ResourceHandleInfo
 
 	void CacheRegionHash(const RegionHashKeyL2& key, uint32_t hash);
 	uint32_t GetCachedRegionHash(const RegionHashKeyL2& key);
+
+	void InitializeSubresourceTracking(UINT mipLevels, UINT arraySize, bool dataUploaded = false);
+	void ProcessSubresourceUpdate(UINT subresource, bool fullSubresource, bool discard);
+	void ProcessResourceCopy(const ResourceHandleInfo* srcInfo);
+	void ProcessSubresourceCopy(UINT dstSubresource, bool sourceInitialized, bool fullDestinationSubresource, bool discard = false);
+	void ProcessGenerateMips(UINT mostDetailedMip, UINT viewMipLevels, UINT firstArraySlice, UINT viewArraySize);
+	
+	bool IsSubresourceUploaded(UINT subresource) const;
+	uint64_t GetSubresourceGeneration(UINT subresource) const;
+	UINT GetSubresourceIndex(UINT mip, UINT arraySlice = 0) const;
 };
 
 struct CopySubresourceRegionContamination
@@ -617,6 +637,21 @@ UINT GetVertexBufferRegionOffset(UINT stride, DrawCallInfo* call_info, UINT byte
 UINT GetIndexBufferRegionOffset(DXGI_FORMAT format, DrawCallInfo* call_info, UINT byte_offset);
 UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info);
 UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info);
+
+void UpdateTextureSubresourceState(ID3D11Resource* resource, UINT subresource, bool fullSubresource, bool discard);
+void UpdateTextureResourceStateFromCopy(ID3D11Resource* dstResource, ID3D11Resource* srcResource);
+void UpdateTextureGenerateMipsState(ID3D11ShaderResourceView* pShaderResourceView);
+void UpdateTextureSubresourceStateFromResolve(ID3D11Resource* pDstResource, UINT DstSubresource, ID3D11Resource* pSrcResource, UINT SrcSubresource);
+void UpdateTextureSubresourceStateFromCopy(
+	ID3D11Resource* pDstResource,
+	UINT DstSubresource,
+	UINT DstX,
+	UINT DstY,
+	UINT DstZ,
+	ID3D11Resource* pSrcResource,
+	UINT SrcSubresource,
+	const D3D11_BOX* pSrcBox,
+	UINT CopyFlags = 0);
 
 float BitCastToFloat(uint32_t bits);
 uint32_t BitCastToUint(float bits);

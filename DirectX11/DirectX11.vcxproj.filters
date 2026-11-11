@@ -31,6 +31,7 @@
     <ClCompile Include="Override.cpp" />
     <ClCompile Include="HackerInputLayout.cpp" />
     <ClCompile Include="ByteCodeReader.cpp" />
+    <ClCompile Include="DHash64Gpu.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="d3d11Wrapper.def" />
@@ -67,6 +68,7 @@
     <ClInclude Include="HackerInputLayout.h" />
     <ClInclude Include="d3d11TokenizedProgramFormat.hpp" />
     <ClInclude Include="ByteCodeReader.h" />
+    <ClInclude Include="DHash64Gpu.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="DirectX11.rc" />

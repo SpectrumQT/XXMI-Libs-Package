@@ -10,6 +10,7 @@
 #include "HackerInputLayout.h"
 #include "HackerDevice.h"
 #include "Globals.h"
+#include "DHash64Gpu.h"
 
 // {A3046B1E-336B-4D90-9FD6-234BC09B8687}
 DEFINE_GUID(IID_HackerContext,
@@ -150,6 +151,7 @@ private:
 	// Used for deny_cpu_read, track_texture_updates and constant buffer matching
 	typedef std::unordered_map<ID3D11Resource*, std::unordered_map<UINT, MappedResourceInfo>> MappedResources;
 	MappedResources mMappedResources;
+	DHash64Gpu mDHasher;
 
 	unsigned draw_number;
 	unsigned dispatch_number;
@@ -264,6 +266,8 @@ public:
 	void DeferInputLayoutOverride(HackerInputLayout* pInputLayout);
 	void OverrideInputLayout();
 	void RestoreInputLayout();
+
+	HRESULT ComputeDHash(ID3D11Texture2D* texture, UINT mipLevel, DXGI_FORMAT srvFormat, uint64_t& outHash);
 
 	// These are the shaders the game has set, which may be different from
 	// the ones we have bound to the pipeline:

@@ -92,6 +92,16 @@ HackerContext::HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pCon
 	mCurrentInputLayout = nullptr;
 	mOriginalInputLayout = nullptr;
 	mOverrideInputLayout = nullptr;
+
+	// Initialize DHash only for immediate contexts.
+	// Synchronous GPU readback is not supported on deferred contexts.
+	if (pContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+	{
+		HRESULT hr = mDHasher.Initialize(pDevice1);
+
+		if (FAILED(hr))
+			LogOverlayW(LOG_WARNING, L"Failed to initialize DHash64Gpu: 0x%08X\n", hr);
+	}
 }
 
 HackerContext::~HackerContext()
@@ -856,6 +866,14 @@ void HackerContext::RestoreInputLayout()
 
 	mOverrideInputLayout = nullptr;
 	mOriginalInputLayout = nullptr;
+}
+
+HRESULT HackerContext::ComputeDHash(ID3D11Texture2D* texture, UINT mipLevel, DXGI_FORMAT srvFormat, uint64_t& outHash)
+{
+	if (!mDHasher.IsInitialized())
+		return E_FAIL;
+
+	return mDHasher.ComputeHash(GetPassThroughOrigContext1(), texture, mipLevel, srvFormat, outHash);
 }
 
 void HackerContext::BeforeDraw(DrawContext &data)

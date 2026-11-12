@@ -90,15 +90,15 @@ class FrameAnalysisContext : public HackerContext
 private:
 	template <class ID3D11Shader>
 	void FrameAnalysisLogShaderHash(ID3D11Shader *shader);
-	void FrameAnalysisLogResourceHash(ID3D11Resource *resource);
-	void FrameAnalysisLogResource(int slot, char *slot_name, ID3D11Resource *resource);
+	void FrameAnalysisLogResourceHash(ID3D11Resource *resource, ID3D11View* view = nullptr);
+	void FrameAnalysisLogResource(int slot, char *slot_name, ID3D11Resource *resource, ID3D11View* view = nullptr);
 	void FrameAnalysisLogResourceArray(UINT start, UINT len, ID3D11Resource *const *ppResources);
 	void FrameAnalysisLogView(int slot, char *slot_name, ID3D11View *view);
 	void FrameAnalysisLogViewArray(UINT start, UINT len, ID3D11View *const *ppViews);
 	void FrameAnalysisLogMiscArray(UINT start, UINT len, void *const *array);
 	void FrameAnalysisLogAsyncQuery(ID3D11Asynchronous *async);
 	void FrameAnalysisLogData(void *buf, UINT size);
-	void FrameAnalysisLogResourceHashInline(ID3D11Resource* resource);
+	void FrameAnalysisLogResourceHashInline(ID3D11Resource* resource, ID3D11View* view = nullptr);
 	void FrameAnalysisLogConstantBuffer(int slot, char* slot_name, ID3D11Resource* resource, UINT first_constant, UINT num_constants);
 	void FrameAnalysisLogConstantBufferArray(UINT start, UINT len, ID3D11Resource* const* ppResources, const UINT* pFirstConstant, const UINT* pNumConstants);
 

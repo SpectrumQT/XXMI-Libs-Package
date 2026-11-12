@@ -4688,6 +4688,9 @@ void LoadConfigFile()
 	G->shader_hash_type = GetIniEnumClass(L"Rendering", L"shader_hash", ShaderHashType::FNV, NULL, ShaderHashNames);
 	G->texture_hash_version = GetIniInt(L"Rendering", L"texture_hash", 0, NULL);
 
+	G->dhash_mip_size = GetIniInt(L"Rendering", L"dhash_mip_size", 256, NULL);
+	G->dhash_allow_rehash = GetIniBool(L"Rendering", L"dhash_allow_rehash", false, NULL);
+
 	if (GetIniStringAndLog(L"Rendering", L"override_directory", 0, G->SHADER_PATH, MAX_PATH))
 	{
 		while (G->SHADER_PATH[wcslen(G->SHADER_PATH) - 1] == L' ')

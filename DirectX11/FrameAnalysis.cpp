@@ -217,9 +217,10 @@ void FrameAnalysisContext::FrameAnalysisLogShaderHash(ID3D11Shader *shader)
 	fprintf(frame_analysis_log, "\n");
 }
 
-void FrameAnalysisContext::FrameAnalysisLogResourceHashInline(ID3D11Resource *resource)
+void FrameAnalysisContext::FrameAnalysisLogResourceHashInline(ID3D11Resource *resource, ID3D11View* view)
 {
 	uint32_t hash, orig_hash;
+	struct ResourceHandleInfo *handle;
 	struct ResourceHashInfo *info;
 
 	if (!G->analyse_frame || !frame_analysis_log || !resource)
@@ -229,8 +230,10 @@ void FrameAnalysisContext::FrameAnalysisLogResourceHashInline(ID3D11Resource *re
 	EnterCriticalSectionPretty(&G->mResourcesLock);
 
 	try {
-		hash = G->mResources.at(resource).hash;
-		orig_hash = G->mResources.at(resource).orig_hash;
+		handle = &G->mResources.at(resource);
+
+		hash = handle->hash;
+		orig_hash = handle->orig_hash;
 		if (hash)
 			fprintf(frame_analysis_log, " hash=%08x", hash);
 		if (orig_hash != hash)
@@ -248,6 +251,11 @@ void FrameAnalysisContext::FrameAnalysisLogResourceHashInline(ID3D11Resource *re
 			if (!info->region_contamination.empty())
 				fprintf(frame_analysis_log, "UpdateSubresourceRegion,");
 		}
+
+		uint64_t dhash = 0;
+		if (GetDhash(this, resource, G->dhash_mip_size, G->dhash_allow_rehash, dhash, view))
+			fprintf(frame_analysis_log, " dhash=%016llx", dhash);
+
 	} catch (std::out_of_range) {
 	}
 
@@ -255,7 +263,7 @@ void FrameAnalysisContext::FrameAnalysisLogResourceHashInline(ID3D11Resource *re
 	LeaveCriticalSection(&G->mCriticalSection);
 }
 
-void FrameAnalysisContext::FrameAnalysisLogResourceHash(ID3D11Resource* resource)
+void FrameAnalysisContext::FrameAnalysisLogResourceHash(ID3D11Resource* resource, ID3D11View* view)
 {
 	// Always complete the line in the debug log:
 	LogDebug("\n");
@@ -263,12 +271,12 @@ void FrameAnalysisContext::FrameAnalysisLogResourceHash(ID3D11Resource* resource
 	if (!G->analyse_frame || !frame_analysis_log)
 		return;
 
-	FrameAnalysisLogResourceHashInline(resource);
+	FrameAnalysisLogResourceHashInline(resource, view);
 
 	fprintf(frame_analysis_log, "\n");
 }
 
-void FrameAnalysisContext::FrameAnalysisLogResource(int slot, char *slot_name, ID3D11Resource *resource)
+void FrameAnalysisContext::FrameAnalysisLogResource(int slot, char *slot_name, ID3D11Resource *resource, ID3D11View* view)
 {
 	if (!resource || !G->analyse_frame || !frame_analysis_log)
 		return;
@@ -276,7 +284,7 @@ void FrameAnalysisContext::FrameAnalysisLogResource(int slot, char *slot_name, I
 	FrameAnalysisLogSlot(frame_analysis_log, slot, slot_name);
 	fprintf(frame_analysis_log, " resource=0x%p", resource);
 
-	FrameAnalysisLogResourceHash(resource);
+	FrameAnalysisLogResourceHash(resource, view);
 }
 
 void FrameAnalysisContext::FrameAnalysisLogView(int slot, char *slot_name, ID3D11View *view)
@@ -293,7 +301,7 @@ void FrameAnalysisContext::FrameAnalysisLogView(int slot, char *slot_name, ID3D1
 	if (!resource)
 		return;
 
-	FrameAnalysisLogResource(-1, NULL, resource);
+	FrameAnalysisLogResource(-1, NULL, resource, view);
 
 	resource->Release();
 }

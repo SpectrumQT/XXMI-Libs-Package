@@ -905,6 +905,7 @@ struct MemberArg
 		Signed,
 		Unsigned,
 		String,
+		Hash,
 	};
 
 	Type type = Type::None;
@@ -912,6 +913,7 @@ struct MemberArg
 	unique_ptr<CommandListExpression> expression;
 
 	std::wstring constant_string;
+	uint64_t constant_hash;
 
 	float GetValue(CommandListState* state);
 	const std::wstring& GetString() const;
@@ -2004,6 +2006,7 @@ public:
 	bool GetVariable(CommandListVariable*& out, bool is_source, PeekMode mode = PeekMode::Token);
 	bool GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode = PeekMode::Token, bool validate = true, bool allow_range = false);
 	bool GetFloat(float* out);
+	bool GetHash(uint64_t* out);
 	bool GetExpression(unique_ptr<CommandListExpression>* out);
 
 	bool ConsumeSeparator(SeparatorMode separator_mode);

@@ -4360,6 +4360,49 @@ inline bool ParseFloatToken(const wstring& input, float& out, size_t& length)
 	return true;
 }
 
+inline bool ParseHashToken(const wstring& input, uint64_t& out, size_t& length)
+{
+	out = 0;
+	length = 0;
+
+	const wchar_t* begin = input.c_str();
+	const wchar_t* p = begin;
+
+	// Optional 0x prefix.
+	if (p[0] == L'0' && (p[1] == L'x'))
+		p += 2;
+
+	uint64_t value = 0;
+	size_t digits = 0;
+
+	for (; *p; ++p)
+	{
+		unsigned int digit;
+
+		if (*p >= L'0' && *p <= L'9')
+			digit = *p - L'0';
+		else if (*p >= L'a' && *p <= L'f')
+			digit = *p - L'a' + 10;
+		else
+			break;
+
+		// Maximum 64-bit hash: 16 hexadecimal digits.
+		if (digits >= 16)
+			return false;
+
+		value = (value << 4) | digit;
+		++digits;
+	}
+
+	if (digits == 0)
+		return false;
+
+	out = value;
+	length = static_cast<size_t>(p - begin);
+
+	return true;
+}
+
 #pragma endregion CommandLexer
 
 
@@ -4530,6 +4573,28 @@ bool CommandArgumentReader::GetFloat(float* out)
 	ConsumeToken();
 
 	LogDebugW(L"  Float: '%ls'\n", token.c_str());
+
+	return true;
+}
+
+bool CommandArgumentReader::GetHash(uint64_t* out)
+{
+	wstring token;
+
+	if (!PeekToken(&token))
+		return false;
+
+	size_t len;
+
+	if (!ParseHashToken(token, *out, len) || len != token.size())
+	{
+		SetError(L"Invalid hash: " + token, m_peek_start_pos);
+		return false;
+	}
+
+	ConsumeToken();
+
+	LogDebugW(L"  Hash: '%ls'\n", token.c_str());
 
 	return true;
 }
@@ -8032,6 +8097,18 @@ bool SyntaxTarget::ParseMemberArguments(
 
 			member_args[i].constant_string = value;
 			member_args[i].type = MemberArg::Type::String;
+			break;
+		}
+
+		case MemberArg::Type::Hash:
+		{
+			uint64_t hash;
+
+			if (!args.GetHash(&hash))
+				return args.Fail();
+
+			member_args[i].constant_hash = hash;
+			member_args[i].type = MemberArg::Type::Hash;
 			break;
 		}
 

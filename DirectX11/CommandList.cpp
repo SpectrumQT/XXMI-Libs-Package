@@ -3166,6 +3166,9 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 		case ResourceCopyTargetEvaluationMode::RESOURCE_MIPS:
 			return texture_filter_target.GetResourceMips(state);
 
+		case ResourceCopyTargetEvaluationMode::RESOURCE_HAMMING_DISTANCE:
+			return texture_filter_target.GetResourceHammingDistance(state);
+
 		case ResourceCopyTargetEvaluationMode::RESOURCE_BIND_FLAGS:
 			return texture_filter_target.GetResourceBindFlags(state);
 
@@ -8319,6 +8322,9 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 			MemberArg::Type::Unsigned // Semantic Index
 		}} },
 		{ L"->originalformat",  16, ResourceCopyTargetEvaluationMode::RESOURCE_ORIGINAL_FORMAT },
+		{ L"->hammingdistance", 17, ResourceCopyTargetEvaluationMode::RESOURCE_HAMMING_DISTANCE, {{
+			MemberArg::Type::Resource,  // Texture Resource
+		}} },
 	};
 
 	return SyntaxTarget::ParseTargetMember(members, target, length, temp_target, evaluation_mode, ini_namespace, scope);
@@ -10910,6 +10916,63 @@ float ResourceCopyTarget::GetResourceMips(CommandListState* state)
 	return ret;
 }
 
+inline unsigned HammingDistance(uint64_t a, uint64_t b)
+{
+	// Treat an all-zero dHash as maximally different from any non-zero dHash.
+	// A zero dHash is produced when:
+	// * All 64 luminance comparison operations produce zero bits.
+	// * The flat-color fallback produces an all-zero RGBA value.
+	// This safeguard prevents false near-matches between zero-hash images
+	// and non-zero hashes that differ in only a few bits.
+	if ((a == 0) != (b == 0))
+		return 64;
+
+	return static_cast<unsigned>(__popcnt64(a ^ b));
+}
+
+float ResourceCopyTarget::GetResourceHammingDistance(CommandListState* state)
+{
+	float ret = ResourcePropertyResult::UNKNOWN;
+
+	ID3D11View* view = nullptr;
+	ID3D11Resource* resource = GetResource(state, &view, nullptr, nullptr, nullptr, nullptr);
+
+	if (!resource)
+	{
+		ret = ResourcePropertyResult::RESOURCE_NOT_FOUND;
+		goto cleanup;
+	}
+
+	uint64_t resource_dhash = 0;
+	bool has_resource_dhash = GetDhash(state->mHackerContext, resource, G->dhash_mip_size, G->dhash_allow_rehash, resource_dhash, view);
+
+	if (has_resource_dhash)
+	{
+		auto* target_ptr = member_args[0].resource.get();
+
+		if (target_ptr)
+		{
+			CustomResource* custom_resource = target_ptr->GetCustomResource(state);
+
+			if (custom_resource)
+			{
+				const uint64_t reference_dhash = custom_resource->original_dhash;
+				ret = static_cast<float>(HammingDistance(reference_dhash, resource_dhash));
+			}
+		}
+	}
+
+cleanup:
+
+	if (resource)
+		resource->Release();
+
+	if (view)
+		view->Release();
+
+	return ret;
+}
+
 // Returns the D3D11_BIND_FLAGs of a resource.
 D3D11_BIND_FLAG ResourceCopyTarget::GetResourceBindFlags(CommandListState *state)
 {
@@ -12683,9 +12746,11 @@ void ResourceCopyOperation::CopyResourceToResource(
 		if (src.type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
 			CustomResource* src_custom_resource = src.GetCustomResource(state);
 			dst_custom_resource->source_stride = src_custom_resource->source_stride > 0 ? src_custom_resource->source_stride : stride;
+			dst_custom_resource->original_dhash = src_custom_resource->original_dhash;
 			dst_custom_resource->original_format = src_custom_resource->original_format;
 		} else {
 			dst_custom_resource->source_stride = stride;
+			dst_custom_resource->original_dhash = 0;
 			dst_custom_resource->original_format = (DXGI_FORMAT)-1;
 		}
 	}

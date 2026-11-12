@@ -2101,6 +2101,7 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 			LogInfo("  original_format=%s\n", TexFormatStr(custom_resource->override_format));
 		}
 	}
+	custom_resource->original_dhash = GetIniHash(section_name, L"original_dhash", 0, nullptr);
 
 	custom_resource->override_color_space = GetIniEnumClass(section_name, L"color_space", CustomColorSpace::DEFAULT, NULL, CustomColorSpaceNames);
 	custom_resource->override_width = GetIniInt(section_name, L"width", -1, NULL);

@@ -906,6 +906,7 @@ struct MemberArg
 		Unsigned,
 		String,
 		Hash,
+		Resource,
 	};
 
 	Type type = Type::None;
@@ -914,6 +915,7 @@ struct MemberArg
 
 	std::wstring constant_string;
 	uint64_t constant_hash;
+	std::unique_ptr<ResourceCopyTarget> resource;
 
 	float GetValue(CommandListState* state);
 	const std::wstring& GetString() const;

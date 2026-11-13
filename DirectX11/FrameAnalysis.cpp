@@ -561,7 +561,7 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 
 		hr = S_OK;
 		if (GetFileAttributes(save_filename.c_str()) == INVALID_FILE_ATTRIBUTES)
-			hr = DirectX::SaveDDSTextureToFile(GetDumpingContext(), staging, save_filename.c_str());
+			hr = DirectX::SaveDDSTextureToFile(GetDumpingContext(), staging, save_filename.c_str(), G->dump_mips);
 		link_deduplicated_files(filename.c_str(), save_filename.c_str());
 	}
 

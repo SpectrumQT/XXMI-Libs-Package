@@ -167,13 +167,15 @@ namespace
 _Use_decl_annotations_
 HRESULT DirectX::SaveDDSTextureToFile( ID3D11DeviceContext* pContext,
                                        ID3D11Resource* pSource,
-                                       const wchar_t* fileName )
+                                       const wchar_t* fileName,
+                                       bool dump_mips )
 {
     if ( !fileName )
         return E_INVALIDARG;
 
     D3D11_TEXTURE2D_DESC desc = {};
     ComPtr<ID3D11Texture2D> pStaging;
+
     HRESULT hr = CaptureTexture( pContext, pSource, desc, pStaging );
     if ( FAILED(hr) )
         return hr;
@@ -184,26 +186,62 @@ HRESULT DirectX::SaveDDSTextureToFile( ID3D11DeviceContext* pContext,
 #else
     ScopedHandle hFile( safe_handle( CreateFileW( fileName, GENERIC_WRITE | DELETE, 0, nullptr, CREATE_ALWAYS, 0, nullptr ) ) );
 #endif
+
     if ( !hFile )
         return HRESULT_FROM_WIN32( GetLastError() );
 
     auto_delete_file delonfail(hFile.get());
 
+    // Write data in chunks because WriteFile accepts a DWORD byte count.
+	auto writeFile = [&hFile]( const void* buffer, size_t size ) -> HRESULT
+	{
+		const auto* data = static_cast<const uint8_t*>(buffer);
+
+		while ( size )
+		{
+			const DWORD chunkSize = static_cast<DWORD>( std::min<size_t>( size, MAXDWORD ) );
+
+			DWORD bytesWritten = 0;
+
+			if ( !WriteFile( hFile.get(), data, chunkSize, &bytesWritten, nullptr ) )
+				return HRESULT_FROM_WIN32( GetLastError() );
+
+			if ( bytesWritten != chunkSize )
+				return E_FAIL;
+
+			data += chunkSize;
+			size -= chunkSize;
+		}
+
+		return S_OK;
+	};
+
     // Setup header
-    const size_t MAX_HEADER_SIZE = sizeof(uint32_t) + sizeof(DDS_HEADER) + sizeof(DDS_HEADER_DXT10);
-    uint8_t fileHeader[ MAX_HEADER_SIZE ];
+    constexpr size_t MAX_HEADER_SIZE = sizeof(uint32_t) + sizeof(DDS_HEADER) + sizeof(DDS_HEADER_DXT10);
 
-    *reinterpret_cast<uint32_t*>(&fileHeader[0]) = DDS_MAGIC;
+    alignas(DDS_HEADER_DXT10) uint8_t fileHeader[MAX_HEADER_SIZE] = {};
 
-    auto header = reinterpret_cast<DDS_HEADER*>( &fileHeader[0] + sizeof(uint32_t) );
+    const uint32_t magic = DDS_MAGIC;
+    memcpy( fileHeader, &magic, sizeof(magic) );
+
+    auto header = reinterpret_cast<DDS_HEADER*>(fileHeader + sizeof(uint32_t) );
+
     size_t headerSize = sizeof(uint32_t) + sizeof(DDS_HEADER);
-    memset( header, 0, sizeof(DDS_HEADER) );
+	
+    UINT mip_levels = dump_mips ? desc.MipLevels : 1;
+
     header->size = sizeof( DDS_HEADER );
-    header->flags = DDS_HEADER_FLAGS_TEXTURE | DDS_HEADER_FLAGS_MIPMAP;
+    header->flags = DDS_HEADER_FLAGS_TEXTURE;
     header->height = desc.Height;
     header->width = desc.Width;
-    header->mipMapCount = 1;
+    header->mipMapCount = mip_levels;
     header->caps = DDS_SURFACE_FLAGS_TEXTURE;
+
+    if ( mip_levels > 1 )
+    {
+        header->flags |= DDS_HEADER_FLAGS_MIPMAP;
+        header->caps |= DDS_SURFACE_FLAGS_MIPMAP;
+    }
 
     // Try to use a legacy .DDS pixel format for better tools support, otherwise fallback to 'DX10' header extension
     DDS_HEADER_DXT10* extHeader = nullptr;
@@ -254,16 +292,36 @@ HRESULT DirectX::SaveDDSTextureToFile( ID3D11DeviceContext* pContext,
         memcpy_s( &header->ddspf, sizeof(header->ddspf), &DDSPF_DX10, sizeof(DDS_PIXELFORMAT) );
 
         headerSize += sizeof(DDS_HEADER_DXT10);
-        extHeader = reinterpret_cast<DDS_HEADER_DXT10*>( reinterpret_cast<uint8_t*>(&fileHeader[0]) + sizeof(uint32_t) + sizeof(DDS_HEADER) );
+
+        extHeader = reinterpret_cast<DDS_HEADER_DXT10*>( fileHeader + sizeof(uint32_t) + sizeof(DDS_HEADER) );
+
         memset( extHeader, 0, sizeof(DDS_HEADER_DXT10) );
+
         extHeader->dxgiFormat = desc.Format;
         extHeader->resourceDimension = D3D11_RESOURCE_DIMENSION_TEXTURE2D;
         extHeader->arraySize = 1;
         break;
     }
 
-    size_t rowPitch, slicePitch, rowCount;
-    GetSurfaceInfo( desc.Width, desc.Height, desc.Format, &slicePitch, &rowPitch, &rowCount );
+    // Get top-level mip layout.
+    size_t rowPitch = 0;
+    size_t slicePitch = 0;
+    size_t rowCount = 0;
+
+    GetSurfaceInfo(desc.Width, desc.Height, desc.Format, &slicePitch, &rowPitch, &rowCount );
+
+    if ( !slicePitch || !rowPitch || !rowCount )
+        return E_FAIL;
+
+    // Ensure the layout can be copied as tightly packed rows.
+    if ( rowCount > slicePitch / rowPitch || rowCount * rowPitch != slicePitch )
+        return HRESULT_FROM_WIN32( ERROR_NOT_SUPPORTED );
+
+    // DDS pitch/linear-size fields are 32-bit.
+    const size_t pitchOrLinearSize = IsCompressed( desc.Format ) ? slicePitch : rowPitch;
+
+    if ( pitchOrLinearSize > MAXDWORD )
+        return HRESULT_FROM_WIN32( ERROR_ARITHMETIC_OVERFLOW );
 
     if ( IsCompressed( desc.Format ) )
     {
@@ -276,49 +334,76 @@ HRESULT DirectX::SaveDDSTextureToFile( ID3D11DeviceContext* pContext,
         header->pitchOrLinearSize = static_cast<uint32_t>( rowPitch );
     }
 
-    // Setup pixels
-    std::unique_ptr<uint8_t[]> pixels( new (std::nothrow) uint8_t[ slicePitch ] );
-    if (!pixels)
+    // Allocate once, using the largest mip level.
+    // The same buffer is reused for every mip.
+    std::unique_ptr<uint8_t[]> pixels( new (std::nothrow) uint8_t[slicePitch] );
+
+    if ( !pixels )
         return E_OUTOFMEMORY;
 
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    hr = pContext->Map( pStaging.Get(), 0, D3D11_MAP_READ, 0, &mapped );
+    // Write DDS header.
+    hr = writeFile( fileHeader, headerSize );
+
     if ( FAILED(hr) )
         return hr;
 
-    auto sptr = reinterpret_cast<const uint8_t*>( mapped.pData );
-    if ( !sptr )
+    // Write all mip levels.
+    for ( UINT mip = 0; mip < mip_levels; ++mip )
     {
-        pContext->Unmap( pStaging.Get(), 0 );
-        return E_POINTER;
+        const UINT mipWidth = std::max<UINT>( 1, desc.Width >> mip );
+        const UINT mipHeight = std::max<UINT>( 1, desc.Height >> mip );
+
+        size_t mipRowPitch = 0;
+        size_t mipSlicePitch = 0;
+        size_t mipRowCount = 0;
+
+        GetSurfaceInfo( mipWidth, mipHeight, desc.Format, &mipSlicePitch, &mipRowPitch, &mipRowCount );
+
+        if ( !mipSlicePitch || !mipRowPitch || !mipRowCount )
+            return E_FAIL;
+
+        // Validate destination buffer bounds and tightly packed layout.
+        if ( mipSlicePitch > slicePitch || mipRowCount > mipSlicePitch / mipRowPitch || mipRowCount * mipRowPitch != mipSlicePitch )
+            return E_FAIL;
+
+        // Map the corresponding staging subresource.
+        const UINT subresource = D3D11CalcSubresource( mip, 0, desc.MipLevels);
+
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+
+        hr = pContext->Map( pStaging.Get(), subresource, D3D11_MAP_READ, 0, &mapped );
+
+        if ( FAILED(hr) )
+            return hr;
+
+        if ( !mapped.pData )
+        {
+            pContext->Unmap( pStaging.Get(), subresource );
+            return E_POINTER;
+        }
+
+        if ( mapped.RowPitch < mipRowPitch )
+        {
+            pContext->Unmap( pStaging.Get(), subresource );
+            return E_FAIL;
+        }
+
+        // Remove GPU row-pitch padding.
+        const auto* src = static_cast<const uint8_t*>( mapped.pData );
+
+        for ( size_t y = 0; y < mipRowCount; ++y )
+            memcpy( pixels.get() + y * mipRowPitch, src + y * mapped.RowPitch, mipRowPitch );
+
+        pContext->Unmap( pStaging.Get(), subresource );
+
+        // Write tightly packed mip data.
+        hr = writeFile( pixels.get(), mipSlicePitch );
+
+        if ( FAILED(hr) )
+            return hr;
     }
 
-    uint8_t* dptr = pixels.get();
-
-    size_t msize = std::min<size_t>( rowPitch, mapped.RowPitch );
-    for( size_t h = 0; h < rowCount; ++h )
-    {
-        memcpy_s( dptr, rowPitch, sptr, msize );
-        sptr += mapped.RowPitch;
-        dptr += rowPitch;
-    }
-
-    pContext->Unmap( pStaging.Get(), 0 );
-
-    // Write header & pixels
-    DWORD bytesWritten;
-    if ( !WriteFile( hFile.get(), fileHeader, static_cast<DWORD>( headerSize ), &bytesWritten, nullptr ) )
-        return HRESULT_FROM_WIN32( GetLastError() );
-
-    if ( bytesWritten != headerSize )
-        return E_FAIL;
-
-    if ( !WriteFile( hFile.get(), pixels.get(), static_cast<DWORD>( slicePitch ), &bytesWritten, nullptr ) )
-        return HRESULT_FROM_WIN32( GetLastError() );
-
-    if ( bytesWritten != slicePitch )
-        return E_FAIL;
-
+    // Keep the completed file.
     delonfail.clear();
 
     return S_OK;

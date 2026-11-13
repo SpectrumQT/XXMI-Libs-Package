@@ -492,6 +492,7 @@ struct Globals
 	wchar_t ANALYSIS_PATH[MAX_PATH];
 	FrameAnalysisOptions def_analyse_options, cur_analyse_options;
 	std::unordered_set<void*> frame_analysis_seen_rts;
+	bool dump_mips = true;
 
 	ShaderHashType shader_hash_type;
 	bool track_region_hashes;

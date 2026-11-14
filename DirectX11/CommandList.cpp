@@ -6,6 +6,7 @@
 
 #include <DDSTextureLoader.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <sstream>
 #include "HackerDevice.h"
@@ -39,6 +40,16 @@ std::vector<std::shared_ptr<CommandList>> dynamically_allocated_command_lists;
 	do { \
 		(state)->mHackerContext->FrameAnalysisLog("3DMigoto%*s " fmt, state->recursion + state->extra_indent, "", __VA_ARGS__); \
 	} while (0)
+
+// %f prints the tiny floats an @ identity encodes to as 0.000000,
+// so values below 0.001 get nine significant digits instead.
+static std::string log_float(float value)
+{
+	char buf[64];
+
+	sprintf_s(buf, value != 0.0f && fabsf(value) < 0.001f ? "%.9g" : "%f", value);
+	return buf;
+}
 
 
 #pragma region CommandListProfiling
@@ -5940,7 +5951,8 @@ void ParamOverride::run(CommandListState *state)
 
 	*dest = expression.evaluate(state);
 
-	COMMAND_LIST_LOG(state, "  ini param override = %f\n", *dest);
+	if (G->analyse_frame)
+		COMMAND_LIST_LOG(state, "  ini param override = %s\n", log_float(*dest).c_str());
 
 	state->update_params |= (*dest != orig);
 }
@@ -5953,7 +5965,8 @@ void VariableAssignment::run(CommandListState *state)
 
 	var->fval = expression.evaluate(state);
 
-	COMMAND_LIST_LOG(state, "  = %f\n", var->fval);
+	if (G->analyse_frame)
+		COMMAND_LIST_LOG(state, "  = %s\n", log_float(var->fval).c_str());
 
 	if ((var->flags & VariableFlags::PERSIST) && var->fval != orig)
 		G->user_config_dirty = true;
@@ -7442,6 +7455,14 @@ bool CustomResourcePool::PropagateFlags(D3D11_BIND_FLAG bind_flags, D3D11_RESOUR
 	return ret;
 }
 
+size_t CustomResourcePool::RingIndex(float id) const
+{
+	// Signed arithmetic: an unsigned pool_size makes a negative id huge.
+	int size = (int)pool_size;
+
+	return (size_t)(((int)id % size + size) % size);
+}
+
 size_t CustomResourcePool::GetElementIndex(float id, bool use_ring_index, bool is_assignment)
 {
 	ExpireElements();
@@ -7459,7 +7480,7 @@ size_t CustomResourcePool::GetElementIndex(float id, bool use_ring_index, bool i
 		// For pool [ResourceA, ResourceB, ResourceC]
 		//   ResourcePoolFoo[-1] returns ResourceC pool_index (2)
 		//   ResourcePoolFoo[3] returns ResourceA pool_index (0)
-		pool_index = ((int)id % pool_size + pool_size) % pool_size;
+		pool_index = RingIndex(id);
 
 		if (expiration_timeout_frames != UINT32_MAX)
 			PostponeExpiration(index_table[pool_index], is_assignment);
@@ -9188,7 +9209,8 @@ void PoolVariableOperation::SetVariableValue(CommandListState* state, CommandLis
 
 	dst->fval = value;
 
-	COMMAND_LIST_LOG(state, "  = %f\n", dst->fval);
+	if (G->analyse_frame)
+		COMMAND_LIST_LOG(state, "  = %s\n", log_float(dst->fval).c_str());
 
 	if ((dst->flags & VariableFlags::PERSIST) && dst->fval != orig)
 		G->user_config_dirty = true;
@@ -9289,6 +9311,10 @@ static CommandListCommand* parse_slot_range_operation(
 	const wchar_t* section, ResourceCopyTarget& dst, ResourceCopyTarget& src, ResourceCopyOptions options, CommandList* command_list, const wstring* ini_namespace
 );
 
+static CommandListCommand* parse_pool_range_operation(
+	const wchar_t* section, ResourceCopyTarget& dst, ResourceCopyTarget& src, ResourceCopyOptions options, CommandList* command_list, const wstring* ini_namespace
+);
+
 bool ParseCommandListResourceCopyTargetDirective(
 	const wchar_t *section, const wchar_t *key, wstring *val, CommandList *command_list, const wstring *ini_namespace
 )
@@ -9343,6 +9369,14 @@ bool ParseCommandListResourceCopyTargetDirective(
 		{
 			// ps-t[$a:$b] = ref PoolFoo[$c:$d]  /  PoolFoo[$c:$d] = ref ps-t[$a:$b]
 			operation = parse_slot_range_operation(section, dst, src, options, command_list, ini_namespace);
+			break;
+		}
+
+		if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_RANGE
+			|| src.evaluation_mode == ResourceCopyTargetEvaluationMode::POOL_RANGE)
+		{
+			// PoolFoo[$a:$b] = ref PoolBar[$c:$d]
+			operation = parse_pool_range_operation(section, dst, src, options, command_list, ini_namespace);
 			break;
 		}
 
@@ -12940,6 +12974,13 @@ void ResourceCopyOperation::run(CommandListState *state)
 
 	src_resource = src.GetResource(state, &src_view, &stride, &offset, &format, &buf_src_size, ((options & ResourceCopyOptions::REFERENCE) ? &dst : NULL));
 
+	CopyResolvedSource(state, src_resource, src_view, stride, offset, format, buf_src_size);
+}
+
+void ResourceCopyOperation::CopyResolvedSource(
+	CommandListState *state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size
+)
+{
 	switch (dst.type)
 	{
 	case ResourceCopyTargetType::POOL:
@@ -14005,4 +14046,159 @@ void SlotRangeCopyOperation::run(CommandListState *state)
 }
 
 #pragma endregion SlotRangeCopyOperation
+
+#pragma region PoolRangeCopyOperation
+
+static CommandListCommand* parse_pool_range_operation(
+	const wchar_t* section, ResourceCopyTarget& dst, ResourceCopyTarget& src, ResourceCopyOptions options, CommandList* command_list, const wstring* ini_namespace
+)
+{
+	// A range on one side only would be dropped silently, by whichever generic copy the line falls through to:
+	if (dst.evaluation_mode != ResourceCopyTargetEvaluationMode::POOL_RANGE
+		|| src.evaluation_mode != ResourceCopyTargetEvaluationMode::POOL_RANGE)
+	{
+		LogOverlayW(LOG_WARNING, L"A pool range pairs only with a slot range or another pool range\n - [%ls] @ [%ls]\n", section, ini_namespace->c_str());
+		return nullptr;
+	}
+
+	// The default of a single `PoolFoo[0] = PoolBar[0]` line,
+	// whose destination is a custom resource:
+	if (!(options & ResourceCopyOptions::COPY_TYPE_MASK))
+		options |= ResourceCopyOptions::COPY;
+
+	if (options & ResourceCopyOptions::REFERENCE) {
+		CustomResource* src_template = src.custom_resource_pool->resource_template;
+		CustomResource* dst_template = dst.custom_resource_pool->resource_template;
+
+		if (!src.custom_resource_pool->PropagateFlags(dst_template->bind_flags, dst_template->misc_flags)) {
+			LogOverlayW(LOG_WARNING, L"Pool range source has incompatible bind flags\n - [%ls] @ [%ls]\n", section, ini_namespace->c_str());
+			return nullptr;
+		}
+		DeferBindFlagsPropagation(src_template, dst_template);
+	}
+
+	PoolRangeCopyOperation* operation = new PoolRangeCopyOperation();
+	operation->src = std::move(src);
+	operation->dst = std::move(dst);
+	operation->options = options;
+	return operation;
+}
+
+bool PoolRangeCopyOperation::optimise(HackerDevice *device)
+{
+	bool ret = false;
+	for (ResourceCopyTarget *target : { &src, &dst }) {
+		if (target->range_start)
+			ret = target->range_start->optimise(device) || ret;
+		if (target->range_end)
+			ret = target->range_end->optimise(device) || ret;
+	}
+	return ret;
+}
+
+// "PoolFoo[3]" for the frame analysis log:
+static std::wstring pool_element_log_name(const ResourceCopyTarget &target, int pool_first, unsigned index)
+{
+	return target.custom_resource_pool->name + L"[" + std::to_wstring(pool_first + (int)index) + L"]";
+}
+
+void PoolRangeCopyOperation::CopyElement(CommandListState *state, ResourceCopyOperation &element_op, int src_first, int dst_first, unsigned index)
+{
+	ID3D11Resource *src_resource = NULL;
+	ID3D11View *src_view = NULL;
+	UINT stride = 0, offset = 0, buf_src_size = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+	std::wstring dst_name, src_name;
+
+	if (G->analyse_frame) {
+		dst_name = pool_element_log_name(dst, dst_first, index);
+		src_name = pool_element_log_name(src, src_first, index);
+	}
+
+	element_op.src.SetCustomResource(pool_element(src.custom_resource_pool, src_first, index, false));
+	// Only read for its bind flags, which come from the pool's template:
+	// the real destination waits until the source is known to be copied.
+	element_op.dst.SetCustomResource(dst.custom_resource_pool->ResolvePool()->resource_template);
+	src_resource = element_op.src.GetResource(state, &src_view, &stride, &offset, &format, &buf_src_size, (options & ResourceCopyOptions::REFERENCE) ? &element_op.dst : NULL);
+
+	// unless_null must leave the element exactly as it was,
+	// so bail before resolving it as an assignment, which postpones its expiration:
+	if (!src_resource && (options & ResourceCopyOptions::UNLESS_NULL)) {
+		SLOT_RANGE_LOG(state, "  %S = %s %S: source is NULL, keeping current resource\n",
+			dst_name.c_str(), copy_type_name(options), src_name.c_str());
+		if (src_view)
+			src_view->Release();
+		return;
+	}
+
+	SLOT_RANGE_LOG(state, "  %S = %s %S\n", dst_name.c_str(), copy_type_name(options), src_name.c_str());
+
+	element_op.dst.SetCustomResource(pool_element(dst.custom_resource_pool, dst_first, index, true));
+	state->extra_indent += 2;
+	element_op.CopyResolvedSource(state, src_resource, src_view, stride, offset, format, buf_src_size);
+	state->extra_indent -= 2;
+}
+
+// Within one pool a later element may be the source of an earlier write, or the reverse,
+// and indices wrap around the ring, so the distance is taken modulo the pool size.
+PoolRangeCopyOperation::Order PoolRangeCopyOperation::CopyOrder(int src_first, int dst_first, unsigned count)
+{
+	CustomResourcePool *pool = dst.custom_resource_pool->ResolvePool();
+	if (pool != src.custom_resource_pool->ResolvePool())
+		return Order::FORWARD;
+
+	long long size = (long long)pool->GetPoolSize();
+	if (size <= 0)
+		return Order::FORWARD;
+
+	long long src_index = (long long)pool->RingIndex((float)src_first);
+	long long dst_index = (long long)pool->RingIndex((float)dst_first);
+
+	long long distance = (dst_index - src_index + size) % size;
+	if (distance == 0)
+		return Order::SKIP;
+	if (distance >= count)
+		return Order::FORWARD;
+
+	// The destination also overlaps the source from the other side of the ring:
+	if (size - distance < count) {
+		LogOverlayW(LOG_WARNING, L"Pool range wraps onto itself, skipping the copy\n - [%ls]\n", ini_line.c_str());
+		return Order::SKIP;
+	}
+
+	return Order::BACKWARD;
+}
+
+void PoolRangeCopyOperation::run(CommandListState *state)
+{
+	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
+
+	int src_first = 0, dst_first = 0;
+	unsigned src_count = 0, dst_count = 0;
+
+	if (!src.ResolveRange(state, &src_first, &src_count) || !dst.ResolveRange(state, &dst_first, &dst_count))
+		return;
+
+	if (src_count != dst_count) {
+		LogOverlayW(LOG_WARNING, L"Pool range sizes differ (%u vs %u)\n - [%ls]\n", dst_count, src_count, ini_line.c_str());
+		return;
+	}
+
+	// Walk away from the overlap so that no element is read after it was overwritten:
+	Order order = CopyOrder(src_first, dst_first, src_count);
+	if (order == Order::SKIP)
+		return;
+
+	// A local operation, as the command itself is shared by every context running it:
+	ResourceCopyOperation element_op;
+	element_op.options = options;
+	element_op.ini_line = ini_line;
+	element_op.src.type = ResourceCopyTargetType::CUSTOM_RESOURCE;
+	element_op.dst.type = ResourceCopyTargetType::CUSTOM_RESOURCE;
+
+	for (unsigned n = 0; n < src_count; n++)
+		CopyElement(state, element_op, src_first, dst_first, order == Order::BACKWARD ? src_count - 1 - n : n);
+}
+
+#pragma endregion PoolRangeCopyOperation
 

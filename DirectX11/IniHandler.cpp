@@ -2102,6 +2102,8 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		}
 	}
 	custom_resource->match_dhash = GetIniHash(section_name, L"match_dhash", 0, nullptr);
+	custom_resource->match_confidence = GetIniFloat(section_name, L"match_confidence", 0.75f, nullptr);
+	custom_resource->match_confidence = max(min(0.0f, custom_resource->match_confidence), 1.0f);
 
 	custom_resource->override_color_space = GetIniEnumClass(section_name, L"color_space", CustomColorSpace::DEFAULT, NULL, CustomColorSpaceNames);
 	custom_resource->override_width = GetIniInt(section_name, L"width", -1, NULL);

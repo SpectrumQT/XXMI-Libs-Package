@@ -210,6 +210,34 @@ extern std::unordered_set<CommandList*> command_lists_profiling;
 extern std::unordered_set<CommandListCommand*> command_lists_cmd_profiling;
 void clear_command_list_profiling();
 
+struct TextureOverrideCache
+{
+	static constexpr UINT SLOT_COUNT = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+
+	// Original SRVs captured at the beginning of the draw.
+	// Non-null means that the slot is eligible for matching.
+	std::array<ID3D11ShaderResourceView*, SLOT_COUNT> original_textures{};
+
+	// Hamming distance accepted for each slot during this draw.
+	std::array<uint8_t, SLOT_COUNT> hamming_distance{};
+
+	bool snapshot_active = false;
+	unsigned snapshot_call_number = 0;
+	UINT first_srv_slot = 0;
+	UINT last_srv_slot = 0;
+
+	TextureOverrideCache()
+	{
+		hamming_distance.fill(65);
+	}
+
+	~TextureOverrideCache();
+	void Clear();
+	void ResetMatches();
+
+	void SnapshotOriginalTextures(CommandListState* state);
+};
+
 // Forward declaration to avoid circular reference since Override.h includes
 // HackerDevice.h includes HackerContext.h includes CommandList.h
 class PresetOverride;
@@ -567,6 +595,7 @@ public:
 
 	uint64_t match_dhash;
 	DXGI_FORMAT match_format;
+	float match_confidence;
 
 	UINT source_stride;
 
@@ -1001,6 +1030,8 @@ enum class ShaderTargetEvaluationMode : uint32_t {
 	DCL_SRV_SLOT_COUNT = 0b00000000000000000000100000000000,
 	DCL_SRV_FIRST_SLOT = 0b00000000000000000001000000000000,
 	DCL_SRV_LAST_SLOT  = 0b00000000000000000010000000000000,
+
+	MATCH_TEXTURES     = 0b00000000000000000100000000000000,
 };
 SENSIBLE_ENUM(ShaderTargetEvaluationMode);
 //static EnumName_t<const wchar_t*, ShaderTargetEvaluationMode> ShaderTargetEvaluationModeNames[] = {
@@ -1228,6 +1259,7 @@ public:
 	// A folded if/elif/else chain overrides it:
 	// the slot it drives is its branches', not its own.
 	virtual const ResourceCopyTarget& BatchTarget(BatchDirection direction) const;
+	virtual bool IsBatchable() const { return true; }
 
 private:
 	void SetOrDeferResource(CommandListState* state, ID3D11Resource* res, ID3D11View* view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_size);
@@ -1351,6 +1383,39 @@ public:
 
 private:
 	CustomResourcePool* failed_root = nullptr;
+};
+
+class SnapshotOriginalTexturesOperation : public CommandListCommand
+{
+public:
+	void run(CommandListState* state) override;
+};
+
+class RestoreOriginalTexturesOperation : public ResourceCopyOperation
+{
+public:
+	RestoreOriginalTexturesOperation();
+
+	void run(CommandListState* state) override;
+
+	bool IsBatchable() const override { return false; }
+};
+
+class TextureOverrideOperation : public ResourceCopyOperation
+{
+public:
+	static constexpr UINT SLOT_COUNT = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+
+	std::unique_ptr<ResourceCopyTarget> match_resource;
+
+	unsigned FindBestMatchingTextureDistance(CommandListState* state, CustomResource* candidate, std::array<uint8_t, SLOT_COUNT>& distances);
+	void ReplaceBestMatchingTextures(CommandListState* state, ID3D11Resource* source_resource, ID3D11View* source_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_size, const std::array<uint8_t, SLOT_COUNT>& distances, unsigned best_distance);
+
+	void OverrideMatchingTextures(CommandListState* state);
+
+	void run(CommandListState*) override;
+
+	bool IsBatchable() const override { return false; }
 };
 
 class LayoutElementOperation : public CommandListCommand {

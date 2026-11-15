@@ -676,6 +676,7 @@ uint32_t SpatialDistanceChebyshev(const GridPos& a, const GridPos& b);
 uint32_t GetRegionHash(HackerContext* context, ID3D11Buffer* buffer, UINT offset, UINT size, CustomResource* custom_resource = nullptr);
 uint32_t GetSpatialHash(HackerContext* context, ID3D11Buffer* buffer, UINT offset_x, UINT offset_y, UINT offset_z, float cell_size = 0.125f, CustomResource* custom_resource = nullptr);
 bool GetDhash(HackerContext* context, ID3D11Resource* resource, UINT prefer_mip_size, bool rehash_updated_mip, uint64_t& out_hash, ID3D11View* view = nullptr);
+unsigned HammingDistance(uint64_t a, uint64_t b);
 
 void MarkResourceHashContaminated(ID3D11Resource *dest, UINT DstSubresource,
 		ID3D11Resource *src, UINT srcSubresource, char type,

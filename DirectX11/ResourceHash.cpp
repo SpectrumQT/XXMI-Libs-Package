@@ -3170,3 +3170,17 @@ bool GetDhash(HackerContext* context, ID3D11Resource* resource, UINT prefer_mip_
 
 	return true;
 }
+
+unsigned HammingDistance(uint64_t a, uint64_t b)
+{
+	// Treat an all-zero dHash as maximally different from any non-zero dHash.
+	// A zero dHash is produced when:
+	// * All 64 luminance comparison operations produce zero bits.
+	// * The flat-color fallback produces an all-zero RGBA value.
+	// This safeguard prevents false near-matches between zero-hash images
+	// and non-zero hashes that differ in only a few bits.
+	if ((a == 0) != (b == 0))
+		return 64;
+
+	return static_cast<unsigned>(__popcnt64(a ^ b));
+}

@@ -2127,6 +2127,9 @@ bool ParseCommandListVariableAssignment(const wchar_t *section,
 bool ParseCommandListResourceCopyTargetDirective(const wchar_t *section,
 		const wchar_t *key, wstring *val, CommandList *command_list,
 		const wstring *ini_namespace);
+bool ParseCommandListResourceFilterTargetDirective(const wchar_t* section,
+		const wchar_t* key, wstring* val, CommandList* command_list,
+		const wstring* ini_namespace);
 bool ParseCommandListFlowControl(const wchar_t *section, const wstring *line,
 		CommandList *pre_command_list, CommandList *post_command_list,
 		const wstring *ini_namespace);

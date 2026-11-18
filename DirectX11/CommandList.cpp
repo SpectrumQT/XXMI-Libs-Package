@@ -6591,6 +6591,180 @@ float ResourceFilterTarget::GetFilterId(CommandListState* state)
 }
 
 #pragma endregion ResourceFilter
+
+
+#pragma endregion ResourceFilterTargetDirective
+
+void ResourceFilterCopyOperation::CopyFilterToFilter(CommandListState* state)
+{
+	// Operation enters "failed" state when recursively resolved SRC root is DST.
+	// It allows to bail on cyclic reference to avoid runtime overhead from warnings spam.
+	if (failed_root) {
+		if (src.filter && failed_root != src.filter->ResolveFilter())
+			failed_root = nullptr;  // Recover from "failed" state if SRC root changed.
+		else
+			return;
+	}
+
+	if (options & ResourceCopyOptions::COPY_MASK)
+	{
+		if (options & ResourceCopyOptions::COPY) {
+			COMMAND_LIST_LOG(state, "  copying filter fields\n");
+			dst.filter->CopyMetadataFrom(*src.filter);
+		}
+	}
+	else {
+		COMMAND_LIST_LOG(state, "  copying filter by reference\n");
+		if (!dst.filter->SetSource(src.filter)) {
+			// Cyclic reference encountered. Enter "failed" state.
+			failed_root = src.filter->ResolveFilter();
+		}
+	}
+}
+
+void ResourceFilterCopyOperation::run(CommandListState* state)
+{
+	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
+
+	switch (src.type)
+	{
+	case ResourceFilterTargetType::FILTER:
+		CopyFilterToFilter(state);
+		return;
+
+	case ResourceFilterTargetType::EMPTY:
+		// Reset filter proxy state.
+		dst.filter->SetSource(nullptr);
+		return;
+	}
+}
+
+static bool parse_filter_target_copy_source(
+	const wchar_t* section, const wstring& val, ResourceFilterTarget& src, ResourceCopyOptions& options,
+	CommandList* command_list, const wstring* ini_namespace, const wchar_t* key
+)
+{
+	wstring token;
+	ResourceCopyOptions option;
+	bool src_found = false;
+	size_t unknown_token_count = 0;
+
+	CommandArgumentReader args(L"filter_copy", val, section, ini_namespace, command_list->scope);
+
+	while (args.PeekToken(&token))
+	{
+		if (args.GetEnum(ResourceCopyOptionNames, ResourceCopyOptions::INVALID, &option))
+		{
+			options |= option;
+			continue;
+		}
+
+		if (!src_found && args.GetFilter(&src, true, CommandArgumentReader::PeekMode::Token, true))
+		{
+			src_found = true;
+			continue;
+		}
+
+		args.ConsumeToken();
+
+		if (!args.Finished())
+		{
+			if (!args.ConsumeSeparator(SeparatorMode::Space))
+				return args.Fail();
+		}
+
+		unknown_token_count++;
+
+		if (unknown_token_count > 1 && !args.Finished())
+		{
+			LogOverlayW(LOG_WARNING, L"WARNING: Unknown option: %ls\n", token.c_str());
+			options |= ResourceCopyOptions::UNKNOWN;
+		}
+	}
+
+	if (options & ResourceCopyOptions::UNKNOWN) {
+		LogOverlayW(LOG_WARNING, L"Filter copy source contains invalid options: \"%ls = %ls\"\n - [%ls] @ [%ls]\n",
+			key, val.c_str(), section, ini_namespace->c_str());
+	}
+
+	return src_found;
+}
+
+static CommandListCommand* parse_resource_filter_copy_operation(
+	const wchar_t* section, ResourceFilterTarget& dst, ResourceFilterTarget& src, ResourceCopyOptions options, CommandList* command_list, const wstring* ini_namespace
+)
+{
+	// DST must be non-evaluatable filter target.
+	if (dst.type != ResourceFilterTargetType::FILTER || dst.evaluation_mode != ResourceFilterTargetEvaluationMode::INVALID)
+		return nullptr;
+
+	// SRC must be non-evaluatable filter target or empty target.
+	if (src.type == ResourceFilterTargetType::INVALID || src.evaluation_mode != ResourceFilterTargetEvaluationMode::INVALID)
+		return nullptr;
+
+	if (!(options & ResourceCopyOptions::REFERENCE) && (options & ResourceCopyOptions::COPY_TYPE_MASK)) {
+		if (options & ResourceCopyOptions::COPY)
+			LogOverlayW(LOG_WARNING, L"WIP: Filter `copy` is not supported (`%ls = copy %ls`)\n - [% ls] @[% ls]\n",
+				src.filter->name.c_str(), dst.filter->name.c_str(), section, ini_namespace->c_str());
+		else if (options & ResourceCopyOptions::COPY_DESC)
+			LogOverlayW(LOG_WARNING, L"WIP: Filter `copy_desc` is not supported (`%ls = copy_desc %ls`)\n - [% ls] @[% ls]\n",
+				src.filter->name.c_str(), dst.filter->name.c_str(), section, ini_namespace->c_str());
+		return nullptr;
+	}
+	else
+	{
+		options |= ResourceCopyOptions::REFERENCE;
+	}
+
+	ResourceFilterCopyOperation* operation = new ResourceFilterCopyOperation();
+
+	operation->src = std::move(src);
+	operation->dst = std::move(dst);
+	operation->options = options;
+
+	return operation;
+}
+
+bool ParseCommandListResourceFilterTargetDirective(
+	const wchar_t* section, const wchar_t* key, wstring* val, CommandList* command_list, const wstring* ini_namespace
+)
+{
+	//LogInfo("Parsing ParseResourceFilterTargetDirective: `%ls = %ls`\n", key, val->c_str());
+
+	ResourceFilterTarget dst = ResourceFilterTarget();
+
+	if (!dst.ParseTarget(key, false, ini_namespace, command_list->scope))
+		return false;
+
+	CommandListCommand* operation = nullptr;
+
+	ResourceCopyOptions options = ResourceCopyOptions::INVALID;
+	ResourceFilterTarget src = ResourceFilterTarget();
+
+	if (!parse_filter_target_copy_source(section, *val, src, options, command_list, ini_namespace, key))
+		return false;
+
+	// 1. Copy NULL to Filter (reset filter proxy mode).
+	//   FilterFoo = null
+	// 2. Copy Filter To Filter
+	//   FilterFoo = copy FilterFoo
+	//   FilterFoo = ref FilterFoo
+	operation = parse_resource_filter_copy_operation(section, dst, src, options, command_list, ini_namespace);
+
+	if (operation == nullptr)
+		return false;
+
+	//LogInfo("Parsed ParseResourceFilterTargetDirective: `%ls = %ls`\n", key, val->c_str());
+
+	operation->ini_line = L"[" + wstring(section) + L"] " + wstring(key) + L" = " + *val;
+	command_list->commands.push_back(std::shared_ptr<CommandListCommand>(operation));
+
+	return true;
+}
+
+#pragma endregion ResourceFilterTargetDirective
+
+
 #pragma region CustomResource
 
 CustomResource::CustomResource() :

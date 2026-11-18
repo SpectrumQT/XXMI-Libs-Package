@@ -2296,6 +2296,9 @@ static bool ParseCommandListLine(const wchar_t *ini_section,
 	if (ParseCommandListResourceCopyTargetDirective(ini_section, lhs, rhs, command_list, ini_namespace))
 		return true;
 
+	if (ParseCommandListResourceFilterTargetDirective(ini_section, lhs, rhs, command_list, ini_namespace))
+		return true;
+
 	return false;
 }
 

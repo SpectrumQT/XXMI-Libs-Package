@@ -3201,16 +3201,6 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 				return -1.0f;
 		}
 
-		case ResourceCopyTargetEvaluationMode::RESOURCE_GET_MATCH_FORMAT:
-		{
-			CustomResource* custom_resource = texture_filter_target.GetCustomResource(state);
-			if (custom_resource != nullptr)
-				return (float)custom_resource->match_format;
-			else
-				// Return -1 for ResourceCopyTarget with non-custom resource
-				return -1.0f;
-		}
-
 		case ResourceCopyTargetEvaluationMode::POOL_INDEX:
 		{
 			CustomResource* custom_resource = texture_filter_target.GetCustomResource(state);
@@ -8721,7 +8711,6 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 			MemberArg::Type::String,  // Semantic Name
 			MemberArg::Type::Unsigned // Semantic Index
 		}} },
-		{ L"->getmatchformat",  16, ResourceCopyTargetEvaluationMode::RESOURCE_GET_MATCH_FORMAT },
 		{ L"->hammingdistance", 17, ResourceCopyTargetEvaluationMode::RESOURCE_HAMMING_DISTANCE, {{
 			MemberArg::Type::Filter,  // Dhash Filter
 		}} },
@@ -13609,14 +13598,8 @@ void ResourceCopyOperation::CopyResourceToResource(
 		if (src.type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
 			CustomResource* src_custom_resource = src.GetCustomResource(state);
 			dst_custom_resource->source_stride = src_custom_resource->source_stride > 0 ? src_custom_resource->source_stride : stride;
-			dst_custom_resource->match_dhash = src_custom_resource->match_dhash;
-			dst_custom_resource->match_format = src_custom_resource->match_format;
-			dst_custom_resource->match_confidence = src_custom_resource->match_confidence;
 		} else {
 			dst_custom_resource->source_stride = stride;
-			dst_custom_resource->match_dhash = 0;
-			dst_custom_resource->match_format = (DXGI_FORMAT)-1;
-			dst_custom_resource->match_confidence = 0.0f;
 		}
 	}
 

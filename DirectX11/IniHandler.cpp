@@ -2093,19 +2093,6 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		}
 	}
 
-	if (GetIniString(section_name, L"match_format", 0, setting, MAX_PATH)) {
-		custom_resource->match_format = ParseFormatString(setting, true);
-		if (custom_resource->match_format == (DXGI_FORMAT)-1) {
-			IniWarningW(L"Unknown match_format \"%ls\"\n - [%ls]\n", setting, section_name);
-		}
-		else {
-			LogInfo("  match_format=%s\n", TexFormatStr(custom_resource->override_format));
-		}
-	}
-	custom_resource->match_dhash = GetIniHash(section_name, L"match_dhash", 0, nullptr);
-	custom_resource->match_confidence = GetIniFloat(section_name, L"match_confidence", 0.75f, nullptr);
-	custom_resource->match_confidence = max(min(0.0f, custom_resource->match_confidence), 1.0f);
-
 	custom_resource->override_color_space = GetIniEnumClass(section_name, L"color_space", CustomColorSpace::DEFAULT, NULL, CustomColorSpaceNames);
 	custom_resource->override_width = GetIniInt(section_name, L"width", -1, NULL);
 	custom_resource->override_height = GetIniInt(section_name, L"height", -1, NULL);

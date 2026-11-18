@@ -64,6 +64,7 @@ static Section CommandListSections[] = {
 static Section RegularSections[] = {
 	{L"Pool", true},
 	{L"Resource", true},
+	{L"Filter", true},
 	{L"Key", true},
 	{L"Include", true}, // Prefix so that it may be namespaced to allow included files to include more files with relative paths
 	{L"Preset", true},
@@ -2216,6 +2217,58 @@ static void ParseResourceSections()
 		LogInfoW(L"[%s]\n", section_name.c_str());
 
 		ParseResourceSection(section_name.c_str(), nullptr);
+	}
+}
+
+static ResourceFilter* ParseFilterSection(const wchar_t* section_name)
+{
+	wchar_t setting[MAX_PATH];
+
+	wstring filter_id(section_name);
+
+	// Convert section name to lower case so our keys will be consistent in the unordered_map:
+	std::transform(filter_id.begin(), filter_id.end(), filter_id.begin(), ::towlower);
+
+	ResourceFilter* filter = &resourceFilters[filter_id];
+	filter->name = filter_id;
+
+	if (GetIniString(section_name, L"match_format", 0, setting, MAX_PATH)) {
+		filter->match_format = ParseFormatString(setting, true);
+		if (filter->match_format == (DXGI_FORMAT)-1) {
+			IniWarningW(L"Unknown match_format \"%ls\"\n - [%ls]\n", setting, section_name);
+		}
+		else {
+			LogInfo("  match_format=%s\n", TexFormatStr(filter->match_format));
+			filter->is_empty = false;
+		}
+	}
+
+	bool found = false;
+	filter->match_dhash = GetIniHash(section_name, L"match_dhash", 0, &found);
+	if (found)
+		filter->is_empty = false;
+
+	filter->match_confidence = GetIniFloat(section_name, L"match_confidence", 0.75f, &found);
+	filter->match_confidence = min(max(0.0f, filter->match_confidence), 1.0f);
+	if (found)
+		filter->is_empty = false;
+
+	return filter;
+}
+
+static void ParseFilterSections()
+{
+	resourceFilters.clear();
+
+	IniSections::iterator lower = ini_sections.lower_bound(wstring(L"Filter"));
+	IniSections::iterator upper = prefix_upper_bound(ini_sections, wstring(L"Filter"));
+
+	for (IniSections::iterator i = lower; i != upper; i++) {
+		wstring section_name = i->first;
+
+		LogInfoW(L"[%s]\n", section_name.c_str());
+
+		ParseFilterSection(section_name.c_str());
 	}
 }
 
@@ -4888,6 +4941,7 @@ void LoadConfigFile()
 	ParseConstantsSection();
 
 	// Must be done before any command lists that may refer to them:
+	ParseFilterSections();
 	ParseResourceSections();
 
 	// Second pass for the Constants command list:

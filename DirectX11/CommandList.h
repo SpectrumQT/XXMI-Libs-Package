@@ -27,6 +27,7 @@ class HackerDevice;
 class HackerContext;
 enum class FrameAnalysisOptions;
 class ResourceCopyTarget;
+class ResourceFilterTarget;
 
 struct InputLayoutElementOverride {
 	struct Match {
@@ -547,6 +548,27 @@ static EnumName_t<const wchar_t*, DataCacheBindFlags> DataCacheBindFlagNames[] =
 	{NULL, DataCacheBindFlags::INVALID} // End of list marker
 };
 
+class ResourceFilter
+{
+public:
+	wstring name;
+	bool is_empty = true;
+
+	uint64_t match_dhash = 0;
+	DXGI_FORMAT match_format = DXGI_FORMAT_UNKNOWN;
+	float match_confidence = 0.75f;
+
+	ResourceFilter* ResolveFilter();
+	bool SetSource(ResourceFilter* source);
+	void CopyMetadataFrom(const ResourceFilter& src);
+
+private:
+	ResourceFilter* source_filter = nullptr;
+};
+
+typedef std::unordered_map<std::wstring, class ResourceFilter> ResourceFilters;
+extern ResourceFilters resourceFilters;
+
 // The ResourcePool holds a pool of cached resources for when a single copy
 // operation or a custom resource may be copied to from multiple distinct
 // incompatible resources (e.g. they may have differing sizes). This saves us
@@ -940,6 +962,7 @@ struct MemberArg
 		String,
 		Hash,
 		Resource,
+		Filter,
 	};
 
 	Type type = Type::None;
@@ -949,6 +972,7 @@ struct MemberArg
 	std::wstring constant_string;
 	uint64_t constant_hash;
 	std::unique_ptr<ResourceCopyTarget> resource;
+	std::unique_ptr<ResourceFilterTarget> filter;
 
 	float GetValue(CommandListState* state);
 	const std::wstring& GetString() const;
@@ -1211,6 +1235,72 @@ static EnumName_t<const wchar_t *, ResourceCopyOptions> ResourceCopyOptionNames[
 // copy_subresource_region=... - Use copy_subresource_region instead of copy_resource
 // mip_map, array, etc. - create a view that exposes only part of the resource
 // overwrite - instead of creating a new resource for a copy operation, overwrite the resource already assigned to the destination (if it exists and is compatible)
+
+
+enum class ResourceFilterTargetType : uint32_t {
+	INVALID = 0b00000000000000000000000000000000,
+
+	FILTER = 0b00000000000000000000000000000001,
+	EMPTY = 0b00000000000000000000000000000010,
+};
+SENSIBLE_ENUM(ResourceFilterTargetType);
+static EnumName_t<const wchar_t*, ResourceFilterTargetType> ResourceFilterTypeNames[] = {
+	{L"Filter", ResourceFilterTargetType::FILTER},
+	{L"Empty", ResourceFilterTargetType::EMPTY},
+
+	{NULL, ResourceFilterTargetType::INVALID} // End of list marker
+};
+
+enum class ResourceFilterTargetEvaluationMode : uint32_t {
+	INVALID         = 0b00000000000000000000000000000000,
+
+	FILTER_IDENTITY = 0b00000000000000000000000000000001,
+	FORMAT          = 0b00000000000000000000000000000010,
+	CONFIDENCE      = 0b00000000000000000000000000000100,
+};
+SENSIBLE_ENUM(ResourceFilterTargetEvaluationMode);
+static EnumName_t<const wchar_t*, ResourceFilterTargetEvaluationMode> ResourceFilterTargetEvaluationModeNames[] = {
+	{L"FilterIdentity", ResourceFilterTargetEvaluationMode::FILTER_IDENTITY},
+	{L"Format", ResourceFilterTargetEvaluationMode::FORMAT},
+	{L"Confidence", ResourceFilterTargetEvaluationMode::CONFIDENCE},
+
+	{NULL, ResourceFilterTargetEvaluationMode::INVALID} // End of list marker
+};
+
+class ResourceFilterTarget : public SyntaxTarget
+{
+public:
+	using MemberInfo = SyntaxTarget::MemberInfo<ResourceFilterTargetEvaluationMode>;
+
+	ResourceFilterTargetType type = ResourceFilterTargetType::INVALID;
+	ResourceFilterTargetEvaluationMode evaluation_mode = ResourceFilterTargetEvaluationMode::INVALID;
+
+	bool ParseTarget(const wchar_t* target, bool is_source, const wstring* ini_namespace, CommandListScope* scope);
+	ResourceFilter* GetFilter() { return filter ? filter->ResolveFilter() : nullptr; }
+
+	float GetFilterId(CommandListState* state);
+
+	ResourceFilter* filter = nullptr;
+
+private:
+	IniParserResult ParseTargetPrefix(const wchar_t*& target, size_t& length);
+	IniParserResult ParseTargetMember(const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope);
+};
+
+
+class ResourceFilterCopyOperation : public CommandListCommand {
+public:
+	ResourceFilterTarget src;
+	ResourceFilterTarget dst;
+	ResourceCopyOptions options;
+
+	void CopyFilterToFilter(CommandListState* state);
+
+	void run(CommandListState*) override;
+
+private:
+	ResourceFilter* failed_root = nullptr;
+};
 
 
 // What a ResourceCopyOperation would have bound to its destination slot,
@@ -1630,6 +1720,7 @@ enum class ParamOverrideType {
 	DISPATCH_NUMBER,
 	FRAME_TIME,
 	FPS,
+	RESOURCE_FILTER,
 };
 static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] = {
 	{L"rt_width", ParamOverrideType::RT_WIDTH},
@@ -1674,6 +1765,7 @@ static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] =
 	{L"dispatch_number", ParamOverrideType::DISPATCH_NUMBER},
 	{L"frame_time", ParamOverrideType::FRAME_TIME},
 	{L"fps", ParamOverrideType::FPS},
+	{L"resource_filter", ParamOverrideType::RESOURCE_FILTER},
 	{NULL, ParamOverrideType::INVALID} // End of list marker
 };
 class CommandListOperand :
@@ -1682,6 +1774,7 @@ class CommandListOperand :
 	public CommandListEvaluatable {
 	float process_texture_filter(CommandListState*);
 	float process_shader_filter(CommandListState*);
+	float process_resource_filter(CommandListState*);
 public:
 	// TODO: Break up into separate classes for each operand type
 	ParamOverrideType type;
@@ -1697,6 +1790,7 @@ public:
 	// For texture filters:
 	ResourceCopyTarget texture_filter_target;
 	ShaderTarget shader_target;
+	ResourceFilterTarget filter_target;
 
 	// For scissor rectangle:
 	unsigned scissor;
@@ -1717,6 +1811,7 @@ public:
 	bool parse_slot(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_target(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_shader(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
+	bool parse_resource_filter(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_scissor(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_ini_keywords(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 
@@ -2077,6 +2172,7 @@ public:
 	bool GetEnum(const EnumName_t<const wchar_t*, T>* names, T invalid, T* out);
 	bool GetVariable(CommandListVariable*& out, bool is_source, PeekMode mode = PeekMode::Token);
 	bool GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode = PeekMode::Token, bool validate = true, bool allow_range = false);
+	bool GetFilter(ResourceFilterTarget* out, bool is_source, PeekMode mode = PeekMode::Token, bool validate = true);
 	bool GetFloat(float* out);
 	bool GetHash(uint64_t* out);
 	bool GetExpression(unique_ptr<CommandListExpression>* out);

@@ -8726,7 +8726,7 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 		}} },
 		{ L"->getmatchformat",  16, ResourceCopyTargetEvaluationMode::RESOURCE_GET_MATCH_FORMAT },
 		{ L"->hammingdistance", 17, ResourceCopyTargetEvaluationMode::RESOURCE_HAMMING_DISTANCE, {{
-			MemberArg::Type::Resource,  // Texture Resource
+			MemberArg::Type::Filter,  // Dhash Filter
 		}} },
 	};
 
@@ -11853,15 +11853,15 @@ float ResourceCopyTarget::GetResourceHammingDistance(CommandListState* state)
 
 	if (has_resource_dhash)
 	{
-		auto* target_ptr = member_args[0].resource.get();
+		auto* target_ptr = member_args[0].filter.get();
 
 		if (target_ptr)
 		{
-			CustomResource* custom_resource = target_ptr->GetCustomResource(state);
+			ResourceFilter* resource_filter = target_ptr->GetFilter();
 
-			if (custom_resource)
+			if (resource_filter)
 			{
-				const uint64_t reference_dhash = custom_resource->match_dhash;
+				const uint64_t reference_dhash = resource_filter->match_dhash;
 				ret = static_cast<float>(HammingDistance(reference_dhash, resource_dhash));
 			}
 		}

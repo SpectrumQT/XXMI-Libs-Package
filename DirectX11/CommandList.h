@@ -211,32 +211,33 @@ extern std::unordered_set<CommandList*> command_lists_profiling;
 extern std::unordered_set<CommandListCommand*> command_lists_cmd_profiling;
 void clear_command_list_profiling();
 
-struct TextureOverrideCache
+struct InitialTexturesSnapshot
 {
 	static constexpr UINT SLOT_COUNT = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
 
-	// Original SRVs captured at the beginning of the draw.
+	// Initial SRVs captured at the beginning of the draw.
 	// Non-null means that the slot is eligible for matching.
-	std::array<ID3D11ShaderResourceView*, SLOT_COUNT> original_textures{};
+	std::array<ID3D11ShaderResourceView*, SLOT_COUNT> initial_textures{};
 
 	// Hamming distance accepted for each slot during this draw.
 	std::array<uint8_t, SLOT_COUNT> hamming_distance{};
 
-	bool snapshot_active = false;
-	unsigned snapshot_call_number = 0;
+	bool active = false;
+	unsigned call_number = 0;
+
 	UINT first_srv_slot = 0;
 	UINT last_srv_slot = 0;
 
-	TextureOverrideCache()
+	InitialTexturesSnapshot()
 	{
 		hamming_distance.fill(65);
 	}
 
-	~TextureOverrideCache();
+	~InitialTexturesSnapshot();
 	void Clear();
 	void ResetMatches();
 
-	void SnapshotOriginalTextures(CommandListState* state);
+	void SnapshotInitialTextures(CommandListState* state);
 };
 
 // Forward declaration to avoid circular reference since Override.h includes
@@ -915,6 +916,7 @@ enum class ResourceCopyTargetEvaluationMode : uint32_t {
 
 	// PIPELINE SLOT
 	SLOT_RANGE                = 0b00010000000000000000000000000000, // ps-t[$a:$b]
+	SLOT_FILTER               = 0b00100000000000000000000000000000, // ps-t[FilterA]
 };
 SENSIBLE_ENUM(ResourceCopyTargetEvaluationMode);
 static EnumName_t<const wchar_t*, ResourceCopyTargetEvaluationMode> ResourceCopyTargetEvaluationModeNames[] = {
@@ -1054,8 +1056,6 @@ enum class ShaderTargetEvaluationMode : uint32_t {
 	DCL_SRV_SLOT_COUNT = 0b00000000000000000000100000000000,
 	DCL_SRV_FIRST_SLOT = 0b00000000000000000001000000000000,
 	DCL_SRV_LAST_SLOT  = 0b00000000000000000010000000000000,
-
-	MATCH_TEXTURES     = 0b00000000000000000100000000000000,
 };
 SENSIBLE_ENUM(ShaderTargetEvaluationMode);
 //static EnumName_t<const wchar_t*, ShaderTargetEvaluationMode> ShaderTargetEvaluationModeNames[] = {
@@ -1105,6 +1105,8 @@ public:
 	std::unique_ptr<CommandListExpression> range_start = nullptr;
 	std::unique_ptr<CommandListExpression> range_end = nullptr;
 
+	ResourceFilter* slot_filter = nullptr;
+
 	bool forbid_view_cache = false;
 
 	// allow_range: accept ps-t[$a:$b] / PoolFoo[$a:$b] / bare ps-t targets,
@@ -1128,6 +1130,7 @@ public:
 
 	CustomResource* GetCustomResource(CommandListState* state, bool is_assignment = false);
 	CommandListVariable* GetPoolVariable(CommandListState* state, bool is_assignment = false);
+	ResourceFilter* GetSlotFilter() { return slot_filter ? slot_filter->ResolveFilter() : nullptr; };
 
 	ID3D11Resource *GetResource(CommandListState *state,
 			ID3D11View **view,
@@ -1475,30 +1478,27 @@ private:
 	CustomResourcePool* failed_root = nullptr;
 };
 
-class SnapshotOriginalTexturesOperation : public CommandListCommand
+class SnapshotInitialTexturesOperation : public CommandListCommand
 {
 public:
 	void run(CommandListState* state) override;
 };
 
-class RestoreOriginalTexturesOperation : public ResourceCopyOperation
+class RestoreInitialTexturesOperation : public ResourceCopyOperation
 {
 public:
-	RestoreOriginalTexturesOperation();
+	RestoreInitialTexturesOperation();
 
 	void run(CommandListState* state) override;
 
 	bool IsBatchable() const override { return false; }
 };
 
-class TextureOverrideOperation : public ResourceCopyOperation
+class SlotFilterOperation : public ResourceCopyOperation
 {
 public:
 	static constexpr UINT SLOT_COUNT = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
 
-	std::unique_ptr<ResourceCopyTarget> match_resource;
-
-	unsigned FindBestMatchingTextureDistance(CommandListState* state, CustomResource* candidate, std::array<uint8_t, SLOT_COUNT>& distances);
 	void ReplaceBestMatchingTextures(CommandListState* state, ID3D11Resource* source_resource, ID3D11View* source_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_size, const std::array<uint8_t, SLOT_COUNT>& distances, unsigned best_distance);
 
 	void OverrideMatchingTextures(CommandListState* state);

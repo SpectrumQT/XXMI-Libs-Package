@@ -1336,11 +1336,11 @@ bool ParseCommandListGeneralCommands(const wchar_t *section,
 	if (!wcsncmp(key, L"commandlist", 11))
 		return ParseCopyCommandListCommand(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 
-	if (!wcscmp(val->c_str(), L"snapshotoriginaltextures"))
-		return AddCommandToList(new SnapshotOriginalTexturesOperation(), explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
+	if (!wcscmp(val->c_str(), L"snapshotinitialtextures"))
+		return AddCommandToList(new SnapshotInitialTexturesOperation(), explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
 
-	if (!wcscmp(val->c_str(), L"restoreoriginaltextures"))
-		return AddCommandToList(new RestoreOriginalTexturesOperation(), explicit_command_list, post_command_list, NULL, NULL, section, key, val);
+	if (!wcscmp(val->c_str(), L"restoreinitialtextures"))
+		return AddCommandToList(new RestoreInitialTexturesOperation(), explicit_command_list, post_command_list, NULL, NULL, section, key, val);
 
 	return ParseDrawCommand(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 }
@@ -8641,9 +8641,6 @@ IniParserResult ShaderTarget::ParseTargetMember(
 		{ L"->cb_slot_count",  15, ShaderTargetEvaluationMode::DCL_CB_SLOT_COUNT },
 		{ L"->cb_first_slot",  15, ShaderTargetEvaluationMode::DCL_CB_FIRST_SLOT },
 		{ L"->srv_last_slot",  15, ShaderTargetEvaluationMode::DCL_SRV_LAST_SLOT },
-		{ L"->matchtextures",  15, ShaderTargetEvaluationMode::MATCH_TEXTURES, {{
-			MemberArg::Type::Resource, // Match-filter resource
-		}} },
 		{ L"->srv_slot_count", 16, ShaderTargetEvaluationMode::DCL_SRV_SLOT_COUNT },
 		{ L"->srv_first_slot", 16, ShaderTargetEvaluationMode::DCL_SRV_FIRST_SLOT },
 	};
@@ -8987,6 +8984,14 @@ IniParserResult ResourceCopyTarget::ParseTargetSlotExpression(const wchar_t* tex
 	max_slot = info->max_slot_count;
 
 	wstring inner(open + 1, text + length - 1);
+
+	ResourceFilterTarget filter;
+	if (filter.ParseTarget(inner.c_str(), false, ini_namespace, scope)) {
+		slot_filter = filter.GetFilter();
+		evaluation_mode = ResourceCopyTargetEvaluationMode::SLOT_FILTER;
+		return IniParserResult::TOKEN_FOUND;
+	}
+
 	size_t colon = inner.find(L':');
 
 	if (colon == wstring::npos) {
@@ -9349,52 +9354,52 @@ void PoolCopyOperation::run(CommandListState* state)
 #pragma endregion PoolCopyOperation
 
 
-#pragma region TextureOverrideOperation
+#pragma region SlotFilterOperation
 
 // Release any SRV references still held by the cache when it is destroyed.
-TextureOverrideCache::~TextureOverrideCache()
+InitialTexturesSnapshot::~InitialTexturesSnapshot()
 {
 	Clear();
 }
 
-void TextureOverrideCache::ResetMatches()
+void InitialTexturesSnapshot::ResetMatches()
 {
-	if (!snapshot_active)
+	if (!active)
 		return;
 
 	for (UINT slot = first_srv_slot; slot <= last_srv_slot; ++slot)
 	{
-		if (original_textures[slot])
+		if (initial_textures[slot])
 		{
 			// Reset the best accepted Hamming distance for this slot.
-			// 65 indicates that no matching candidate has been accepted.
+			// 65 indicates that no matching filter has been accepted.
 			hamming_distance[slot] = 65;
 		}
 	}
 }
 
 // Release the references acquired by the most recent snapshot and reset its state.
-void TextureOverrideCache::Clear()
+void InitialTexturesSnapshot::Clear()
 {
-	if (!snapshot_active)
+	if (!active)
 		return;
 
 	// Snapshot references are confined to the recorded pixel-shader SRV range.
 	for (UINT slot = first_srv_slot; slot <= last_srv_slot; ++slot)
 	{
-		if (original_textures[slot])
+		if (initial_textures[slot])
 		{
 			// Release the reference acquired by PSGetShaderResources.
-			original_textures[slot]->Release();
-			original_textures[slot] = nullptr;
+			initial_textures[slot]->Release();
+			initial_textures[slot] = nullptr;
 
 			// Reset the best accepted Hamming distance for this slot.
-			// 65 indicates that no matching candidate has been accepted.
+			// 65 indicates that no matching filter has been accepted.
 			hamming_distance[slot] = 65;
 		}
 	}
 
-	snapshot_active = false;
+	active = false;
 }
 
 // Resolve the binding metadata for the pixel shader currently bound to the context.
@@ -9425,18 +9430,18 @@ static const ShaderBindings* ResolvePixelShaderBindings(CommandListState* state)
 	return &bindings_it->second;
 }
 
-void TextureOverrideCache::SnapshotOriginalTextures(CommandListState* state)
+void InitialTexturesSnapshot::SnapshotInitialTextures(CommandListState* state)
 {
 	if (!state || !state->mHackerContext || !state->mOrigContext1)
 		return;
 
-	const unsigned call_number = state->mHackerContext->GetCallNumber();
+	const unsigned current_call_number = state->mHackerContext->GetCallNumber();
 
 	// A snapshot is taken at most once per draw.
-	if (snapshot_active)
+	if (active)
 	{
 		// In particular, don't reset distances when another snapshot operation runs in the same draw.
-		if (snapshot_call_number == call_number)
+		if (call_number == current_call_number)
 			return;
 
 		// Clear existing snapshot.
@@ -9444,8 +9449,8 @@ void TextureOverrideCache::SnapshotOriginalTextures(CommandListState* state)
 	}
 
 	// Mark the snapshot as active for this draw.
-	snapshot_active = true;
-	snapshot_call_number = call_number;
+	active = true;
+	call_number = current_call_number;
 
 	// Resolve the resource slots declared by the currently bound pixel shader.
 	const ShaderBindings* bindings = ResolvePixelShaderBindings(state);
@@ -9483,35 +9488,35 @@ void TextureOverrideCache::SnapshotOriginalTextures(CommandListState* state)
 		const UINT count = slot - first;
 
 		// PSGetShaderResources AddRefs each returned non-null view.
-		// These references are retained by the cache until next SnapshotOriginalTextures or Clear.
-		state->mOrigContext1->PSGetShaderResources(first, count, original_textures.data() + first);
+		// These references are retained by the cache until next SnapshotInitialTextures or Clear.
+		state->mOrigContext1->PSGetShaderResources(first, count, initial_textures.data() + first);
 
-		// Initialize the best Hamming distance for each captured, non-null original SRV.
-		// A value of 65 means no candidate has matched yet.
+		// Initialize the best Hamming distance for each captured, non-null initial SRV.
+		// A value of 65 means no filter has matched yet.
 		for (UINT i = first; i < first + count; ++i)
 		{
-			if (original_textures[i])
+			if (initial_textures[i])
 				hamming_distance[i] = 65;
 		}
 	}
 }
 
-// Capture the original pixel-shader SRV references for the current draw.
+// Capture the initial pixel-shader SRV references for the current draw.
 // This snapshot is shared by all TextureOverrideOperations executed during the draw.
-void SnapshotOriginalTexturesOperation::run(CommandListState* state)
+void SnapshotInitialTexturesOperation::run(CommandListState* state)
 {
 	if (!state || !state->mHackerContext)
 		return;
 
-	TextureOverrideCache& cache = state->mHackerContext->GetTextureOverrideCache();
+	InitialTexturesSnapshot& snapshot = state->mHackerContext->GetInitialTexturesSnapshot();
 
-	cache.SnapshotOriginalTextures(state);
+	snapshot.SnapshotInitialTextures(state);
 }
 
-// Configure the source and destination targets used to restore original SRV references.
-RestoreOriginalTexturesOperation::RestoreOriginalTexturesOperation()
+// Configure the source and destination targets used to restore initial SRV references.
+RestoreInitialTexturesOperation::RestoreInitialTexturesOperation()
 {
-	// The original texture reference is the source.
+	// The initial texture reference is the source.
 	src.type = ResourceCopyTargetType::SHADER_RESOURCE;
 	src.evaluation_mode = ResourceCopyTargetEvaluationMode::RESOURCE;
 
@@ -9524,109 +9529,106 @@ RestoreOriginalTexturesOperation::RestoreOriginalTexturesOperation()
 	options = ResourceCopyOptions::REFERENCE;
 }
 
-// Restore all original pixel-shader SRV references captured by the current draw.
-void RestoreOriginalTexturesOperation::run(CommandListState* state)
+// Restore all initial pixel-shader SRV references captured by the current draw.
+void RestoreInitialTexturesOperation::run(CommandListState* state)
 {
 	if (!state || !state->mHackerContext)
 		return;
 
-	TextureOverrideCache& cache = state->mHackerContext->GetTextureOverrideCache();
+	InitialTexturesSnapshot& snapshot = state->mHackerContext->GetInitialTexturesSnapshot();
 
 	// Only active snapshot can be restored.
-	if (!cache.snapshot_active)
+	if (!snapshot.active)
 		return;
 
 	// The snapshot must be restored using the same draw in which it was captured.
 	// Clear it if that invariant has been violated.
-	if (cache.snapshot_call_number != state->mHackerContext->GetCallNumber())
+	if (snapshot.call_number != state->mHackerContext->GetCallNumber())
 	{
 		assert(false);
-		cache.Clear();
+		snapshot.Clear();
 		return;
 	}
 
-	for (UINT slot = cache.first_srv_slot; slot <= cache.last_srv_slot; ++slot)
+	for (UINT slot = snapshot.first_srv_slot; slot <= snapshot.last_srv_slot; ++slot)
 	{
-		ID3D11ShaderResourceView* original_srv = cache.original_textures[slot];
+		ID3D11ShaderResourceView* initial_srv = snapshot.initial_textures[slot];
 
 		// Ignore undeclared slots and declared slots that had no bound SRV.
-		if (!original_srv)
+		if (!initial_srv)
 			continue;
 
-		// Retrieve the resource associated with the original SRV.
-		ID3D11Resource* original_resource = nullptr;
-		original_srv->GetResource(&original_resource);
+		// Retrieve the resource associated with the initial SRV.
+		ID3D11Resource* initial_resource = nullptr;
+		initial_srv->GetResource(&initial_resource);
 
-		if (!original_resource)
+		if (!initial_resource)
 			continue;
 
 		// Restore this slot through the inherited resource-copy mechanism.
 		dst.slot = slot;
 
-		CopyResourceToResource(state, original_resource, original_srv, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
+		CopyResourceToResource(state, initial_resource, initial_srv, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
 
-		original_resource->Release();
+		initial_resource->Release();
 	}
 
-	// All SRV slots were reset to original textures, any existing matches data is now obsolete.
-	cache.ResetMatches();
+	// All SRV slots were reset to initial textures, any existing matches data is now obsolete.
+	snapshot.ResetMatches();
 }
 
-// Calculate the Hamming distance between a candidate texture and each captured
-// original SRV whose format matches the candidate.
+// Calculate the Hamming distance between a filter and each captured
+// initial SRV whose format matches the filter.
 // Returns the smallest valid distance, or 65 if no comparison succeeds.
-unsigned TextureOverrideOperation::FindBestMatchingTextureDistance(CommandListState* state, CustomResource* candidate, std::array<uint8_t, SLOT_COUNT>& distances)
+unsigned FindBestMatchingTextureDistance(CommandListState* state, ResourceFilter* slot_filter, std::array<uint8_t, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT>& distances)
 {
 	// Initialize every slot as having no valid comparison.
-	// This also excludes undeclared slots and slots without original SRVs.
+	// This also excludes undeclared slots and slots without initial SRVs.
 	distances.fill(65);
 
-	if (!state || !state->mHackerContext || !candidate)
-		return 65;
-
-	TextureOverrideCache& cache = state->mHackerContext->GetTextureOverrideCache();
+	InitialTexturesSnapshot& snapshot = state->mHackerContext->GetInitialTexturesSnapshot();
 
 	unsigned best_distance = 65;
 
-	for (UINT slot = cache.first_srv_slot; slot <= cache.last_srv_slot; ++slot)
+	for (UINT slot = snapshot.first_srv_slot; slot <= snapshot.last_srv_slot; ++slot)
 	{
-		ID3D11ShaderResourceView* original_srv = cache.original_textures[slot];
+		ID3D11ShaderResourceView* initial_srv = snapshot.initial_textures[slot];
 
-		// Only slots containing an original SRV can participate in matching.
-		if (!original_srv)
+		// Only slots containing an initial SRV can participate in matching.
+		if (!initial_srv)
 			continue;
 
 		// If match_format is provided, skip slot on format mismatch.
-		if (candidate->match_format != DXGI_FORMAT_UNKNOWN)
+		if (slot_filter->match_format != DXGI_FORMAT_UNKNOWN)
 		{
-			// Only compare textures with the same SRV format as the candidate.
+			// Only compare textures with the same SRV format as the filter.
 			D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-			original_srv->GetDesc(&srv_desc);
+			initial_srv->GetDesc(&srv_desc);
 
-			if (srv_desc.Format != candidate->match_format)
+			if (srv_desc.Format != slot_filter->match_format)
 				continue;
 		}
 
-		// Retrieve the original resource so its dHash can be calculated.
-		ID3D11Resource* original_resource = nullptr;
-		original_srv->GetResource(&original_resource);
+		// Retrieve the initial resource so its dHash can be calculated.
+		ID3D11Resource* initial_resource = nullptr;
+		initial_srv->GetResource(&initial_resource);
 
-		if (!original_resource)
+		if (!initial_resource)
 			continue;
 
-		uint64_t original_dhash = 0;
+		uint64_t initial_dhash = 0;
 
-		// Calculate the original texture's dHash and compare it with the candidate's precomputed match_dhash.
-		const bool has_dhash = GetDhash(state->mHackerContext, original_resource, G->dhash_mip_size, G->dhash_allow_rehash, original_dhash, original_srv);
+		// Calculate the initial texture's dHash and compare it with the filter's precomputed match_dhash.
+		const bool has_dhash = GetDhash(state->mHackerContext, initial_resource, G->dhash_mip_size, G->dhash_allow_rehash, initial_dhash, initial_srv);
 
-		original_resource->Release();
+		initial_resource->Release();
 
 		// A failed dHash calculation makes this slot ineligible for matching.
 		if (!has_dhash)
 			continue;
 
-		// Store this candidate's distance for the slot.
-		const unsigned distance = HammingDistance(candidate->match_dhash, original_dhash);
+		// Store this filter's distance for the slot.
+		const unsigned distance = HammingDistance(slot_filter->match_dhash, initial_dhash);
 
 		// Keep track of the smallest valid distance across all eligible slots.
 		distances[slot] = static_cast<uint8_t>(distance);
@@ -9638,28 +9640,25 @@ unsigned TextureOverrideOperation::FindBestMatchingTextureDistance(CommandListSt
 	return best_distance;
 }
 
-// Replace the original SRVs whose distance equals the best distance found for the current candidate,
+// Replace the initial SRVs whose distance equals the best distance found for the current filter,
 // provided that distance improves on the best distance previously accepted for each individual slot.
-void TextureOverrideOperation::ReplaceBestMatchingTextures(
+void SlotFilterOperation::ReplaceBestMatchingTextures(
 	CommandListState* state, ID3D11Resource* source_resource, ID3D11View* source_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_size, const std::array<uint8_t, SLOT_COUNT>& distances, unsigned best_distance
 )
 {
-	if (!state || !state->mHackerContext)
-		return;
+	InitialTexturesSnapshot& snapshot = state->mHackerContext->GetInitialTexturesSnapshot();
 
-	TextureOverrideCache& cache = state->mHackerContext->GetTextureOverrideCache();
-
-	for (UINT slot = cache.first_srv_slot; slot <= cache.last_srv_slot; ++slot)
+	for (UINT slot = snapshot.first_srv_slot; slot <= snapshot.last_srv_slot; ++slot)
 	{
-		// Only slots with a captured original SRV are eligible for replacement.
-		if (!cache.original_textures[slot])
+		// Only slots with a captured initial SRV are eligible for replacement.
+		if (!snapshot.initial_textures[slot])
 			continue;
 
 		const uint8_t distance = distances[slot];
 
-		// Replace only slots tied at this candidate's global best distance.
+		// Replace only slots tied at this filter's global best distance.
 		// Also require the distance to improve on the best match already accepted for this slot during the current draw.
-		if (distance != best_distance || distance >= cache.hamming_distance[slot])
+		if (distance != best_distance || distance >= snapshot.hamming_distance[slot])
 			continue;
 
 		// Configure the inherited destination to target this pixel-shader slot.
@@ -9668,53 +9667,50 @@ void TextureOverrideOperation::ReplaceBestMatchingTextures(
 		// Use the base resource-copy operation to create and bind the compatible SRV reference in the destination slot.
 		CopyResourceToResource(state, source_resource, source_view, stride, offset, format, buf_size);
 
-		// Record the improved match so a less accurate candidate cannot replace it later in the same draw.
-		cache.hamming_distance[slot] = distance;
+		// Record the improved match so a less accurate filter cannot replace it later in the same draw.
+		snapshot.hamming_distance[slot] = distance;
 	}
 }
 
-// Find the best matching original texture slots for this candidate and replace
+// Find the best matching initial texture slots for this filter and replace
 // every slot tied at the best distance when the match is within the confidence
 // threshold and improves on that slot's previously accepted match.
-void TextureOverrideOperation::OverrideMatchingTextures(CommandListState* state)
+void SlotFilterOperation::OverrideMatchingTextures(CommandListState* state)
 {
-	if (!state || !state->mHackerContext)
+	if (!state || !state->mHackerContext || !dst.slot_filter)
 		return;
 
-	TextureOverrideCache& cache = state->mHackerContext->GetTextureOverrideCache();
+	InitialTexturesSnapshot& snapshot = state->mHackerContext->GetInitialTexturesSnapshot();
 
-	unsigned call_number = state->mHackerContext->GetCallNumber();
+	unsigned current_call_number = state->mHackerContext->GetCallNumber();
 
 	// All matching operations must use the snapshot captured for the current draw.
-	if (!cache.snapshot_active || call_number != cache.snapshot_call_number)
+	if (!snapshot.active || current_call_number != snapshot.call_number)
 	{
 		// Try to capture a snapshot automatically.
-		cache.SnapshotOriginalTextures(state);
+		snapshot.SnapshotInitialTextures(state);
 
-		if (!cache.snapshot_active || call_number != cache.snapshot_call_number)
+		if (!snapshot.active || current_call_number != snapshot.call_number)
 		{
 			assert(false);
 			return;
 		}
 	}
 
-	// Resolve the candidate texture used for matching.
-	CustomResource* candidate = match_resource->GetCustomResource(state);
-	if (!candidate)
-		return;
+	ResourceFilter* slot_filter = dst.GetSlotFilter();
 
 	// Convert confidence into the maximum acceptable Hamming distance.
 	// For example, 0.75 confidence permits a distance of 16.
 	// The comparison below is inclusive: a distance equal to this limit is accepted.
-	const unsigned max_distance = static_cast<unsigned>((1.0f - candidate->match_confidence) * 64.0f);
+	const unsigned max_distance = static_cast<unsigned>((1.0f - slot_filter->match_confidence) * 64.0f);
 
 	std::array<uint8_t, SLOT_COUNT> distances;
 
-	// Pass 1: calculate the candidate's distance against every eligible
-	// original SRV in the shared snapshot and identify the global best distance.
-	const unsigned best_distance = FindBestMatchingTextureDistance(state, candidate, distances);
+	// Pass 1: calculate the filter's distance against every eligible
+	// initial SRV in the shared snapshot and identify the global best distance.
+	const unsigned best_distance = FindBestMatchingTextureDistance(state, slot_filter, distances);
 
-	// Reject the candidate if no valid match was found within the threshold.
+	// Reject the filter if no valid match was found within the threshold.
 	if (best_distance > max_distance)
 		return;
 
@@ -9732,8 +9728,8 @@ void TextureOverrideOperation::OverrideMatchingTextures(CommandListState* state)
 		return;
 	}
 
-	// Pass 2: replace all slots tied at the candidate's global best distance.
-	// A slot is updated only when this candidate improves on the best distance
+	// Pass 2: replace all slots tied at the filter's global best distance.
+	// A slot is updated only when this filter improves on the best distance
 	// already accepted for that slot during the current draw.
 	ReplaceBestMatchingTextures(state, source_resource, source_view, stride, offset, format, buf_size, distances, best_distance);
 
@@ -9744,14 +9740,14 @@ void TextureOverrideOperation::OverrideMatchingTextures(CommandListState* state)
 	source_resource->Release();
 }
 
-void TextureOverrideOperation::run(CommandListState* state)
+void SlotFilterOperation::run(CommandListState* state)
 {
 	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
 
 	OverrideMatchingTextures(state);
 }
 
-#pragma endregion TextureOverrideOperation
+#pragma endregion SlotFilterOperation
 
 
 #pragma region ParseResourceCopyOperation
@@ -9842,43 +9838,25 @@ static CommandListCommand* parse_resource_copy_operation(
 
 #pragma endregion ParseResourceCopyOperation
 
-#pragma region ParseTextureOverrideOperation
+#pragma region ParseSlotFilterOperation
 
-static CommandListCommand* parse_texture_override_operation(
-	const wchar_t* section, ShaderTarget& dst_shader, ResourceCopyTarget& src, ResourceCopyOptions options, CommandList* command_list, const wstring* ini_namespace
+static CommandListCommand* parse_slot_filter_operation(
+	const wchar_t* section, ResourceCopyTarget& dst, ResourceCopyTarget& src, ResourceCopyOptions options, CommandList* command_list, const wstring* ini_namespace
 )
 {
-	// MatchTextures currently supports pixel-shader SRV bindings only.
-	if (dst_shader.shader_type != L'p' || dst_shader.evaluation_mode != ShaderTargetEvaluationMode::MATCH_TEXTURES)
-	{
-		LogOverlayW(LOG_WARNING, L"MatchTextures is only supported for pixel shaders\n - [%ls] @ [%ls]\n", section, ini_namespace->c_str());
-		return nullptr;
-	}
+	//LogInfoW(L"parse_slot_filter_operation dst_type=%ls, dst_mode=%ls, src_type=%ls, src_mode=%ls\n",
+	//	lookup_enum_name(ResourceCopyTargetTypeNames, dst.type), lookup_enum_name(ResourceCopyTargetEvaluationModeNames, dst.evaluation_mode),
+	//	lookup_enum_name(ResourceCopyTargetTypeNames, src.type), lookup_enum_name(ResourceCopyTargetEvaluationModeNames, src.evaluation_mode));
 
-	// The first member argument is the matching candidate, not the
-	// resource that will be copied into matching slots.
-	if (!dst_shader.member_args[0].resource)
+	if (dst.shader_type != L'p' || dst.type != ResourceCopyTargetType::SHADER_RESOURCE)
 	{
-		LogOverlayW(LOG_WARNING, L"MatchTextures requires a custom resource argument\n - [%ls] @ [%ls]\n", section, ini_namespace->c_str());
-		return nullptr;
-	}
-
-	ResourceCopyTarget& match_resource = *dst_shader.member_args[0].resource;
-
-	if (match_resource.type != ResourceCopyTargetType::CUSTOM_RESOURCE ||
-		match_resource.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE ||
-		!match_resource.GetCustomResource(nullptr, true))
-	{
-		LogOverlayW(LOG_WARNING,L"MatchTextures candidate must be a custom resource\n - [%ls] @ [%ls]\n", section, ini_namespace->c_str());
+		LogOverlayW(LOG_WARNING, L"Work in progress - slot filtering is only supported for ps-t slots\n - [%ls] @ [%ls]\n", section, ini_namespace->c_str());
 		return nullptr;
 	}
 
 	// Configure the inherited ResourceCopyTarget as a pixel-shader SRV.
 	// Its slot is selected dynamically by OverrideMatchingTextures().
-	ResourceCopyTarget dst;
-	dst.type = ResourceCopyTargetType::SHADER_RESOURCE;
 	dst.evaluation_mode = ResourceCopyTargetEvaluationMode::RESOURCE;
-	dst.shader_type = L'p';
 	dst.max_slot = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
 
 	if (!(options & ResourceCopyOptions::COPY_TYPE_MASK))
@@ -9917,17 +9895,16 @@ static CommandListCommand* parse_texture_override_operation(
 		}
 	}
 
-	TextureOverrideOperation* operation = new TextureOverrideOperation();
+	SlotFilterOperation* operation = new SlotFilterOperation();
 
 	operation->src = std::move(src);
 	operation->dst = std::move(dst);
-	operation->match_resource = std::move(dst_shader.member_args[0].resource);
 	operation->options = options;
 
 	return operation;
 }
 
-#pragma endregion ParseTextureOverrideOperation
+#pragma endregion ParseSlotFilterOperation
 
 #pragma region LayoutElementOperation
 
@@ -10193,31 +10170,6 @@ bool ParseCommandListResourceCopyTargetDirective(
 
 	if (!dst.ParseTarget(key, false, ini_namespace, command_list->scope, true, true))
 	{
-		ShaderTarget dst_shader;
-
-		if (dst_shader.ParseTarget(key, false, ini_namespace, command_list->scope))
-		{
-			if (dst_shader.evaluation_mode != ShaderTargetEvaluationMode::MATCH_TEXTURES)
-				return false;
-
-			ResourceCopyOptions options = ResourceCopyOptions::INVALID;
-			ResourceCopyTarget src;
-
-			if (!parse_resource_copy_target_source(section, *val, src, options, command_list, ini_namespace, key))
-				return false;
-
-			CommandListCommand* operation = parse_texture_override_operation(section, dst_shader, src, options, command_list, ini_namespace);
-
-			if (!operation)
-				return false;
-
-			operation->ini_line = L"[" + wstring(section) + L"] " + wstring(key) + L" = " + *val;
-
-			command_list->commands.push_back(std::shared_ptr<CommandListCommand>(operation));
-
-			return true;
-		}
-
 		if (dst.evaluation_mode != ResourceCopyTargetEvaluationMode::VARIABLE)
 			return false;
 	}
@@ -10256,6 +10208,12 @@ bool ParseCommandListResourceCopyTargetDirective(
 
 		if (!parse_resource_copy_target_source(section, *val, src, options, command_list, ini_namespace, key))
 			return false;
+
+		if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::SLOT_FILTER)
+		{
+			operation = parse_slot_filter_operation(section, dst, src, options, command_list, ini_namespace);
+			break;
+		}
 
 		if (dst.evaluation_mode == ResourceCopyTargetEvaluationMode::SLOT_RANGE
 			|| src.evaluation_mode == ResourceCopyTargetEvaluationMode::SLOT_RANGE)

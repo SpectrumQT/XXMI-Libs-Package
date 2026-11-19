@@ -1340,7 +1340,7 @@ bool ParseCommandListGeneralCommands(const wchar_t *section,
 		return AddCommandToList(new SnapshotInitialTexturesOperation(), explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
 
 	if (!wcscmp(val->c_str(), L"restoreinitialtextures"))
-		return AddCommandToList(new RestoreInitialTexturesOperation(), explicit_command_list, post_command_list, NULL, NULL, section, key, val);
+		return AddCommandToList(new RestoreInitialTexturesOperation(), explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
 
 	return ParseDrawCommand(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 }

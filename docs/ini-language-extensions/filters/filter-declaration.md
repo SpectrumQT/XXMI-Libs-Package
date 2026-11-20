@@ -12,7 +12,7 @@ match_confidence = 0.75
 ## Filter Options
 
 | Option | Default | Description |
-| ------ | -------- | ------- | ----------- |
+| ------ | -------- | ----------- |
 | `match_dhash` | — | Reference texture dHash. |
 | `match_format` | — | Restricts matching to slots whose texture SRV format matches the specified `DXGI_FORMAT`. |
 | `match_confidence` | `0.75` | Minimum required dHash similarity, from `0.0` to `1.0`. |

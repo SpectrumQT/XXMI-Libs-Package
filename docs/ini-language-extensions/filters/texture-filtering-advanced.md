@@ -43,7 +43,7 @@ XOR:        000000000000003f
 The calculation is:
 
 $$
-D(H_r,H_c)=\operatorname{popcount}(H_r\oplus H_c)
+D(H_r,H_c)=\mathrm{popcount}(H_r\oplus H_c)
 $$
 
 where:
@@ -85,7 +85,7 @@ This percentage describes **how many hash bits agree**. It is not a measurement 
 `match_confidence` sets the minimum normalized dHash similarity required for a candidate to qualify. The DLL converts it into an integer maximum Hamming distance:
 
 $$
-D_{\max}=\operatorname{trunc}\big((1-C)\times64\big)
+D_{\max}=\lfloor(1-C)\times64\rfloor
 $$
 
 where:
@@ -114,8 +114,8 @@ match_confidence = 0.90
 The configured confidence becomes:
 
 $$
-D_{\max}=\operatorname{trunc}((1-0.90)\times64)
-        =\operatorname{trunc}(6.4)
+D_{\max}=\lfloor(1-0.90)\times64\rfloor
+        =\lfloor6.4\rfloor
         =6
 $$
 

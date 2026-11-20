@@ -1,5 +1,31 @@
 # Commands
 
+## `SnapshotInitialTextures`
+
+[Captures the initial textures](../filters/texture-filtering.md/#capturing-the-initial-texture-snapshot) in the `ps-t` slots declared by the currently bound pixel shader.
+
+```ini
+run = SnapshotInitialTextures
+```
+
+A snapshot can be captured only once for a given draw call. Further `SnapshotInitialTextures` calls during that draw call are ignored.
+
+This snapshot is used as the reference state for subsequent [textures filtering operations](../filters/texture-filtering.md).
+
+A snapshot is also captured automatically when the first filter-based slot operation executes without an active snapshot.
+
+## `RestoreInitialTextures`
+
+[Restores the textures](../filters/texture-filtering.md/#restoring-the-initial-texture-snapshot) captured by `SnapshotInitialTextures`.
+
+```ini
+run = RestoreInitialTextures
+```
+
+It also resets per-slot best-match distances, allowing subsequent [textures filtering operations](../filters/texture-filtering.md) to start with a clean state.
+
+It is generally recommended to restore the initial textures after the draw call that uses the replacements.
+
 ## `store`
 
 Reads a 32-bit floating-point value from a GPU resource and stores it in an INI runtime variable or a [pool variable](../pools/variables.md).

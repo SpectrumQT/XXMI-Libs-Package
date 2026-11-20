@@ -184,6 +184,21 @@ The same data caching rules as for [`HashRegion`](#hashregionbyte_offset-byte_si
 
 > **Experimental:** `->SpatialHash(...)` is experimental and its behavior may change. **Only CB regions** are really tested.
 
+### `HammingDistance(FilterReferenceTexture)`
+
+Returns the [Hamming distance](../filters/texture-filtering-advanced.md/#2-what-is-hamming-distance) between the dHash of the target texture and `match_dhash` of [FilterTexture](../filters/README.md).
+
+```ini
+$hamming_distance = ps-t[$slot_id]->HammingDistance(FilterReferenceTexture)
+
+[FilterReferenceTexture]
+match_dhash = 56577a2d6a2759a8
+```
+
+- `0` means an exact dHash match.
+- Larger values indicate greater differences.
+- `64` represents the maximum possible Hamming distance.
+
 ### Performance
 
 Accessing `->` attributes from custom resources is extremely inexpensive, as the metadata is stored directly with the custom resource.

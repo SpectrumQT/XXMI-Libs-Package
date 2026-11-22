@@ -71,6 +71,7 @@ static Section RegularSections[] = {
 	{L"Hunting", false},
 	{L"Logging", false},
 	{L"System", false},
+	{L"MCP", false},
 	{L"Input", false},
 	{L"Device", false},
 	{L"Rendering", false},
@@ -4632,6 +4633,7 @@ void LoadConfigFile()
 		enable_lock_dependency_checks();
 
 	G->gShowWarnings = GetIniBool(L"Logging", L"show_warnings", true, NULL);
+	G->mcp_enabled = GetIniBool(L"MCP", L"enabled", true, NULL);
 
 	// [Include]
 	LogInfo("[Include]\n");
@@ -5320,4 +5322,5 @@ void ReloadConfig(HackerDevice *device)
 	std::chrono::duration<float> duration = stop - start;
 
 	LogOverlayW(LOG_INFO, L"> Reloaded config in %.3fs\n", duration.count());
+	G->config_generation++;
 }

@@ -4,6 +4,7 @@
 #include "Globals.h"
 #include "IniHandler.h"
 #include "HookedDXGI.h"
+#include "MCPBridge.h"
 
 #include <locale>
 #include <chrono>
@@ -120,6 +121,8 @@ static bool InitializeDLL()
 		this_thread::sleep_for(chrono::milliseconds(G->gDllInitializationDelay));
 	}
 
+	MCP_Start(G->mcp_enabled);
+
 	LogInfo("\n***  D3D11 DLL successfully initialized.  ***\n\n");
 
 	return true;
@@ -127,6 +130,7 @@ static bool InitializeDLL()
 
 void DestroyDLL()
 {
+	MCP_Stop();
 }
 
 int WINAPI D3DKMTCloseAdapter()

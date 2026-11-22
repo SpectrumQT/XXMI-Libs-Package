@@ -4,6 +4,8 @@
 
 #include "HackerDevice.h"
 
+#include <string>
+
 // Custom #include handler used to track which shaders need to be reloaded after an included file is modified
 class MigotoIncludeHandler : public ID3DInclude
 {
@@ -26,3 +28,5 @@ void RegisterVisitedIndexBuffer(uint32_t hash);
 void RegisterVisitedVertexBufferNoLock(uint32_t hash, uint32_t slot_id);
 void RegisterVisitedVertexBuffer(uint32_t hash, uint32_t slot_id);
 void PurgeStaleVisitedBufferHashes(HackerDevice* device);
+bool MCPTriggerFrameAnalysis(HackerDevice *device, std::string *error);
+bool MCPReloadShaderFixes(HackerDevice *device, std::string *error);

@@ -424,8 +424,10 @@ struct Globals
 	bool bIntendedTargetExe;
 	bool gReloadConfigPending;
 	bool gConfigInitialized;
+	uint32_t config_generation;
 	bool gWipeUserConfig;
 	bool gShowWarnings;
+	bool mcp_enabled;
 	bool dump_all_profiles;
 
 	bool clear_unknown_settings = true;
@@ -762,9 +764,11 @@ struct Globals
 		bIntendedTargetExe(false),
 		gReloadConfigPending(false),
 		gConfigInitialized(false),
+		config_generation(0),
 		gWipeUserConfig(false),
 		user_config_dirty(false),
 		gShowWarnings(true),
+		mcp_enabled(true),
 		gDllInitializationDelay(0),
 		gSettingsAutoSaveInterval(0),
 		gConfigInitializationDelay(0),

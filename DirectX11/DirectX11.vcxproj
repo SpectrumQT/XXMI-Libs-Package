@@ -64,6 +64,7 @@
     <ClCompile Include="IniHandler.cpp" />
     <ClCompile Include="Input.cpp" />
     <ClCompile Include="lock.cpp" />
+    <ClCompile Include="MCPBridge.cpp" />
     <ClCompile Include="Overlay.cpp" />
     <ClCompile Include="Override.cpp" />
     <ClCompile Include="profiling.cpp" />
@@ -99,6 +100,7 @@
     <ClInclude Include="IniHandler.h" />
     <ClInclude Include="Input.h" />
     <ClInclude Include="lock.h" />
+    <ClInclude Include="MCPBridge.h" />
     <ClInclude Include="Overlay.h" />
     <ClInclude Include="CommandList.h" />
     <ClInclude Include="Override.h" />

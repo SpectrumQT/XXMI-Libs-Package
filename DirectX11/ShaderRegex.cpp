@@ -474,7 +474,7 @@ struct ShaderRegexCacheHeader {
 	uint32_t num_matches;
 };
 
-ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type, vector<byte> *bytecode, std::wstring *tagline)
+ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type, vector<byte_t> *bytecode, std::wstring *tagline)
 {
 	ShaderRegexCache ret = ShaderRegexCache::NO_CACHE;
 	HANDLE meta_f = INVALID_HANDLE_VALUE;
@@ -484,7 +484,7 @@ ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type
 	wchar_t path[MAX_PATH];
 	uint32_t *match_ids;
 	DWORD size, size2;
-	byte *buf = NULL;
+	byte_t *buf = NULL;
 	size_t suffix;
 	uint32_t i;
 
@@ -498,7 +498,7 @@ ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type
 	if (size < sizeof(ShaderRegexCacheHeader))
 		goto out;
 
-	buf = new byte[size];
+	buf = new byte_t[size];
 
 	if (!ReadFile(meta_f, buf, size, &size2, NULL) || size != size2)
 		goto out;
@@ -626,7 +626,7 @@ static void save_shader_regex_cache_meta(UINT64 hash, const wchar_t *shader_type
 	}
 }
 
-void save_shader_regex_cache_bin(UINT64 hash, const wchar_t *shader_type, vector<byte> *bytecode)
+void save_shader_regex_cache_bin(UINT64 hash, const wchar_t *shader_type, vector<byte_t> *bytecode)
 {
 	wchar_t path[MAX_PATH];
 	FILE *f = NULL;

@@ -548,7 +548,7 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 	HRESULT hr;
 	unsigned i;
 	wstring tagline(L"//");
-	vector<byte> patched_bytecode;
+	vector<byte_t> patched_bytecode;
 	vector<char> asm_vector;
 
 	EnterCriticalSectionPretty(&G->mCriticalSection);

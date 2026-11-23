@@ -7,11 +7,7 @@
 #include "profiling.h"
 #include "overlay.h"
 
-// DirectXTK headers fail to include their own pre-requisits. We just want
-// GetSurfaceInfo from LoaderHelpers
-#include "DirectXTK/Src/pch.h"
-#include "DirectXTK/Src/PlatformHelpers.h"
-#include "DirectXTK/Src/LoaderHelpers.h"
+#include <DirectXTex.h>
 
 // Overloaded functions to log any kind of resource description (useful to call
 // from templates):
@@ -653,7 +649,15 @@ static uint32_t hash_tex2d_data(uint32_t hash, const void *data, size_t length,
 	if (!zero_padding && !skip_padding)
 		return crc32c_hw(hash, data, length);
 
-	DirectX::LoaderHelpers::GetSurfaceInfo(pDesc->Width, pDesc->Height, pDesc->Format, &slice_pitch, &row_pitch, &row_count);
+	HRESULT hr = DirectX::ComputePitch(pDesc->Format, pDesc->Width, pDesc->Height, row_pitch, slice_pitch);
+
+	if (FAILED(hr))
+		return crc32c_hw(hash, data, length);
+
+	row_count = DirectX::ComputeScanlines(pDesc->Format, pDesc->Height);
+
+	if (!row_count)
+		return crc32c_hw(hash, data, length);
 
 	uint8_t *sptr = (uint8_t*)data;
 	size_t msize = min(row_pitch, mapped_row_pitch);

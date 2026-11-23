@@ -9,6 +9,7 @@
 #include <DirectXMath.h>
 #include <util.h>
 #include <WICTextureLoader.h>
+#include <DDSTextureLoader.h>
 
 #include "DrawCallInfo.h"
 #include "ResourceHash.h"
@@ -671,6 +672,7 @@ public:
 private:
 	bool HasPNGsRGBChunk(wstring filename);
 	DirectX::WIC_LOADER_FLAGS GetWICFlags(wstring filename);
+	DirectX::DDS_LOADER_FLAGS GetDDSFlags();
 	void LoadFromFile(ID3D11Device *mOrigDevice);
 	void LoadBufferFromFile(ID3D11Device *mOrigDevice);
 	void SubstantiateBuffer(ID3D11Device *mOrigDevice, void **buf, DWORD size);

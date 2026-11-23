@@ -1,0 +1,50 @@
+{
+  "packages": [
+{
+  "SPDXID" : "SPDXRef-resource-0",
+  "checksums" : 
+  [
+    {
+      "algorithm" : "SHA512",
+      "checksumValue" : "8257285809a9a4afb441869936740ae5ff04cc4bd95f86c8e4b9fd41f3b6a194e88d0aaa1c2cfc01b8845984993736fa5e77201c82021842acc87451d8f62f8b"
+    }
+  ],
+  "copyrightText" : "NOASSERTION",
+  "downloadLocation" : "git+https://github.com/PCRE2Project/pcre2@pcre2-10.49",
+  "licenseConcluded" : "NOASSERTION",
+  "licenseDeclared" : "NOASSERTION",
+  "name" : "PCRE2Project/pcre2"
+},
+{
+  "SPDXID" : "SPDXRef-resource-1",
+  "checksums" : 
+  [
+    {
+      "algorithm" : "SHA512",
+      "checksumValue" : "719fa1d8d8e1e749ce6f7370db32818268f84b1376ed9367fd5290ab440d8bea7a6a25a68e55045a45da68b0ce7a55daa0d7acd2f1b11774319b50268c02441c"
+    }
+  ],
+  "copyrightText" : "NOASSERTION",
+  "downloadLocation" : "https://api.github.com/repos/PCRE2Project/pcre2/contents/deps/sljit?ref=pcre2-10.49",
+  "licenseConcluded" : "NOASSERTION",
+  "licenseDeclared" : "NOASSERTION",
+  "name" : "pcre2-pcre2-10.49-sljit-gitlink.json",
+  "packageFileName" : "pcre2-pcre2-10.49-sljit-gitlink.json"
+},
+{
+  "SPDXID" : "SPDXRef-resource-2",
+  "checksums" : 
+  [
+    {
+      "algorithm" : "SHA512",
+      "checksumValue" : "e5cc01f941877558f19859aedc9079c155f752a92e6d94fc5fb716e483b8fcb3a8495a5974bbb545d6d9a947ca97ebb36bfe278c4dc083afeb48b8ccab36895b"
+    }
+  ],
+  "copyrightText" : "NOASSERTION",
+  "downloadLocation" : "git+https://github.com/zherczeg/sljit@de0259c7aaf36aa40cba8014f3fad3edde9307f9",
+  "licenseConcluded" : "NOASSERTION",
+  "licenseDeclared" : "NOASSERTION",
+  "name" : "zherczeg/sljit"
+}
+  ]
+}

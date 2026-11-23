@@ -1,0 +1,40 @@
+Package: vcpkg-cmake
+Version: 2026-11-09
+Architecture: x64-windows
+Multi-Arch: same
+Abi: cc51d70cb32ecd320b6131e893c0c973f712d3fdda06754ad88a420d0adad6b6
+Status: install ok installed
+
+Package: vcpkg-cmake-config
+Version: 2026-07-21
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 234f569cefb4dd0905379d74425cffb7fb059e445fe78d8b68f091b999a0e56d
+Status: install ok installed
+
+Package: pcre2
+Version: 10.49
+Port-Version: 2
+Depends: vcpkg-cmake:x64-windows, vcpkg-cmake-config:x64-windows
+Architecture: x64-windows-static-pcre2
+Multi-Arch: same
+Abi: fd3a2177b51e95ef385eceb2307a077d8ad7f1e0eb40cc1802a68ce4c5301fb6
+Description: Regular Expression pattern matching using the same syntax and semantics as Perl 5.
+Default-Features: platform-default-features
+Status: install ok installed
+
+Package: pcre2
+Feature: jit
+Architecture: x64-windows-static-pcre2
+Multi-Arch: same
+Description: Enable support for Just-In-Time compiling regex matchers
+Status: install ok installed
+
+Package: pcre2
+Feature: platform-default-features
+Depends: pcre2
+Architecture: x64-windows-static-pcre2
+Multi-Arch: same
+Description: Enable default features
+Status: install ok installed
+

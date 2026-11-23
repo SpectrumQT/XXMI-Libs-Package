@@ -162,6 +162,11 @@
     <OutDir>$(SolutionDir)x64\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)x64\$(Configuration)\</IntDir>
   </PropertyGroup>
+
+  <!-- - - - - - - - - - - - - - - - -->
+  <!--          Debug x64            -->
+  <!-- - - - - - - - - - - - - - - - -->
+
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -171,7 +176,13 @@
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <ExceptionHandling>Async</ExceptionHandling>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(SolutionDir);$(SolutionDir)HLSLDecompiler;$(SolutionDir)DirectXTK\Inc;$(SolutionDir)D3D_Shaders;$(SolutionDir)pcre2</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>
+        $(SolutionDir);
+        $(SolutionDir)HLSLDecompiler;
+        $(SolutionDir)DirectXTK\Inc;
+        $(SolutionDir)D3D_Shaders;
+        $(SolutionDir)pcre2
+      </AdditionalIncludeDirectories>
       <BufferSecurityCheck>true</BufferSecurityCheck>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
@@ -179,7 +190,16 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>d3d11Wrapper.def</ModuleDefinitionFile>
-      <AdditionalDependencies>..\Nektra\NktHookLib64_Debug.lib;..\pcre2\pcre2-8-64d.lib;XINPUT9_1_0.lib;d3dcompiler.lib;DXGI.lib;Shlwapi.lib;Dbghelp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>
+        ..\Nektra\NktHookLib64_Debug.lib;
+        ..\pcre2\pcre2-8-64d.lib;
+        XINPUT9_1_0.lib;
+        d3dcompiler.lib;
+        DXGI.lib;
+        Shlwapi.lib;
+        Dbghelp.lib;
+        %(AdditionalDependencies)
+      </AdditionalDependencies>
       <ForceSymbolReferences>CreateDXGIFactory</ForceSymbolReferences>
     </Link>
     <PostBuildEvent>
@@ -189,6 +209,11 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
       <Message>Copy all Dependencies to target directory.</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
+
+  <!-- - - - - - - - - - - - - - - - -->
+  <!--         Release x64           -->
+  <!-- - - - - - - - - - - - - - - - -->
+
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -199,7 +224,13 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
       <PreprocessorDefinitions>CRC32C_STATIC=1;PCRE2_STATIC;PCRE2_CODE_UNIT_WIDTH=8;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT=1;_WINDOWS;_USRDLL;MIGOTO_DX=11;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ExceptionHandling>Async</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(SolutionDir);$(SolutionDir)HLSLDecompiler;$(SolutionDir)DirectXTK\Inc;$(SolutionDir)D3D_Shaders;$(SolutionDir)pcre2</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>
+        $(SolutionDir);
+        $(SolutionDir)HLSLDecompiler;
+        $(SolutionDir)DirectXTK\Inc;
+        $(SolutionDir)D3D_Shaders;
+        $(SolutionDir)pcre2
+      </AdditionalIncludeDirectories>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -211,7 +242,16 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <ModuleDefinitionFile>d3d11Wrapper.def</ModuleDefinitionFile>
-      <AdditionalDependencies>..\Nektra\NktHookLib64.lib;..\pcre2\pcre2-8-64.lib;XINPUT9_1_0.lib;d3dcompiler.lib;DXGI.lib;Shlwapi.lib;Dbghelp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>
+        ..\Nektra\NktHookLib64.lib;
+        ..\pcre2\pcre2-8-64.lib;
+        XINPUT9_1_0.lib;
+        d3dcompiler.lib;
+        DXGI.lib;
+        Shlwapi.lib;
+        Dbghelp.lib;
+        %(AdditionalDependencies)
+      </AdditionalDependencies>
       <ForceSymbolReferences>CreateDXGIFactory</ForceSymbolReferences>
     </Link>
     <PostBuildEvent>
@@ -219,6 +259,11 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
       <Message>Copy all Dependencies to target directory.</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
+
+  <!-- - - - - - - - - - - - - - - - -->
+  <!--       Zip Release x64         -->
+  <!-- - - - - - - - - - - - - - - - -->
+
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Zip Release|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -229,7 +274,13 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
       <PreprocessorDefinitions>CRC32C_STATIC=1;PCRE2_STATIC;PCRE2_CODE_UNIT_WIDTH=8;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT=1;_WINDOWS;_USRDLL;MIGOTO_DX=11;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ExceptionHandling>Async</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(SolutionDir);$(SolutionDir)HLSLDecompiler;$(SolutionDir)DirectXTK\Inc;$(SolutionDir)D3D_Shaders;$(SolutionDir)pcre2</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>
+        $(SolutionDir);
+        $(SolutionDir)HLSLDecompiler;
+        $(SolutionDir)DirectXTK\Inc;
+        $(SolutionDir)D3D_Shaders;
+        $(SolutionDir)pcre2
+      </AdditionalIncludeDirectories>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -241,7 +292,16 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <ModuleDefinitionFile>d3d11Wrapper.def</ModuleDefinitionFile>
-      <AdditionalDependencies>..\Nektra\NktHookLib64.lib;..\pcre2\pcre2-8-64.lib;XINPUT9_1_0.lib;d3dcompiler.lib;DXGI.lib;Shlwapi.lib;Dbghelp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>
+        ..\Nektra\NktHookLib64.lib;
+        ..\pcre2\pcre2-8-64.lib;
+        XINPUT9_1_0.lib;
+        d3dcompiler.lib;
+        DXGI.lib;
+        Shlwapi.lib;
+        Dbghelp.lib;
+        %(AdditionalDependencies)
+      </AdditionalDependencies>
       <ForceSymbolReferences>CreateDXGIFactory</ForceSymbolReferences>
     </Link>
     <PostBuildEvent>

@@ -30,31 +30,9 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Dependencies", "Dependencie
 		Dependencies\uninstall.bat = Dependencies\uninstall.bat
 	EndProjectSection
 EndProject
-Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "pcre2", "pcre2", "{2356EA4F-1B7B-439C-803F-6F30F7A86FE3}"
-	ProjectSection(SolutionItems) = preProject
-		pcre2\pcre2-32.lib = pcre2\pcre2-32.lib
-		pcre2\pcre2-32d.lib = pcre2\pcre2-32d.lib
-		pcre2\pcre2-64.lib = pcre2\pcre2-64.lib
-		pcre2\pcre2-64d.lib = pcre2\pcre2-64d.lib
-		pcre2\pcre2.h = pcre2\pcre2.h
-	EndProjectSection
-EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Injector", "Injector\Injector.vcxproj", "{8747D291-5845-4743-B3ED-FB418FCCC817}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "InjectorLib", "InjectorLib\InjectorLib.vcxproj", "{9227AD9C-C12D-46E4-9254-CF0EC56CF4CE}"
-EndProject
-Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Nektra", "Nektra", "{02EA681E-C7D8-13C7-8484-4AC65E1B71E8}"
-	ProjectSection(SolutionItems) = preProject
-		Nektra\NktHookLib.h = Nektra\NktHookLib.h
-		Nektra\NktHookLib.lib = Nektra\NktHookLib.lib
-		Nektra\nkthooklib.pdb = Nektra\nkthooklib.pdb
-		Nektra\NktHookLib64.lib = Nektra\NktHookLib64.lib
-		Nektra\nkthooklib64.pdb = Nektra\nkthooklib64.pdb
-		Nektra\NktHookLib64_Debug.lib = Nektra\NktHookLib64_Debug.lib
-		Nektra\nkthooklib64_debug.pdb = Nektra\nkthooklib64_debug.pdb
-		Nektra\NktHookLib_Debug.lib = Nektra\NktHookLib_Debug.lib
-		Nektra\nkthooklib_debug.pdb = Nektra\nkthooklib_debug.pdb
-	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -99,8 +77,6 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{09915712-7D63-41F9-8110-D5667F1F9FCF} = {1693604A-42AF-4848-B892-D1540FB17FDE}
 		{83DCC342-4199-4E03-B720-80E5EDF18500} = {1693604A-42AF-4848-B892-D1540FB17FDE}
-		{2356EA4F-1B7B-439C-803F-6F30F7A86FE3} = {83DCC342-4199-4E03-B720-80E5EDF18500}
-		{02EA681E-C7D8-13C7-8484-4AC65E1B71E8} = {83DCC342-4199-4E03-B720-80E5EDF18500}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {A93030B7-FA63-4CBB-87C6-2E430AF6A6BA}

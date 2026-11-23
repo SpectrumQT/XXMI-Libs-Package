@@ -3,13 +3,13 @@
   "spdxVersion": "SPDX-2.3",
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
-  "documentNamespace": "https://spdx.org/spdxdocs/directxtk-x64-windows-static-2026-05-07#1-5b9933e1-204e-477f-9eb2-66a57f799ed1",
-  "name": "directxtk:x64-windows-static@2026-05-07#1 eccc8f6b66e7746f9f12a80bb556bdb31980c1f34793ce8f7144546a4ec31814",
+  "documentNamespace": "https://spdx.org/spdxdocs/directxtk-x64-windows-static-2026-05-07#1-7203cb57-956d-4172-8f3a-d398b140f8d4",
+  "name": "directxtk:x64-windows-static@2026-05-07#1 220f225c201b2fd012da07e8b487f1110bfa9cf8e11ef44b47a70c9bc6e9d0a8",
   "creationInfo": {
     "creators": [
       "Tool: vcpkg-2026-10-29-139f2e53438b1529e178f6295bc563f4e0de734f"
     ],
-    "created": "2026-11-23T13:52:36Z"
+    "created": "2026-11-23T18:28:27Z"
   },
   "relationships": [
     {
@@ -201,6 +201,11 @@
       "spdxElementId": "SPDXRef-binary",
       "relationshipType": "CONTAINS",
       "relatedSpdxElement": "SPDXRef-binary-file-32"
+    },
+    {
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-33"
     }
   ],
   "packages": [
@@ -226,7 +231,7 @@
     {
       "name": "directxtk:x64-windows-static",
       "SPDXID": "SPDXRef-binary",
-      "versionInfo": "eccc8f6b66e7746f9f12a80bb556bdb31980c1f34793ce8f7144546a4ec31814",
+      "versionInfo": "220f225c201b2fd012da07e8b487f1110bfa9cf8e11ef44b47a70c9bc6e9d0a8",
       "downloadLocation": "NONE",
       "licenseConcluded": "MIT",
       "licenseDeclared": "NOASSERTION",
@@ -303,7 +308,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "0a03865064bd76f6407aa7f05326987cf379e0659c09a8b14ef68a8f3b5dcc12"
+          "checksumValue": "069bdb046983c2708362517d102cb15babae524797f80eb05bf6339442825ee5"
         }
       ],
       "licenseConcluded": "NOASSERTION",
@@ -322,8 +327,20 @@
       "copyrightText": "NOASSERTION"
     },
     {
-      "fileName": "./include/directxtk/BufferHelpers.h",
+      "fileName": "./include/directxtk/Audio.h",
       "SPDXID": "SPDXRef-binary-file-3",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "cb53563f3dfd653e529f59c9af2c842be6914d54bd6f39683ed2b58f78c2044a"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./include/directxtk/BufferHelpers.h",
+      "SPDXID": "SPDXRef-binary-file-4",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -335,7 +352,7 @@
     },
     {
       "fileName": "./include/directxtk/CommonStates.h",
-      "SPDXID": "SPDXRef-binary-file-4",
+      "SPDXID": "SPDXRef-binary-file-5",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -347,7 +364,7 @@
     },
     {
       "fileName": "./include/directxtk/DDSTextureLoader.h",
-      "SPDXID": "SPDXRef-binary-file-5",
+      "SPDXID": "SPDXRef-binary-file-6",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -359,7 +376,7 @@
     },
     {
       "fileName": "./include/directxtk/DirectXHelpers.h",
-      "SPDXID": "SPDXRef-binary-file-6",
+      "SPDXID": "SPDXRef-binary-file-7",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -371,7 +388,7 @@
     },
     {
       "fileName": "./include/directxtk/Effects.h",
-      "SPDXID": "SPDXRef-binary-file-7",
+      "SPDXID": "SPDXRef-binary-file-8",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -383,7 +400,7 @@
     },
     {
       "fileName": "./include/directxtk/GamePad.h",
-      "SPDXID": "SPDXRef-binary-file-8",
+      "SPDXID": "SPDXRef-binary-file-9",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -395,7 +412,7 @@
     },
     {
       "fileName": "./include/directxtk/GeometricPrimitive.h",
-      "SPDXID": "SPDXRef-binary-file-9",
+      "SPDXID": "SPDXRef-binary-file-10",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -407,7 +424,7 @@
     },
     {
       "fileName": "./include/directxtk/GraphicsMemory.h",
-      "SPDXID": "SPDXRef-binary-file-10",
+      "SPDXID": "SPDXRef-binary-file-11",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -419,7 +436,7 @@
     },
     {
       "fileName": "./include/directxtk/Keyboard.h",
-      "SPDXID": "SPDXRef-binary-file-11",
+      "SPDXID": "SPDXRef-binary-file-12",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -431,7 +448,7 @@
     },
     {
       "fileName": "./include/directxtk/Model.h",
-      "SPDXID": "SPDXRef-binary-file-12",
+      "SPDXID": "SPDXRef-binary-file-13",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -443,7 +460,7 @@
     },
     {
       "fileName": "./include/directxtk/Mouse.h",
-      "SPDXID": "SPDXRef-binary-file-13",
+      "SPDXID": "SPDXRef-binary-file-14",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -455,7 +472,7 @@
     },
     {
       "fileName": "./include/directxtk/PostProcess.h",
-      "SPDXID": "SPDXRef-binary-file-14",
+      "SPDXID": "SPDXRef-binary-file-15",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -467,7 +484,7 @@
     },
     {
       "fileName": "./include/directxtk/PrimitiveBatch.h",
-      "SPDXID": "SPDXRef-binary-file-15",
+      "SPDXID": "SPDXRef-binary-file-16",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -479,7 +496,7 @@
     },
     {
       "fileName": "./include/directxtk/ScreenGrab.h",
-      "SPDXID": "SPDXRef-binary-file-16",
+      "SPDXID": "SPDXRef-binary-file-17",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -491,7 +508,7 @@
     },
     {
       "fileName": "./include/directxtk/SimpleMath.h",
-      "SPDXID": "SPDXRef-binary-file-17",
+      "SPDXID": "SPDXRef-binary-file-18",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -503,7 +520,7 @@
     },
     {
       "fileName": "./include/directxtk/SimpleMath.inl",
-      "SPDXID": "SPDXRef-binary-file-18",
+      "SPDXID": "SPDXRef-binary-file-19",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -515,7 +532,7 @@
     },
     {
       "fileName": "./include/directxtk/SpriteBatch.h",
-      "SPDXID": "SPDXRef-binary-file-19",
+      "SPDXID": "SPDXRef-binary-file-20",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -527,7 +544,7 @@
     },
     {
       "fileName": "./include/directxtk/SpriteFont.h",
-      "SPDXID": "SPDXRef-binary-file-20",
+      "SPDXID": "SPDXRef-binary-file-21",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -539,7 +556,7 @@
     },
     {
       "fileName": "./include/directxtk/VertexTypes.h",
-      "SPDXID": "SPDXRef-binary-file-21",
+      "SPDXID": "SPDXRef-binary-file-22",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -551,7 +568,7 @@
     },
     {
       "fileName": "./include/directxtk/WICTextureLoader.h",
-      "SPDXID": "SPDXRef-binary-file-22",
+      "SPDXID": "SPDXRef-binary-file-23",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -563,11 +580,11 @@
     },
     {
       "fileName": "./lib/DirectXTK.lib",
-      "SPDXID": "SPDXRef-binary-file-23",
+      "SPDXID": "SPDXRef-binary-file-24",
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "b7446e3f5d495359d89efd45bba65b0c909be8d8728d6eaacfe200cfe47a026d"
+          "checksumValue": "c4e5c1195ac4690d4e50776b05a4d81e821cbae844492500fad5800df9edc8d7"
         }
       ],
       "licenseConcluded": "NOASSERTION",
@@ -575,7 +592,7 @@
     },
     {
       "fileName": "./lib/pkgconfig/DirectXTK.pc",
-      "SPDXID": "SPDXRef-binary-file-24",
+      "SPDXID": "SPDXRef-binary-file-25",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -587,7 +604,7 @@
     },
     {
       "fileName": "./share/directxtk/copyright",
-      "SPDXID": "SPDXRef-binary-file-25",
+      "SPDXID": "SPDXRef-binary-file-26",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -599,7 +616,7 @@
     },
     {
       "fileName": "./share/directxtk/directxtk-config-version.cmake",
-      "SPDXID": "SPDXRef-binary-file-26",
+      "SPDXID": "SPDXRef-binary-file-27",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -611,11 +628,11 @@
     },
     {
       "fileName": "./share/directxtk/directxtk-config.cmake",
-      "SPDXID": "SPDXRef-binary-file-27",
+      "SPDXID": "SPDXRef-binary-file-28",
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "b7a2da0db2329ba845addaf881e38ee46c25d521a9710db8029deb2a897560f9"
+          "checksumValue": "fe45f994a2a4c86095620a34eb96acd923e106dbf78f0ed020373720cafff8a1"
         }
       ],
       "licenseConcluded": "NOASSERTION",
@@ -623,7 +640,7 @@
     },
     {
       "fileName": "./share/directxtk/DirectXTK-targets-debug.cmake",
-      "SPDXID": "SPDXRef-binary-file-28",
+      "SPDXID": "SPDXRef-binary-file-29",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -635,7 +652,7 @@
     },
     {
       "fileName": "./share/directxtk/DirectXTK-targets-release.cmake",
-      "SPDXID": "SPDXRef-binary-file-29",
+      "SPDXID": "SPDXRef-binary-file-30",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -647,7 +664,7 @@
     },
     {
       "fileName": "./share/directxtk/DirectXTK-targets.cmake",
-      "SPDXID": "SPDXRef-binary-file-30",
+      "SPDXID": "SPDXRef-binary-file-31",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -659,7 +676,7 @@
     },
     {
       "fileName": "./share/directxtk/usage",
-      "SPDXID": "SPDXRef-binary-file-31",
+      "SPDXID": "SPDXRef-binary-file-32",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -671,7 +688,7 @@
     },
     {
       "fileName": "./share/directxtk/vcpkg-spdx-resources.json",
-      "SPDXID": "SPDXRef-binary-file-32",
+      "SPDXID": "SPDXRef-binary-file-33",
       "checksums": [
         {
           "algorithm": "SHA256",

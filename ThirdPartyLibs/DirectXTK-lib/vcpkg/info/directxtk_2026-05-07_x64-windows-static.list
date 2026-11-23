@@ -6,6 +6,7 @@ x64-windows-static/debug/lib/pkgconfig/
 x64-windows-static/debug/lib/pkgconfig/DirectXTK.pc
 x64-windows-static/include/
 x64-windows-static/include/directxtk/
+x64-windows-static/include/directxtk/Audio.h
 x64-windows-static/include/directxtk/BufferHelpers.h
 x64-windows-static/include/directxtk/CommonStates.h
 x64-windows-static/include/directxtk/DDSTextureLoader.h

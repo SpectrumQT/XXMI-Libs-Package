@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/../..
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: DirectXMath
+Description: DirectXMath SIMD C++ math library
+URL: https://go.microsoft.com/fwlink/?LinkID=615560
+Version: 3.21
+
+Libs: 
+Cflags: "-I${includedir}"

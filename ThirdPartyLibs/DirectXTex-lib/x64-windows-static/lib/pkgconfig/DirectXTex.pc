@@ -1,0 +1,12 @@
+prefix=${pcfiledir}/../..
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: DirectXTex
+Description: DirectX Texture Library
+URL: https://go.microsoft.com/fwlink/?LinkId=248926
+Version: 2.1.1
+
+Libs: -lDirectXTex
+Requires: DirectXMath
+Cflags: "-I${includedir}"

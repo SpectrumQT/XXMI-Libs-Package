@@ -22,6 +22,8 @@
 
 #include <stdexcept>
 
+#include <DirectXTex.h>
+
 // Flag introduced in Windows 10 Fall Creators Update
 // Someone was clearly on crack when they decided this flag was necessary
 #ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
@@ -561,7 +563,22 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 
 		hr = S_OK;
 		if (GetFileAttributes(save_filename.c_str()) == INVALID_FILE_ATTRIBUTES)
-			hr = DirectX::SaveDDSTextureToFile(GetDumpingContext(), staging, save_filename.c_str(), G->dump_mips);
+		{
+			if (G->dump_mips)
+			{
+				// Capture the entire texture, including its mip chain.
+				DirectX::ScratchImage image;
+				hr = DirectX::CaptureTexture(GetHackerDevice()->GetPassThroughOrigDevice1(), GetDumpingContext(), staging, image);
+
+				// Save all images and mip levels to DDS.
+				if (SUCCEEDED(hr))
+					hr = DirectX::SaveToDDSFile(image.GetImages(), image.GetImageCount(), image.GetMetadata(), DirectX::DDS_FLAGS_NONE, save_filename.c_str());
+			}
+			else
+			{
+				hr = DirectX::SaveDDSTextureToFile(GetDumpingContext(), staging, save_filename.c_str());
+			}
+		}
 		link_deduplicated_files(filename.c_str(), save_filename.c_str());
 	}
 

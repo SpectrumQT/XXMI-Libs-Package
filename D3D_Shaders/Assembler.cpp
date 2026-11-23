@@ -1,6 +1,8 @@
 #include "stdafx.h"
 #include "float.h"
 
+#include <mutex>
+
 #if MIGOTO_DX == 9
 #include <d3dx9shader.h>
 #endif
@@ -17,7 +19,11 @@ using namespace std;
 // for sscanf_s convinience. Explanation in DecompileHLSL.cpp
 #define UCOUNTOF(...) (unsigned)_countof(__VA_ARGS__)
 
+// Debug cache of opcode verification results, written during disassembly.
+// Guarded by a mutex because the ShaderRegex background worker disassembles
+// concurrently with the render thread (hunting, live shader reload, etc.).
 static unordered_map<string, vector<DWORD>> codeBin;
+static std::mutex codeBinMutex;
 
 static DWORD strToDWORD(string s)
 {
@@ -181,6 +187,10 @@ static string convertD(DWORD v1, DWORD v2)
 void writeLUT()
 {
 	FILE* f;
+
+	// Take the lock so we don't iterate codeBin while the ShaderRegex worker
+	// is concurrently adding to it during disassembly:
+	std::lock_guard<std::mutex> lock(codeBinMutex);
 
 	fopen_s(&f, "lut.asm", "wb");
 	if (!f)
@@ -2286,6 +2296,10 @@ static vector<DWORD> assembleIns(string s)
 
 static string assembleAndCompare(string s, vector<DWORD> v)
 {
+	// This may be running on the ShaderRegex background worker while the
+	// render thread disassembles another shader, so guard the shared cache:
+	std::lock_guard<std::mutex> lock(codeBinMutex);
+
 	string s2;
 	int numSpaces = 0;
 	while (memcmp(s.c_str(), " ", 1) == 0) {

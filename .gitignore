@@ -43,6 +43,7 @@ version.generated.h
 *.obj
 *.pch
 *.pdb
+!ThirdPartyLibs/**/*.pdb
 *.pgc
 *.pgd
 *.rsp

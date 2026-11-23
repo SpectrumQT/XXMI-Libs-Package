@@ -179,6 +179,7 @@
       <AdditionalIncludeDirectories>
         $(SolutionDir);
         $(SolutionDir)HLSLDecompiler;
+		$(SolutionDir)ThirdPartyLibs\Nektra-lib;
         $(SolutionDir)DirectXTK\Inc;
         $(SolutionDir)D3D_Shaders;
         $(SolutionDir)pcre2
@@ -191,7 +192,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>d3d11Wrapper.def</ModuleDefinitionFile>
       <AdditionalDependencies>
-        ..\Nektra\NktHookLib64_Debug.lib;
+        $(SolutionDir)ThirdPartyLibs\Nektra-lib\NktHookLib64_Debug.lib;
         ..\pcre2\pcre2-8-64d.lib;
         XINPUT9_1_0.lib;
         d3dcompiler.lib;
@@ -227,6 +228,7 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
       <AdditionalIncludeDirectories>
         $(SolutionDir);
         $(SolutionDir)HLSLDecompiler;
+		$(SolutionDir)ThirdPartyLibs\Nektra-lib;
         $(SolutionDir)DirectXTK\Inc;
         $(SolutionDir)D3D_Shaders;
         $(SolutionDir)pcre2
@@ -243,7 +245,7 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
       <OptimizeReferences>true</OptimizeReferences>
       <ModuleDefinitionFile>d3d11Wrapper.def</ModuleDefinitionFile>
       <AdditionalDependencies>
-        ..\Nektra\NktHookLib64.lib;
+        $(SolutionDir)ThirdPartyLibs\Nektra-lib\NktHookLib64.lib;
         ..\pcre2\pcre2-8-64.lib;
         XINPUT9_1_0.lib;
         d3dcompiler.lib;
@@ -277,6 +279,7 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
       <AdditionalIncludeDirectories>
         $(SolutionDir);
         $(SolutionDir)HLSLDecompiler;
+		$(SolutionDir)ThirdPartyLibs\Nektra-lib;
         $(SolutionDir)DirectXTK\Inc;
         $(SolutionDir)D3D_Shaders;
         $(SolutionDir)pcre2
@@ -293,7 +296,7 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
       <OptimizeReferences>true</OptimizeReferences>
       <ModuleDefinitionFile>d3d11Wrapper.def</ModuleDefinitionFile>
       <AdditionalDependencies>
-        ..\Nektra\NktHookLib64.lib;
+        $(SolutionDir)ThirdPartyLibs\Nektra-lib\NktHookLib64.lib;
         ..\pcre2\pcre2-8-64.lib;
         XINPUT9_1_0.lib;
         d3dcompiler.lib;

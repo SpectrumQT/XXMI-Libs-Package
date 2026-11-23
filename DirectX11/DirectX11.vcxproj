@@ -180,9 +180,9 @@
         $(SolutionDir);
         $(SolutionDir)HLSLDecompiler;
 		$(SolutionDir)ThirdPartyLibs\Nektra-lib;
+		$(SolutionDir)ThirdPartyLibs\pcre2-lib;
         $(SolutionDir)DirectXTK\Inc;
         $(SolutionDir)D3D_Shaders;
-        $(SolutionDir)pcre2
       </AdditionalIncludeDirectories>
       <BufferSecurityCheck>true</BufferSecurityCheck>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -193,7 +193,7 @@
       <ModuleDefinitionFile>d3d11Wrapper.def</ModuleDefinitionFile>
       <AdditionalDependencies>
         $(SolutionDir)ThirdPartyLibs\Nektra-lib\NktHookLib64_Debug.lib;
-        ..\pcre2\pcre2-8-64d.lib;
+        $(SolutionDir)ThirdPartyLibs\pcre2-lib\pcre2-8-64d.lib;
         XINPUT9_1_0.lib;
         d3dcompiler.lib;
         DXGI.lib;
@@ -229,9 +229,9 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
         $(SolutionDir);
         $(SolutionDir)HLSLDecompiler;
 		$(SolutionDir)ThirdPartyLibs\Nektra-lib;
+		$(SolutionDir)ThirdPartyLibs\pcre2-lib;
         $(SolutionDir)DirectXTK\Inc;
         $(SolutionDir)D3D_Shaders;
-        $(SolutionDir)pcre2
       </AdditionalIncludeDirectories>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <BufferSecurityCheck>false</BufferSecurityCheck>
@@ -246,7 +246,7 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
       <ModuleDefinitionFile>d3d11Wrapper.def</ModuleDefinitionFile>
       <AdditionalDependencies>
         $(SolutionDir)ThirdPartyLibs\Nektra-lib\NktHookLib64.lib;
-        ..\pcre2\pcre2-8-64.lib;
+        $(SolutionDir)ThirdPartyLibs\pcre2-lib\pcre2-8-64.lib;
         XINPUT9_1_0.lib;
         d3dcompiler.lib;
         DXGI.lib;
@@ -280,9 +280,9 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
         $(SolutionDir);
         $(SolutionDir)HLSLDecompiler;
 		$(SolutionDir)ThirdPartyLibs\Nektra-lib;
+		$(SolutionDir)ThirdPartyLibs\pcre2-lib;
         $(SolutionDir)DirectXTK\Inc;
         $(SolutionDir)D3D_Shaders;
-        $(SolutionDir)pcre2
       </AdditionalIncludeDirectories>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <BufferSecurityCheck>false</BufferSecurityCheck>
@@ -297,7 +297,7 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
       <ModuleDefinitionFile>d3d11Wrapper.def</ModuleDefinitionFile>
       <AdditionalDependencies>
         $(SolutionDir)ThirdPartyLibs\Nektra-lib\NktHookLib64.lib;
-        ..\pcre2\pcre2-8-64.lib;
+        $(SolutionDir)ThirdPartyLibs\pcre2-lib\pcre2-8-64.lib;
         XINPUT9_1_0.lib;
         d3dcompiler.lib;
         DXGI.lib;

@@ -1,0 +1,23 @@
+Package: vcpkg-cmake
+Version: 2026-11-09
+Architecture: x64-windows
+Multi-Arch: same
+Abi: cc51d70cb32ecd320b6131e893c0c973f712d3fdda06754ad88a420d0adad6b6
+Status: install ok installed
+
+Package: vcpkg-cmake-config
+Version: 2026-07-21
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 234f569cefb4dd0905379d74425cffb7fb059e445fe78d8b68f091b999a0e56d
+Status: install ok installed
+
+Package: minhook
+Version: 1.3.4
+Depends: vcpkg-cmake:x64-windows, vcpkg-cmake-config:x64-windows
+Architecture: x64-windows-static
+Multi-Arch: same
+Abi: ed0b04dedba7f5fbb8f6bd169f41cd5bab9552384ad93986e88173dec66a42b0
+Description: The Minimalistic x86/x64 API Hooking Library for Windows.
+Status: install ok installed
+

@@ -177,6 +177,7 @@
         $(SolutionDir);
         $(SolutionDir)HLSLDecompiler;
 		$(SolutionDir)ThirdPartyLibs\Nektra-lib;
+		$(SolutionDir)ThirdPartyLibs\MinHook-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\pcre2-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\DirectXTex-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\include;
@@ -192,6 +193,7 @@
       <ModuleDefinitionFile>d3d11Wrapper.def</ModuleDefinitionFile>
       <AdditionalDependencies>
         $(SolutionDir)ThirdPartyLibs\Nektra-lib\NktHookLib64_Debug.lib;
+		$(SolutionDir)ThirdPartyLibs\MinHook-lib\x64-windows-static\debug\lib\minhook.x64d.lib;
         $(SolutionDir)ThirdPartyLibs\pcre2-lib\x64-windows-static\debug\lib\pcre2-8.lib;
 		$(SolutionDir)ThirdPartyLibs\DirectXTex-lib\x64-windows-static\debug\lib\DirectXTex.lib;
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\debug\lib\DirectXTK.lib;
@@ -230,6 +232,7 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
         $(SolutionDir);
         $(SolutionDir)HLSLDecompiler;
 		$(SolutionDir)ThirdPartyLibs\Nektra-lib;
+		$(SolutionDir)ThirdPartyLibs\MinHook-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\pcre2-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\DirectXTex-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\include;
@@ -249,6 +252,7 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
       <ModuleDefinitionFile>d3d11Wrapper.def</ModuleDefinitionFile>
       <AdditionalDependencies>
         $(SolutionDir)ThirdPartyLibs\Nektra-lib\NktHookLib64.lib;
+		$(SolutionDir)ThirdPartyLibs\MinHook-lib\x64-windows-static\lib\minhook.x64.lib;
         $(SolutionDir)ThirdPartyLibs\pcre2-lib\x64-windows-static\lib\pcre2-8.lib;
 		$(SolutionDir)ThirdPartyLibs\DirectXTex-lib\x64-windows-static\lib\DirectXTex.lib;
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\lib\DirectXTK.lib;
@@ -285,6 +289,7 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
         $(SolutionDir);
         $(SolutionDir)HLSLDecompiler;
 		$(SolutionDir)ThirdPartyLibs\Nektra-lib;
+		$(SolutionDir)ThirdPartyLibs\MinHook-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\pcre2-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\DirectXTex-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\include;
@@ -304,6 +309,7 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
       <ModuleDefinitionFile>d3d11Wrapper.def</ModuleDefinitionFile>
       <AdditionalDependencies>
         $(SolutionDir)ThirdPartyLibs\Nektra-lib\NktHookLib64.lib;
+		$(SolutionDir)ThirdPartyLibs\MinHook-lib\x64-windows-static\lib\minhook.x64.lib;
         $(SolutionDir)ThirdPartyLibs\pcre2-lib\x64-windows-static\lib\pcre2-8.lib;
 		$(SolutionDir)ThirdPartyLibs\DirectXTex-lib\x64-windows-static\lib\DirectXTex.lib;
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\lib\DirectXTK.lib;

@@ -18,6 +18,7 @@
 #include "CommandList.h"
 #include "profiling.h"
 #include "FrameAnalysis.h"
+#include "MCPBridge.h"
 #include "ShaderRegex.h"
 
 // bo3b: For this routine, we have a lot of warnings in x64, from converting a size_t result into the needed
@@ -1136,7 +1137,7 @@ static void RevertMissingShaders()
 // the hlsl file and replace it.  This dual file scenario is expected to be rare, so
 // not doing anything heroic here to avoid that double load.
 
-static void ReloadFixes(HackerDevice *device, void *private_data)
+static bool ReloadFixesInternal(HackerDevice *device, std::string *error)
 {
 	LogInfo("> reloading *_replace.txt fixes from ShaderFixes\n");
 
@@ -1185,8 +1186,25 @@ static void ReloadFixes(HackerDevice *device, void *private_data)
 		{
 			LogOverlay(LOG_WARNING, "> FAILED to reload shaders from ShaderFixes\n");
 			BeepFailure();
+			if (error)
+				*error = "shader_reload_failed";
 		}
+		return success;
 	}
+
+	if (error)
+		*error = "shader_path_missing";
+	return false;
+}
+
+static void ReloadFixes(HackerDevice *device, void *private_data)
+{
+	ReloadFixesInternal(device, nullptr);
+}
+
+bool MCPReloadShaderFixes(HackerDevice *device, std::string *error)
+{
+	return ReloadFixesInternal(device, error);
 }
 
 static void DisableFix(HackerDevice *device, void *private_data)
@@ -1216,9 +1234,10 @@ static void _AnalyseFrameStop()
 		LeaveCriticalSection(&G->mCriticalSection);
 	}
 	LogOverlayW(LOG_INFO, L"Frame analysis saved to %ls\n", G->ANALYSIS_PATH);
+	MCP_AfterFrameAnalysis();
 }
 
-static void AnalyseFrame(HackerDevice *device, void *private_data)
+static bool StartFrameAnalysisInternal(HackerDevice *device, std::string *error, bool reject_hold)
 {
 	FrameAnalysisContext *factx = NULL;
 	wchar_t path[MAX_PATH], subdir[MAX_PATH];
@@ -1227,27 +1246,36 @@ static void AnalyseFrame(HackerDevice *device, void *private_data)
 
 	if (FAILED(device->GetHackerContext()->QueryInterface(IID_FrameAnalysisContext, (void**)&factx))) {
 		LogOverlay(LOG_DIRE, "Frame Analysis Context is missing: Restart the game with hunting enabled\n");
-		return;
+		if (error)
+			*error = "frame_analysis_context_missing";
+		return false;
 	}
 	factx->Release();
 
-	if (G->analyse_frame) {
-		// Frame analysis key has been pressed again while FA was
-		// already in progress, abort:
-		device->GetHackerContext()->FrameAnalysisLog("----- Frame analysis aborted -----\n");
-		LogOverlay(LOG_NOTICE, "Frame analysis aborted\n");
-		return _AnalyseFrameStop();
+	if (G->hunting != HUNTING_MODE_ENABLED)
+	{
+		if (error)
+			*error = "hunting_disabled";
+		return false;
 	}
 
-	if (G->hunting != HUNTING_MODE_ENABLED)
-		return;
+	if (reject_hold && (G->def_analyse_options & FrameAnalysisOptions::HOLD))
+	{
+		if (error)
+			*error = "hold_mode_not_supported";
+		return false;
+	}
 
 	time(&ltime);
 	_localtime64_s(&tm, &ltime);
 	wcsftime(subdir, MAX_PATH, L"FrameAnalysis-%Y-%m-%d-%H%M%S", &tm);
 
 	if (!GetModuleFileName(migoto_handle, path, MAX_PATH))
-		return;
+	{
+		if (error)
+			*error = "module_path_unavailable";
+		return false;
+	}
 	wcsrchr(path, L'\\')[1] = 0;
 	wcscat_s(path, MAX_PATH, subdir);
 
@@ -1258,7 +1286,9 @@ static void AnalyseFrame(HackerDevice *device, void *private_data)
 	// enough. We can always increase the granuality if needed.
 	if (!CreateDirectoryEnsuringAccess(path)) {
 		LogInfoW(L"Error creating frame analysis directory: %i\n", GetLastError());
-		return;
+		if (error)
+			*error = "capture_directory_unavailable";
+		return false;
 	}
 
 	wcscpy(G->ANALYSIS_PATH, path);
@@ -1267,6 +1297,32 @@ static void AnalyseFrame(HackerDevice *device, void *private_data)
 	G->frame_analysis_seen_rts.clear();
 	G->analyse_frame_no = 1;
 	G->analyse_frame = true;
+	return true;
+}
+
+static void AnalyseFrame(HackerDevice *device, void *private_data)
+{
+	if (G->analyse_frame) {
+		// The existing hotkey aborts an active capture. MCP capture requests
+		// reject busy sessions instead so a repeated call cannot destroy a dump.
+		device->GetHackerContext()->FrameAnalysisLog("----- Frame analysis aborted -----\n");
+		LogOverlay(LOG_NOTICE, "Frame analysis aborted\n");
+		return _AnalyseFrameStop();
+	}
+
+	StartFrameAnalysisInternal(device, nullptr, false);
+}
+
+bool MCPTriggerFrameAnalysis(HackerDevice *device, std::string *error)
+{
+	if (G->analyse_frame)
+	{
+		if (error)
+			*error = "busy";
+		return false;
+	}
+
+	return StartFrameAnalysisInternal(device, error, true);
 }
 
 static void AnalyseFrameStop(HackerDevice *device, void *private_data)

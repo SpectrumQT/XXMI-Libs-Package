@@ -27,6 +27,7 @@
     <ClCompile Include="profiling.cpp" />
     <ClCompile Include="..\ini_parser_lite.cpp" />
     <ClCompile Include="lock.cpp" />
+    <ClCompile Include="MCPBridge.cpp" />
     <ClCompile Include="cursor.cpp" />
     <ClCompile Include="Override.cpp" />
     <ClCompile Include="HackerInputLayout.cpp" />
@@ -63,6 +64,7 @@
     <ClInclude Include="HackerDXGI.h" />
     <ClInclude Include="profiling.h" />
     <ClInclude Include="lock.h" />
+    <ClInclude Include="MCPBridge.h" />
     <ClInclude Include="cursor.h" />
     <ClInclude Include="Override.h" />
     <ClInclude Include="HackerInputLayout.h" />

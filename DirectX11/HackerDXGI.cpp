@@ -59,6 +59,7 @@
 #include "lock.h"
 
 #include "HackerDXGI.h"
+#include "MCPBridge.h"
 #include "HookedDevice.h"
 #include "HookedDXGI.h"
 
@@ -209,6 +210,8 @@ void HackerSwapChain::RunFrameActions()
 
 	G->gFPSCounter.Update(system_tick_count);
 
+	MCP_RunDeferredActions(mHackerDevice);
+
 	// Run the command list here, before drawing the overlay so that a
 	// custom shader on the present call won't remove the overlay. Also,
 	// run this before most frame actions so that this can be considered as
@@ -231,6 +234,7 @@ void HackerSwapChain::RunFrameActions()
 			if (G->DumpUsage)
 				DumpUsage(G->ANALYSIS_PATH);
 			LogOverlayW(LOG_INFO, L"Frame analysis saved to %ls\n", G->ANALYSIS_PATH);
+			MCP_AfterFrameAnalysis();
 		}
 	}
 
@@ -269,6 +273,8 @@ void HackerSwapChain::RunFrameActions()
 			ReloadConfig(mHackerDevice);
 		}
 	}
+
+	MCP_RunFrameActions(mHackerDevice);
 
 	// Draw the on-screen overlay text with hunting and informational
 	// messages, before final Present. We now do this after the shader and

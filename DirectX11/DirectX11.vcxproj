@@ -63,11 +63,11 @@
     <ClInclude Include="..\log.h" />
     <ClInclude Include="..\shader.h" />
     <ClInclude Include="..\ThirdPartyLibs\CRC32C\crc32c.h" />
+    <ClInclude Include="..\ThirdPartyLibs\WindowsSDK\um\d3d11TokenizedProgramFormat.hpp" />
     <ClInclude Include="..\util.h" />
     <ClInclude Include="..\version.h" />
     <ClInclude Include="ByteCodeReader.h" />
     <ClInclude Include="cursor.h" />
-    <ClInclude Include="d3d11TokenizedProgramFormat.hpp" />
     <ClInclude Include="D3D11Wrapper.h" />
     <ClInclude Include="DHash64Gpu.h" />
     <ClInclude Include="DLLMainHook.h" />
@@ -182,6 +182,7 @@
 		$(SolutionDir)ThirdPartyLibs\DirectXTex-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\include\directxtk;
+		$(SolutionDir)ThirdPartyLibs\WindowsSDK;
 		$(SolutionDir)ThirdPartyLibs\CRC32C;
         $(SolutionDir)D3D_Shaders;
       </AdditionalIncludeDirectories>
@@ -238,6 +239,7 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
 		$(SolutionDir)ThirdPartyLibs\DirectXTex-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\include\directxtk;
+		$(SolutionDir)ThirdPartyLibs\WindowsSDK;
 		$(SolutionDir)ThirdPartyLibs\CRC32C;
         $(SolutionDir)D3D_Shaders;
       </AdditionalIncludeDirectories>
@@ -296,6 +298,7 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
 		$(SolutionDir)ThirdPartyLibs\DirectXTex-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\include;
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\include\directxtk;
+		$(SolutionDir)ThirdPartyLibs\WindowsSDK;
 		$(SolutionDir)ThirdPartyLibs\CRC32C;
         $(SolutionDir)D3D_Shaders;
       </AdditionalIncludeDirectories>

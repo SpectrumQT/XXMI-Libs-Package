@@ -1,76 +1,270 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <ClCompile Include="D3D11Wrapper.cpp" />
+    <ClCompile Include="..\ThirdPartyLibs\ReShade\source\hook.cpp">
+      <Filter>Third-Party Dependencies\ReShade\core\hook</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ThirdPartyLibs\ReShade\source\hook_manager.cpp">
+      <Filter>Third-Party Dependencies\ReShade\core\hook</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ThirdPartyLibs\ReShade\source\dll_log.cpp">
+      <Filter>Third-Party Dependencies\ReShade\core</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ThirdPartyLibs\ReShade\source\dll_main.cpp">
+      <Filter>Third-Party Dependencies\ReShade\core</Filter>
+    </ClCompile>
+    <ClCompile Include="cursor.cpp">
+      <Filter>Input</Filter>
+    </ClCompile>
+    <ClCompile Include="Input.cpp">
+      <Filter>Input</Filter>
+    </ClCompile>
+    <ClCompile Include="lock.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="HackerContext.cpp">
+      <Filter>COM Wrappers</Filter>
+    </ClCompile>
+    <ClCompile Include="HackerDevice.cpp">
+      <Filter>COM Wrappers</Filter>
+    </ClCompile>
+    <ClCompile Include="HackerDXGI.cpp">
+      <Filter>COM Wrappers</Filter>
+    </ClCompile>
+    <ClCompile Include="HookedContext.cpp">
+      <Filter>Hooking</Filter>
+    </ClCompile>
+    <ClCompile Include="HookedDevice.cpp">
+      <Filter>Hooking</Filter>
+    </ClCompile>
+    <ClCompile Include="HookedDXGI.cpp">
+      <Filter>Hooking</Filter>
+    </ClCompile>
+    <ClCompile Include="DHash64Gpu.cpp">
+      <Filter>Shader Handling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\HLSLDecompiler\DecompileHLSL.cpp">
+      <Filter>Shader Handling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ThirdPartyLibs\CRC32C\crc32c.cpp">
+      <Filter>Third-Party Dependencies\CRC32C</Filter>
+    </ClCompile>
+    <ClCompile Include="ByteCodeReader.cpp">
+      <Filter>Shader Handling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\D3D_Shaders\Assembler.cpp">
+      <Filter>Third-Party Dependencies\D3D_Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="..\D3D_Shaders\SignatureParser.cpp">
+      <Filter>Third-Party Dependencies\D3D_Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="ShaderRegex.cpp">
+      <Filter>Shader Handling</Filter>
+    </ClCompile>
+    <ClCompile Include="HackerInputLayout.cpp">
+      <Filter>COM Wrappers</Filter>
+    </ClCompile>
+    <ClCompile Include="HookAddresses.c">
+      <Filter>Hooking</Filter>
+    </ClCompile>
+    <ClCompile Include="Overlay.cpp">
+      <Filter>Overlay</Filter>
+    </ClCompile>
+    <ClCompile Include="Hunting.cpp">
+      <Filter>Overlay</Filter>
+    </ClCompile>
+    <ClCompile Include="..\util.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="CommandList.cpp">
+      <Filter>INI Runtime</Filter>
+    </ClCompile>
+    <ClCompile Include="Override.cpp">
+      <Filter>INI Runtime</Filter>
+    </ClCompile>
+    <ClCompile Include="FrameAnalysis.cpp">
+      <Filter>COM Wrappers</Filter>
+    </ClCompile>
+    <ClCompile Include="IniHandler.cpp">
+      <Filter>Configuration</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11Wrapper.cpp">
+      <Filter>Hooking</Filter>
+    </ClCompile>
     <ClCompile Include="DLLMainHook.cpp" />
-    <ClCompile Include="HackerContext.cpp" />
-    <ClCompile Include="HackerDevice.cpp" />
-    <ClCompile Include="Hunting.cpp" />
-    <ClCompile Include="IniHandler.cpp" />
-    <ClCompile Include="Input.cpp" />
-    <ClCompile Include="Overlay.cpp" />
-    <ClCompile Include="..\HLSLDecompiler\DecompileHLSL.cpp" />
-    <ClCompile Include="HookedDXGI.cpp" />
-    <ClCompile Include="FrameAnalysis.cpp" />
-    <ClCompile Include="..\D3D_Shaders\Assembler.cpp" />
-    <ClCompile Include="..\crc32c-hw-1.0.5\src\crc32c.cpp" />
-    <ClCompile Include="CommandList.cpp" />
-    <ClCompile Include="ResourceHash.cpp" />
-    <ClCompile Include="HookedContext.cpp" />
-    <ClCompile Include="HookedDevice.cpp" />
-    <ClCompile Include="..\D3D_Shaders\SignatureParser.cpp" />
-    <ClCompile Include="ShaderRegex.cpp" />
-    <ClCompile Include="HookAddresses.c" />
-    <ClCompile Include="HackerDXGI.cpp" />
-    <ClCompile Include="..\iid.cpp" />
-    <ClCompile Include="..\util.cpp" />
-    <ClCompile Include="profiling.cpp" />
-    <ClCompile Include="..\ini_parser_lite.cpp" />
-    <ClCompile Include="lock.cpp" />
-    <ClCompile Include="cursor.cpp" />
-    <ClCompile Include="Override.cpp" />
-    <ClCompile Include="HackerInputLayout.cpp" />
-    <ClCompile Include="ByteCodeReader.cpp" />
-    <ClCompile Include="DHash64Gpu.cpp" />
+    <ClCompile Include="ResourceHash.cpp">
+      <Filter>Resource Handling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\iid.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ini_parser_lite.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="profiling.cpp">
+      <Filter>Overlay</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="d3d11Wrapper.def" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="D3D11Wrapper.h" />
     <ClInclude Include="Globals.h" />
-    <ClInclude Include="HackerContext.h" />
-    <ClInclude Include="HackerDevice.h" />
-    <ClInclude Include="Hunting.h" />
-    <ClInclude Include="IniHandler.h" />
-    <ClInclude Include="Input.h" />
-    <ClInclude Include="Overlay.h" />
-    <ClInclude Include="..\vkeys.h" />
-    <ClInclude Include="..\HLSLDecompiler\DecompileHLSL.h" />
-    <ClInclude Include="HookedDXGI.h" />
-    <ClInclude Include="DLLMainHook.h" />
-    <ClInclude Include="..\log.h" />
-    <ClInclude Include="..\util.h" />
     <ClInclude Include="..\version.h" />
-    <ClInclude Include="..\crc32c-hw-1.0.5\include\crc32c.h" />
-    <ClInclude Include="CommandList.h" />
-    <ClInclude Include="ResourceHash.h" />
-    <ClInclude Include="HookedContext.h" />
-    <ClInclude Include="HookedDevice.h" />
-    <ClInclude Include="..\shader.h" />
-    <ClInclude Include="ShaderRegex.h" />
-    <ClInclude Include="FrameAnalysis.h" />
-    <ClInclude Include="HackerDXGI.h" />
-    <ClInclude Include="profiling.h" />
-    <ClInclude Include="lock.h" />
-    <ClInclude Include="cursor.h" />
-    <ClInclude Include="Override.h" />
-    <ClInclude Include="HackerInputLayout.h" />
-    <ClInclude Include="d3d11TokenizedProgramFormat.hpp" />
-    <ClInclude Include="ByteCodeReader.h" />
-    <ClInclude Include="DHash64Gpu.h" />
+    <ClInclude Include="..\ThirdPartyLibs\ReShade\source\hook.hpp">
+      <Filter>Third-Party Dependencies\ReShade\core\hook</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ThirdPartyLibs\ReShade\source\hook_manager.hpp">
+      <Filter>Third-Party Dependencies\ReShade\core\hook</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ThirdPartyLibs\ReShade\source\dll_log.hpp">
+      <Filter>Third-Party Dependencies\ReShade\core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ThirdPartyLibs\ReShade\source\dll_main.h">
+      <Filter>Third-Party Dependencies\ReShade\core</Filter>
+    </ClInclude>
+    <ClInclude Include="cursor.h">
+      <Filter>Input</Filter>
+    </ClInclude>
+    <ClInclude Include="Input.h">
+      <Filter>Input</Filter>
+    </ClInclude>
+    <ClInclude Include="lock.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="HackerContext.h">
+      <Filter>COM Wrappers</Filter>
+    </ClInclude>
+    <ClInclude Include="HackerDevice.h">
+      <Filter>COM Wrappers</Filter>
+    </ClInclude>
+    <ClInclude Include="HackerDXGI.h">
+      <Filter>COM Wrappers</Filter>
+    </ClInclude>
+    <ClInclude Include="HookedContext.h">
+      <Filter>Hooking</Filter>
+    </ClInclude>
+    <ClInclude Include="HookedDevice.h">
+      <Filter>Hooking</Filter>
+    </ClInclude>
+    <ClInclude Include="HookedDXGI.h">
+      <Filter>Hooking</Filter>
+    </ClInclude>
+    <ClInclude Include="DHash64Gpu.h">
+      <Filter>Shader Handling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\HLSLDecompiler\DecompileHLSL.h">
+      <Filter>Shader Handling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ThirdPartyLibs\CRC32C\crc32c.h">
+      <Filter>Third-Party Dependencies\CRC32C</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ThirdPartyLibs\WindowsSDK\um\d3d11TokenizedProgramFormat.hpp">
+      <Filter>Third-Party Dependencies\WindowsSDK</Filter>
+    </ClInclude>
+    <ClInclude Include="ByteCodeReader.h">
+      <Filter>Shader Handling</Filter>
+    </ClInclude>
+    <ClInclude Include="ShaderRegex.h">
+      <Filter>Shader Handling</Filter>
+    </ClInclude>
+    <ClInclude Include="HackerInputLayout.h">
+      <Filter>COM Wrappers</Filter>
+    </ClInclude>
+    <ClInclude Include="Overlay.h">
+      <Filter>Overlay</Filter>
+    </ClInclude>
+    <ClInclude Include="Hunting.h">
+      <Filter>Overlay</Filter>
+    </ClInclude>
+    <ClInclude Include="..\util.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\vkeys.h">
+      <Filter>Input</Filter>
+    </ClInclude>
+    <ClInclude Include="CommandList.h">
+      <Filter>INI Runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="Override.h">
+      <Filter>INI Runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="FrameAnalysis.h">
+      <Filter>COM Wrappers</Filter>
+    </ClInclude>
+    <ClInclude Include="IniHandler.h">
+      <Filter>Configuration</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11Wrapper.h">
+      <Filter>Hooking</Filter>
+    </ClInclude>
+    <ClInclude Include="DLLMainHook.h" />
+    <ClInclude Include="ResourceHash.h">
+      <Filter>Resource Handling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\shader.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="profiling.h">
+      <Filter>Overlay</Filter>
+    </ClInclude>
+    <ClInclude Include="..\log.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="DirectX11.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Third-Party Dependencies">
+      <UniqueIdentifier>{9f2d6229-6587-470a-b40f-d741f92a6677}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Third-Party Dependencies\CRC32C">
+      <UniqueIdentifier>{3c6996cb-1a2f-4360-ba3d-36fa93b4a946}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Third-Party Dependencies\ReShade">
+      <UniqueIdentifier>{849b646f-b11c-4f5a-93c4-097db93c8d76}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Third-Party Dependencies\ReShade\core">
+      <UniqueIdentifier>{83303763-7728-4e6c-bfea-38be0b5348e5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Third-Party Dependencies\ReShade\core\hook">
+      <UniqueIdentifier>{87a705fd-cd79-44cb-8318-8de9b39ed35c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Third-Party Dependencies\WindowsSDK">
+      <UniqueIdentifier>{bd050703-9e5d-4a0c-b115-09c1c8e73d25}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Third-Party Dependencies\D3D_Shaders">
+      <UniqueIdentifier>{de24930f-7718-443e-b055-947eb64ee8cf}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="COM Wrappers">
+      <UniqueIdentifier>{f1db354e-aab0-4f6a-aca8-51695f7d57c6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Hooking">
+      <UniqueIdentifier>{6bee583d-30e7-4ce7-b0b3-177ab8db7696}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Input">
+      <UniqueIdentifier>{23a256f6-2672-4273-9c72-1d1afbb7d69b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Configuration">
+      <UniqueIdentifier>{d960c4fc-db75-494b-9423-b75d0d837795}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Overlay">
+      <UniqueIdentifier>{3f7e84df-40ef-479d-afdf-7c48eff5929a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Utilities">
+      <UniqueIdentifier>{c5a6d85b-523f-4717-a619-04355bf1eebb}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="INI Runtime">
+      <UniqueIdentifier>{2c40ffc0-1140-4aa9-8944-c4adb046d467}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shader Handling">
+      <UniqueIdentifier>{d98cc16d-a6dd-420b-bfdc-2d14cffb48b9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Resource Handling">
+      <UniqueIdentifier>{d8ac61b5-71ed-4c28-9b7c-50d7d0d58d62}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="d3d11Wrapper.def">
+      <Filter>Hooking</Filter>
+    </None>
   </ItemGroup>
 </Project>

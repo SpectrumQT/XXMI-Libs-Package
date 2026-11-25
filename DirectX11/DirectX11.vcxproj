@@ -27,6 +27,10 @@
     <ClCompile Include="..\D3D_Shaders\SignatureParser.cpp" />
     <ClCompile Include="..\HLSLDecompiler\DecompileHLSL.cpp" />
     <ClCompile Include="..\ThirdPartyLibs\CRC32C\crc32c.cpp" />
+    <ClCompile Include="..\ThirdPartyLibs\ReShade\source\dll_log.cpp" />
+    <ClCompile Include="..\ThirdPartyLibs\ReShade\source\dll_main.cpp" />
+    <ClCompile Include="..\ThirdPartyLibs\ReShade\source\hook.cpp" />
+    <ClCompile Include="..\ThirdPartyLibs\ReShade\source\hook_manager.cpp" />
     <ClCompile Include="ByteCodeReader.cpp" />
     <ClCompile Include="CommandList.cpp" />
     <ClCompile Include="..\iid.cpp" />
@@ -63,6 +67,10 @@
     <ClInclude Include="..\log.h" />
     <ClInclude Include="..\shader.h" />
     <ClInclude Include="..\ThirdPartyLibs\CRC32C\crc32c.h" />
+    <ClInclude Include="..\ThirdPartyLibs\ReShade\source\dll_log.hpp" />
+    <ClInclude Include="..\ThirdPartyLibs\ReShade\source\dll_main.h" />
+    <ClInclude Include="..\ThirdPartyLibs\ReShade\source\hook.hpp" />
+    <ClInclude Include="..\ThirdPartyLibs\ReShade\source\hook_manager.hpp" />
     <ClInclude Include="..\ThirdPartyLibs\WindowsSDK\um\d3d11TokenizedProgramFormat.hpp" />
     <ClInclude Include="..\util.h" />
     <ClInclude Include="..\version.h" />
@@ -184,6 +192,7 @@
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\include\directxtk;
 		$(SolutionDir)ThirdPartyLibs\WindowsSDK;
 		$(SolutionDir)ThirdPartyLibs\CRC32C;
+		$(SolutionDir)ThirdPartyLibs\ReShade\source;
         $(SolutionDir)D3D_Shaders;
       </AdditionalIncludeDirectories>
       <BufferSecurityCheck>true</BufferSecurityCheck>
@@ -241,6 +250,7 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\include\directxtk;
 		$(SolutionDir)ThirdPartyLibs\WindowsSDK;
 		$(SolutionDir)ThirdPartyLibs\CRC32C;
+		$(SolutionDir)ThirdPartyLibs\ReShade\source;
         $(SolutionDir)D3D_Shaders;
       </AdditionalIncludeDirectories>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
@@ -300,6 +310,7 @@ call "$(SolutionDir)CopyToGames.bat" "$(TargetDir)" "$(TargetedSDKArchitecture)"
 		$(SolutionDir)ThirdPartyLibs\DirectXTK-lib\x64-windows-static\include\directxtk;
 		$(SolutionDir)ThirdPartyLibs\WindowsSDK;
 		$(SolutionDir)ThirdPartyLibs\CRC32C;
+		$(SolutionDir)ThirdPartyLibs\ReShade\source;
         $(SolutionDir)D3D_Shaders;
       </AdditionalIncludeDirectories>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>

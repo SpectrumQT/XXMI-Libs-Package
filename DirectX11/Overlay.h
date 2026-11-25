@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vector>
 #include <memory>
 #include <d3d11_1.h>
 #include <dxgi1_2.h>
@@ -50,6 +51,20 @@ private:
 	std::unique_ptr<DirectX::BasicEffect> mEffect;
 	std::unique_ptr<DirectX::PrimitiveBatch<DirectX::VertexPositionColor>> mPrimitiveBatch;
 	Microsoft::WRL::ComPtr<ID3D11InputLayout> mInputLayout;
+
+	Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> mProfilingTextureSRV;
+	ID3D11Resource* mProfilingTextureResource = nullptr;
+
+	HRESULT UpdateProfilingTexture();
+	void DrawProfilingTexture(float x, float y);
+
+	ID3D11Resource* mProfilingBufferResource = nullptr;
+	std::vector<uint8_t> mProfilingBufferData;
+	UINT mProfilingBufferElementSize = 0;
+	LARGE_INTEGER mProfilingBufferLastUpdate = {};
+
+	HRESULT UpdateProfilingBuffer();
+	void DrawProfilingBuffer(float x, float y);
 
 	// These are all state that we save away before drawing the overlay and
 	// restore again afterwards. Basically everything that DirectTK

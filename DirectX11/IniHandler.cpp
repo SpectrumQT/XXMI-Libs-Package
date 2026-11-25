@@ -22,6 +22,8 @@
 #include <locale>
 #include <cmath>
 
+#include "ReShadeRuntime.hpp"
+
 #define INI_FILENAME L"d3dx.ini"
 
 // List all the section prefixes which may contain a command list here and
@@ -4590,6 +4592,9 @@ void LoadConfigFile()
 	}
 
 	gLogDebug = gLogVerbosity == LogVerbosity::DEBUG;
+
+	if (gLogDebug)
+		InitializeHooksLog();
 
 	ParseIniFile(iniFile);
 	InsertBuiltInIniSections();

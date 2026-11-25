@@ -104,6 +104,9 @@
     <ClCompile Include="profiling.cpp">
       <Filter>Overlay</Filter>
     </ClCompile>
+    <ClCompile Include="ReShadeRuntime.cpp">
+      <Filter>Hooking</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Globals.h" />
@@ -119,6 +122,9 @@
     </ClInclude>
     <ClInclude Include="..\ThirdPartyLibs\ReShade\source\dll_main.h">
       <Filter>Third-Party Dependencies\ReShade\core</Filter>
+    </ClInclude>
+    <ClInclude Include="ReShadeRuntime.hpp">
+      <Filter>Hooking</Filter>
     </ClInclude>
     <ClInclude Include="cursor.h">
       <Filter>Input</Filter>

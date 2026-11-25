@@ -4,6 +4,7 @@
 #include "D3D11Wrapper.h"
 #include "util_min.h"
 #include "globals.h"
+#include "ReShadeRuntime.hpp"
 
 HINSTANCE migoto_handle;
 
@@ -343,6 +344,8 @@ BOOL WINAPI DllMain(
 			// so bail early if this is not the intended target
 			if (!verify_intended_target(hinstDLL))
 				return false;
+
+			InitializeHooking(hinstDLL);
 
 			// Hook d3d11.dll if we are loaded via injection either
 			// under a different name, or just not as the primary

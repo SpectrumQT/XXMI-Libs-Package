@@ -888,7 +888,7 @@ void FrameAnalysisContext::dedupe_buf_filename_vb_txt(const wchar_t *bin_filenam
 	StringCchPrintfExW(pos, rem, &pos, &rem, NULL, L"-vb%i", idx);
 
 	if (layout) {
-		uint32_t layout_hash = layout->GetLayoutHash();
+		uint32_t layout_hash = (uint32_t)layout->GetLayoutHash();
 		StringCchPrintfExW(pos, rem, &pos, &rem, NULL, L"-layout=%08x", layout_hash);
 	}
 

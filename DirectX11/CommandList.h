@@ -29,6 +29,7 @@ class HackerContext;
 enum class FrameAnalysisOptions;
 class ResourceCopyTarget;
 class ResourceFilterTarget;
+namespace SoundEngine { class Section; }
 
 struct InputLayoutElementOverride {
 	struct Match {
@@ -1719,6 +1720,8 @@ enum class ParamOverrideType {
 	FRAME_TIME,
 	FPS,
 	RESOURCE_FILTER,
+	SOUND,	// Needs a [Sound*] and one of its properties:
+		// SoundFoo->Position, parsed by parse_sound().
 };
 static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] = {
 	{L"rt_width", ParamOverrideType::RT_WIDTH},
@@ -1766,6 +1769,26 @@ static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] =
 	{L"resource_filter", ParamOverrideType::RESOURCE_FILTER},
 	{NULL, ParamOverrideType::INVALID} // End of list marker
 };
+
+// What `SoundFoo->Position` and its like read off a [Sound*].
+// Both times are in milliseconds, as the offset `play` takes is.
+enum class SoundProperty {
+	INVALID,
+	POSITION,
+	LENGTH,
+	PLAYING,
+	SPEED,
+	VOLUME,
+};
+static EnumName_t<const wchar_t *, SoundProperty> SoundPropertyNames[] = {
+	{L"position", SoundProperty::POSITION},
+	{L"length", SoundProperty::LENGTH},
+	{L"playing", SoundProperty::PLAYING},
+	{L"speed", SoundProperty::SPEED},
+	{L"volume", SoundProperty::VOLUME},
+	{NULL, SoundProperty::INVALID} // End of list marker
+};
+
 class CommandListOperand :
 	public CommandListToken,
 	public CommandListOperandBase,
@@ -1793,6 +1816,10 @@ public:
 	// For scissor rectangle:
 	unsigned scissor;
 
+	// For SOUND type:
+	SoundEngine::Section *sound;
+	SoundProperty sound_property;
+
 	CommandListOperand(size_t pos, wstring token=L"") :
 		CommandListToken(pos, token),
 		type(ParamOverrideType::INVALID),
@@ -1800,7 +1827,9 @@ public:
 		param_component(NULL),
 		param_idx(0),
 		var_ftarget(NULL),
-		scissor(0)
+		scissor(0),
+		sound(NULL),
+		sound_property(SoundProperty::INVALID)
 	{}
 
 	bool parse_float(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope, size_t& out_length);
@@ -1811,6 +1840,7 @@ public:
 	bool parse_shader(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_resource_filter(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_scissor(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
+	bool parse_sound(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 	bool parse_ini_keywords(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope);
 
 	float evaluate(CommandListState *state, HackerDevice *device=NULL) override;
@@ -1994,6 +2024,27 @@ public:
 		float& value);
 	bool TryReadValueFromCache(ID3D11Resource* resource, UINT64 byte_offset, float& value);
 	void SetOutputValue(CommandListState* state, float value);
+};
+
+// play = SoundFoo, or play = SoundFoo, <expression> to begin that many
+// milliseconds in. A [Sound*] with overlap starts a voice of its own each time;
+// one without restarts the single voice it owns.
+class PlaySoundCommand : public CommandListCommand {
+public:
+	SoundEngine::Section *sound = nullptr;
+	// Empty unless the line gave a start offset:
+	std::unique_ptr<CommandListExpression> start_ms = nullptr;
+
+	void run(CommandListState*) override;
+};
+
+// stop = SoundFoo. Nothing to stop on a section that overlaps, since each of
+// its plays belongs to the engine.
+class StopSoundCommand : public CommandListCommand {
+public:
+	SoundEngine::Section *sound = nullptr;
+
+	void run(CommandListState*) override;
 };
 
 class ClearViewCommand : public CommandListCommand {

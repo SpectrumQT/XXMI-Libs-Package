@@ -3,6 +3,7 @@
 #include "lock.h"
 
 #include "CommandList.h"
+#include "SoundEngine.h"
 
 #include <DDSTextureLoader.h>
 #include <algorithm>
@@ -1275,6 +1276,92 @@ bool ParseStoreCommand(const wchar_t* section,
 	return AddCommandToList(operation.release(), explicit_command_list, pre_command_list, NULL, NULL, section, key, val);
 }
 
+// The [Sound*] an ini line named,
+// preferring one the ini that named it declared itself,
+// over one of the same name in the global namespace.
+static SoundEngine::Section *find_sound(const wstring *name, const wstring *ini_namespace)
+{
+	wstring namespaced_section;
+
+	if (get_namespaced_section_name_lower(name, ini_namespace, &namespaced_section)) {
+		SoundEngine::Section *sound = SoundEngine::Find(namespaced_section);
+
+		if (sound)
+			return sound;
+	}
+
+	return SoundEngine::Find(*name);
+}
+
+void PlaySoundCommand::run(CommandListState *state)
+{
+	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
+
+	sound->Play(start_ms ? (double)start_ms->evaluate(state) : 0.0);
+}
+
+void StopSoundCommand::run(CommandListState *state)
+{
+	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
+
+	sound->Stop();
+}
+
+// play = SoundFoo
+// play = SoundFoo, <expression>   - begin that many milliseconds in
+static bool ParsePlaySound(const wchar_t *section, const wchar_t *key, wstring *val,
+		CommandList *explicit_command_list, CommandList *pre_command_list, CommandList *post_command_list,
+		const wstring *ini_namespace)
+{
+	CommandArgumentReader args(L"play", *val, section, ini_namespace, pre_command_list->scope);
+
+	wstring name;
+
+	if (!args.GetToken(&name))
+		return args.Fail();
+
+	SoundEngine::Section *sound = find_sound(&name, ini_namespace);
+	if (!sound)
+		return false;
+
+	auto operation = std::make_unique<PlaySoundCommand>();
+
+	// No comma means no offset,
+	// and a missing separator is only an error once something follows the name:
+	if (args.ConsumeSeparator(SeparatorMode::Comma)) {
+		if (!args.GetExpression(&operation->start_ms))
+			return false; // The expression parser said what was wrong with it.
+
+		// A one shot is submitted whole, so there is nowhere to start it from:
+		if (sound->Overlaps())
+			LogOverlayW(LOG_WARNING, L"An overlapping sound cannot be started part way in\n - [%ls] %ls\n",
+					section, key);
+	}
+
+	if (!args.Finished())
+		return args.Fail();
+
+	operation->sound = sound;
+
+	return AddCommandToList(operation.release(), explicit_command_list, NULL, pre_command_list, post_command_list, section, key, val);
+}
+
+static bool ParseStopSound(const wchar_t *section, const wchar_t *key, wstring *val,
+		CommandList *explicit_command_list, CommandList *pre_command_list, CommandList *post_command_list,
+		const wstring *ini_namespace)
+{
+	wstring name = *val;
+
+	SoundEngine::Section *sound = find_sound(&name, ini_namespace);
+	if (!sound)
+		return false;
+
+	StopSoundCommand *operation = new StopSoundCommand();
+	operation->sound = sound;
+
+	return AddCommandToList(operation, explicit_command_list, NULL, pre_command_list, post_command_list, section, key, val);
+}
+
 bool ParseCommandListGeneralCommands(const wchar_t *section,
 		const wchar_t *key, wstring *val,
 		CommandList *explicit_command_list,
@@ -1311,6 +1398,12 @@ bool ParseCommandListGeneralCommands(const wchar_t *section,
 
 	if (!wcscmp(key, L"reset_per_frame_limits"))
 		return ParseResetPerFrameLimits(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
+
+	if (!wcscmp(key, L"play"))
+		return ParsePlaySound(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
+
+	if (!wcscmp(key, L"stop"))
+		return ParseStopSound(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
 
 	if (!wcscmp(key, L"clear"))
 		return ParseClearView(section, key, val, explicit_command_list, pre_command_list, post_command_list, ini_namespace);
@@ -3816,6 +3909,28 @@ static float HeuristicGetWindowHeight(CommandListState* state)
 
 #pragma region CommandListRuntimePart3
 
+// What `SoundFoo->Position` and its like read off the section the parser found.
+// A sound that overlaps has no voice of its own to ask,
+// so it can say that it is playing but not where it is.
+static float sound_property_value(SoundEngine::Section *sound, SoundProperty property)
+{
+	switch (property) {
+		case SoundProperty::POSITION:
+			return (float)sound->PositionMs();
+		case SoundProperty::LENGTH:
+			return (float)sound->LengthMs();
+		case SoundProperty::PLAYING:
+			return sound->Playing() ? 1.0f : 0.0f;
+		case SoundProperty::SPEED:
+			return sound->Speed();
+		case SoundProperty::VOLUME:
+			return sound->Volume();
+	}
+
+	LogOverlay(LOG_DIRE, "BUG: Unhandled sound property %i\n", property);
+	return 0;
+}
+
 float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device)
 {
 	float ftemp;
@@ -3861,6 +3976,8 @@ float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device
 			return 0;
 		case ParamOverrideType::STEREO_AVAILABLE:
 			return 0;
+		case ParamOverrideType::SOUND:
+			return sound_property_value(sound, sound_property);
 		// XXX: If updating this list, be sure to also update
 		// XXX: operand_allowed_in_context()
 	}
@@ -5246,6 +5363,14 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 			// Must be attempted after target, otherwise it'll win over slots (e.g. `vs` over `vs-cb0`).
 			if (!has_prefix)
 			{
+				// Parse sound property (e.g. `SoundFoo->Position`).
+				if (operand->parse_sound(&token, ini_namespace, scope))
+				{
+					LogDebugW(L"      Sound: \"%ls\"\n", token.c_str());
+					pos += len_target;
+					goto import_operand;
+				}
+
 				// Parse shader (e.g. `vs`, `cs`).
 				if (operand->parse_shader(&token, ini_namespace, scope))
 				{
@@ -6039,6 +6164,7 @@ static bool operand_allowed_in_context(ParamOverrideType type, CommandListScope 
 		case ParamOverrideType::SLI:
 		case ParamOverrideType::STEREO_ACTIVE:
 		case ParamOverrideType::STEREO_AVAILABLE:
+		case ParamOverrideType::SOUND:
 			return true;
 	}
 	return false;
@@ -6186,6 +6312,31 @@ bool CommandListOperand::parse_scissor(const wstring* operand, const wstring* in
 		return operand_allowed_in_context(type, scope);
 	}
 	return false;
+}
+
+// SoundFoo->Position, and the other properties a [Sound*] answers for.
+// The section is resolved here, so that reading one is no more than a call.
+bool CommandListOperand::parse_sound(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)
+{
+	size_t member = operand->find(L"->");
+
+	if (member == wstring::npos)
+		return false;
+
+	wstring name = operand->substr(0, member);
+
+	sound = find_sound(&name, ini_namespace);
+	if (!sound)
+		return false;
+
+	sound_property = lookup_enum_val<const wchar_t*, SoundProperty>(SoundPropertyNames,
+		operand->c_str() + member + 2, SoundProperty::INVALID);
+
+	if (sound_property == SoundProperty::INVALID)
+		return false;
+
+	type = ParamOverrideType::SOUND;
+	return operand_allowed_in_context(type, scope);
 }
 
 bool CommandListOperand::parse_ini_keywords(const wstring* operand, const wstring* ini_namespace, CommandListScope* scope)

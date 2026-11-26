@@ -13560,6 +13560,13 @@ void ResourceCopyOperation::CopyResourceToResource(
 	CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size
 )
 {
+	CopyResourceToTarget(state, dst, src_resource, src_view, stride, offset, format, buf_src_size);
+}
+
+void ResourceCopyOperation::CopyResourceToTarget(
+	CommandListState* state, ResourceCopyTarget& dst_target, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size
+)
+{
 	if (!src_resource) {
 		COMMAND_LIST_LOG(state, "  Copy source was NULL\n");
 		if (!(options & ResourceCopyOptions::UNLESS_NULL)) {
@@ -13568,7 +13575,7 @@ void ResourceCopyOperation::CopyResourceToResource(
 			// this will make errors more obvious if we copy
 			// something that doesn't exist. This behaviour can be
 			// overridden with the unless_null keyword.
-			SetOrDeferResource(state, NULL, NULL, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
+			SetOrDeferResource(state, dst_target, NULL, NULL, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
 		}
 		return;
 	}
@@ -13580,13 +13587,13 @@ void ResourceCopyOperation::CopyResourceToResource(
 	ResourcePool* p_resource_pool = &resource_pool;
 	ID3D11View** pp_cached_view = &cached_view;
 
-	if (dst.type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
+	if (dst_target.type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
 		// If we're copying to a custom resource, use the resource &
 		// view in the CustomResource directly as the cache instead of
 		// the cache in the ResourceCopyOperation. This will reduce the
 		// number of extra resources we have floating around if copying
 		// something to a single custom resource from multiple shaders.
-		dst_custom_resource = dst.GetCustomResource(state, true);
+		dst_custom_resource = dst_target.GetCustomResource(state, true);
 
 		pp_cached_resource = &dst_custom_resource->resource;
 		pp_cached_device = &dst_custom_resource->device;
@@ -13624,7 +13631,7 @@ void ResourceCopyOperation::CopyResourceToResource(
 		UINT src_bind_flags = get_resource_bind_flags(src_resource);
 		// Reuse the already resolved custom resource to avoid evaluating
 		// a dynamic pool index twice:
-		D3D11_BIND_FLAG dst_bind_flags = dst_custom_resource ? dst_custom_resource->bind_flags : dst.BindFlags(state);
+		D3D11_BIND_FLAG dst_bind_flags = dst_custom_resource ? dst_custom_resource->bind_flags : dst_target.BindFlags(state);
 		COMMAND_LIST_LOG(state, "  src bind_flags=0x%03x [%S] dst bind_flags=0x%03x [%S]\n",
 			src_bind_flags, lookup_enum_bit_names(CustomResourceBindFlagNames, (CustomResourceBindFlags)src_bind_flags).c_str(),
 			dst_bind_flags, lookup_enum_bit_names(CustomResourceBindFlagNames, (CustomResourceBindFlags)dst_bind_flags).c_str());
@@ -13641,7 +13648,7 @@ void ResourceCopyOperation::CopyResourceToResource(
 	}
 
 	if (options & ResourceCopyOptions::COPY_MASK) {
-		RecreateCompatibleResource(&ini_line, &src, &dst, src_resource, pp_cached_resource, p_resource_pool, src_view, pp_cached_view,
+		RecreateCompatibleResource(&ini_line, &src, &dst_target, src_resource, pp_cached_resource, p_resource_pool, src_view, pp_cached_view,
 			state, options, stride, offset, format, &buf_src_size, &buf_dst_size);
 
 		if (!*pp_cached_resource) {
@@ -13679,7 +13686,7 @@ void ResourceCopyOperation::CopyResourceToResource(
 		if (G->cache_resource_data != DataCacheBindFlags::INVALID && dst_custom_resource)
 			dst_custom_resource->SetHandleInfo(src_resource, offset, buf_dst_size ? buf_dst_size : buf_src_size);
 		dst_resource = src_resource;
-		dst_view = UsableRefView(&dst, state, src_view, dst_resource);
+		dst_view = UsableRefView(&dst_target, state, src_view, dst_resource);
 		if (!dst_view && *pp_cached_view) {
 			if (ViewMatchesResource(*pp_cached_view, dst_resource)) {
 				dst_view = *pp_cached_view;
@@ -13692,7 +13699,7 @@ void ResourceCopyOperation::CopyResourceToResource(
 	}
 
 	if (!dst_view) {
-		dst_view = CreateCompatibleView(&dst, dst_resource, state,
+		dst_view = CreateCompatibleView(&dst_target, dst_resource, state,
 				stride, offset, format, buf_src_size, options);
 		// Not checking for NULL return as view's are not applicable to
 		// all types. Legitimate failures are logged.
@@ -13705,7 +13712,7 @@ void ResourceCopyOperation::CopyResourceToResource(
 	//   `cs-cb0 = ref vs-cb0->Region($offset, $size)`
 	// 
 	// Here we ensure that SetConstantBuffers1 is never called for non-ref copies to CB.
-	if (dst.type == ResourceCopyTargetType::CONSTANT_BUFFER
+	if (dst_target.type == ResourceCopyTargetType::CONSTANT_BUFFER
 		&& src.evaluation_mode != ResourceCopyTargetEvaluationMode::RESOURCE_REGION
 		&& !(options & ResourceCopyOptions::COPY_MASK))
 	{
@@ -13713,7 +13720,7 @@ void ResourceCopyOperation::CopyResourceToResource(
 		buf_dst_size = 0;
 	}
 
-	SetOrDeferResource(state, dst_resource, dst_view, stride, offset, format, buf_dst_size);
+	SetOrDeferResource(state, dst_target, dst_resource, dst_view, stride, offset, format, buf_dst_size);
 
 	if (options & ResourceCopyOptions::SET_VIEWPORT)
 		SetViewportFromResource(state, dst_resource);
@@ -13731,33 +13738,31 @@ void ResourceCopyOperation::CopyResourceToPool(
 	CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size
 )
 {
-	// TODO: Implement a proper way to do the same without hacks.
 	CustomResourcePool* custom_resource_pool = dst.custom_resource_pool;
 
-	// Make pool's ResourceCopyTarget object to pretend it's one of a custom resource.
-	dst.type = ResourceCopyTargetType::CUSTOM_RESOURCE;
-	dst.custom_resource_pool = nullptr;
-	
+	// Each element is copied to as if it had been named directly,
+	// through a local target rather than `dst` rewritten for the duration:
+	// `dst` belongs to the command and is shared by every context running it.
+	// A bare target is enough:
+	// a custom resource destination is only asked for its type and its element,
+	// and caches the resource and view on the element itself,
+	// so none of the expressions `dst` owns (and cannot copy) apply.
+	ResourceCopyTarget element_target;
+	element_target.type = ResourceCopyTargetType::CUSTOM_RESOURCE;
+
 	for (size_t slot_index = 0; slot_index < custom_resource_pool->GetPoolSize(); ++slot_index)
 	{
 		// Force ring index usage to directly get custom resources from pool slots.
-		CustomResource* dst_resource = custom_resource_pool->GetResource((float)slot_index, false, true, true);
-		// Change target custom resource to one of the current pool slot.
-		dst.SetCustomResource(dst_resource);
-		// DST ResourceCopyTarget setup is complete, invoke CopyResourceToResource.
-		CopyResourceToResource(state, src_resource, src_view, stride, offset, format, buf_src_size);
+		element_target.SetCustomResource(custom_resource_pool->GetResource((float)slot_index, false, true, true));
+		CopyResourceToTarget(state, element_target, src_resource, src_view, stride, offset, format, buf_src_size);
 	}
-	// Restore original state of pool's ResourceCopyTarget object.
-	dst.type = ResourceCopyTargetType::POOL;
-	dst.custom_resource_pool = custom_resource_pool;
-	dst.SetCustomResource(nullptr);
 }
 
-void ResourceCopyOperation::SetOrDeferResource(CommandListState *state,
+void ResourceCopyOperation::SetOrDeferResource(CommandListState *state, ResourceCopyTarget& dst_target,
 		ID3D11Resource *res, ID3D11View *view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_size)
 {
 	if (!deferred) {
-		dst.SetResource(state, res, view, stride, offset, format, buf_size);
+		dst_target.SetResource(state, res, view, stride, offset, format, buf_size);
 		return;
 	}
 
@@ -13786,7 +13791,7 @@ void ResourceCopyOperation::run(CommandListState *state)
 	COMMAND_LIST_LOG(state, "%S\n", ini_line.c_str());
 
 	if (src.type == ResourceCopyTargetType::EMPTY) {
-		SetOrDeferResource(state, NULL, NULL, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
+		SetOrDeferResource(state, dst, NULL, NULL, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
 		return;
 	}
 

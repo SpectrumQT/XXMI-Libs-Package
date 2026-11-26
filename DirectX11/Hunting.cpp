@@ -3,7 +3,6 @@
 #include <string>
 #include <sstream>
 #include <D3Dcompiler.h>
-#include <codecvt>
 
 #include "ScreenGrab.h"
 #include "wincodec.h"
@@ -392,7 +391,6 @@ void MigotoIncludeHandler::push_dir(const char *path)
 
 STDMETHODIMP MigotoIncludeHandler::Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFileName, LPCVOID pParentData, LPCVOID *ppData, UINT *pBytes)
 {
-	std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> codec;
 	char *buf = NULL;
 	DWORD size, read;
 	string apath;
@@ -420,7 +418,7 @@ STDMETHODIMP MigotoIncludeHandler::Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFi
 		apath = dir_stack.back() + pFileName;
 	else
 		apath = dir_stack.front() + pFileName;
-	wpath = codec.from_bytes(apath);
+	wpath = utf8_to_wstring(apath);
 
 	f = CreateFile(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (f == INVALID_HANDLE_VALUE && !G->recursive_include) {
@@ -435,7 +433,7 @@ STDMETHODIMP MigotoIncludeHandler::Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFi
 		// vs UPlay), so we disallow this if recursive_include is
 		// enabled as that already disables backwards compatibility.
 		apath = pFileName;
-		wpath = codec.from_bytes(apath);
+		wpath = utf8_to_wstring(apath);
 		f = CreateFile(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	}
 	if (f == INVALID_HANDLE_VALUE) {
@@ -636,8 +634,7 @@ static bool RegenerateShader(wchar_t *shaderFixPath, wchar_t *fileName, const ch
 
 	// For success, let's add the first line of text from the file to the OriginalShaderInfo,
 	// so the ShaderHacker can edit the line and reload and have it live.
-	std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> utf8_to_utf16;
-	headerLine = utf8_to_utf16.from_bytes(srcData.data(), strchr(srcData.data(), '\n'));
+	headerLine = utf8_to_wstring(srcData.data(), strchr(srcData.data(), '\n'));
 
 	// pCode on return == NULL for error cases, valid if made it this far.
 	*pCode = pByteCode;

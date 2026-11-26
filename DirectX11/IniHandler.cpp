@@ -1,11 +1,13 @@
 #include "IniHandler.h"
 
 #include <algorithm>
+#include <charconv>
 #include <iterator>
 #include <string>
 #include <strsafe.h>
 #include <fstream>
 #include <sstream>
+#include <system_error>
 #include <memory>
 #include <pcre2.h>
 #include <codecvt>
@@ -21,6 +23,7 @@
 #include "vector"
 #include <locale>
 #include <cmath>
+#include <cwctype>
 
 #include "ReShadeRuntime.hpp"
 
@@ -1178,21 +1181,94 @@ inline bool ConvertExpressionToFloat(float expr, float& out) noexcept
 	return true;
 }
 
-bool ParseFloatValue(const wchar_t* section, const wchar_t* key, const wstring& val, float& out, bool warn = true, const wstring* ini_namespace_override = nullptr)
+// std::from_chars only accepts narrow characters. Numeric literals are pure
+// ASCII once the leading whitespace is skipped, so a value containing anything
+// else is left to the expression parser. The whitespace set is iswspace, as
+// wcstoll and wcstof used, and a single '+' is dropped since from_chars rejects it.
+static bool NarrowNumericLiteral(const wstring& val, std::string& out)
+{
+	out.clear();
+	out.reserve(val.size());
+
+	size_t i = 0;
+	while (i < val.size() && std::iswspace(val[i]))
+		i++;
+
+	for (; i < val.size(); i++)
+	{
+		if (val[i] > 0x7F)
+			return false;
+		out.push_back(static_cast<char>(val[i]));
+	}
+
+	// Leave the '+' of "+-5" or "++5" in place so from_chars rejects them.
+	if (out.size() > 1 && out[0] == '+' && out[1] != '+' && out[1] != '-')
+		out.erase(0, 1);
+
+	return true;
+}
+
+// Returns false when the value is not a plain numeric literal. On overflow
+// from_chars leaves the output untouched, so the caller saturates by the sign
+// found at narrow[0].
+template <typename T, typename... Args>
+static bool TryParseNumericLiteral(const wstring& val, std::string& narrow, T& out, std::errc& ec, Args... args)
+{
+	// wcstoll and wcstof read an empty value as a literal zero.
+	if (val.empty())
+	{
+		out = T{};
+		ec = std::errc{};
+		narrow.clear();
+		return true;
+	}
+
+	if (!NarrowNumericLiteral(val, narrow))
+		return false;
+
+	const char* first = narrow.data();
+	const char* last = first + narrow.size();
+	auto result = std::from_chars(first, last, out, args...);
+	ec = result.ec;
+
+	return result.ptr == last && ec != std::errc::invalid_argument;
+}
+
+// Hex floats (0x1p3) have no from_chars equivalent without stripping the prefix,
+// so anything it rejects gets the wcstof it replaced; this keeps the accepted set.
+static bool TryParseFloatWithWcstof(const wstring& val, float& out)
 {
 	wchar_t* end = nullptr;
 	errno = 0;
-	out = std::wcstof(val.c_str(), &end); // TODO: C++17: use std::from_chars.
-	
-	if (*end == L'\0')
+	float parsed = std::wcstof(val.c_str(), &end);
+
+	if (*end != L'\0')
+		return false;
+
+	out = parsed;
+	if (errno == ERANGE)
+		out = std::signbit(out) ? -std::numeric_limits<float>::infinity() : std::numeric_limits<float>::infinity();
+
+	return true;
+}
+
+bool ParseFloatValue(const wchar_t* section, const wchar_t* key, const wstring& val, float& out, bool warn = true, const wstring* ini_namespace_override = nullptr)
+{
+	std::string narrow;
+	std::errc ec;
+
+	if (TryParseNumericLiteral(val, narrow, out, ec))
 	{
-		if (errno == ERANGE)
+		if (ec == std::errc::result_out_of_range)
 		{
 			// Treat floating-point overflow as ±infinity.
-			out = std::signbit(out) ? -std::numeric_limits<float>::infinity() : std::numeric_limits<float>::infinity();
+			out = (narrow[0] == '-') ? -std::numeric_limits<float>::infinity() : std::numeric_limits<float>::infinity();
 		}
 		return true;
 	}
+
+	if (TryParseFloatWithWcstof(val, out))
+		return true;
 
 	return ParseIniExpression(ini_namespace_override, section, key, val, out, warn, ConvertExpressionToFloat);
 }
@@ -1224,15 +1300,16 @@ inline bool ConvertExpressionToInt(float expr, int& out) noexcept
 
 bool ParseIntValue(const wchar_t* section, const wchar_t* key, const wstring& val, int& out, bool warn = false, const wstring* ini_namespace_override = nullptr)
 {
-	wchar_t* end = nullptr;
-	errno = 0;
-	long long n = std::wcstoll(val.c_str(), &end, 10); // TODO: C++17: use std::from_chars
-	
-	if (*end == L'\0') {
-		if (errno == ERANGE)
+	std::string narrow;
+	std::errc ec;
+	long long n = 0;
+
+	if (TryParseNumericLiteral(val, narrow, n, ec, 10))
+	{
+		if (ec == std::errc::result_out_of_range)
 		{
 			// Saturate integer literal overflow.
-			out = (n < 0) ? INT_MIN : INT_MAX;
+			out = (narrow[0] == '-') ? INT_MIN : INT_MAX;
 		}
 		else
 		{

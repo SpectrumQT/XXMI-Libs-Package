@@ -91,9 +91,9 @@ private:
 	template <class ID3D11Shader>
 	void FrameAnalysisLogShaderHash(ID3D11Shader *shader);
 	void FrameAnalysisLogResourceHash(ID3D11Resource *resource, ID3D11View* view = nullptr);
-	void FrameAnalysisLogResource(int slot, char *slot_name, ID3D11Resource *resource, ID3D11View* view = nullptr);
+	void FrameAnalysisLogResource(int slot, const char *slot_name, ID3D11Resource *resource, ID3D11View* view = nullptr);
 	void FrameAnalysisLogResourceArray(UINT start, UINT len, ID3D11Resource *const *ppResources);
-	void FrameAnalysisLogView(int slot, char *slot_name, ID3D11View *view);
+	void FrameAnalysisLogView(int slot, const char *slot_name, ID3D11View *view);
 	void FrameAnalysisLogViewArray(UINT start, UINT len, ID3D11View *const *ppViews);
 	void FrameAnalysisLogMiscArray(UINT start, UINT len, void *const *array);
 	void FrameAnalysisLogAsyncQuery(ID3D11Asynchronous *async);
@@ -175,7 +175,7 @@ private:
 	void finish_deferred_resources(ID3D11CommandList *command_list);
 
 	HRESULT FrameAnalysisFilename(wchar_t *filename, size_t size, bool compute,
-			wchar_t *reg, char shader_type, int idx, ID3D11Resource *handle, uint32_t override_hash = 0);
+			const wchar_t *reg, char shader_type, int idx, ID3D11Resource *handle, uint32_t override_hash = 0);
 	HRESULT FrameAnalysisFilenameResource(wchar_t *filename, size_t size, const wchar_t *type,
 			ID3D11Resource *handle, bool force_filename_handle);
 	const wchar_t* dedupe_tex2d_filename(ID3D11Texture2D *resource,
@@ -208,7 +208,7 @@ private:
 	void update_per_draw_analyse_options();
 	void FrameAnalysisAfterDraw(bool compute, DrawCallInfo *call_info);
 	void _FrameAnalysisAfterUpdate(ID3D11Resource *pResource,
-			FrameAnalysisOptions type_mask, wchar_t *type);
+			FrameAnalysisOptions type_mask, const wchar_t *type);
 	void FrameAnalysisAfterUnmap(ID3D11Resource *pResource);
 	void FrameAnalysisAfterUpdate(ID3D11Resource *pResource);
 	void set_default_dump_formats(bool draw);
@@ -222,10 +222,10 @@ public:
 	~FrameAnalysisContext();
 
 	// public to allow CommandList access
-	void FrameAnalysisLog(char *fmt, ...) override;
-	void FrameAnalysisLogW(wchar_t* fmt, ...);
-	void vFrameAnalysisLog(char *fmt, va_list ap);
-	void vFrameAnalysisLogW(wchar_t* fmt, va_list ap);
+	void FrameAnalysisLog(const char *fmt, ...) override;
+	void FrameAnalysisLogW(const wchar_t* fmt, ...);
+	void vFrameAnalysisLog(const char *fmt, va_list ap);
+	void vFrameAnalysisLogW(const wchar_t* fmt, va_list ap);
 	// An alias for the above function that we use to denote that omitting
 	// the newline was done intentionally. For now this is just for our
 	// reference, but later we might actually make the default function

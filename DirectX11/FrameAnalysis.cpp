@@ -50,7 +50,7 @@ FrameAnalysisContext::~FrameAnalysisContext()
 		fclose(frame_analysis_log);
 }
 
-void FrameAnalysisContext::vFrameAnalysisLog(char *fmt, va_list ap)
+void FrameAnalysisContext::vFrameAnalysisLog(const char *fmt, va_list ap)
 {
 	wchar_t filename[MAX_PATH];
 
@@ -103,7 +103,7 @@ void FrameAnalysisContext::vFrameAnalysisLog(char *fmt, va_list ap)
 	vfprintf(frame_analysis_log, fmt, ap);
 }
 
-void FrameAnalysisContext::vFrameAnalysisLogW(wchar_t* fmt, va_list ap)
+void FrameAnalysisContext::vFrameAnalysisLogW(const wchar_t* fmt, va_list ap)
 {
 	wchar_t filename[MAX_PATH];
 
@@ -156,7 +156,7 @@ void FrameAnalysisContext::vFrameAnalysisLogW(wchar_t* fmt, va_list ap)
 	vfwprintf(frame_analysis_log, fmt, ap);
 }
 
-void FrameAnalysisContext::FrameAnalysisLog(char *fmt, ...)
+void FrameAnalysisContext::FrameAnalysisLog(const char *fmt, ...)
 {
 	va_list ap;
 
@@ -165,7 +165,7 @@ void FrameAnalysisContext::FrameAnalysisLog(char *fmt, ...)
 	va_end(ap);
 }
 
-void FrameAnalysisContext::FrameAnalysisLogW(wchar_t* fmt, ...)
+void FrameAnalysisContext::FrameAnalysisLogW(const wchar_t* fmt, ...)
 {
 	va_list ap;
 
@@ -184,7 +184,7 @@ void FrameAnalysisContext::FrameAnalysisLogW(wchar_t* fmt, ...)
 } while (0)
 
 
-static void FrameAnalysisLogSlot(FILE *frame_analysis_log, int slot, char *slot_name)
+static void FrameAnalysisLogSlot(FILE *frame_analysis_log, int slot, const char *slot_name)
 {
 	if (slot_name)
 		fprintf(frame_analysis_log, "       %s:", slot_name);
@@ -278,7 +278,7 @@ void FrameAnalysisContext::FrameAnalysisLogResourceHash(ID3D11Resource* resource
 	fprintf(frame_analysis_log, "\n");
 }
 
-void FrameAnalysisContext::FrameAnalysisLogResource(int slot, char *slot_name, ID3D11Resource *resource, ID3D11View* view)
+void FrameAnalysisContext::FrameAnalysisLogResource(int slot, const char *slot_name, ID3D11Resource *resource, ID3D11View* view)
 {
 	if (!resource || !G->analyse_frame || !frame_analysis_log)
 		return;
@@ -289,7 +289,7 @@ void FrameAnalysisContext::FrameAnalysisLogResource(int slot, char *slot_name, I
 	FrameAnalysisLogResourceHash(resource, view);
 }
 
-void FrameAnalysisContext::FrameAnalysisLogView(int slot, char *slot_name, ID3D11View *view)
+void FrameAnalysisContext::FrameAnalysisLogView(int slot, const char *slot_name, ID3D11View *view)
 {
 	ID3D11Resource *resource;
 
@@ -520,7 +520,7 @@ void FrameAnalysisContext::Dump2DResourceImmediateCtx(ID3D11Texture2D *staging,
 	HRESULT hr = S_OK;
 	wchar_t dedupe_filename[MAX_PATH];
 	wstring save_filename;
-	wchar_t *wic_ext = L".jpg";
+	const wchar_t *wic_ext = L".jpg";
 	size_t ext, save_ext;
 
 	save_filename = dedupe_tex2d_filename(staging, orig_desc, dedupe_filename, MAX_PATH, filename.c_str(), format);
@@ -798,7 +798,7 @@ void FrameAnalysisContext::DumpBufferTxt(wchar_t *filename, D3D11_MAPPED_SUBRESO
 		UINT size, char type, int idx, UINT stride, UINT offset)
 {
 	FILE *fd = NULL;
-	char *components = "xyzw";
+	const char *components = "xyzw";
 	float *buf = (float*)map->pData;
 	UINT i, c;
 	errno_t err;
@@ -1959,7 +1959,7 @@ void FrameAnalysisContext::get_deduped_dir(wchar_t *path, size_t size)
 }
 
 HRESULT FrameAnalysisContext::FrameAnalysisFilename(wchar_t *filename, size_t size, bool compute,
-		wchar_t *reg, char shader_type, int idx, ID3D11Resource *handle, uint32_t override_hash)
+		const wchar_t *reg, char shader_type, int idx, ID3D11Resource *handle, uint32_t override_hash)
 {
 	struct ResourceHashInfo *info;
 	uint32_t hash, orig_hash;
@@ -2541,6 +2541,8 @@ void FrameAnalysisContext::DumpVBs(DrawCallInfo *call_info, ID3D11Buffer *staged
 	GetPassThroughOrigContext1()->IAGetPrimitiveTopology(&topology);
 
 	for (i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
+		uint32_t region_hash;
+
 		if (!buffers[i])
 			continue;
 
@@ -2548,7 +2550,7 @@ void FrameAnalysisContext::DumpVBs(DrawCallInfo *call_info, ID3D11Buffer *staged
 		if (!vb_slot_in_layout(i, layout))
 			goto continue_release;
 
-		uint32_t region_hash = 0;
+		region_hash = 0;
 		if (G->track_region_hashes && strides[i]) {
 			UINT region_offset = GetVertexBufferRegionOffset(strides[i], call_info, offsets[i]);
 			UINT region_size = GetVertexBufferRegionSize(strides[i], call_info);
@@ -2935,7 +2937,7 @@ void FrameAnalysisContext::FrameAnalysisAfterDraw(bool compute, DrawCallInfo *ca
 }
 
 void FrameAnalysisContext::_FrameAnalysisAfterUpdate(ID3D11Resource *resource,
-		FrameAnalysisOptions type_mask, wchar_t *type)
+		FrameAnalysisOptions type_mask, const wchar_t *type)
 {
 	wchar_t filename[MAX_PATH];
 	HRESULT hr;

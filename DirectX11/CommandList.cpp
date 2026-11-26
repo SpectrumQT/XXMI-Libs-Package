@@ -1179,7 +1179,7 @@ static bool ParseFrameAnalysisDump(const wchar_t *section,
 	FrameAnalysisDumpCommand *operation = new FrameAnalysisDumpCommand();
 	wchar_t *buf;
 	size_t size = val->size() + 1;
-	wchar_t *target = NULL;
+	const wchar_t *target = NULL;
 
 	// parse_enum_option_string replaces spaces with NULLs, so it can't
 	// operate on the buffer in the wstring directly. I could potentially
@@ -1188,7 +1188,7 @@ static bool ParseFrameAnalysisDump(const wchar_t *section,
 	buf = new wchar_t[size];
 	wcscpy_s(buf, size, val->c_str());
 
-	operation->analyse_options = parse_enum_option_string<wchar_t *, FrameAnalysisOptions>
+	operation->analyse_options = parse_enum_option_string<const wchar_t *, FrameAnalysisOptions>
 		(FrameAnalysisOptionNames, buf, &target);
 
 	if (!target)
@@ -1569,7 +1569,7 @@ static UINT get_index_count_from_current_ib(ID3D11DeviceContext *mOrigContext1)
 	return 0;
 }
 
-void DrawCommand::do_indirect_draw_call(CommandListState *state, char *name,
+void DrawCommand::do_indirect_draw_call(CommandListState *state, const char *name,
 		void (__stdcall ID3D11DeviceContext::*IndirectDrawCall)(THIS_
 		ID3D11Buffer *pBufferForArgs,
 		UINT AlignedByteOffsetForArgs))
@@ -1995,7 +1995,7 @@ FrameAnalysisChangeOptionsCommand::FrameAnalysisChangeOptionsCommand(wstring *va
 	buf = new wchar_t[size];
 	wcscpy_s(buf, size, val->c_str());
 
-	analyse_options = parse_enum_option_string<wchar_t *, FrameAnalysisOptions>
+	analyse_options = parse_enum_option_string<const wchar_t *, FrameAnalysisOptions>
 		(FrameAnalysisOptionNames, buf, NULL);
 
 	delete [] buf;
@@ -2466,6 +2466,7 @@ bool CustomShader::compile(char type, wchar_t *filename, const wstring *wname, c
 	const D3D_SHADER_MACRO *macros = NULL;
 	bool found = false;
 	FILETIME timestamp;
+	wchar_t *ext;
 
 	LogInfo("  %cs=%S\n", type, filename);
 
@@ -2544,7 +2545,7 @@ bool CustomShader::compile(char type, wchar_t *filename, const wstring *wname, c
 	// XXX: If we allow the compilation to be customised further (e.g. with
 	// addition preprocessor defines), make the cache filename unique for
 	// each possible combination
-	wchar_t *ext = wcsrchr(wpath, L'.');
+	ext = wcsrchr(wpath, L'.');
 	if (ext > wcsrchr(wpath, L'\\'))
 		swprintf_s(cache_path, MAX_PATH, L"%.*s.%S.%x.bin", (int)(ext - wpath), wpath, shaderModel, (UINT)compile_flags);
 	else
@@ -5047,6 +5048,10 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 		remain = expr.substr(pos);
 
 		bool matched = false;
+		bool has_variable_prefix;
+		bool has_prefix;
+		size_t len;
+		size_t len_target;
 
 		// Operators:
 		for (i = 0; i < ARRAYSIZE(operator_tokens); i++)
@@ -5103,20 +5108,20 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 			// - Must tokenise subtraction operation first.
 			// - Static optimisation will merge unary negation.
 			// - Special literals (inf, nan, etc) are being parsed last.
-			size_t len = remain.size();
+			size_t float_len = remain.size();
 
-			if (operand->parse_float(&remain, ini_namespace, scope, len))
+			if (operand->parse_float(&remain, ini_namespace, scope, float_len))
 			{
-				token = remain.substr(0, len);
+				token = remain.substr(0, float_len);
 				LogDebug("      Float: \"%S\"\n", token.c_str());
-				pos += len;
+				pos += float_len;
 				goto import_operand;
 			}
 
 			throw CommandListSyntaxError(L"Float not recognized: " + remain, friendly_pos);
 		}
 
-		bool has_variable_prefix = remain[0] == L'$';
+		has_variable_prefix = remain[0] == L'$';
 
 		// Variable
 		if (has_variable_prefix)
@@ -5127,32 +5132,32 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 			{
 				// More loose pool variable identifier match with hyphens, brackets and UTF-8.
 				// Allows strings like `$Pool\path like\namespace\chars_UTF-8[$index]`.
-				size_t len_target = FindResourceCopyTargetTokenEnd(remain, 1);
+				size_t pool_len = FindResourceCopyTargetTokenEnd(remain, 1);
 
-				if (len_target)
+				if (pool_len)
 				{
-					token = remain.substr(0, len_target);
+					token = remain.substr(0, pool_len);
 
 					// Parse pool variable.
 					if (operand->parse_target(&token, ini_namespace, scope))
 					{
 						LogDebugW(L"      ResourceCopyTarget: \"%ls\"\n", token.c_str());
-						pos += len_target;
+						pos += pool_len;
 						goto import_operand;
 					}
 				}
 			}
 
-			size_t len = FindVariableTokenEnd(remain, 1);
+			size_t var_len = FindVariableTokenEnd(remain, 1);
 
-			if (len)
+			if (var_len)
 			{
-				token = remain.substr(0, len);
+				token = remain.substr(0, var_len);
 
 				if (operand->parse_variable( &token, ini_namespace, scope))
 				{
 					LogDebug("      Variable: \"%S\"\n", token.c_str());
-					pos += len;
+					pos += var_len;
 					goto import_operand;
 				}
 			}
@@ -5160,9 +5165,9 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 			throw CommandListSyntaxError(L"Variable not recognized: " + remain, friendly_pos);
 		}
 
-		bool has_prefix = has_variable_prefix || remain[0] == L'@' || remain[0] == L'#';
+		has_prefix = has_variable_prefix || remain[0] == L'@' || remain[0] == L'#';
 
-		size_t len = 0;
+		len = 0;
 
 		// Other Tokens
 		if (!has_prefix)
@@ -5222,7 +5227,7 @@ static void tokenise(const wstring* expression, CommandListSyntaxTree* tree, con
 		
 		// More loose match with hyphens, brackets and UTF-8.
 		// Allows strings like `Pool\path like\namespace\chars_UTF-8[$index]->Call($PoolFoo[$index], 1)`.
-		size_t len_target = FindResourceCopyTargetTokenEnd(remain, has_prefix ? 1 : 0);
+		len_target = FindResourceCopyTargetTokenEnd(remain, has_prefix ? 1 : 0);
 		if (len_target)
 		{
 			token = remain.substr(0, len_target);
@@ -10031,11 +10036,11 @@ CommandListCommand* parse_pool_variable_operation(
 			if (ParseFloatToken(*val, value, len))
 				RegisterUnknownSetting(key, value);
 		}
-		return false;
+		return nullptr;
 	}
 
 	if (val->empty())
-		return false;
+		return nullptr;
 
 	PoolVariableOperation* command = new PoolVariableOperation();
 
@@ -11797,6 +11802,9 @@ float ResourceCopyTarget::GetResourceHammingDistance(CommandListState* state)
 {
 	float ret = ResourcePropertyResult::UNKNOWN;
 
+	uint64_t resource_dhash = 0;
+	bool has_resource_dhash = false;
+
 	ID3D11View* view = nullptr;
 	ID3D11Resource* resource = GetResource(state, &view, nullptr, nullptr, nullptr, nullptr);
 
@@ -11806,8 +11814,7 @@ float ResourceCopyTarget::GetResourceHammingDistance(CommandListState* state)
 		goto cleanup;
 	}
 
-	uint64_t resource_dhash = 0;
-	bool has_resource_dhash = GetDhash(state->mHackerContext, resource, G->dhash_mip_size, G->dhash_allow_rehash, resource_dhash, view);
+	has_resource_dhash = GetDhash(state->mHackerContext, resource, G->dhash_mip_size, G->dhash_allow_rehash, resource_dhash, view);
 
 	if (has_resource_dhash)
 	{

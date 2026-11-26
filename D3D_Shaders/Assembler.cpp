@@ -309,7 +309,7 @@ struct special_purpose_register
 	// may interact with this, but this is at least passing all test cases.
 	unsigned comps_enum;
 
-	char *name;
+	const char *name;
 };
 
 static struct special_purpose_register special_purpose_registers[] = {

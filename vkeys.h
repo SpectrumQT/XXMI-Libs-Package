@@ -4,7 +4,7 @@
 #include "util.h"
 
 // http://msdn.microsoft.com/en-us/library/windows/desktop/dd375731(v=vs.85).aspx
-static EnumName_t<wchar_t *, int> VKMappings[] = {
+static EnumName_t<const wchar_t *, int> VKMappings[] = {
 	{L"LBUTTON", 0x01},
 	{L"RBUTTON", 0x02},
 	{L"CANCEL", 0x03},

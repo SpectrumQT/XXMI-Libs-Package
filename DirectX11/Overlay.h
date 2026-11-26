@@ -17,16 +17,6 @@
 
 class HackerSwapChain;
 
-enum LogLevel {
-	LOG_DIRE,
-	LOG_WARNING,
-	LOG_WARNING_MONOSPACE,
-	LOG_NOTICE,
-	LOG_INFO,
-
-	NUM_LOG_LEVELS
-};
-
 class OverlayNotice {
 public:
 	std::wstring message;
@@ -99,7 +89,7 @@ private:
 	void SaveState();
 	void RestoreState();
 	HRESULT InitDrawState();
-	void DrawShaderInfoLine(char *type, UINT64 selectedShader, float *y, bool shader);
+	void DrawShaderInfoLine(const char *type, UINT64 selectedShader, float *y, bool shader);
 	void DrawShaderInfoLines(float *y);
 	void DrawNotices(float *y);
 	void DrawProfiling(float *y);
@@ -118,5 +108,4 @@ public:
 };
 
 void ClearNotices();
-void LogOverlayW(LogLevel level, wchar_t *fmt, ...);
-void LogOverlay(LogLevel level, char *fmt, ...);
+// LogLevel, LogOverlay and LogOverlayW are declared in log.h

@@ -44,7 +44,7 @@ bool bLog = false;
 // We cannot log to our normal file, because this is too early, in DLLMain.
 // Nektra provides a safe log though, so we will use this when debugging.
 
-static void LogHooking(char *fmt, ...)
+static void LogHooking(const char *fmt, ...)
 {
 	va_list ap;
 	va_start(ap, fmt);
@@ -57,7 +57,7 @@ static void LogHooking(char *fmt, ...)
 
 
 // ----------------------------------------------------------------------------
-static HRESULT InstallHookDLLMain(LPCWSTR moduleName, char *func, void **trampoline, void *hook)
+static HRESULT InstallHookDLLMain(LPCWSTR moduleName, const char *func, void **trampoline, void *hook)
 {
 	HINSTANCE module;
 	SIZE_T hook_id;

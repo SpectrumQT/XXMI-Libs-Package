@@ -194,7 +194,7 @@ enum class FrameAnalysisOptions {
 	DEPRECATED      = (signed)0x80000000,
 };
 SENSIBLE_ENUM(FrameAnalysisOptions);
-static EnumName_t<wchar_t *, FrameAnalysisOptions> FrameAnalysisOptionNames[] = {
+static EnumName_t<const wchar_t *, FrameAnalysisOptions> FrameAnalysisOptionNames[] = {
 	// Bind flag selection:
 	{L"dump_rt", FrameAnalysisOptions::DUMP_RT},
 	{L"dump_depth", FrameAnalysisOptions::DUMP_DEPTH},

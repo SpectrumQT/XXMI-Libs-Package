@@ -331,7 +331,7 @@ void HackerDevice::CreatePinkHuntingResources()
 	// Only create special pink mode PixelShader when requested.
 	if (G->hunting && (G->marking_mode == MarkingMode::PINK || G->config_reloadable))
 	{
-		char* hlsl =
+		const char* hlsl =
 			"float4 pshader() : SV_Target0"
 			"{"
 			"	return float4(1,0,1,1);"
@@ -1228,7 +1228,7 @@ template <class ID3D11Shader,
 HRESULT HackerDevice::ReplaceShaderFromShaderFixes(UINT64 hash,
 		const void *pShaderBytecode, SIZE_T BytecodeLength,
 		ID3D11ClassLinkage *pClassLinkage, ID3D11Shader **ppShader,
-		wchar_t *shaderType)
+		const wchar_t *shaderType)
 {
 	ShaderOverrideMap::iterator override;
 	const char *overrideShaderModel = NULL;
@@ -1311,7 +1311,7 @@ template <class ID3D11Shader,
 HRESULT HackerDevice::ProcessShaderNotFoundInShaderFixes(UINT64 hash,
 		const void *pShaderBytecode, SIZE_T BytecodeLength,
 		ID3D11ClassLinkage *pClassLinkage, ID3D11Shader **ppShader,
-		wchar_t *shaderType)
+		const wchar_t *shaderType)
 {
 	HRESULT hr;
 
@@ -1441,7 +1441,7 @@ template <class ID3D11Shader,
 			 __in_opt ID3D11ClassLinkage *pClassLinkage,
 			 __out_opt ID3D11Shader **ppShader)
 	 >
-void HackerDevice::KeepOriginalShader(UINT64 hash, wchar_t *shaderType,
+void HackerDevice::KeepOriginalShader(UINT64 hash, const wchar_t *shaderType,
 		ID3D11Shader *pShader,
 		const void *pShaderBytecode,
 		SIZE_T BytecodeLength,
@@ -2491,7 +2491,7 @@ STDMETHODIMP HackerDevice::CreateShaderResourceView(THIS_
 // otherwise identical shaders. However I don't think there is much advantage
 // of that over just hashing the full shader, and in some cases we might like
 // to ignore variable name changes, so it seems best to skip it.
-static char* hash_whitelisted_sections[] = {
+static const char* hash_whitelisted_sections[] = {
 	"SHDR", "SHEX",         // Bytecode
 	"ISGN",         "ISG1", // Input signature
 	"PCSG",         "PSG1", // Patch constant signature
@@ -2619,7 +2619,7 @@ STDMETHODIMP HackerDevice::CreateShader(THIS_
 	__in_opt  ID3D11ClassLinkage *pClassLinkage,
 	/* [annotation] */
 	__out_opt  ID3D11Shader **ppShader,
-	wchar_t *shaderType)
+	const wchar_t *shaderType)
 {
 	HRESULT hr;
 	UINT64 hash;

@@ -536,7 +536,7 @@ template <class ID3D11Shader,
 	void (__stdcall ID3D11DeviceContext::*SetShaderVS2013BUGWORKAROUND)(ID3D11Shader*, ID3D11ClassInstance*const*, UINT),
 	HRESULT (__stdcall ID3D11Device::*CreateShader)(const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11Shader**)
 >
-void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 hash, wchar_t *shader_type)
+void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 hash, const wchar_t *shader_type)
 {
 	ID3D11Shader *orig_shader = NULL, *patched_shader = NULL;
 	ID3D11ClassInstance *class_instances[256];
@@ -1526,6 +1526,9 @@ void UpdateResourceDataCacheFromMap(ID3D11Resource* pResource, void* data, size_
 void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresource)
 {
 	Profiling::State profiling_state;
+	bool deallocate_diverted_memory;
+	MappedResources::mapped_type::iterator subresource_it;
+	MappedResourceInfo* map_info;
 
 	if (Profiling::mode == Profiling::Mode::SUMMARY)
 		Profiling::start(&profiling_state);
@@ -1535,14 +1538,14 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 	if (resource_it == mMappedResources.end())
 		goto out_profile;
 
-	auto subresource_it = resource_it->second.find(Subresource);
+	subresource_it = resource_it->second.find(Subresource);
 
 	if (subresource_it == resource_it->second.end())
 		goto out_profile;
 
-	MappedResourceInfo* map_info = &subresource_it->second;
+	map_info = &subresource_it->second;
 
-	bool deallocate_diverted_memory = true;
+	deallocate_diverted_memory = true;
 
 	if ((map_info->bind_flags & (D3D11_BIND_FLAG)G->cache_resource_data) != 0)
 		UpdateResourceDataCacheFromMap(pResource, map_info->map.pData, map_info->size, &deallocate_diverted_memory);

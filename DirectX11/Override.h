@@ -241,7 +241,7 @@ public:
 			OverrideParams *targets, OverrideVars *vars,
 			int time, TransitionType transition_type);
 	void UpdatePresets(HackerDevice *wrapper);
-	void OverrideTransition::UpdateTransitions(HackerDevice *wrapper);
+	void UpdateTransitions(HackerDevice *wrapper);
 	void Stop();
 };
 

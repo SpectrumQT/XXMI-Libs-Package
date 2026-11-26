@@ -242,7 +242,7 @@ bool XInputButton::_CheckState(int controller)
 	return false ^ invert;
 }
 
-static EnumName_t<wchar_t *, WORD> XInputButtons[] = {
+static EnumName_t<const wchar_t *, WORD> XInputButtons[] = {
 	{L"DPAD_UP", XINPUT_GAMEPAD_DPAD_UP},
 	{L"DPAD_DOWN", XINPUT_GAMEPAD_DPAD_DOWN},
 	{L"DPAD_LEFT", XINPUT_GAMEPAD_DPAD_LEFT},

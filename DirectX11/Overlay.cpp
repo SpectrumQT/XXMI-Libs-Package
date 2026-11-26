@@ -539,7 +539,7 @@ void Overlay::DrawOutlinedString(DirectX::SpriteFont *font, wchar_t const *text,
 // The active shader will show where we are in each list. / 0 / 0 will mean that we are not 
 // actively searching. 
 
-static void AppendShaderText(wchar_t *fullLine, wchar_t *type, int pos, size_t size)
+static void AppendShaderText(wchar_t *fullLine, const wchar_t *type, int pos, size_t size)
 {
 	bool vb = type && type[0] == L'V' && type[1] == L'B';
 	if (size == 0 && (!vb))
@@ -594,7 +594,7 @@ static void CreateShaderCountString(wchar_t *counts)
 
 static bool FindInfoText(wchar_t *info, UINT64 selectedShader)
 {
-	for each (pair<ID3D11DeviceChild *, OriginalShaderInfo> loaded in G->mReloadedShaders)
+	for (pair<ID3D11DeviceChild *, OriginalShaderInfo> loaded : G->mReloadedShaders)
 	{
 		if ((loaded.second.hash == selectedShader) && !loaded.second.infoText.empty())
 		{
@@ -645,7 +645,7 @@ std::wstring FormatSet(const std::set<uint32_t>& s, const std::wstring& sep, con
 // example, we'll show one line for each, but only those that are present
 // in ShaderFixes and have something other than a blank line at the top.
 
-void Overlay::DrawShaderInfoLine(char *type, UINT64 selectedShader, float *y, bool shader)
+void Overlay::DrawShaderInfoLine(const char *type, UINT64 selectedShader, float *y, bool shader)
 {
 	wchar_t osdString[maxstring];
 	Vector2 strSize;
@@ -869,7 +869,7 @@ void ClearNotices()
 	LeaveCriticalSection(&notices.lock);
 }
 
-void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
+void LogOverlayW(LogLevel level, const wchar_t *fmt, ...)
 {
 	bool show_overlay_message = (level == LOG_INFO) || G->gShowWarnings;
 
@@ -909,7 +909,7 @@ void LogOverlayW(LogLevel level, wchar_t *fmt, ...)
 // to LogOverlayW, because that would reverse the meaning of %s and %S in the
 // format string. Instead we do our own vLogInfo and _vsnprintf_s to handle the
 // format string correctly and convert the result to a wide string.
-void LogOverlay(LogLevel level, char *fmt, ...)
+void LogOverlay(LogLevel level, const char *fmt, ...)
 {
 	bool show_overlay_message = (level == LOG_INFO) || G->gShowWarnings;
 

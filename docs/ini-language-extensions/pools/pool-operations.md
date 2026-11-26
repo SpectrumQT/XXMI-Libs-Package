@@ -8,7 +8,7 @@ A pool itself, without an element index, can be the target of a few operations t
 | `PoolFoo = copy_desc PoolBar`| Copy the configuration of `PoolBar` into `PoolFoo`. See [Pool Descriptor Copy](#pool-descriptor-copy). |
 | `PoolFoo = null`             | Drop the proxy, or clear the pool's index state. See [Pool Reset](#pool-reset). |
 
-`copy` is not supported between pools: elements have to be copied one by one or via [ranges](resources.md/#pool-resource-ranges).
+`copy` is not supported between pools: elements have to be copied one by one or via [ranges](resources.md/#pool-resource-ranges), including pool range to pool range such as `PoolFoo[0:3] = ref PoolBar[0:3] unless_null`.
 
 ## Pool Reference
 
